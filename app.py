@@ -1,430 +1,323 @@
-# -*- coding: utf-8 -*-
-import streamlit as st
+import dash
+from dash import dcc, html, Input, Output, State, callback_context, no_update, ALL
+import dash_bootstrap_components as dbc
 import google.generativeai as genai
 import fitz  # PyMuPDF
-from PIL import Image
+import docx
 import io
+import base64
 import json
 import re
-import docx  # python-docx
+from PIL import Image
 
-# ----------------- CHAVE DA API (ESTÁTICA) -----------------
+# ----------------- CONFIGURAÇÃO -----------------
 FIXED_API_KEY = "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw"
 
-# ----------------- CONFIGURAÇÃO E CSS -----------------
-st.set_page_config(layout="wide", page_title="Validador Belfar", page_icon="🔬")
+# Configuração Visual (Tema Bootstrap MINTY = Clean/Profissional)
+app = dash.Dash(
+    __name__, 
+    external_stylesheets=[dbc.themes.MINTY, "https://use.fontawesome.com/releases/v5.15.4/css/all.css"],
+    title="Validador Belfar",
+    suppress_callback_exceptions=True
+)
+server = app.server
 
-GLOBAL_CSS = """
-<style>
-/* Ajustes Gerais */
-.main .block-container { 
-    padding-top: 2rem !important; 
-    padding-bottom: 3rem !important; 
-    max-width: 95% !important; 
-}
-[data-testid="stHeader"] { display: none !important; }
-footer { display: none !important; }
+# ----------------- BACKEND (IA & PROCESSAMENTO) -----------------
 
-/* --- ESTILOS DA HOME PAGE --- */
-.home-title {
-    font-size: 36px;
-    font-weight: 700;
-    color: #111827;
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    margin-bottom: 10px;
-}
-.home-subtitle {
-    font-size: 20px;
-    color: #374151;
-    margin-bottom: 30px;
-}
-.info-box {
-    background-color: #eff6ff;
-    border-left: 5px solid #3b82f6;
-    padding: 15px;
-    border-radius: 4px;
-    color: #1e40af;
-    font-size: 16px;
-    margin-bottom: 30px;
-}
-.feature-card {
-    background-color: white;
-    padding: 20px;
-    border-radius: 8px;
-    border: 1px solid #e5e7eb;
-    margin-bottom: 15px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-}
-.feature-title {
-    font-weight: 700;
-    color: #111827;
-    font-size: 16px;
-    margin-bottom: 5px;
-}
-.feature-desc {
-    color: #4b5563;
-    font-size: 14px;
-    line-height: 1.5;
-}
-
-/* --- ESTILOS DAS FERRAMENTAS --- */
-.tool-header {
-    font-size: 26px;
-    font-weight: 700;
-    color: #1f2937;
-    margin-bottom: 5px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-.bula-box {
-  height: 450px;
-  overflow-y: auto;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 20px;
-  background: #ffffff;
-  font-family: "Georgia", "Times New Roman", serif;
-  font-size: 15px;
-  line-height: 1.6;
-  color: #111;
-  white-space: pre-wrap;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-}
-.upload-header {
-    font-size: 16px;
-    font-weight: 600;
-    color: #374151;
-    margin-bottom: 8px;
-}
-.ref-title { color: #0369a1; font-weight: bold; margin-bottom: 5px; }
-.bel-title { color: #15803d; font-weight: bold; margin-bottom: 5px; }
-
-mark.diff { background-color: #fef08a; padding: 2px 4px; color: black; border-radius: 4px; border: 1px solid #fde047; }
-mark.ort { background-color: #fecaca; padding: 2px 4px; color: black; border-bottom: 2px solid #ef4444; }
-mark.anvisa { background-color: #dbeafe; padding: 2px 4px; color: #1e40af; border: 1px solid #93c5fd; font-weight: 600; }
-
-.stButton>button { 
-    width: 100%; 
-    background-color: #ef4444; 
-    color: white; 
-    font-weight: bold; 
-    font-size: 16px; 
-    height: 50px; 
-    border-radius: 8px; 
-    border: none;
-    margin-top: 20px;
-}
-.stButton>button:hover { background-color: #dc2626; }
-</style>
-"""
-st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
-
-# ----------------- CONSTANTES -----------------
-SECOES_PACIENTE = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
-    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
-    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
-    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
-    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
-    "DIZERES LEGAIS"
-]
-SECOES_PROFISSIONAL = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
-    "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
-    "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
-    "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
-]
-SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
-
-# ----------------- BACKEND -----------------
-def get_best_model(api_key):
+def get_gemini_model():
     try:
-        genai.configure(api_key=api_key)
-        preferencias = ['models/gemini-2.5-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-pro']
-        available = [m.name for m in genai.list_models()]
-        for pref in preferencias:
-            if pref in available: return pref
-        return 'models/gemini-1.5-flash'
+        genai.configure(api_key=FIXED_API_KEY)
+        # Prioriza modelos disponíveis
+        return genai.GenerativeModel('models/gemini-1.5-flash')
     except: return None
 
-def process_file_content(uploaded_file):
-    """
-    Processa o arquivo.
-    - Se PDF: Retorna lista de Imagens (Visão).
-    - Se DOCX: Retorna Texto (Texto).
-    """
-    if not uploaded_file: return None, None
+def process_uploaded_file(contents, filename):
+    """Lê PDF (como imagem) ou DOCX (como texto) do upload base64."""
+    if not contents: return None
     
-    # Processamento DOCX (Extração de Texto)
-    if uploaded_file.name.endswith('.docx'):
-        try:
-            doc = docx.Document(uploaded_file)
-            full_text = "\n".join([para.text for para in doc.paragraphs])
-            return "text", full_text
-        except Exception as e:
-            st.error(f"Erro ao ler DOCX: {e}")
-            return None, None
+    try:
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
+        
+        if filename.lower().endswith('.docx'):
+            doc = docx.Document(io.BytesIO(decoded))
+            text = "\n".join([p.text for p in doc.paragraphs])
+            return {"type": "text", "data": text}
 
-    # Processamento PDF (Conversão para Imagem para IA "ver")
-    elif uploaded_file.name.endswith('.pdf'):
-        try:
-            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        elif filename.lower().endswith('.pdf'):
+            doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
-            for page in doc:
+            # Renderiza até 10 páginas para não sobrecarregar
+            for i in range(min(10, len(doc))):
+                page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
-            return "images", images
-        except Exception as e:
-            st.error(f"Erro ao processar PDF: {e}")
-            return None, None
-    
-    return None, None
-
-def clean_json_response(text):
-    text = text.replace("```json", "").replace("```", "").strip()
-    text = re.sub(r'//.*', '', text)
-    return text
-
-# ----------------- NAVEGAÇÃO -----------------
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=60)
-    
-    # Menu Principal
-    page = st.radio(
-        "Navegação", 
-        ["🏠 Página Inicial", "1. Referência x BELFAR", "2. Conferência MKT", "3. Gráfica x Arte"],
-        label_visibility="collapsed"
-    )
-    
-    st.markdown("---")
-    
-    # Status
-    model_name = get_best_model(FIXED_API_KEY)
-    if model_name:
-        st.success(f"Conectado: {model_name.replace('models/', '')}")
-    else:
-        st.error("Erro Conexão API")
-
-# ----------------- PÁGINA INICIAL (HOME) -----------------
-if page == "🏠 Página Inicial":
-    st.markdown("""
-    <div class="home-title">
-        🔬 Validador Inteligente de Bulas
-    </div>
-    <div class="home-subtitle">
-        Bem-vindo à ferramenta de análise e comparação de documentos.
-    </div>
-    
-    <div class="info-box">
-        👈 <b>Comece agora:</b> Selecione uma das ferramentas de análise na barra lateral esquerda.
-    </div>
-    
-    <h3>Ferramentas Disponíveis:</h3>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("""
-    <div class="feature-card">
-        <div class="feature-title">1. Medicamento Referência x BELFAR</div>
-        <div class="feature-desc">
-            Compara a bula de referência (Padrão) com a bula BELFAR. Aponta divergências de texto (dose, posologia), 
-            erros ortográficos e valida datas da ANVISA. Suporta PDF e DOCX.
-        </div>
-    </div>
-    
-    <div class="feature-card">
-        <div class="feature-title">2. Conferência MKT</div>
-        <div class="feature-desc">
-            Auditoria rápida de itens obrigatórios. Verifica se o arquivo final do Marketing contém todas as frases legais, 
-            logos e informações exigidas pela ANVISA.
-        </div>
-    </div>
-    
-    <div class="feature-card">
-        <div class="feature-title">3. Gráfica x Arte Vigente</div>
-        <div class="feature-desc">
-            Compara o PDF enviado pela Gráfica (Prova) com a Arte Vigente. O sistema analisa o conteúdo visual e textual 
-            para garantir que nada foi alterado na impressão.
-        </div>
-    </div>
-    
-    <br>
-    <div style="background-color:#f9fafb; padding:15px; border-radius:8px; border:1px solid #e5e7eb;">
-        <b>💡 O que é um arquivo 'em curva'?</b><br>
-        <span style="color:#6b7280; font-size:14px;">
-        Uma bula em curva é um arquivo PDF onde todo o texto foi convertido em vetores (desenhos). 
-        A maioria dos validadores comuns falha ao ler isso. <b>Este sistema usa Inteligência Artificial Visual</b>, 
-        então ele consegue ler e validar arquivos em curva perfeitamente.
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
-
-# ----------------- FERRAMENTAS DE ANÁLISE -----------------
-else:
-    # Cabeçalho Comum das Ferramentas
-    st.markdown(f'<div class="tool-header">🔬 {page}</div>', unsafe_allow_html=True)
-    
-    # Variáveis de Estado
-    f1, f2 = None, None
-    inputs_ok = False
-    lista_secoes = SECOES_PACIENTE
-    nome_tipo = "Paciente"
-    
-    # --- CENÁRIO 1: REF x BELFAR ---
-    if page == "1. Referência x BELFAR":
-        # Seletor Interno (Horizontal)
-        st.markdown("**Selecione o Tipo de Bula:**")
-        tipo_sel = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True, label_visibility="collapsed")
-        
-        if tipo_sel == "Profissional":
-            lista_secoes = SECOES_PROFISSIONAL
-            nome_tipo = "Profissional"
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
+                images.append(Image.open(img_byte_arr))
+            return {"type": "images", "data": images}
             
-        st.write("") # Espaço
+    except Exception as e:
+        print(f"Erro ao processar {filename}: {e}")
+        return None
+    return None
+
+# ----------------- COMPONENTES VISUAIS -----------------
+
+def upload_component(id_name, label):
+    return dbc.Card([
+        dbc.CardBody([
+            html.H6(label, className="card-subtitle mb-2 text-muted fw-bold"),
+            dcc.Upload(
+                id=id_name,
+                children=html.Div([
+                    html.I(className="fas fa-cloud-upload-alt fa-2x text-primary mb-2"),
+                    html.Br(),
+                    'Arraste ou ', html.A('Selecione', className="fw-bold")
+                ]),
+                style={
+                    'width': '100%', 'height': '100px', 'lineHeight': '30px',
+                    'borderWidth': '2px', 'borderStyle': 'dashed', 'borderRadius': '10px',
+                    'textAlign': 'center', 'borderColor': '#dee2e6', 'backgroundColor': '#f8f9fa',
+                    'cursor': 'pointer', 'padding': '20px'
+                },
+                multiple=False
+            ),
+            html.Div(id=f"{id_name}-filename", className="mt-2 small text-success text-center fw-bold")
+        ])
+    ], className="mb-3 shadow-sm border-0")
+
+def metric_card(title, value, icon, color):
+    return dbc.Card([
+        dbc.CardBody([
+            html.Div([
+                html.I(className=f"fas {icon} fa-2x text-{color}"),
+                html.Div([
+                    html.H3(value, className=f"text-{color} mb-0"),
+                    html.Small(title, className="text-muted")
+                ], className="ms-3")
+            ], className="d-flex align-items-center")
+        ])
+    ], className="shadow-sm border-0 mb-3")
+
+# ----------------- LAYOUTS DE PÁGINA -----------------
+
+sidebar = html.Div([
+    html.div(className="text-center py-4", children=[
+        html.I(className="fas fa-microscope fa-3x text-primary mb-2"),
+        html.H4("Validador Belfar", className="fw-bold text-dark"),
+        html.Small("Versão Dash 1.0", className="text-muted")
+    ]),
+    html.Hr(),
+    dbc.Nav([
+        dbc.NavLink([html.I(className="fas fa-home me-2"), "Página Inicial"], href="/", active="exact"),
+        dbc.NavLink([html.I(className="fas fa-pills me-2"), "Ref x Belfar"], href="/ref-bel", active="exact"),
+        dbc.NavLink([html.I(className="fas fa-clipboard-check me-2"), "Conferência MKT"], href="/mkt", active="exact"),
+        dbc.NavLink([html.I(className="fas fa-print me-2"), "Gráfica x Arte"], href="/graf", active="exact"),
+    ], vertical=True, pills=True, className="px-2"),
+    html.Div([
+        dbc.Alert([
+            html.I(className="fas fa-plug me-2"), "Sistema Conectado"
+        ], color="success", className="m-3 small py-2")
+    ], className="mt-auto")
+], style={"position": "fixed", "top": 0, "left": 0, "bottom": 0, "width": "250px", "padding": "1rem", "backgroundColor": "#fff", "borderRight": "1px solid #dee2e6"})
+
+content_style = {"marginLeft": "270px", "padding": "2rem"}
+
+# Layout Home
+home_layout = html.Div([
+    html.H1("Bem-vindo ao Validador Inteligente", className="display-5 fw-bold text-primary mb-4"),
+    dbc.Alert("👈 Selecione uma ferramenta no menu lateral para começar.", color="info", className="mb-5"),
+    
+    dbc.Row([
+        dbc.Col(dbc.Card([
+            dbc.CardBody([
+                html.H4("1. Ref x Belfar", className="card-title text-primary"),
+                html.P("Compara bula referência com a candidata. Analisa texto técnico, posologia e dosagens. Suporta PDF e DOCX.", className="card-text"),
+                dbc.Button("Acessar", href="/ref-bel", color="primary", outline=True, size="sm")
+            ])
+        ], className="h-100 shadow-sm"), md=4),
         
-        c1, c2 = st.columns(2, gap="large")
-        with c1:
-            st.markdown('<div class="upload-header">📄 Referência (Padrão)</div>', unsafe_allow_html=True)
-            f1 = st.file_uploader("PDF ou DOCX", type=["pdf", "docx"], key="f1")
-        with c2:
-            st.markdown('<div class="upload-header">📄 Belfar (Candidata)</div>', unsafe_allow_html=True)
-            f2 = st.file_uploader("PDF ou DOCX", type=["pdf", "docx"], key="f2")
+        dbc.Col(dbc.Card([
+            dbc.CardBody([
+                html.H4("2. Conferência MKT", className="card-title text-warning"),
+                html.P("Verificação rápida de itens obrigatórios de marketing e legal (Logos, SAC, Frases de alerta).", className="card-text"),
+                dbc.Button("Acessar", href="/mkt", color="warning", outline=True, size="sm")
+            ])
+        ], className="h-100 shadow-sm"), md=4),
+        
+        dbc.Col(dbc.Card([
+            dbc.CardBody([
+                html.H4("3. Gráfica x Arte", className="card-title text-danger"),
+                html.P("Validação visual pixel-perfect. Compara a arte original com a prova da gráfica para achar manchas ou erros.", className="card-text"),
+                dbc.Button("Acessar", href="/graf", color="danger", outline=True, size="sm")
+            ])
+        ], className="h-100 shadow-sm"), md=4),
+    ])
+])
+
+# Layout Ferramenta Genérica
+def build_tool_page(title, subtitle, scenario_id):
+    options_div = html.Div()
+    if scenario_id == "1":
+        options_div = dbc.Card([
+            dbc.CardBody([
+                html.Label("Tipo de Bula:", className="fw-bold me-3"),
+                dbc.RadioItems(
+                    options=[
+                        {"label": "Paciente", "value": "PACIENTE"},
+                        {"label": "Profissional", "value": "PROFISSIONAL"},
+                    ],
+                    value="PACIENTE",
+                    id="radio-tipo-bula",
+                    inline=True
+                )
+            ])
+        ], className="mb-4 bg-light border-0")
+
+    return html.Div([
+        html.H2(title, className="fw-bold text-dark"),
+        html.P(subtitle, className="text-muted mb-4"),
+        
+        options_div,
+        
+        dbc.Row([
+            dbc.Col(upload_component("upload-1", "📄 Documento Referência / Padrão"), md=6),
+            dbc.Col(upload_component("upload-2", "📄 Documento Belfar / Candidato"), md=6),
+        ]),
+        
+        dbc.Button([html.I(className="fas fa-rocket me-2"), "INICIAR AUDITORIA COMPLETA"], 
+                   id="btn-run", color="danger", size="lg", className="w-100 mb-5 shadow"),
+        
+        dcc.Loading(id="loading", type="default", children=html.Div(id="output-results")),
+        
+        # Armazena o ID do cenário atual
+        dcc.Store(id="scenario-store", data=scenario_id)
+    ])
+
+# ----------------- APP PRINCIPAL -----------------
+
+app.layout = html.Div([
+    dcc.Location(id="url"),
+    sidebar,
+    html.Div(id="page-content", style=content_style)
+])
+
+# Callback de Navegação
+@app.callback(Output("page-content", "children"), [Input("url", "pathname")])
+def render_page_content(pathname):
+    if pathname == "/ref-bel":
+        return build_tool_page("1. Medicamento Referência x BELFAR", "Comparação técnica de conteúdo e dosagens.", "1")
+    elif pathname == "/mkt":
+        return build_tool_page("2. Conferência MKT", "Checklist de itens obrigatórios de marketing.", "2")
+    elif pathname == "/graf":
+        return build_tool_page("3. Gráfica x Arte Vigente", "Comparação visual de pré-impressão.", "3")
+    return home_layout
+
+# Callbacks de Nome de Arquivo
+@app.callback(Output("upload-1-filename", "children"), Input("upload-1", "filename"))
+def update_f1(name): return f"Arquivo: {name}" if name else ""
+
+@app.callback(Output("upload-2-filename", "children"), Input("upload-2", "filename"))
+def update_f2(name): return f"Arquivo: {name}" if name else ""
+
+# Callback PRINCIPAL (Processamento IA)
+@app.callback(
+    Output("output-results", "children"),
+    Input("btn-run", "n_clicks"),
+    [State("upload-1", "contents"), State("upload-1", "filename"),
+     State("upload-2", "contents"), State("upload-2", "filename"),
+     State("scenario-store", "data"),
+     State("radio-tipo-bula", "value")]  # radio-tipo-bula pode não existir em outras páginas, Dash lida com isso se id for None? Não, precisa tratar.
+)
+def run_audit(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
+    if not n_clicks: return no_update
+    if not c1 and not c2: return dbc.Alert("⚠️ Faça upload dos arquivos!", color="warning")
+
+    try:
+        model = get_gemini_model()
+        if not model: return dbc.Alert("Erro de configuração API.", color="danger")
+
+        # Processa Arquivos
+        data1 = process_uploaded_file(c1, n1) if c1 else None
+        data2 = process_uploaded_file(c2, n2) if c2 else None
+        
+        # Monta Payload
+        payload = []
+        if data1:
+            if data1['type'] == 'text': payload.append(f"--- REF TEXTO ---\n{data1['data']}")
+            else: payload.extend(data1['data'])
+        if data2:
+            if data2['type'] == 'text': payload.append(f"--- BELFAR TEXTO ---\n{data2['data']}")
+            else: payload.extend(data2['data'])
+
+        # Define Prompt
+        prompt = ""
+        if scenario == "1":
+            secoes = "POSOLOGIA, COMPOSIÇÃO, CONTRAINDICAÇÕES" if tipo_bula == "PROFISSIONAL" else "PARA QUE SERVE, COMO USAR, QUANDO NÃO USAR, MALES QUE PODE CAUSAR"
+            prompt = f"""
+            Atue como Auditor Farmacêutico.
+            Compare os dois documentos (Ref vs Belfar). Analise texto (DOCX) ou imagem (PDF).
+            Extraia e compare estas seções: {secoes}.
             
-        if f1 and f2: inputs_ok = True
-
-    # --- CENÁRIO 2: MKT ---
-    elif page == "2. Conferência MKT":
-        c1, c2 = st.columns(2, gap="large")
-        with c1:
-            st.markdown('<div class="upload-header">📄 Referência (Opcional)</div>', unsafe_allow_html=True)
-            f1 = st.file_uploader("PDF ou DOCX", type=["pdf", "docx"], key="f1_mkt")
-        with c2:
-            st.markdown('<div class="upload-header">📄 Arquivo MKT (Obrigatório)</div>', unsafe_allow_html=True)
-            f2 = st.file_uploader("PDF ou DOCX", type=["pdf", "docx"], key="f2_mkt")
-        
-        if f2: inputs_ok = True
-
-    # --- CENÁRIO 3: GRÁFICA ---
-    elif page == "3. Gráfica x Arte":
-        c1, c2 = st.columns(2, gap="large")
-        with c1:
-            st.markdown('<div class="upload-header">🎨 Arte Final</div>', unsafe_allow_html=True)
-            f1 = st.file_uploader("PDF ou DOCX", type=["pdf", "docx"], key="f1_art")
-        with c2:
-            st.markdown('<div class="upload-header">🖨️ Prova Gráfica</div>', unsafe_allow_html=True)
-            f2 = st.file_uploader("PDF ou DOCX", type=["pdf", "docx"], key="f2_art")
-        
-        if f1 and f2: inputs_ok = True
-
-    # --- EXECUÇÃO (LÓGICA HÍBRIDA PDF/DOCX) ---
-    if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
-        if not inputs_ok:
-            st.warning("⚠️ Faça o upload dos arquivos necessários.")
+            SAÍDA JSON OBRIGATÓRIA:
+            {{
+                "METADADOS": {{"score": 95, "datas": ["dd/mm/aaaa"]}},
+                "SECOES": [
+                    {{"titulo": "Nome Seção", "ref": "texto ref...", "bel": "texto bel...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE"}}
+                ]
+            }}
+            Use tags HTML <mark style='background-color: #ffff00'>texto</mark> para destacar diferenças no texto.
+            """
+        elif scenario == "2":
+            prompt = "Verifique MKT: VENDA SOB PRESCRIÇÃO, Logo, SAC. Retorne JSON com status de cada item."
         else:
-            with st.spinner("🤖 Processando arquivos (PDF visual ou DOCX texto)..."):
-                try:
-                    genai.configure(api_key=FIXED_API_KEY)
-                    model = genai.GenerativeModel(model_name)
-                    
-                    # Processa Arquivo 1
-                    t1, content1 = process_file_content(f1)
-                    # Processa Arquivo 2 (se existir)
-                    t2, content2 = process_file_content(f2) if f2 else (None, None)
-                    
-                    # Monta Payload para IA
-                    payload = []
-                    
-                    # Adiciona conteúdo do Arq 1
-                    if t1 == "images": payload.extend(content1)
-                    elif t1 == "text": payload.append(f"--- DOCUMENTO REFERÊNCIA (TEXTO EXTRAÍDO) ---\n{content1}\n--- FIM REF ---")
-                    
-                    # Adiciona conteúdo do Arq 2
-                    if t2 == "images": payload.extend(content2)
-                    elif t2 == "text": payload.append(f"--- DOCUMENTO BELFAR/ALVO (TEXTO EXTRAÍDO) ---\n{content2}\n--- FIM ALVO ---")
-                    
-                    # Configura Prompt
-                    secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
-                    nao_comparar_str = ", ".join(SECOES_NAO_COMPARAR)
-                    
-                    prompt = f"""
-                    Atue como um Auditor de Qualidade Farmacêutica Sênior.
-                    
-                    Você recebeu dois documentos (Referência e Alvo/Belfar). 
-                    Eles podem ser imagens (PDF visual) ou texto bruto (DOCX). Analise o conteúdo disponível.
-                    
-                    TAREFA: Extraia e compare o texto das seções abaixo.
-                    
-                    LISTA DE SEÇÕES ({nome_tipo}):
-                    {secoes_str}
-                    
-                    REGRAS:
-                    1. DIVERGÊNCIAS: Envolva diferenças de sentido com <mark class='diff'>texto</mark>.
-                       (Ignore nas seções: {nao_comparar_str}).
-                    2. ORTOGRAFIA: Envolva erros na Belfar com <mark class='ort'>erro</mark>.
-                    3. DATAS: Envolva datas (ex: 10/05/2024) com <mark class='anvisa'>data</mark>.
-                    
-                    SAÍDA JSON:
-                    {{
-                        "NOME_DA_SECAO": {{
-                            "ref_text": "Texto completo...",
-                            "bel_text": "Texto completo...",
-                            "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" | "INFORMATIVO"
-                        }},
-                        "METADADOS": {{ "score_global": 90, "datas_anvisa": ["dd/mm/aaaa"] }}
-                    }}
-                    """
-                    
-                    # Envia
-                    response = model.generate_content([prompt] + payload)
-                    json_data = json.loads(clean_json_response(response.text))
-                    
-                    # Renderiza Resultados
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    st.subheader("📊 Resultado da Análise")
-                    
-                    meta = json_data.get("METADADOS", {})
-                    score = meta.get("score_global", 0)
-                    datas = meta.get("datas_anvisa", [])
-                    
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Conformidade", f"{score}%")
-                    m2.metric("Seções", len(lista_secoes))
-                    m3.metric("Datas ANVISA", ", ".join(datas) if datas else "-")
-                    m4.metric("Status", "Concluído", delta="OK")
-                    
-                    st.markdown("---")
-                    
-                    for secao in lista_secoes:
-                        dados_sec = json_data.get(secao)
-                        # Busca flexível
-                        if not dados_sec:
-                            for k, v in json_data.items():
-                                if secao.lower() in k.lower(): dados_sec = v; break
-                        
-                        if not dados_sec: continue
-                            
-                        status = dados_sec.get("status", "N/A").upper()
-                        ref_html = dados_sec.get("ref_text", "")
-                        bel_html = dados_sec.get("bel_text", "")
-                        
-                        icon = "✅"
-                        expanded = False
-                        if "DIVERGENTE" in status: icon, expanded = "❌", True
-                        elif "FALTANTE" in status: icon, expanded = "🚨", True
-                        elif "INFORMATIVO" in status: icon = "ℹ️"
-                        
-                        with st.expander(f"{secao} — {icon} {status}", expanded=expanded):
-                            c_ref, c_bel = st.columns(2)
-                            with c_ref:
-                                st.markdown(f"<div class='ref-title'>REFERÊNCIA</div><div class='bula-box'>{ref_html}</div>", unsafe_allow_html=True)
-                            with c_bel:
-                                st.markdown(f"<div class='bel-title'>BELFAR</div><div class='bula-box'>{bel_html}</div>", unsafe_allow_html=True)
+            prompt = "Comparação Visual. Liste defeitos visuais em JSON."
 
-                except Exception as e:
-                    st.error(f"Erro na Análise: {e}")
+        # Chama IA
+        response = model.generate_content([prompt] + payload)
+        
+        # Limpa e Parseia JSON
+        txt = response.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(txt)
+        
+        # --- RENDERIZAÇÃO DOS RESULTADOS ---
+        meta = data.get("METADADOS", {})
+        score = meta.get("score", 0)
+        
+        # Cards de Métricas
+        cards = dbc.Row([
+            dbc.Col(metric_card("Conformidade", f"{score}%", "fa-check-circle", "success"), md=4),
+            dbc.Col(metric_card("Datas ANVISA", str(len(meta.get("datas", []))), "fa-calendar-alt", "info"), md=4),
+            dbc.Col(metric_card("Motor IA", "Gemini 1.5", "fa-robot", "primary"), md=4),
+        ])
+        
+        # Acordeão
+        items = []
+        for sec in data.get("SECOES", []):
+            status_color = "danger" if "DIVERGENTE" in sec['status'] else "success"
+            icon = "❌" if "DIVERGENTE" in sec['status'] else "✅"
+            
+            content = dbc.Row([
+                dbc.Col([html.Strong("Referência"), html.Div(dcc.Markdown(sec.get('ref', '-'), dangerously_allow_html=True), className="border p-3 bg-light rounded")], md=6),
+                dbc.Col([html.Strong("Belfar"), html.Div(dcc.Markdown(sec.get('bel', '-'), dangerously_allow_html=True), className="border p-3 bg-white rounded")], md=6),
+            ])
+            
+            items.append(dbc.AccordionItem(content, title=f"{icon} {sec['titulo']} — {sec['status']}", item_id=sec['titulo']))
+            
+        return html.Div([
+            html.H4("📊 Resultado da Auditoria", className="mb-4"),
+            cards,
+            dbc.Accordion(items, start_collapsed=False, always_open=True)
+        ])
 
-st.markdown("<br><br><div style='text-align:center; color:#9ca3af; font-size:12px'>Validador v112 | Belfar Lab</div>", unsafe_allow_html=True)
+    except Exception as e:
+        return dbc.Alert(f"Erro na análise: {str(e)}", color="danger")
+
+# Corrige erro de callback com input inexistente na pagina inicial
+app.validation_layout = html.Div([
+    upload_component("upload-1", ""), upload_component("upload-2", ""),
+    dcc.Store(id="scenario-store"), dcc.RadioItems(id="radio-tipo-bula"),
+    sidebar, home_layout
+])
+
+if __name__ == "__main__":
+    app.run_server(debug=True)
