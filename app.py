@@ -4,207 +4,159 @@ import fitz  # PyMuPDF
 from PIL import Image
 import io
 
-# --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="Belfar AI Validator", page_icon="💊", layout="wide")
+# --- CONFIGURAÇÃO DA PÁGINA (WIDE) ---
+st.set_page_config(page_title="Validador Belfar", page_icon="💊", layout="wide")
 
+# Estilo para ficar mais parecido com sistemas corporativos
 st.markdown("""
 <style>
-    .main-header {font-size: 30px; font-weight: bold; color: #1E88E5; margin-bottom: 10px;}
-    .sub-header {font-size: 18px; color: #555;}
-    .report-container {background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #1E88E5; box-shadow: 2px 2px 10px rgba(0,0,0,0.05);}
-    .stButton>button {width: 100%;}
+    .report-view {
+        background-color: #f8f9fa; 
+        padding: 20px; 
+        border-radius: 10px; 
+        border: 1px solid #ddd;
+        font-family: 'Arial', sans-serif;
+    }
+    .main-title {
+        color: #0d6efd; 
+        font-weight: bold;
+        text-align: center;
+    }
+    .stButton>button {
+        width: 100%;
+        background-color: #0d6efd;
+        color: white;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- SIDEBAR & CONFIGURAÇÃO DA API ---
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.title("Configuração")
-    st.markdown("---")
-    
-    api_key = st.text_input("🔑 Cole sua Google API Key", type="password", help="Pegue sua chave gratuita no Google AI Studio")
-    
-    st.info("""
-    **Como funciona:**
-    Este sistema usa o **Gemini 1.5 Flash**. 
-    Ele 'enxerga' as páginas do PDF como imagens, 
-    eliminando erros de formatação ou texto embaralhado.
-    """)
-    st.markdown("---")
-    st.caption("Desenvolvido para Belfar Lab.")
-
-# --- FUNÇÕES DE PROCESSAMENTO ---
-
+# --- FUNÇÕES DE BACKEND (MANTER IGUAL) ---
 def pdf_to_images(uploaded_file):
-    """Converte PDF em lista de imagens de alta resolução"""
-    if not uploaded_file:
-        return []
-    
-    # Lê o arquivo da memória
-    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-    images = []
-    
-    for page_num, page in enumerate(doc):
-        # Zoom de 2x (matrix) para garantir que a IA leia letras miúdas (bula)
-        mat = fitz.Matrix(2, 2)
-        pix = page.get_pixmap(matrix=mat)
-        img_data = pix.tobytes("jpeg")
-        images.append(Image.open(io.BytesIO(img_data)))
-        
-    return images
+    if not uploaded_file: return []
+    try:
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        images = []
+        for page in doc:
+            mat = fitz.Matrix(2, 2)
+            pix = page.get_pixmap(matrix=mat)
+            img_data = pix.tobytes("jpeg")
+            images.append(Image.open(io.BytesIO(img_data)))
+        return images
+    except: return []
 
-def call_gemini(system_prompt, user_prompt, images):
-    """Função segura para chamar a IA"""
+def call_gemini(api_key, system_prompt, user_prompt, images):
     if not api_key:
-        st.error("⚠️ ERRO: API Key não detectada. Insira a chave na barra lateral.")
+        st.error("⚠️ API Key não configurada no menu lateral.")
         return None
-
     try:
         genai.configure(api_key=api_key)
-        # Configurações de segurança para evitar bloqueios indevidos em textos médicos
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
-        
-        model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash',
-            safety_settings=safety_settings,
-            system_instruction=system_prompt
-        )
-        
-        # Monta o payload (Texto + Imagens)
+        model = genai.GenerativeModel('gemini-1.5-flash')
         content = [user_prompt] + images
-        
-        with st.spinner("🧠 A IA está analisando os documentos... Aguarde."):
+        with st.spinner("⏳ Processando inteligência artificial..."):
             response = model.generate_content(content)
             return response.text
-            
     except Exception as e:
-        st.error(f"Ocorreu um erro na conexão com a IA: {str(e)}")
+        st.error(f"Erro na IA: {e}")
         return None
 
-# --- INTERFACE PRINCIPAL ---
-
-st.markdown('<div class="main-header">💊 Validador de Bulas Inteligente (V3.0)</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Validação visual e semântica powered by Google Gemini</div>', unsafe_allow_html=True)
-st.write("")
-
-# Abas de Navegação
-tab1, tab2, tab3 = st.tabs(["📄 1. Ref x BELFAR (Texto)", "✅ 2. Conferência MKT", "🎨 3. Gráfica x Arte"])
-
-# --- CENÁRIO 1: REF x BELFAR ---
-with tab1:
-    st.markdown("### Comparação de Conteúdo Médico")
-    st.write("Verifica se o teor da bula Belfar bate com a Referência, ignorando diferenças de layout.")
+# --- BARRA LATERAL (INTERFACE CLÁSSICA) ---
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=50)
+    st.title("Validador Belfar")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        file_ref = st.file_uploader("Upload Bula Referência (PDF)", type="pdf", key="f1")
-    with col2:
-        file_bel = st.file_uploader("Upload Bula Belfar (PDF)", type="pdf", key="f2")
+    # 1. Configuração da Chave
+    st.markdown("### 🔑 Acesso")
+    api_key = st.text_input("Google API Key", type="password")
 
-    if st.button("Analisar Divergências Médicas", type="primary"):
-        if file_ref and file_bel:
-            imgs_ref = pdf_to_images(file_ref)
-            imgs_bel = pdf_to_images(file_bel)
-            
-            system_instruction = "Você é um Especialista Sênior em Assuntos Regulatórios da ANVISA."
-            prompt = """
-            Analise visualmente as imagens fornecidas.
-            O primeiro grupo de imagens é a BULA REFERÊNCIA (Padrão).
-            O segundo grupo é a BULA BELFAR (Candidata).
-
-            TAREFA: Compare o TEXTO TÉCNICO das duas.
-            Ignore formatação, quebras de linha ou fontes. Foque no significado.
-            
-            Verifique rigorosamente:
-            1. Posologia (Doses e frequências).
-            2. Contraindicações.
-            3. Concentração do medicamento.
-            4. Cuidados de conservação.
-
-            Gere um relatório em Markdown:
-            - Se estiver tudo certo, diga: "✅ Conteúdo Técnico Conforme".
-            - Se houver divergência, crie uma tabela mostrando: [Item] | [Texto Referência] | [Texto Belfar].
-            """
-            
-            # Envia tudo junto para a IA entender a separação
-            response = call_gemini(system_instruction, prompt, imgs_ref + imgs_bel)
-            if response:
-                st.markdown('<div class="report-container">', unsafe_allow_html=True)
-                st.markdown(response)
-                st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.warning("Por favor, faça upload dos dois arquivos.")
-
-# --- CENÁRIO 2: MKT ---
-with tab2:
-    st.markdown("### Conferência de Marketing & Legal")
-    st.write("Verifica automaticamente se itens obrigatórios constam no documento.")
+    st.markdown("---")
     
-    file_mkt = st.file_uploader("Upload Bula para MKT (PDF)", type="pdf", key="f3")
-    
-    default_checklist = "Frase: 'VENDA SOB PRESCRIÇÃO MÉDICA'\nLogo da Belfar visível\nNome do Farmacêutico Responsável\nNúmero do CRF\nEndereço da Indústria"
-    checklist = st.text_area("Itens para verificar (um por linha):", value=default_checklist, height=150)
-    
-    if st.button("Rodar Checklist MKT", type="primary"):
-        if file_mkt:
-            imgs_mkt = pdf_to_images(file_mkt)
-            
-            system_instruction = "Você é um Auditor de Qualidade Farmacêutica."
-            prompt = f"""
-            Analise as imagens da bula anexa.
-            Verifique a presença dos seguintes itens obrigatórios:
-            
-            {checklist}
-            
-            Para cada item, responda:
-            - [OK] Se encontrou (cite onde está ou o texto exato).
-            - [AUSENTE] Se não encontrou.
-            
-            Se houver erros grosseiros de português, aponte em uma seção "Observações Extras".
-            """
-            
-            response = call_gemini(system_instruction, prompt, imgs_mkt)
-            if response:
-                st.markdown('<div class="report-container">', unsafe_allow_html=True)
-                st.markdown(response)
-                st.markdown('</div>', unsafe_allow_html=True)
+    # 2. Seleção do Modo (Menu)
+    modo = st.selectbox(
+        "Selecione o Cenário:",
+        [
+            "1_Med._Referencia_x_BELFAR",
+            "2_Conferencia_MKT",
+            "3_Grafica_x_Arte"
+        ]
+    )
 
-# --- CENÁRIO 3: GRÁFICA ---
-with tab3:
-    st.markdown("### Validação Visual (Pré-Impressão)")
-    st.write("Compara a Arte Final com a Prova Gráfica para detectar defeitos de impressão.")
+    st.markdown("---")
     
-    c1, c2 = st.columns(2)
-    with c1:
-        file_arte = st.file_uploader("Upload Arte Final (PDF)", type="pdf", key="f4")
-    with c2:
-        file_prova = st.file_uploader("Upload Prova Gráfica (Scan/PDF)", type="pdf", key="f5")
+    # 3. Inputs Dinâmicos (Mudam conforme a escolha acima)
+    inputs_ok = False # Controle para liberar o botão
+    
+    if modo == "1_Med._Referencia_x_BELFAR":
+        st.info("Comparação de Texto Técnico")
+        file1 = st.file_uploader("📂 Bula Referência (PDF)", type="pdf")
+        file2 = st.file_uploader("📂 Bula Belfar (PDF)", type="pdf")
+        if file1 and file2: inputs_ok = True
+
+    elif modo == "2_Conferencia_MKT":
+        st.info("Checklist de Itens Obrigatórios")
+        file1 = st.file_uploader("📂 Bula para Análise (PDF)", type="pdf")
+        checklist_txt = st.text_area("Itens para validar:", value="VENDA SOB PRESCRIÇÃO\nLogo Belfar\nFarmacêutico Resp.\nSAC", height=100)
+        if file1: inputs_ok = True
+
+    elif modo == "3_Grafica_x_Arte":
+        st.info("Comparação Visual (Pixel a Pixel)")
+        file1 = st.file_uploader("📂 Arte Original (PDF)", type="pdf")
+        file2 = st.file_uploader("📂 Prova Gráfica (Scan)", type="pdf")
+        if file1 and file2: inputs_ok = True
+
+    st.markdown("---")
+    
+    # Botão de Ação na Barra Lateral
+    btn_processar = st.button("🚀 INICIAR VALIDAÇÃO", disabled=not inputs_ok)
+
+# --- ÁREA PRINCIPAL (RESULTADOS) ---
+
+st.markdown(f'<h1 class="main-title">{modo.replace("_", " ")}</h1>', unsafe_allow_html=True)
+
+if not btn_processar:
+    # Tela Inicial (Placeholder)
+    st.markdown("""
+    <div style="text-align: center; color: #666; margin-top: 50px;">
+        <h3>Aguardando arquivos...</h3>
+        <p>Utilize o menu lateral (esquerda) para configurar e fazer upload.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+else:
+    # Lógica de Processamento (Só roda quando clica no botão)
+    
+    # CENÁRIO 1
+    if modo == "1_Med._Referencia_x_BELFAR":
+        imgs1 = pdf_to_images(file1)
+        imgs2 = pdf_to_images(file2)
         
-    if st.button("Comparar Visualmente", type="primary"):
-        if file_arte and file_prova:
-            imgs_arte = pdf_to_images(file_arte)
-            imgs_prova = pdf_to_images(file_prova)
-            
-            system_instruction = "Você é um Especialista em Pré-Impressão Gráfica."
-            prompt = """
-            Compare visualmente a ARTE ORIGINAL (primeiras imagens) com a PROVA GRÁFICA (últimas imagens).
-            
-            Procure por defeitos de impressão:
-            1. Textos cortados nas margens.
-            2. Manchas, sujeiras ou borrões na prova gráfica.
-            3. Cores desbotadas ou ilegíveis.
-            4. Elementos gráficos deslocados.
-            
-            Se a prova estiver perfeita, confirme a aprovação.
-            """
-            
-            response = call_gemini(system_instruction, prompt, imgs_arte + imgs_prova)
-            if response:
-                st.markdown('<div class="report-container">', unsafe_allow_html=True)
-                st.markdown(response)
-                st.markdown('</div>', unsafe_allow_html=True)
+        prompt = """
+        Você é um Especialista Regulatório. 
+        Compare o CONTEÚDO TÉCNICO das duas bulas (Imagens 1 vs Imagens 2).
+        Ignore formatação. Foque em: Posologia, Concentração e Contraindicações.
+        Diga se estão CONFORMES ou descreva as DIVERGÊNCIAS.
+        """
+        res = call_gemini(api_key, "Especialista Farma", prompt, imgs1 + imgs2)
+        if res: st.markdown(res)
+
+    # CENÁRIO 2
+    elif modo == "2_Conferencia_MKT":
+        imgs1 = pdf_to_images(file1)
+        prompt = f"""
+        Verifique visualmente se estes itens existem na bula:
+        {checklist_txt}
+        Responda com [OK] ou [AUSENTE] para cada um.
+        """
+        res = call_gemini(api_key, "Auditor MKT", prompt, imgs1)
+        if res: st.markdown(res)
+
+    # CENÁRIO 3
+    elif modo == "3_Grafica_x_Arte":
+        imgs1 = pdf_to_images(file1)
+        imgs2 = pdf_to_images(file2)
+        prompt = """
+        Compare visualmente a Arte (Grupo 1) com a Prova Gráfica (Grupo 2).
+        Procure: Textos cortados, Manchas, Cores erradas ou Deslocamentos.
+        Se estiver perfeito, aprove.
+        """
+        res = call_gemini(api_key, "Especialista Gráfico", prompt, imgs1 + imgs2)
+        if res: st.markdown(res)
