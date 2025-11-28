@@ -4,312 +4,310 @@ import google.generativeai as genai
 import fitz  # PyMuPDF
 from PIL import Image
 import io
+import json
 import re
 
-# ----------------- CONFIGURAÇÃO E CSS (Visual v107 + v105) -----------------
+# ----------------- CONFIGURAÇÃO E CSS (O Visual que você quer) -----------------
 st.set_page_config(layout="wide", page_title="Auditoria de Bulas AI", page_icon="🔬")
 
 GLOBAL_CSS = """
 <style>
-/* Ajustes Gerais */
-.main .block-container {
-    padding-top: 2rem !important;
-    padding-bottom: 2rem !important;
-    max-width: 95% !important;
-}
+.main .block-container { padding-top: 2rem !important; padding-bottom: 2rem !important; max-width: 95% !important; }
 [data-testid="stHeader"] { display: none !important; }
 footer { display: none !important; }
 
-/* Caixa de Bula (Estilo Papel) */
+/* Caixa de Texto da Bula */
 .bula-box {
   height: 450px;
   overflow-y: auto;
   border: 1px solid #dcdcdc;
   border-radius: 6px;
-  padding: 20px;
+  padding: 18px;
   background: #ffffff;
   font-family: "Georgia", "Times New Roman", serif;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.6;
   color: #111;
-  box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+  white-space: pre-wrap;
 }
 
-/* Títulos das Seções */
-.section-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: #222;
-  margin: 15px 0 10px;
-  border-bottom: 2px solid #eee;
-  padding-bottom: 5px;
-}
+/* Títulos */
+.ref-title { color: #0b5686; font-weight: bold; margin-bottom: 5px; font-size: 1.1em; }
+.bel-title { color: #0b8a3e; font-weight: bold; margin-bottom: 5px; font-size: 1.1em; }
 
-/* Cores de Destaque */
-.ref-title { color: #0b5686; } /* Azul Referência */
-.bel-title { color: #0b8a3e; } /* Verde Belfar */
+/* Marcações (Highlight) */
+mark.diff { background-color: #ffff99; padding: 0 2px; color: black; border-radius: 2px; } /* Amarelo: Divergência */
+mark.ort { background-color: #ffdfd9; padding: 0 2px; color: black; border-bottom: 1px dashed red; } /* Vermelho: Ortografia */
+mark.anvisa { background-color: #DDEEFF; padding: 0 2px; color: black; border: 1px solid #0000FF; font-weight: bold; } /* Azul: Data */
 
-/* Status Box para mensagens da IA */
-.status-box {padding: 15px; border-radius: 8px; margin-bottom: 15px; font-size: 15px;}
-.success {background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb;}
-.error {background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;}
-
-/* Botão Principal */
-.stButton>button {
-    width: 100%; 
-    background-color: #0068c9; 
-    color: white; 
-    font-weight: bold; 
-    height: 50px;
-    border-radius: 8px;
-    border: none;
-}
-.stButton>button:hover { background-color: #0053a0; }
+/* Botão */
+.stButton>button { width: 100%; background-color: #0068c9; color: white; font-weight: bold; height: 50px; border-radius: 8px; }
 </style>
 """
 st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
-# ----------------- FUNÇÕES BACKEND (IA) -----------------
+# ----------------- DEFINIÇÃO DAS LISTAS DE SEÇÕES (RIGOROSAS) -----------------
+
+SECOES_PACIENTE = [
+    "APRESENTAÇÕES", 
+    "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", 
+    "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", 
+    "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
+    "DIZERES LEGAIS"
+]
+
+SECOES_PROFISSIONAL = [
+    "APRESENTAÇÕES", 
+    "COMPOSIÇÃO", 
+    "INDICAÇÕES", 
+    "RESULTADOS DE EFICÁCIA", 
+    "CARACTERÍSTICAS FARMACOLÓGICAS", 
+    "CONTRAINDICAÇÕES", 
+    "ADVERTÊNCIAS E PRECAUÇÕES", 
+    "INTERAÇÕES MEDICAMENTOSAS", 
+    "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
+    "POSOLOGIA E MODO DE USAR", 
+    "REAÇÕES ADVERSAS", 
+    "SUPERDOSE", 
+    "DIZERES LEGAIS"
+]
+
+# Seções que NÃO devem ser comparadas semanticamente (apenas exibidas)
+SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+
+# ----------------- FUNÇÕES BACKEND -----------------
 
 def get_best_model(api_key):
-    """Seleciona o modelo Gemini mais capaz disponível na conta."""
     if not api_key: return None, "Chave vazia"
     try:
         genai.configure(api_key=api_key)
+        # Prioriza 2.5 e 2.0 que são ótimos para seguir instruções complexas JSON
+        preferencias = ['models/gemini-2.5-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-pro']
         available = [m.name for m in genai.list_models()]
-        
-        # Prioridade: 2.5 -> 2.0 -> 1.5
-        preferencias = [
-            'models/gemini-2.5-flash',
-            'models/gemini-2.0-flash-001',
-            'models/gemini-2.0-flash',
-            'models/gemini-1.5-pro',
-            'models/gemini-1.5-flash'
-        ]
         for pref in preferencias:
             if pref in available: return pref, None
-            
-        # Fallback genérico
-        for model in available:
-            if 'gemini' in model and 'vision' not in model: return model, None
-            
-        return None, "Nenhum modelo Gemini compatível."
-    except Exception as e:
-        return None, str(e)
+        return 'models/gemini-1.5-flash', None 
+    except Exception as e: return None, str(e)
 
 def pdf_to_images(uploaded_file):
-    """Renderiza PDF para imagens (Visão Computacional)."""
     if not uploaded_file: return []
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         images = []
         for page in doc:
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2)) # Zoom 2x para nitidez
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2)) # Zoom 2x para leitura boa
             images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
         return images
     except: return []
+
+def clean_json_response(text):
+    text = text.replace("```json", "").replace("```", "").strip()
+    # Corrige problema comum onde a IA coloca comentários no JSON
+    text = re.sub(r'//.*', '', text) 
+    return text
 
 # ----------------- BARRA LATERAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=60)
     st.title("Configuração")
-    
     api_key = st.text_input("Chave API Google:", type="password")
     
     selected_model = None
     if api_key:
         mod, err = get_best_model(api_key)
         if mod:
-            st.success(f"Conectado: {mod.replace('models/', '')}")
+            st.success(f"Motor Ativo: {mod.replace('models/', '')}")
             selected_model = mod
-        else:
-            st.error(f"Erro: {err}")
     
     st.divider()
-    tipo_auditoria = st.radio(
+    tipo_auditoria = st.selectbox(
         "Cenário de Análise:",
-        (
-            "1. Comparação Texto (Ref x Bel)", 
-            "2. Conferência MKT (Checklist)", 
-            "3. Gráfica x Arte (Visual)"
-        )
+        ["1. Referência x BELFAR", "2. Conferência MKT", "3. Gráfica x Arte"]
     )
-    st.info("Visual v107/v105 + Motor Gemini AI")
+    
+    # Lógica de Seleção de Lista de Seções
+    lista_secoes_ativa = SECOES_PACIENTE # Default
+    nome_tipo_bula = "Paciente"
+
+    if tipo_auditoria == "1. Referência x BELFAR":
+        escolha = st.radio("Tipo de Bula:", ["Paciente", "Profissional"])
+        if escolha == "Profissional":
+            lista_secoes_ativa = SECOES_PROFISSIONAL
+            nome_tipo_bula = "Profissional"
+    else:
+        # Cenários 2 e 3 sempre usam a lista de Paciente conforme pedido
+        lista_secoes_ativa = SECOES_PACIENTE
+        nome_tipo_bula = "Paciente"
 
 # ----------------- ÁREA PRINCIPAL -----------------
+st.title(f"🔬 Auditoria: {tipo_auditoria}")
 
-st.markdown("<h2 style='text-align: center; color: #333;'>🔬 Auditoria de Bulas Inteligente</h2>", unsafe_allow_html=True)
-
-# Variáveis de Upload
+# Uploads
 f1, f2 = None, None
-checklist_txt = ""
 inputs_ok = False
 
-# --- CENÁRIO 1: TEXTO (Layout Clássico) ---
-if "Comparação" in tipo_auditoria:
-    st.markdown("Comparação semântica de texto técnico (Posologia, Contraindicações, etc).")
+if tipo_auditoria == "1. Referência x BELFAR":
     c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("<div class='section-title ref-title'>📄 Documento Referência</div>", unsafe_allow_html=True)
-        f1 = st.file_uploader("Upload PDF Ref", type=["pdf"], key="ref1")
-    with c2:
-        st.markdown("<div class='section-title bel-title'>📄 Documento BELFAR</div>", unsafe_allow_html=True)
-        f2 = st.file_uploader("Upload PDF Belfar", type=["pdf"], key="bel1")
+    with c1: f1 = st.file_uploader("📂 PDF Referência (Padrão)", type=["pdf"], key="f1")
+    with c2: f2 = st.file_uploader("📂 PDF Belfar (Candidata)", type=["pdf"], key="f2")
     if f1 and f2: inputs_ok = True
 
-# --- CENÁRIO 2: MKT (Layout v107) ---
-elif "MKT" in tipo_auditoria:
-    st.markdown("Validação de itens obrigatórios de Marketing.")
+elif tipo_auditoria == "2. Conferência MKT":
     c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("📄 Arquivo ANVISA (Ref)") # Mantendo estilo v107
-        f1 = st.file_uploader("Opcional (para contexto)", type=["pdf"], key="ref2")
-    with c2:
-        st.subheader("📄 Arquivo MKT (Alvo)")   # Mantendo estilo v107
-        f2 = st.file_uploader("Arquivo para Validar", type=["pdf"], key="bel2")
-    
-    checklist_txt = st.text_area("Itens Obrigatórios (Checklist):", 
-        "VENDA SOB PRESCRIÇÃO MÉDICA\nLogo da Belfar\nFarmacêutico Responsável\nSAC 0800\nIndústria Brasileira", height=100)
-    
-    if f2: inputs_ok = True # Só o arquivo MKT é obrigatório aqui
+    with c1: f1 = st.file_uploader("📂 PDF Referência (Opcional)", type=["pdf"], key="f1_mkt")
+    with c2: f2 = st.file_uploader("📂 PDF MKT (Obrigatório)", type=["pdf"], key="f2_mkt")
+    if f2: inputs_ok = True # Só o arquivo MKT é crucial
 
-# --- CENÁRIO 3: GRÁFICA (Layout v105) ---
-elif "Gráfica" in tipo_auditoria:
-    st.markdown("Comparação Visual (Pixel-Perfect) para Pré-Impressão.")
+elif tipo_auditoria == "3. Gráfica x Arte":
     c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("📄 Arte Vigente")      # Mantendo estilo v105
-        f1 = st.file_uploader("PDF Original", type=["pdf"], key="ref3")
-    with c2:
-        st.subheader("📄 PDF da Gráfica")    # Mantendo estilo v105
-        f2 = st.file_uploader("Prova Digitalizada", type=["pdf"], key="bel3")
+    with c1: f1 = st.file_uploader("📂 Arte Final", type=["pdf"], key="f1_art")
+    with c2: f2 = st.file_uploader("📂 Prova Gráfica", type=["pdf"], key="f2_graf")
     if f1 and f2: inputs_ok = True
 
 st.divider()
 
-# --- EXECUÇÃO ---
-if st.button("🔍 Iniciar Auditoria Completa"):
-    if not api_key:
-        st.error("⚠️ Insira a Chave API na barra lateral.")
-    elif not inputs_ok:
-        st.warning("⚠️ Faça o upload dos arquivos necessários.")
+if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
+    if not inputs_ok or not api_key:
+        st.warning("Verifique a API Key e se os arquivos foram enviados.")
     else:
-        with st.spinner("🤖 A IA está analisando os documentos..."):
+        with st.spinner("🤖 A IA está lendo, extraindo texto e comparando seções..."):
             try:
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel(selected_model)
                 
                 # Prepara imagens
-                imgs_payload = []
-                if "MKT" in tipo_auditoria:
-                    # No MKT o foco é o arquivo f2 (Belfar/MKT)
+                imgs = []
+                if f2:
+                    if f1: f1.seek(0)
                     f2.seek(0)
-                    imgs_payload = pdf_to_images(f2)
+                    imgs = pdf_to_images(f1) + pdf_to_images(f2) if f1 else pdf_to_images(f2)
                 else:
-                    f1.seek(0); f2.seek(0)
-                    imgs_payload = pdf_to_images(f1) + pdf_to_images(f2)
+                    f1.seek(0)
+                    imgs = pdf_to_images(f1)
                 
-                # PROMPTS INTELIGENTES (Gerando a saída no estilo antigo)
-                prompt = ""
+                # Lista formatada para o prompt
+                secoes_str = "\n".join([f"- {s}" for s in lista_secoes_ativa])
+                nao_comparar_str = ", ".join(SECOES_NAO_COMPARAR)
                 
-                if "Comparação" in tipo_auditoria:
-                    prompt = """
-                    Atue como Auditor de Qualidade Farmacêutica.
-                    Compare as Bulas (Primeiro grupo = Ref, Segundo grupo = Belfar).
-                    
-                    Gere uma saída HTML LIMPA (sem tags html, head, body) para ser inserida numa div.
-                    
-                    1. Calcule uma nota estimada de conformidade (0-100%).
-                    2. Crie uma TABELA para: POSOLOGIA, COMPOSIÇÃO, CONTRAINDICAÇÕES.
-                       Colunas: Item | Ref | Belfar | Status.
-                       Se houver divergência, coloque em negrito.
-                    
-                    Formato de saída obrigatório:
-                    SCORE: [Nota]%
-                    <hr>
-                    (Tabela HTML aqui)
-                    """
-                    
-                elif "MKT" in tipo_auditoria:
-                    prompt = f"""
-                    Atue como Auditor de Marketing Farmacêutico.
-                    Analise o documento visualmente.
-                    
-                    Checklist para verificar:
-                    {checklist_txt}
-                    
-                    Gere uma saída estilo Relatório:
-                    1. Nota de Conformidade (baseada em quantos itens achou).
-                    2. Lista detalhada.
-                    
-                    Formato de saída obrigatório:
-                    SCORE: [Nota]%
-                    <hr>
-                    <h3>Checklist de Itens</h3>
-                    <ul>
-                    (Liste cada item com ✅ ou ❌ e uma breve observação de onde está)
-                    </ul>
-                    """
-                    
-                elif "Gráfica" in tipo_auditoria:
-                    prompt = """
-                    Atue como Especialista de Pré-Impressão.
-                    Compare a ARTE VIGENTE (Primeiras imagens) com o PDF DA GRÁFICA (Últimas imagens).
-                    
-                    Procure defeitos visuais:
-                    - Textos cortados ou faltando.
-                    - Manchas de tinta.
-                    - Deslocamento de layout.
-                    - Cores/Fontes visivelmente erradas.
-                    
-                    Formato de saída obrigatório:
-                    SCORE: [Nota]%
-                    <hr>
-                    <h3>Relatório Visual</h3>
-                    (Se perfeito, diga "Aprovado para Impressão". Se não, liste os erros com bullet points).
-                    """
-
-                # Chamada IA
-                resp = model.generate_content([prompt] + imgs_payload)
-                texto_ia = resp.text
+                # PROMPT PODEROSO QUE FAZ O "CSS" DENTRO DO JSON
+                prompt = f"""
+                Atue como um Auditor de Qualidade Farmacêutica rigoroso.
                 
-                # --- PARSER PARA EXTRAIR NOTA E HTML ---
-                # A IA vai mandar "SCORE: 95%". Vamos pegar isso para o st.metric
-                score_val = "N/A"
-                if "SCORE:" in texto_ia:
-                    parts = texto_ia.split("SCORE:")
-                    try:
-                        score_val = parts[1].split("%")[0].strip() + "%"
-                        # O resto do texto é o relatório
-                        relatorio_html = parts[1].split("%", 1)[1]
-                    except:
-                        relatorio_html = texto_ia
-                else:
-                    relatorio_html = texto_ia
-
-                # --- VISUALIZAÇÃO ESTILO DASHBOARD (IGUAL v107) ---
+                Você recebeu imagens de duas bulas (Referência e Belfar).
                 
-                # 1. Métricas no Topo
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Conformidade", score_val)
-                c2.metric("Motor IA", selected_model.split("/")[-1])
-                c3.metric("Análise", "Visual + Texto")
-                c4.metric("Status", "Concluído", delta="OK")
+                TAREFA:
+                Para cada seção da lista abaixo, extraia o texto COMPLETO de ambos os documentos.
+                
+                LISTA DE SEÇÕES ({nome_tipo_bula}):
+                {secoes_str}
+                
+                REGRAS DE MARCAÇÃO HTML (Aplique diretamente no texto extraído):
+                1. DIVERGÊNCIAS DE CONTEÚDO: Se houver palavras diferentes (mudança de dose, posologia, sentido), envolva a palavra/frase com <mark class='diff'>texto diferente</mark>.
+                   (Exceto nas seções: {nao_comparar_str} -> Nessas, extraia o texto mas NÃO marque divergências semânticas).
+                2. ERROS ORTOGRÁFICOS: Se houver erro claro de português na Belfar, envolva com <mark class='ort'>erro</mark>.
+                3. DATAS ANVISA: Encontre qualquer data de aprovação (ex: 15/04/2023) e envolva com <mark class='anvisa'>dd/mm/aaaa</mark>.
+                
+                SAÍDA:
+                Retorne APENAS um JSON válido.
+                Chave: Nome exato da seção.
+                Valor: Objeto com:
+                  - "ref_text": Texto da referência com marcações HTML.
+                  - "bel_text": Texto da belfar com marcações HTML.
+                  - "status": "CONFORME", "DIVERGENTE" ou "FALTANTE".
+                  
+                Seções "Apresentações", "Composição" e "Dizeres Legais" devem ter status "INFORMATIVO" (não julgar divergência).
+                
+                Adicione uma chave final "METADADOS" com "score_global" (0-100) e "datas_anvisa" (lista de strings).
+                """
+                
+                response = model.generate_content([prompt] + imgs)
+                
+                try:
+                    json_data = json.loads(clean_json_response(response.text))
+                except:
+                    st.error("Erro ao processar resposta da IA. Tente novamente.")
+                    st.stop()
+                
+                # --- RENDERIZAÇÃO DO FRONT-END ---
+                
+                # 1. Métricas
+                meta = json_data.get("METADADOS", {})
+                score = meta.get("score_global", 0)
+                datas = meta.get("datas_anvisa", [])
+                datas_str = ", ".join(datas) if datas else "Não detectada"
+                
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Conformidade", f"{score}%")
+                m2.metric("Seções", len(lista_secoes_ativa))
+                m3.metric("Datas ANVISA", datas_str)
+                m4.metric("Status", "Processado")
                 
                 st.divider()
+                st.subheader("📝 Comparação Seção a Seção")
                 
-                # 2. Relatório dentro da Bula-Box
-                st.subheader("📝 Relatório Detalhado")
-                
-                # Usamos markdown com HTML allow para renderizar a tabela/lista bonita dentro da caixa
-                st.markdown(f"""
-                <div class='bula-box'>
-                    {relatorio_html}
-                </div>
-                """, unsafe_allow_html=True)
+                # 2. Loop de Exibição
+                for secao in lista_secoes_ativa:
+                    # Busca flexível no JSON
+                    dados_sec = json_data.get(secao)
+                    if not dados_sec:
+                        # Tenta achar aproximado (case insensitive)
+                        for k, v in json_data.items():
+                            if secao.lower() in k.lower():
+                                dados_sec = v
+                                break
+                    
+                    if not dados_sec:
+                        # Seção não encontrada na resposta da IA
+                        with st.expander(f"{secao} — 🔴 NÃO ENCONTRADA", expanded=False):
+                             st.warning("A IA não conseguiu identificar esta seção nos documentos.")
+                        continue
+                        
+                    # Dados extraídos
+                    ref_html = dados_sec.get("ref_text", "")
+                    bel_html = dados_sec.get("bel_text", "")
+                    status = dados_sec.get("status", "N/A").upper()
+                    
+                    # Definição de Ícones e Cores
+                    icon = "✅"
+                    expanded = False
+                    
+                    if "DIVERGENTE" in status:
+                        icon = "❌"
+                        expanded = True
+                    elif "FALTANTE" in status:
+                        icon = "🚨"
+                        expanded = True
+                    elif "INFORMATIVO" in status:
+                        icon = "ℹ️"
+                        expanded = False
+                    
+                    # Renderiza o Expander
+                    with st.expander(f"{secao} — {icon} {status}", expanded=expanded):
+                        col_ref, col_bel = st.columns(2)
+                        
+                        with col_ref:
+                            st.markdown(f"<div class='ref-title'>REFERÊNCIA (Padrão)</div>", unsafe_allow_html=True)
+                            if ref_html:
+                                st.markdown(f"<div class='bula-box'>{ref_html}</div>", unsafe_allow_html=True)
+                            else:
+                                st.info("Conteúdo não presente na Referência.")
+                                
+                        with col_bel:
+                            st.markdown(f"<div class='bel-title'>BELFAR (Candidata)</div>", unsafe_allow_html=True)
+                            if bel_html:
+                                st.markdown(f"<div class='bula-box'>{bel_html}</div>", unsafe_allow_html=True)
+                            else:
+                                st.info("Conteúdo não presente na Belfar.")
 
             except Exception as e:
-                st.error(f"Erro na análise: {e}")
+                st.error(f"Erro Crítico: {e}")
 
 st.divider()
-st.caption("Sistema de Auditoria v107/v105 (Híbrido) | Powered by Google Gemini")
+st.caption("Sistema de Auditoria v108 | Powered by Google Gemini AI")
