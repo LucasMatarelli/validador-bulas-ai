@@ -54,7 +54,7 @@ def call_groq(api_key, system_msg, user_msg, images):
     try:
         with st.spinner("⚡ A Groq (Llama 3.2) está analisando..."):
             completion = client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview", # Modelo gratuito com visão
+                model="llama-3.2-90b-vision-preview",
                 messages=[
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": content}
