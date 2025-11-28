@@ -1,152 +1,131 @@
 import streamlit as st
+import google.generativeai as genai
 import fitz  # PyMuPDF
-from groq import Groq
-import base64
+from PIL import Image
+import io
+import time
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Validador Belfar (Groq)", page_icon="💊", layout="wide")
+# --- CONFIGURAÇÃO ---
+st.set_page_config(page_title="Validador Belfar (Final)", page_icon="💊", layout="wide")
 
-# Estilos CSS
 st.markdown("""
 <style>
-    .main-title {color: #f55036; font-weight: bold; text-align: center;}
-    .stButton>button {width: 100%; background-color: #f55036; color: white; border: none;}
-    .report-box {background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 1px solid #ddd;}
+    .stButton>button {width: 100%; background-color: #0068c9; color: white;}
+    .success-box {padding: 15px; background-color: #d4edda; border-radius: 5px; border: 1px solid #c3e6cb;}
+    .error-box {padding: 15px; background-color: #f8d7da; border-radius: 5px; border: 1px solid #f5c6cb;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNÇÕES ---
+# --- FUNÇÃO DE INTELIGÊNCIA ROBUSTA ---
+def try_gemini_generation(api_key, system_prompt, user_prompt, images):
+    """
+    Tenta gerar resposta usando múltiplos modelos em sequência.
+    Se o Flash falhar, tenta o Pro, etc.
+    """
+    if not api_key:
+        return "⚠️ Chave API não configurada."
 
-def pdf_to_base64(uploaded_file):
-    """Converte PDF para imagens em Base64 (formato que a Groq aceita)"""
+    genai.configure(api_key=api_key)
+    
+    # Lista de modelos para tentar (do mais rápido para o mais forte)
+    modelos_para_tentar = [
+        'gemini-1.5-flash',       # Tentativa 1: O padrão rápido
+        'gemini-1.5-flash-001',   # Tentativa 2: Versão congelada
+        'gemini-1.5-pro',         # Tentativa 3: O mais potente
+        'gemini-1.5-pro-001'      # Tentativa 4: Pro congelado
+    ]
+    
+    ultimo_erro = ""
+
+    for nome_modelo in modelos_para_tentar:
+        try:
+            model = genai.GenerativeModel(nome_modelo, system_instruction=system_prompt)
+            content = [user_prompt] + images
+            
+            # Tenta gerar
+            response = model.generate_content(content)
+            return response.text # Se der certo, retorna e sai do loop
+            
+        except Exception as e:
+            # Se der erro, guarda a mensagem e tenta o próximo
+            ultimo_erro = str(e)
+            continue
+            
+    return f"❌ Falha em todos os modelos. Erro final: {ultimo_erro}"
+
+def pdf_to_images(uploaded_file):
     if not uploaded_file: return []
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        images_b64 = []
+        images = []
         for page in doc:
-            # Baixa resolução (matrix=1.0) para ser rápido e aceito pela API
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
-            img_bytes = pix.tobytes("jpeg")
-            base64_str = base64.b64encode(img_bytes).decode('utf-8')
-            images_b64.append(f"data:image/jpeg;base64,{base64_str}")
-        return images_b64
-    except Exception as e:
-        st.error(f"Erro ao ler PDF: {e}")
-        return []
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
+        return images
+    except: return []
 
-def call_groq(api_key, system_msg, user_msg, images):
-    if not api_key:
-        st.error("⚠️ Configure a API Key na barra lateral.")
-        return None
-    
-    client = Groq(api_key=api_key)
-    
-    # Monta a mensagem (Texto + Imagens)
-    content = [{"type": "text", "text": user_msg}]
-    
-    # Adiciona as imagens ao prompt
-    for img_url in images:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": img_url}
-        })
-        
-    try:
-        with st.spinner("⚡ A Groq (Llama 3.2) está analisando..."):
-            completion = client.chat.completions.create(
-                model="llama-3.2-90b-vision-preview",
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": content}
-                ],
-                temperature=0.1,
-                max_tokens=2048
-            )
-            return completion.choices[0].message.content
-    except Exception as e:
-        st.error(f"Erro na API Groq: {str(e)}")
-        return None
-
-# --- BARRA LATERAL (MENU) ---
+# --- INTERFACE ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=50)
-    st.title("Validador (Groq)")
-    
-    # Input da Chave
-    st.markdown("### 🔑 Configuração")
-    api_key = st.text_input("Groq API Key (gsk_...)", type="password")
-    st.caption("[Criar chave grátis aqui](https://console.groq.com/keys)")
-    
+    st.header("⚙️ Configuração")
+    api_key = st.text_input("Cole sua Google API Key:", type="password")
     st.markdown("---")
-    
-    # Seleção de Modo
     modo = st.selectbox("Selecione o Cenário:", [
-        "1_Med._Referencia_x_BELFAR",
-        "2_Conferencia_MKT",
-        "3_Grafica_x_Arte"
+        "1. Referência x BELFAR",
+        "2. Conferência MKT",
+        "3. Gráfica x Arte"
     ])
-    
-    st.markdown("---")
-    
-    # Inputs Dinâmicos
-    inputs_ok = False
-    
-    if modo == "1_Med._Referencia_x_BELFAR":
-        st.info("Comparação Técnica")
-        f1 = st.file_uploader("📂 Bula Referência", type="pdf")
-        f2 = st.file_uploader("📂 Bula Belfar", type="pdf")
-        if f1 and f2: inputs_ok = True
+    st.info("Sistema operando com redundância de modelos (Flash/Pro).")
 
-    elif modo == "2_Conferencia_MKT":
-        st.info("Checklist Obrigatório")
-        f1 = st.file_uploader("📂 Bula MKT", type="pdf")
-        checklist = st.text_area("Itens:", "VENDA SOB PRESCRIÇÃO\nLogo Belfar\nFarm. Resp.\nSAC")
-        if f1: inputs_ok = True
+st.title(f"Validador: {modo}")
 
-    elif modo == "3_Grafica_x_Arte":
-        st.info("Comparação Visual")
-        f1 = st.file_uploader("📂 Arte Final", type="pdf")
-        f2 = st.file_uploader("📂 Prova Gráfica", type="pdf")
-        if f1 and f2: inputs_ok = True
+# --- LÓGICA DE UPLOAD ---
+inputs_ok = False
+if modo == "1. Referência x BELFAR":
+    c1, c2 = st.columns(2)
+    f1 = c1.file_uploader("Bula Referência", type="pdf")
+    f2 = c2.file_uploader("Bula Belfar", type="pdf")
+    if f1 and f2: inputs_ok = True
 
-    st.markdown("---")
-    btn_run = st.button("🚀 INICIAR VALIDAÇÃO", disabled=not inputs_ok)
+elif modo == "2. Conferência MKT":
+    f1 = st.file_uploader("Arquivo MKT", type="pdf")
+    checklist = st.text_area("Itens Obrigatórios:", "VENDA SOB PRESCRIÇÃO\nLogo Belfar\nFarm. Resp.")
+    if f1: inputs_ok = True
 
-# --- TELA PRINCIPAL ---
+elif modo == "3. Gráfica x Arte":
+    c1, c2 = st.columns(2)
+    f1 = c1.file_uploader("Arte Final", type="pdf")
+    f2 = c2.file_uploader("Prova Gráfica", type="pdf")
+    if f1 and f2: inputs_ok = True
 
-st.markdown(f'<h1 class="main-title">{modo.replace("_", " ")}</h1>', unsafe_allow_html=True)
-
-if btn_run:
-    # 1. TEXTO TÉCNICO
-    if modo == "1_Med._Referencia_x_BELFAR":
-        f1.seek(0); f2.seek(0)
-        imgs1 = pdf_to_base64(f1)
-        imgs2 = pdf_to_base64(f2)
+# --- BOTÃO E EXECUÇÃO ---
+if st.button("🚀 INICIAR ANÁLISE", disabled=not inputs_ok):
+    with st.spinner("Analisando documentos... (Testando modelos disponíveis)"):
         
-        prompt = """
-        Atue como Especialista Regulatório.
-        As primeiras imagens são a REFERÊNCIA. As últimas são a BELFAR.
-        Compare APENAS o texto técnico (Posologia, Contraindicações, Composição).
-        Ignore diferenças de formatação.
-        Liste divergências ou confirme a conformidade.
-        """
-        # Limite de segurança: Groq aceita poucas imagens de uma vez, mandamos as primeiras de cada
-        res = call_groq(api_key, "Analista Farma", prompt, imgs1[:2] + imgs2[:2]) 
-        if res: st.markdown(f'<div class="report-box">{res}</div>', unsafe_allow_html=True)
+        # Preparação das imagens
+        imgs = []
+        if modo == "2. Conferência MKT":
+            f1.seek(0)
+            imgs = pdf_to_images(f1)
+        else:
+            f1.seek(0); f2.seek(0)
+            imgs = pdf_to_images(f1) + pdf_to_images(f2)
+            
+        # Definição dos Prompts
+        sys_msg = "Você é um Especialista em Farmácia e Regulação."
+        user_msg = ""
+        
+        if "Referência" in modo:
+            user_msg = "Compare o texto técnico das primeiras imagens (Referência) com as últimas (Belfar). Liste APENAS divergências de posologia, concentração ou contraindicação."
+        elif "MKT" in modo:
+            user_msg = f"Verifique visualmente se estes itens estão no documento: {checklist}"
+        else:
+            user_msg = "Compare visualmente Arte vs Prova Gráfica. Procure erros de impressão, manchas ou cortes de texto."
 
-    # 2. CHECKLIST MKT
-    elif modo == "2_Conferencia_MKT":
-        f1.seek(0)
-        imgs1 = pdf_to_base64(f1)
-        prompt = f"Verifique visualmente se estes itens existem na imagem: {checklist}. Responda apenas [OK] ou [AUSENTE]."
-        res = call_groq(api_key, "Auditor MKT", prompt, imgs1[:3])
-        if res: st.markdown(f'<div class="report-box">{res}</div>', unsafe_allow_html=True)
-
-    # 3. VISUAL GRÁFICO
-    elif modo == "3_Grafica_x_Arte":
-        f1.seek(0); f2.seek(0)
-        imgs1 = pdf_to_base64(f1)
-        imgs2 = pdf_to_base64(f2)
-        prompt = "Compare visualmente a Arte (primeiras img) vs Prova (últimas img). Procure defeitos de impressão, cortes ou manchas."
-        res = call_groq(api_key, "Inspetor Gráfico", prompt, imgs1[:1] + imgs2[:1])
-        if res: st.markdown(f'<div class="report-box">{res}</div>', unsafe_allow_html=True)
+        # CHAMADA DA FUNÇÃO BLINDADA
+        resultado = try_gemini_generation(api_key, sys_msg, user_msg, imgs)
+        
+        st.markdown("### Resultado da Análise")
+        if "❌" in resultado:
+            st.error(resultado)
+        else:
+            st.markdown(f'<div class="success-box">{resultado}</div>', unsafe_allow_html=True)
