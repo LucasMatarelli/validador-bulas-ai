@@ -8,7 +8,6 @@ import json
 import re
 
 # ----------------- CHAVE DA API (ESTÁTICA) -----------------
-# A chave ficará fixa aqui. Não precisa mais digitar na tela.
 FIXED_API_KEY = "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw"
 
 # ----------------- CONFIGURAÇÃO E CSS -----------------
@@ -16,36 +15,93 @@ st.set_page_config(layout="wide", page_title="Auditoria de Bulas AI", page_icon=
 
 GLOBAL_CSS = """
 <style>
-.main .block-container { padding-top: 2rem !important; padding-bottom: 2rem !important; max-width: 95% !important; }
+/* Ajustes de Espaçamento Geral */
+.main .block-container { 
+    padding-top: 3rem !important; 
+    padding-bottom: 3rem !important; 
+    max-width: 95% !important; 
+}
 [data-testid="stHeader"] { display: none !important; }
 footer { display: none !important; }
 
-/* Caixa de Texto da Bula */
+/* Título Principal Estilizado */
+.main-header {
+    font-size: 28px;
+    font-weight: 700;
+    color: #1f2937;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.sub-header {
+    font-size: 16px;
+    color: #6b7280;
+    margin-bottom: 30px;
+    border-bottom: 1px solid #e5e7eb;
+    padding-bottom: 20px;
+}
+
+/* Caixa de Texto da Bula (Estilo Papel) */
 .bula-box {
   height: 450px;
   overflow-y: auto;
-  border: 1px solid #dcdcdc;
-  border-radius: 6px;
-  padding: 18px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 20px;
   background: #ffffff;
   font-family: "Georgia", "Times New Roman", serif;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.6;
   color: #111;
   white-space: pre-wrap;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
 }
 
-/* Títulos */
-.ref-title { color: #0b5686; font-weight: bold; margin-bottom: 5px; font-size: 1.1em; }
-.bel-title { color: #0b8a3e; font-weight: bold; margin-bottom: 5px; font-size: 1.1em; }
+/* Headers das Colunas de Upload */
+.upload-header {
+    font-size: 18px;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 
-/* Marcações (Highlight) */
-mark.diff { background-color: #ffff99; padding: 0 2px; color: black; border-radius: 2px; }
-mark.ort { background-color: #ffdfd9; padding: 0 2px; color: black; border-bottom: 1px dashed red; }
-mark.anvisa { background-color: #DDEEFF; padding: 0 2px; color: black; border: 1px solid #0000FF; font-weight: bold; }
+/* Cores e Tags */
+.ref-title { color: #0369a1; font-weight: bold; margin-bottom: 5px; }
+.bel-title { color: #15803d; font-weight: bold; margin-bottom: 5px; }
 
-/* Botão */
-.stButton>button { width: 100%; background-color: #0068c9; color: white; font-weight: bold; height: 50px; border-radius: 8px; }
+mark.diff { background-color: #fef08a; padding: 2px 4px; color: black; border-radius: 4px; border: 1px solid #fde047; }
+mark.ort { background-color: #fecaca; padding: 2px 4px; color: black; border-bottom: 2px solid #ef4444; }
+mark.anvisa { background-color: #dbeafe; padding: 2px 4px; color: #1e40af; border: 1px solid #93c5fd; font-weight: 600; }
+
+/* Botão Principal Grande */
+.stButton>button { 
+    width: 100%; 
+    background-color: #ef4444; /* Vermelho estilo imagem 2 */
+    color: white; 
+    font-weight: bold; 
+    font-size: 16px;
+    height: 55px; 
+    border-radius: 8px; 
+    border: none;
+    margin-top: 20px;
+}
+.stButton>button:hover { background-color: #dc2626; }
+
+/* Status de Conexão na Sidebar */
+.connection-status {
+    padding: 10px;
+    background-color: #dcfce7;
+    color: #166534;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    text-align: center;
+    border: 1px solid #bbf7d0;
+}
 </style>
 """
 st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
@@ -78,7 +134,6 @@ SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES BACKEND -----------------
 
 def get_best_model(api_key):
-    # Tenta conectar silenciosamente
     try:
         genai.configure(api_key=api_key)
         preferencias = ['models/gemini-2.5-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-pro']
@@ -104,69 +159,105 @@ def clean_json_response(text):
     text = re.sub(r'//.*', '', text) 
     return text
 
-# ----------------- BARRA LATERAL -----------------
+# ----------------- BARRA LATERAL (SIMPLIFICADA) -----------------
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=60)
-    st.title("Configuração")
+    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
+    st.markdown("### Navegação")
     
-    # Conexão Automática
-    selected_model = get_best_model(FIXED_API_KEY)
-    
-    if selected_model:
-        st.success(f"✅ Sistema Conectado\nMotor: {selected_model.replace('models/', '')}")
-    else:
-        st.error("❌ Erro na Chave API Fixa")
-
-    st.divider()
-    tipo_auditoria = st.selectbox(
-        "Cenário de Análise:",
+    # Menu de Navegação
+    tipo_auditoria = st.radio(
+        "Selecione o Cenário:",
         ["1. Referência x BELFAR", "2. Conferência MKT", "3. Gráfica x Arte"]
     )
     
-    # Lógica de Seleção
-    lista_secoes_ativa = SECOES_PACIENTE
-    nome_tipo_bula = "Paciente"
-
-    if tipo_auditoria == "1. Referência x BELFAR":
-        escolha = st.radio("Tipo de Bula:", ["Paciente", "Profissional"])
-        if escolha == "Profissional":
-            lista_secoes_ativa = SECOES_PROFISSIONAL
-            nome_tipo_bula = "Profissional"
+    st.markdown("---")
+    
+    # Status da Conexão (Fixo)
+    selected_model = get_best_model(FIXED_API_KEY)
+    if selected_model:
+        st.markdown(f"""
+        <div class="connection-status">
+            ✅ Sistema Conectado<br>
+            <span style="font-size:11px">{selected_model.replace('models/', '')}</span>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        lista_secoes_ativa = SECOES_PACIENTE
-        nome_tipo_bula = "Paciente"
+        st.error("❌ Erro na API Key")
 
 # ----------------- ÁREA PRINCIPAL -----------------
-st.title(f"🔬 Auditoria: {tipo_auditoria}")
 
+# Título Principal (Estilo v21.9)
+st.markdown(f"""
+<div class="main-header">
+    🔬 Inteligência Artificial para Auditoria de Bulas
+</div>
+<div class="sub-header">
+    Cenário Ativo: <b>{tipo_auditoria}</b>
+</div>
+""", unsafe_allow_html=True)
+
+# Variáveis Globais de Execução
 f1, f2 = None, None
 inputs_ok = False
+lista_secoes_ativa = SECOES_PACIENTE
+nome_tipo_bula = "Paciente"
+
+# --- LÓGICA DE LAYOUT POR CENÁRIO ---
 
 if tipo_auditoria == "1. Referência x BELFAR":
-    c1, c2 = st.columns(2)
-    with c1: f1 = st.file_uploader("📂 PDF Referência (Padrão)", type=["pdf"], key="f1")
-    with c2: f2 = st.file_uploader("📂 PDF Belfar (Candidata)", type=["pdf"], key="f2")
+    # Seletor "Bonitinho" na página principal
+    st.markdown("**Tipo de Bula:**")
+    tipo_bula_radio = st.radio(
+        "Selecione o tipo:", 
+        ["Paciente", "Profissional"], 
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    
+    if tipo_bula_radio == "Profissional":
+        lista_secoes_ativa = SECOES_PROFISSIONAL
+        nome_tipo_bula = "Profissional"
+    
+    st.markdown("<br>", unsafe_allow_html=True) # Espaçamento
+    
+    c1, c2 = st.columns(2, gap="large")
+    with c1:
+        st.markdown('<div class="upload-header">📄 Documento de Referência</div>', unsafe_allow_html=True)
+        f1 = st.file_uploader("PDF Referência (Padrão)", type=["pdf"], key="f1", label_visibility="collapsed")
+    with c2:
+        st.markdown('<div class="upload-header">📄 Documento BELFAR</div>', unsafe_allow_html=True)
+        f2 = st.file_uploader("PDF Belfar (Candidata)", type=["pdf"], key="f2", label_visibility="collapsed")
+    
     if f1 and f2: inputs_ok = True
 
 elif tipo_auditoria == "2. Conferência MKT":
-    c1, c2 = st.columns(2)
-    with c1: f1 = st.file_uploader("📂 PDF Referência (Opcional)", type=["pdf"], key="f1_mkt")
-    with c2: f2 = st.file_uploader("📂 PDF MKT (Obrigatório)", type=["pdf"], key="f2_mkt")
+    c1, c2 = st.columns(2, gap="large")
+    with c1:
+        st.markdown('<div class="upload-header">📄 Referência (Opcional)</div>', unsafe_allow_html=True)
+        f1 = st.file_uploader("Upload opcional", type=["pdf"], key="f1mkt", label_visibility="collapsed")
+    with c2:
+        st.markdown('<div class="upload-header">📄 Arquivo MKT (Obrigatório)</div>', unsafe_allow_html=True)
+        f2 = st.file_uploader("Upload para validar", type=["pdf"], key="f2mkt", label_visibility="collapsed")
+    
     if f2: inputs_ok = True
 
 elif tipo_auditoria == "3. Gráfica x Arte":
-    c1, c2 = st.columns(2)
-    with c1: f1 = st.file_uploader("📂 Arte Final", type=["pdf"], key="f1_art")
-    with c2: f2 = st.file_uploader("📂 Prova Gráfica", type=["pdf"], key="f2_graf")
+    c1, c2 = st.columns(2, gap="large")
+    with c1:
+        st.markdown('<div class="upload-header">🎨 Arte Final</div>', unsafe_allow_html=True)
+        f1 = st.file_uploader("Upload Arte", type=["pdf"], key="f1art", label_visibility="collapsed")
+    with c2:
+        st.markdown('<div class="upload-header">🖨️ Prova Gráfica</div>', unsafe_allow_html=True)
+        f2 = st.file_uploader("Upload Prova", type=["pdf"], key="f2art", label_visibility="collapsed")
+    
     if f1 and f2: inputs_ok = True
 
-st.divider()
-
+# --- BOTÃO DE AÇÃO (Vermelho e Largo) ---
 if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
     if not inputs_ok:
-        st.warning("⚠️ Faça o upload dos arquivos necessários.")
+        st.warning("⚠️ Por favor, faça o upload dos arquivos necessários acima.")
     else:
-        with st.spinner("🤖 A IA está lendo, extraindo texto e comparando seções..."):
+        with st.spinner("🤖 Lendo documentos, extraindo seções e comparando textos..."):
             try:
                 genai.configure(api_key=FIXED_API_KEY)
                 model = genai.GenerativeModel(selected_model)
@@ -181,11 +272,10 @@ if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
                     f1.seek(0)
                     imgs = pdf_to_images(f1)
                 
-                # Formata lista
+                # Setup do Prompt
                 secoes_str = "\n".join([f"- {s}" for s in lista_secoes_ativa])
                 nao_comparar_str = ", ".join(SECOES_NAO_COMPARAR)
                 
-                # Prompt JSON Estruturado
                 prompt = f"""
                 Atue como um Auditor de Qualidade Farmacêutica rigoroso.
                 
@@ -215,26 +305,29 @@ if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
                 response = model.generate_content([prompt] + imgs)
                 json_data = json.loads(clean_json_response(response.text))
                 
-                # --- RENDERIZAÇÃO ---
+                # --- RESULTADOS ---
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.subheader("📊 Resultado da Análise")
+                
                 meta = json_data.get("METADADOS", {})
                 score = meta.get("score_global", 0)
                 datas = meta.get("datas_anvisa", [])
                 
+                # Métricas Bonitas
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Conformidade", f"{score}%")
-                m2.metric("Seções", len(lista_secoes_ativa))
-                m3.metric("Datas Detectadas", ", ".join(datas) if datas else "-")
-                m4.metric("Status", "Processado")
+                m2.metric("Seções Analisadas", len(lista_secoes_ativa))
+                m3.metric("Datas ANVISA", ", ".join(datas) if datas else "-")
+                m4.metric("Status", "Processado", delta="OK")
                 
-                st.divider()
-                st.subheader("📝 Comparação Seção a Seção")
+                st.markdown("---")
                 
+                # Loop de Seções
                 for secao in lista_secoes_ativa:
                     dados_sec = json_data.get(secao)
-                    if not dados_sec: # Busca aproximada
+                    if not dados_sec: 
                         for k, v in json_data.items():
-                            if secao.lower() in k.lower():
-                                dados_sec = v; break
+                            if secao.lower() in k.lower(): dados_sec = v; break
                     
                     if not dados_sec: continue
                         
@@ -249,14 +342,13 @@ if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
                     elif "INFORMATIVO" in status: icon = "ℹ️"
                     
                     with st.expander(f"{secao} — {icon} {status}", expanded=expanded):
-                        c_ref, c_bel = st.columns(2)
-                        with c_ref:
+                        col_ref, col_bel = st.columns(2)
+                        with col_ref:
                             st.markdown(f"<div class='ref-title'>REFERÊNCIA</div><div class='bula-box'>{ref_html}</div>", unsafe_allow_html=True)
-                        with c_bel:
+                        with col_bel:
                             st.markdown(f"<div class='bel-title'>BELFAR</div><div class='bula-box'>{bel_html}</div>", unsafe_allow_html=True)
 
             except Exception as e:
                 st.error(f"Erro Crítico: {e}")
 
-st.divider()
-st.caption("Sistema de Auditoria v109 | Powered by Google Gemini AI")
+st.markdown("<br><br><div style='text-align:center; color:#9ca3af; font-size:12px'>Sistema de Auditoria v110 | Belfar Lab</div>", unsafe_allow_html=True)
