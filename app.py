@@ -50,7 +50,7 @@ def call_gemini(api_key, system_prompt, user_prompt, images):
         return None
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-pro')
         content = [user_prompt] + images
         with st.spinner("⏳ Processando inteligência artificial..."):
             response = model.generate_content(content)
