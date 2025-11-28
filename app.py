@@ -1,423 +1,328 @@
-import React, { useState } from 'react';
-import { 
-  Upload, FileText, CheckCircle, AlertTriangle, 
-  XCircle, Info, ChevronDown, ChevronRight, 
-  Printer, ArrowRight, Loader2, File
-} from 'lucide-react';
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import dash
+from dash import dcc, html, Input, Output, State, callback_context, no_update
+import dash_bootstrap_components as dbc
+import google.generativeai as genai
+import fitz  # PyMuPDF
+import docx
+import io
+import base64
+import json
+from PIL import Image
 
-// --- CONFIGURAÇÃO ---
-const FIXED_API_KEY = "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw";
+# ----------------- CONFIGURAÇÃO -----------------
+FIXED_API_KEY = "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw"
 
-// --- COMPONENTES UI ---
+# Inicializa o App com tema Bootstrap (Visual Limpo e Profissional)
+app = dash.Dash(
+    __name__, 
+    external_stylesheets=[dbc.themes.MINTY, "https://use.fontawesome.com/releases/v6.4.0/css/all.css"],
+    title="Validador Belfar",
+    suppress_callback_exceptions=True,
+    meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}]
+)
+server = app.server
 
-const Card = ({ children, className = "" }) => (
-  <div className={`bg-white rounded-xl border border-gray-200 shadow-sm ${className}`}>
-    {children}
-  </div>
-);
+# ----------------- BACKEND (IA & PROCESSAMENTO) -----------------
 
-const Button = ({ children, onClick, disabled, variant = "primary", className = "" }) => {
-  const baseStyle = "w-full font-bold py-3 px-6 rounded-lg transition-all flex items-center justify-center gap-2";
-  const styles = {
-    primary: "bg-red-600 hover:bg-red-700 text-white shadow-md hover:shadow-lg disabled:bg-red-300",
-    secondary: "bg-white border border-gray-300 text-gray-700 hover:bg-gray-50",
-    outline: "border-2 border-red-100 text-red-600 hover:bg-red-50"
-  };
-  return (
-    <button 
-      onClick={onClick} 
-      disabled={disabled} 
-      className={`${baseStyle} ${styles[variant]} ${className}`}
-    >
-      {disabled ? <Loader2 className="animate-spin" /> : children}
-    </button>
-  );
-};
+def get_gemini_model():
+    try:
+        genai.configure(api_key=FIXED_API_KEY)
+        return genai.GenerativeModel('models/gemini-1.5-flash')
+    except: return None
 
-const FileUpload = ({ label, file, setFile, accept = ".pdf,.docx" }) => (
-  <div className="flex flex-col gap-2">
-    <label className="font-semibold text-gray-700 flex items-center gap-2">
-      {label}
-    </label>
-    <div className={`
-      relative border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-all group
-      ${file ? 'border-green-500 bg-green-50' : 'border-gray-300 hover:border-red-400 hover:bg-red-50'}
-    `}>
-      <input 
-        type="file" 
-        accept={accept}
-        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-        onChange={(e) => setFile(e.target.files[0])}
-      />
-      <div className="flex flex-col items-center gap-3">
-        {file ? (
-          <>
-            <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
-              <FileText className="w-6 h-6 text-green-600" />
-            </div>
-            <div>
-              <p className="text-sm font-bold text-green-800">{file.name}</p>
-              <p className="text-xs text-green-600">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center group-hover:bg-red-100 transition-colors">
-              <Upload className="w-6 h-6 text-gray-400 group-hover:text-red-500" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-600">Clique ou arraste o arquivo aqui</p>
-              <p className="text-xs text-gray-400 mt-1">PDF ou DOCX suportados</p>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  </div>
-);
-
-// --- APP PRINCIPAL ---
-
-export default function App() {
-  const [activeTab, setActiveTab] = useState('home');
-
-  const renderContent = () => {
-    switch(activeTab) {
-      case 'home': return <HomePage setActiveTab={setActiveTab} />;
-      case 'ref_bel': return <ValidatorTool scenario="ref_bel" title="1. Referência x BELFAR" />;
-      case 'mkt': return <ValidatorTool scenario="mkt" title="2. Conferência MKT" />;
-      case 'graf': return <ValidatorTool scenario="graf" title="3. Gráfica x Arte" />;
-      default: return <HomePage setActiveTab={setActiveTab} />;
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-gray-50 flex font-sans text-gray-900 selection:bg-red-100 selection:text-red-900">
-      {/* Sidebar */}
-      <aside className="w-72 bg-white border-r border-gray-200 fixed h-full hidden md:flex flex-col z-20 shadow-sm">
-        <div className="p-8 border-b border-gray-100 flex flex-col items-center">
-          <div className="w-16 h-16 bg-gradient-to-br from-red-500 to-red-600 rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-red-200">
-            <FileText className="text-white w-8 h-8" />
-          </div>
-          <h1 className="font-bold text-gray-900 text-xl tracking-tight">Validador Belfar</h1>
-          <span className="text-xs font-medium text-gray-400 mt-1 px-2 py-1 bg-gray-50 rounded-full border border-gray-100">
-            v2.0 React
-          </span>
-        </div>
+def process_uploaded_file(contents, filename):
+    """Lê PDF (como imagem) ou DOCX (como texto) do upload base64."""
+    if not contents: return None
+    
+    try:
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
         
-        <nav className="flex-1 p-6 space-y-2 overflow-y-auto">
-          <div className="text-xs font-bold text-gray-400 uppercase px-3 mb-2 tracking-wider">Menu Principal</div>
-          <NavItem active={activeTab === 'home'} onClick={() => setActiveTab('home')} icon={<FileText size={20}/>}>
-            Página Inicial
-          </NavItem>
-          
-          <div className="pt-6 pb-2 text-xs font-bold text-gray-400 uppercase px-3 tracking-wider">Ferramentas</div>
-          <NavItem active={activeTab === 'ref_bel'} onClick={() => setActiveTab('ref_bel')} icon={<CheckCircle size={20}/>}>
-            Ref x BELFAR
-          </NavItem>
-          <NavItem active={activeTab === 'mkt'} onClick={() => setActiveTab('mkt')} icon={<AlertTriangle size={20}/>}>
-            Conferência MKT
-          </NavItem>
-          <NavItem active={activeTab === 'graf'} onClick={() => setActiveTab('graf')} icon={<Printer size={20}/>}>
-            Gráfica x Arte
-          </NavItem>
-        </nav>
+        if filename.lower().endswith('.docx'):
+            doc = docx.Document(io.BytesIO(decoded))
+            text = "\n".join([p.text for p in doc.paragraphs])
+            return {"type": "text", "data": text}
 
-        <div className="p-6 border-t border-gray-100 bg-gray-50/50">
-          <div className="bg-white border border-green-200 rounded-xl p-4 shadow-sm flex items-center gap-3">
-            <div className="relative">
-              <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-              <div className="w-3 h-3 bg-green-500 rounded-full absolute top-0 animate-ping opacity-50"></div>
-            </div>
-            <div>
-              <p className="text-xs font-bold text-gray-900">Sistema Online</p>
-              <p className="text-[10px] text-gray-500">API Gemini Conectada</p>
-            </div>
-          </div>
-        </div>
-      </aside>
+        elif filename.lower().endswith('.pdf'):
+            doc = fitz.open(stream=decoded, filetype="pdf")
+            images = []
+            # Renderiza até 10 páginas
+            for i in range(min(10, len(doc))):
+                page = doc[i]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
+                images.append(Image.open(img_byte_arr))
+            return {"type": "images", "data": images}
+            
+    except Exception as e:
+        print(f"Erro ao processar {filename}: {e}")
+        return None
+    return None
 
-      {/* Main Content */}
-      <main className="flex-1 md:ml-72 p-8 lg:p-12 max-w-[1600px] mx-auto w-full">
-        {renderContent()}
-      </main>
-    </div>
-  );
-}
+# ----------------- COMPONENTES VISUAIS (FRONT-END PYTHON) -----------------
 
-const NavItem = ({ children, active, onClick, icon }) => (
-  <button 
-    onClick={onClick}
-    className={`w-full flex items-center gap-3 px-4 py-3.5 text-sm font-medium rounded-xl transition-all duration-200 group
-      ${active 
-        ? 'bg-red-50 text-red-700 shadow-sm ring-1 ring-red-200 translate-x-1' 
-        : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900 hover:translate-x-1'
-      }`}
-  >
-    <span className={`${active ? 'text-red-600' : 'text-gray-400 group-hover:text-gray-600'}`}>{icon}</span>
-    {children}
-    {active && <ChevronRight size={16} className="ml-auto text-red-400" />}
-  </button>
-);
+def upload_box(id_name, label):
+    return dbc.Card([
+        dbc.CardBody([
+            html.H6(label, className="fw-bold text-dark mb-3"),
+            dcc.Upload(
+                id=id_name,
+                children=html.Div([
+                    html.I(className="fas fa-cloud-upload-alt fa-2x text-primary mb-2"),
+                    html.Div(["Arraste ou ", html.Span("Clique", className="fw-bold text-primary")])
+                ]),
+                style={
+                    'width': '100%', 'height': '120px', 'lineHeight': '30px',
+                    'borderWidth': '2px', 'borderStyle': 'dashed', 'borderRadius': '10px',
+                    'textAlign': 'center', 'borderColor': '#ced4da', 'backgroundColor': '#f8f9fa',
+                    'cursor': 'pointer', 'padding': '25px', 'transition': 'all 0.3s'
+                },
+                className="upload-area",
+                multiple=False
+            ),
+            html.Div(id=f"{id_name}-filename", className="mt-2 small text-success fw-bold text-center")
+        ])
+    ], className="mb-3 shadow-sm border-0")
 
-// --- PÁGINAS ---
+def feature_card(title, desc, icon, color, link_id):
+    return dbc.Card([
+        dbc.CardBody([
+            html.Div([
+                html.Div(html.I(className=f"fas {icon} fa-lg text-{color}"), className=f"bg-{color}-subtle p-3 rounded-3 me-3"),
+                html.H5(title, className="card-title fw-bold mb-0")
+            ], className="d-flex align-items-center mb-3"),
+            html.P(desc, className="card-text text-muted small"),
+            dbc.Button("Acessar Ferramenta", id=link_id, color=color, outline=True, size="sm", className="mt-3 w-100 fw-bold")
+        ])
+    ], className="h-100 shadow-sm border-0 hover-shadow transition-card")
 
-const HomePage = ({ setActiveTab }) => (
-  <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-    <header className="mb-12">
-      <h1 className="text-4xl lg:text-5xl font-extrabold text-gray-900 mb-6 flex items-center gap-4">
-        <span className="text-red-600">🔬</span> Validador Inteligente
-      </h1>
-      <p className="text-xl text-gray-600 max-w-3xl leading-relaxed">
-        Bem-vindo à nova geração de auditoria de bulas. Utilize Inteligência Artificial para comparar documentos, detectar erros e validar artes gráficas em segundos.
-      </p>
-    </header>
+# ----------------- BARRA LATERAL (SIDEBAR) -----------------
 
-    <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 p-6 mb-10 rounded-2xl flex items-start gap-4 shadow-sm">
-      <Info className="text-blue-600 mt-1 flex-shrink-0" />
-      <div>
-        <h4 className="font-bold text-blue-900 text-lg mb-1">Como começar?</h4>
-        <p className="text-blue-800">
-          Selecione uma das ferramentas abaixo ou use o menu lateral para iniciar sua primeira validação.
-        </p>
-      </div>
-    </div>
+sidebar = html.Div([
+    html.Div([
+        html.I(className="fas fa-file-medical fa-2x text-primary me-2"),
+        html.Span("Validador Belfar", className="h4 fw-bold align-middle")
+    ], className="text-center py-4 border-bottom"),
+    
+    dbc.Nav([
+        dbc.NavLink([html.I(className="fas fa-home me-3"), "Página Inicial"], href="/", active="exact", className="py-3"),
+        dbc.NavLink([html.I(className="fas fa-check-double me-3"), "Ref x Belfar"], href="/ref-bel", active="exact", className="py-3"),
+        dbc.NavLink([html.I(className="fas fa-tasks me-3"), "Conferência MKT"], href="/mkt", active="exact", className="py-3"),
+        dbc.NavLink([html.I(className="fas fa-print me-3"), "Gráfica x Arte"], href="/graf", active="exact", className="py-3"),
+    ], vertical=True, pills=True, className="px-3 py-4"),
+    
+    html.Div([
+        dbc.Alert([html.I(className="fas fa-wifi me-2"), "API Conectada"], color="success", className="small m-0 py-2 text-center")
+    ], className="mt-auto p-3")
+], style={"position": "fixed", "top": 0, "left": 0, "bottom": 0, "width": "260px", "backgroundColor": "#fff", "borderRight": "1px solid #dee2e6", "zIndex": 100})
 
-    <div className="grid md:grid-cols-3 gap-8">
-      <HomeCard 
-        title="Ref x BELFAR" 
-        desc="Comparação semântica completa. Valida Posologia, Contraindicações e Dosagens entre a referência e a candidata."
-        onClick={() => setActiveTab('ref_bel')}
-        icon={<CheckCircle className="text-blue-600 w-8 h-8" />}
-        color="blue"
-      />
-      <HomeCard 
-        title="Conferência MKT" 
-        desc="Checklist rápido de itens obrigatórios (Logos, SAC, Farmacêutico) para aprovação de materiais de marketing."
-        onClick={() => setActiveTab('mkt')}
-        icon={<AlertTriangle className="text-orange-600 w-8 h-8" />}
-        color="orange"
-      />
-      <HomeCard 
-        title="Gráfica x Arte" 
-        desc="Validação visual pixel-a-pixel. Detecta manchas, textos cortados e erros de impressão na prova gráfica."
-        onClick={() => setActiveTab('graf')}
-        icon={<Printer className="text-purple-600 w-8 h-8" />}
-        color="purple"
-      />
-    </div>
-  </div>
-);
+content_style = {"marginLeft": "260px", "padding": "2rem", "backgroundColor": "#f8f9fa", "minHeight": "100vh"}
 
-const HomeCard = ({ title, desc, onClick, icon, color }) => (
-  <div 
-    onClick={onClick}
-    className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all cursor-pointer group h-full flex flex-col"
-  >
-    <div className={`mb-6 bg-${color}-50 w-16 h-16 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-300`}>
-      {icon}
-    </div>
-    <h3 className="text-xl font-bold text-gray-900 mb-3 group-hover:text-red-600 transition-colors">{title}</h3>
-    <p className="text-sm text-gray-500 leading-relaxed mb-6 flex-1">{desc}</p>
-    <div className="flex items-center text-sm font-bold text-red-600 group-hover:gap-2 transition-all mt-auto">
-      Acessar Ferramenta <ArrowRight size={16} className="ml-2" />
-    </div>
-  </div>
-);
+# ----------------- PÁGINAS DO APP -----------------
 
-// --- FERRAMENTA DE VALIDAÇÃO ---
-
-const ValidatorTool = ({ scenario, title }) => {
-  const [file1, setFile1] = useState(null);
-  const [file2, setFile2] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
-  const [bulaType, setBulaType] = useState('paciente');
-
-  // Simula processamento (Para ambiente sem backend Node)
-  // Em produção, aqui entraria a lógica de pdfjs-dist e mammoth
-  const processFileMock = async (file) => {
-    if (!file) return null;
-    return new Promise(resolve => {
-      setTimeout(() => {
-        resolve({ mimeType: 'text/plain', data: `Conteúdo extraído simulado de ${file.name}...` });
-      }, 800);
-    });
-  };
-
-  const handleRun = async () => {
-    if (!file1 && !file2) return;
-    setLoading(true);
-    setResult(null);
-
-    try {
-      const genAI = new GoogleGenerativeAI(FIXED_API_KEY);
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-      // Prompt Simplificado para Demo
-      let prompt = `
-        Atue como Auditor Farmacêutico.
-        Gere um JSON simulado de validação de bula com base nos nomes dos arquivos: 
-        Arquivo 1: ${file1?.name}, Arquivo 2: ${file2?.name}.
+# 1. HOME PAGE
+home_layout = html.Div([
+    html.Div([
+        html.H1([html.I(className="fas fa-microscope text-primary me-3"), "Validador Inteligente"], className="fw-bold mb-3"),
+        html.P("Bem-vindo à central de auditoria de documentos.", className="text-muted lead mb-4"),
+        dbc.Alert([
+            html.I(className="fas fa-info-circle me-2"), 
+            html.B("Como começar: "), "Selecione uma ferramenta abaixo ou no menu lateral."
+        ], color="info", className="mb-5 border-start border-5 border-info bg-info-subtle text-info-emphasis"),
         
-        Crie 3 seções de exemplo (Posologia, Composição, Contraindicações).
-        Faça com que uma delas tenha status DIVERGENTE para teste.
+        html.H4("Ferramentas Disponíveis:", className="fw-bold mb-4"),
+        dbc.Row([
+            dbc.Col(feature_card("1. Ref x Belfar", "Comparação semântica de texto, posologia e dosagens. Suporta PDF e DOCX.", "fa-pills", "primary", "btn-home-ref"), md=4),
+            dbc.Col(feature_card("2. Conferência MKT", "Checklist rápido de itens obrigatórios (Logos, SAC, Frases).", "fa-list-check", "warning", "btn-home-mkt"), md=4),
+            dbc.Col(feature_card("3. Gráfica x Arte", "Validação visual pixel-perfect para pré-impressão.", "fa-eye", "danger", "btn-home-graf"), md=4),
+        ]),
         
-        JSON esperado:
-        {
-          "METADADOS": { "score": 85, "datas_anvisa": ["10/05/2024"] },
-          "SECOES": [
-            { "titulo": "POSOLOGIA", "ref": "Tomar 1cp ao dia", "bel": "Tomar 1cp ao dia", "status": "CONFORME" },
-            { "titulo": "COMPOSIÇÃO", "ref": "500mg de Dipirona", "bel": "500g de Dipirona (Erro unidade)", "status": "DIVERGENTE" },
-            { "titulo": "CONTRAINDICAÇÕES", "ref": "Não usar se grávida", "bel": "Não usar se grávida", "status": "CONFORME" }
-          ]
-        }
-      `;
+        html.Div([
+            html.H6([html.I(className="fas fa-lightbulb text-warning me-2"), "Dica: Arquivos em Curva"], className="fw-bold"),
+            html.P("Este sistema usa Visão Computacional. Ele consegue ler PDFs convertidos em curvas (desenhos) perfeitamente.", className="small text-muted mb-0")
+        ], className="mt-5 p-3 bg-white rounded border shadow-sm")
+    ], className="animate-fade-in")
+])
 
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
-      const jsonStr = text.replace(/```json|```/g, '').trim();
-      const jsonData = JSON.parse(jsonStr);
-      
-      setResult(jsonData);
+# 2. PÁGINA GENÉRICA DE FERRAMENTA
+def build_tool_page(title, subtitle, scenario_id, icon, color):
+    # Seletor de Tipo (Só para Ref x Belfar)
+    options_div = html.Div()
+    if scenario_id == "1":
+        options_div = dbc.Card([
+            dbc.CardBody([
+                html.Label("Selecione o Tipo de Bula:", className="fw-bold mb-2 d-block"),
+                dbc.RadioItems(
+                    options=[
+                        {"label": "Paciente", "value": "PACIENTE"},
+                        {"label": "Profissional", "value": "PROFISSIONAL"},
+                    ],
+                    value="PACIENTE",
+                    id="radio-tipo-bula",
+                    inline=True,
+                    className="btn-group-toggle",
+                    inputClassName="btn-check",
+                    labelClassName="btn btn-outline-primary me-2 rounded-pill",
+                    labelCheckedClassName="active"
+                )
+            ])
+        ], className="mb-4 shadow-sm border-0")
 
-    } catch (error) {
-      alert("Erro na análise: " + error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+    return html.Div([
+        html.Div([
+            html.H2([html.I(className=f"fas {icon} text-{color} me-3"), title], className="fw-bold"),
+            html.P(subtitle, className="text-muted mb-4"),
+        ], className="border-bottom mb-4 pb-2"),
+        
+        options_div,
+        
+        dbc.Row([
+            dbc.Col(upload_box("upload-1", "📄 Documento Referência / Padrão"), md=6),
+            dbc.Col(upload_box("upload-2", "📄 Documento Belfar / Candidato"), md=6),
+        ]),
+        
+        dbc.Button([html.I(className="fas fa-rocket me-2"), "INICIAR AUDITORIA COMPLETA"], 
+                   id="btn-run", color=color, size="lg", className="w-100 my-4 shadow fw-bold p-3"),
+        
+        dcc.Loading(id="loading", type="dot", color="#0d6efd", children=html.Div(id="output-results")),
+        dcc.Store(id="scenario-store", data=scenario_id)
+    ])
 
-  return (
-    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-5xl mx-auto">
-      <header className="mb-10 border-b border-gray-200 pb-6 flex justify-between items-end">
-        <div>
-          <h2 className="text-3xl font-extrabold text-gray-900 flex items-center gap-3">
-            {title}
-          </h2>
-          <p className="text-gray-500 mt-2">Carregue os arquivos para iniciar a validação automática.</p>
-        </div>
-        {scenario === 'ref_bel' && (
-          <div className="bg-white p-1 rounded-lg border border-gray-200 inline-flex items-center shadow-sm">
-            <button 
-              onClick={() => setBulaType('paciente')}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${bulaType === 'paciente' ? 'bg-red-50 text-red-700 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
-            >
-              Paciente
-            </button>
-            <button 
-              onClick={() => setBulaType('profissional')}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${bulaType === 'profissional' ? 'bg-red-50 text-red-700 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
-            >
-              Profissional
-            </button>
-          </div>
-        )}
-      </header>
+# ----------------- APP LAYOUT PRINCIPAL -----------------
 
-      <div className="grid md:grid-cols-2 gap-8 mb-8">
-        <FileUpload 
-          label={scenario === 'graf' ? "🎨 Arte Final (Original)" : "📄 Documento Referência (Padrão)"} 
-          file={file1} setFile={setFile1} 
-        />
-        <FileUpload 
-          label={scenario === 'graf' ? "🖨️ Prova Gráfica (Digitalizada)" : "📄 Documento Belfar (Candidato)"} 
-          file={file2} setFile={setFile2} 
-        />
-      </div>
+app.layout = html.Div([
+    dcc.Location(id="url"),
+    sidebar,
+    html.Div(id="page-content", style=content_style)
+])
 
-      <Button onClick={handleRun} disabled={loading || (!file1 && !file2)}>
-        {loading ? "Processando Inteligência Artificial..." : "🚀 INICIAR AUDITORIA COMPLETA"}
-      </Button>
+# ----------------- CALLBACKS DE NAVEGAÇÃO -----------------
 
-      {result && (
-        <div className="mt-12 animate-in slide-in-from-bottom-8 duration-700">
-          <div className="flex items-center justify-between mb-8 bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
-            <div>
-              <h3 className="text-xl font-bold text-gray-800">Resultado da Análise</h3>
-              <p className="text-sm text-gray-500">Auditoria concluída com sucesso</p>
-            </div>
-            <div className="flex gap-6">
-              <Badge label="Conformidade" value={`${result.METADADOS?.score}%`} color={result.METADADOS?.score > 90 ? "green" : "orange"} />
-              <Badge label="Seções" value={result.SECOES?.length || 0} color="blue" />
-              <Badge label="Status" value="Finalizado" color="gray" />
-            </div>
-          </div>
+@app.callback(Output("page-content", "children"), [Input("url", "pathname")])
+def render_page_content(pathname):
+    if pathname == "/ref-bel":
+        return build_tool_page("Medicamento Ref x BELFAR", "Comparação técnica de conteúdo e dosagens.", "1", "fa-check-double", "primary")
+    elif pathname == "/mkt":
+        return build_tool_page("Conferência MKT", "Validação de itens obrigatórios de marketing.", "2", "fa-tasks", "warning")
+    elif pathname == "/graf":
+        return build_tool_page("Gráfica x Arte Vigente", "Comparação visual de pré-impressão.", "3", "fa-print", "danger")
+    return home_layout
 
-          <div className="space-y-4">
-            {result.SECOES?.map((sec, idx) => (
-              <AccordionItem key={idx} data={sec} />
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
+# Navegação pelos botões da Home
+@app.callback(Output("url", "pathname"), 
+              [Input("btn-home-ref", "n_clicks"), Input("btn-home-mkt", "n_clicks"), Input("btn-home-graf", "n_clicks")])
+def home_navigation(b1, b2, b3):
+    ctx = callback_context
+    if not ctx.triggered: return no_update
+    btn_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    if btn_id == "btn-home-ref": return "/ref-bel"
+    if btn_id == "btn-home-mkt": return "/mkt"
+    if btn_id == "btn-home-graf": return "/graf"
+    return "/"
 
-const Badge = ({ label, value, color }) => {
-  const colors = {
-    green: "bg-green-50 text-green-700 border-green-200",
-    orange: "bg-orange-50 text-orange-700 border-orange-200",
-    blue: "bg-blue-50 text-blue-700 border-blue-200",
-    gray: "bg-gray-50 text-gray-700 border-gray-200",
-  };
-  return (
-    <div className={`flex flex-col items-center px-5 py-2 rounded-xl border ${colors[color] || colors.gray}`}>
-      <span className="text-[10px] font-bold uppercase opacity-70 mb-1">{label}</span>
-      <span className="text-xl font-bold">{value}</span>
-    </div>
-  );
-};
+# ----------------- CALLBACKS DE UPLOAD -----------------
 
-const AccordionItem = ({ data }) => {
-  const [isOpen, setIsOpen] = useState(data.status !== 'CONFORME');
-  const isDiff = data.status === 'DIVERGENTE';
-  
-  return (
-    <div className={`border rounded-xl bg-white overflow-hidden transition-all duration-300 shadow-sm hover:shadow-md ${isDiff ? 'border-red-200 ring-1 ring-red-100' : 'border-gray-200'}`}>
-      <button 
-        onClick={() => setIsOpen(!isOpen)}
-        className={`w-full flex items-center justify-between p-5 text-left transition-colors
-          ${isDiff ? 'bg-red-50/50' : 'hover:bg-gray-50'}`}
-      >
-        <div className="flex items-center gap-4">
-          <div className={`p-2 rounded-full ${isDiff ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
-            {isDiff ? <XCircle size={20} /> : <CheckCircle size={20} />}
-          </div>
-          <span className={`font-bold text-lg ${isDiff ? 'text-red-900' : 'text-gray-700'}`}>{data.titulo}</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className={`text-xs font-bold px-3 py-1 rounded-full border ${
-            isDiff ? 'bg-white text-red-600 border-red-200' : 'bg-green-100 text-green-700 border-green-200'
-          }`}>
-            {data.status}
-          </span>
-          <div className={`transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`}>
-            <ChevronDown size={20} className="text-gray-400" />
-          </div>
-        </div>
-      </button>
+@app.callback(Output("upload-1-filename", "children"), Input("upload-1", "filename"))
+def update_f1(name): return f"✅ {name}" if name else ""
 
-      {isOpen && (
-        <div className="border-t border-gray-100 grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-gray-100 animate-in slide-in-from-top-2">
-          <div className="p-6 bg-gray-50/50">
-            <h4 className="text-xs font-bold text-blue-600 uppercase mb-3 flex items-center gap-2">
-              <div className="w-2 h-2 bg-blue-500 rounded-full"></div> Referência
-            </h4>
-            <div className="text-sm text-gray-700 leading-relaxed font-serif bg-white p-4 rounded-lg border border-gray-200 shadow-sm" 
-                 dangerouslySetInnerHTML={{ __html: data.ref }} />
-          </div>
-          <div className="p-6 bg-white">
-            <h4 className="text-xs font-bold text-green-600 uppercase mb-3 flex items-center gap-2">
-              <div className="w-2 h-2 bg-green-500 rounded-full"></div> Belfar (Candidato)
-            </h4>
-            <div className="text-sm text-gray-700 leading-relaxed font-serif bg-gray-50 p-4 rounded-lg border border-gray-200 shadow-sm"
-                 dangerouslySetInnerHTML={{ __html: data.bel }} />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
+@app.callback(Output("upload-2-filename", "children"), Input("upload-2", "filename"))
+def update_f2(name): return f"✅ {name}" if name else ""
+
+# ----------------- CALLBACK PRINCIPAL (IA) -----------------
+
+@app.callback(
+    Output("output-results", "children"),
+    Input("btn-run", "n_clicks"),
+    [State("upload-1", "contents"), State("upload-1", "filename"),
+     State("upload-2", "contents"), State("upload-2", "filename"),
+     State("scenario-store", "data"), State("radio-tipo-bula", "value")]
+)
+def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
+    if not n_clicks: return no_update
+    if not c1 and not c2: return dbc.Alert("⚠️ Faça upload dos arquivos primeiro!", color="warning", className="fw-bold")
+
+    try:
+        model = get_gemini_model()
+        if not model: return dbc.Alert("Erro de conexão com API.", color="danger")
+
+        # Processamento
+        data1 = process_uploaded_file(c1, n1) if c1 else None
+        data2 = process_uploaded_file(c2, n2) if c2 else None
+        
+        payload = []
+        if data1:
+            if data1['type'] == 'text': payload.append(f"--- REF TEXTO ---\n{data1['data']}")
+            else: payload.extend(data1['data'])
+        if data2:
+            if data2['type'] == 'text': payload.append(f"--- BELFAR TEXTO ---\n{data2['data']}")
+            else: payload.extend(data2['data'])
+
+        # Prompt
+        secoes = "POSOLOGIA, COMPOSIÇÃO, CONTRAINDICAÇÕES"
+        if scenario == "1":
+            if tipo_bula == "PACIENTE":
+                secoes = "PARA QUE SERVE, COMO USAR, QUANDO NÃO USAR, MALES QUE PODE CAUSAR"
+            prompt = f"""
+            Atue como Auditor Farmacêutico.
+            Compare os documentos. Extraia e compare estas seções: {secoes}.
+            
+            SAÍDA JSON OBRIGATÓRIA:
+            {{
+                "METADADOS": {{"score": 95, "datas": ["dd/mm/aaaa"]}},
+                "SECOES": [
+                    {{"titulo": "Nome Seção", "ref": "texto ref...", "bel": "texto bel...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE"}}
+                ]
+            }}
+            Use tags HTML <span style='background-color: #fff3cd; padding: 2px;'>texto</span> para destacar diferenças.
+            """
+        elif scenario == "2":
+            prompt = "Verifique MKT: VENDA SOB PRESCRIÇÃO, Logo Belfar, SAC. Retorne JSON com status."
+        else:
+            prompt = "Comparação Visual Gráfica. Liste defeitos visuais em JSON."
+
+        # Executa IA
+        response = model.generate_content([prompt] + payload)
+        txt = response.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(txt)
+        
+        # Renderiza Resultados
+        meta = data.get("METADADOS", {})
+        score = meta.get("score", 0)
+        
+        metrics = dbc.Row([
+            dbc.Col(dbc.Card([html.H2(f"{score}%", className="text-primary fw-bold"), html.Small("Conformidade")], body=True, className="text-center shadow-sm border-0"), md=3),
+            dbc.Col(dbc.Card([html.H2(len(data.get("SECOES", [])), className="text-info fw-bold"), html.Small("Seções")], body=True, className="text-center shadow-sm border-0"), md=3),
+            dbc.Col(dbc.Card([html.H2("OK", className="text-success fw-bold"), html.Small("Status Geral")], body=True, className="text-center shadow-sm border-0"), md=3),
+        ], className="mb-4 justify-content-center")
+
+        accordion_items = []
+        for sec in data.get("SECOES", []):
+            is_diff = "DIVERGENTE" in sec['status']
+            header_color = "text-danger" if is_diff else "text-success"
+            icon = "❌" if is_diff else "✅"
+            
+            content = dbc.Row([
+                dbc.Col([html.Strong("Referência", className="text-primary"), html.Div(dcc.Markdown(sec.get('ref', ''), dangerously_allow_html=True), className="border p-3 bg-white rounded small")], md=6),
+                dbc.Col([html.Strong("Belfar", className="text-success"), html.Div(dcc.Markdown(sec.get('bel', ''), dangerously_allow_html=True), className="border p-3 bg-white rounded small")], md=6),
+            ])
+            
+            accordion_items.append(dbc.AccordionItem(content, title=f"{icon} {sec['titulo']} — {sec['status']}", item_id=sec['titulo']))
+
+        return html.Div([
+            html.H4("📊 Resultado da Auditoria", className="fw-bold mb-3"),
+            metrics,
+            dbc.Accordion(accordion_items, start_collapsed=False, always_open=True, className="shadow-sm bg-white rounded")
+        ], className="animate-fade-in")
+
+    except Exception as e:
+        return dbc.Alert(f"Erro na análise: {str(e)}", color="danger")
+
+# Corrige callback para inputs que não existem na home
+app.validation_layout = html.Div([
+    upload_box("upload-1", ""), upload_box("upload-2", ""),
+    dcc.Store(id="scenario-store"), dcc.RadioItems(id="radio-tipo-bula"),
+    sidebar, home_layout
+])
+
+if __name__ == "__main__":
+    app.run_server(debug=True)
