@@ -1,197 +1,315 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
 from PIL import Image
 import io
+import re
 
-# --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="Validador Belfar (Final)", page_icon="💊", layout="wide")
+# ----------------- CONFIGURAÇÃO E CSS (Visual v107 + v105) -----------------
+st.set_page_config(layout="wide", page_title="Auditoria de Bulas AI", page_icon="🔬")
 
-st.markdown("""
+GLOBAL_CSS = """
 <style>
-    .stButton>button {width: 100%; background-color: #28a745; color: white; font-weight: bold;}
-    .status-box {padding: 15px; border-radius: 8px; margin-bottom: 15px; font-size: 15px;}
-    .success {background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb;}
-    .error {background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;}
-    .info {background-color: #cce5ff; color: #004085; border: 1px solid #b8daff;}
-</style>
-""", unsafe_allow_html=True)
+/* Ajustes Gerais */
+.main .block-container {
+    padding-top: 2rem !important;
+    padding-bottom: 2rem !important;
+    max-width: 95% !important;
+}
+[data-testid="stHeader"] { display: none !important; }
+footer { display: none !important; }
 
-# --- FUNÇÃO INTELIGENTE: SELEÇÃO DE MODELO ---
+/* Caixa de Bula (Estilo Papel) */
+.bula-box {
+  height: 450px;
+  overflow-y: auto;
+  border: 1px solid #dcdcdc;
+  border-radius: 6px;
+  padding: 20px;
+  background: #ffffff;
+  font-family: "Georgia", "Times New Roman", serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #111;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+}
+
+/* Títulos das Seções */
+.section-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #222;
+  margin: 15px 0 10px;
+  border-bottom: 2px solid #eee;
+  padding-bottom: 5px;
+}
+
+/* Cores de Destaque */
+.ref-title { color: #0b5686; } /* Azul Referência */
+.bel-title { color: #0b8a3e; } /* Verde Belfar */
+
+/* Status Box para mensagens da IA */
+.status-box {padding: 15px; border-radius: 8px; margin-bottom: 15px; font-size: 15px;}
+.success {background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb;}
+.error {background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;}
+
+/* Botão Principal */
+.stButton>button {
+    width: 100%; 
+    background-color: #0068c9; 
+    color: white; 
+    font-weight: bold; 
+    height: 50px;
+    border-radius: 8px;
+    border: none;
+}
+.stButton>button:hover { background-color: #0053a0; }
+</style>
+"""
+st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
+
+# ----------------- FUNÇÕES BACKEND (IA) -----------------
+
 def get_best_model(api_key):
-    """
-    Verifica quais modelos sua conta tem acesso e escolhe o melhor disponível.
-    Prioriza a série 2.5 e 2.0 que apareceu na sua lista.
-    """
-    if not api_key: return None, "Chave não informada"
-    
+    """Seleciona o modelo Gemini mais capaz disponível na conta."""
+    if not api_key: return None, "Chave vazia"
     try:
         genai.configure(api_key=api_key)
+        available = [m.name for m in genai.list_models()]
         
-        # 1. Pega a lista real do que você tem acesso
-        available_models = [m.name for m in genai.list_models()]
-        
-        # 2. Lista de preferência baseada no seu print (Do melhor para o backup)
+        # Prioridade: 2.5 -> 2.0 -> 1.5
         preferencias = [
-            'models/gemini-2.5-flash',       # Mais novo e rápido
-            'models/gemini-2.0-flash-001',   # Versão estável
-            'models/gemini-2.0-flash',       # Versão padrão
-            'models/gemini-2.0-pro-exp',     # Experimental potente
-            'models/gemini-1.5-flash'        # Fallback antigo
+            'models/gemini-2.5-flash',
+            'models/gemini-2.0-flash-001',
+            'models/gemini-2.0-flash',
+            'models/gemini-1.5-pro',
+            'models/gemini-1.5-flash'
         ]
-        
-        # 3. Tenta casar a preferência com o disponível
         for pref in preferencias:
-            if pref in available_models:
-                return pref, None # Achamos o campeão!
-        
-        # 4. Se nenhum dos preferidos existir, pega o primeiro "gemini" que aceita conteúdo
-        for model in available_models:
-            if 'gemini' in model and 'embedding' not in model and 'aqa' not in model:
-                return model, None
-                
-        return None, f"Nenhum modelo de geração de texto encontrado. Sua lista: {available_models}"
-        
+            if pref in available: return pref, None
+            
+        # Fallback genérico
+        for model in available:
+            if 'gemini' in model and 'vision' not in model: return model, None
+            
+        return None, "Nenhum modelo Gemini compatível."
     except Exception as e:
-        return None, f"Erro de conexão: {str(e)}"
+        return None, str(e)
 
-# --- PROCESSAMENTO DE PDF ---
 def pdf_to_images(uploaded_file):
+    """Renderiza PDF para imagens (Visão Computacional)."""
     if not uploaded_file: return []
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         images = []
         for page in doc:
-            # Zoom de 2x para ler letras pequenas da bula
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-            img_data = pix.tobytes("jpeg")
-            images.append(Image.open(io.BytesIO(img_data)))
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2)) # Zoom 2x para nitidez
+            images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
         return images
     except: return []
 
-# --- BARRA LATERAL ---
+# ----------------- BARRA LATERAL -----------------
 with st.sidebar:
-    st.header("⚙️ Configuração")
+    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=60)
+    st.title("Configuração")
     
-    # Campo de senha
-    api_key = st.text_input("Sua Chave Google (AIza...):", type="password")
+    api_key = st.text_input("Chave API Google:", type="password")
     
-    # Validação imediata da chave e modelo
-    selected_model_name = None
-    
+    selected_model = None
     if api_key:
-        with st.spinner("Verificando modelos disponíveis..."):
-            model_name, error_msg = get_best_model(api_key)
-            
-        if model_name:
-            # Limpa o nome para ficar bonito (tira o 'models/')
-            display_name = model_name.replace("models/", "")
-            st.markdown(f'<div class="status-box success">✅ <b>Conectado!</b><br>Usando motor: {display_name}</div>', unsafe_allow_html=True)
-            selected_model_name = model_name
+        mod, err = get_best_model(api_key)
+        if mod:
+            st.success(f"Conectado: {mod.replace('models/', '')}")
+            selected_model = mod
         else:
-            st.markdown(f'<div class="status-box error">❌ <b>Erro:</b><br>{error_msg}</div>', unsafe_allow_html=True)
-    else:
-        st.info("👆 Cole sua chave acima para conectar.")
-            
-    st.markdown("---")
-    modo = st.selectbox("Cenário de Análise:", [
-        "1. Referência x BELFAR", 
-        "2. Conferência MKT", 
-        "3. Gráfica x Arte"
-    ])
-
-# --- TELA PRINCIPAL ---
-st.title(f"Validador: {modo}")
-
-# Uploads baseados no modo
-inputs_ok = False
-f1, f2 = None, None
-checklist_text = ""
-
-if modo == "1. Referência x BELFAR":
-    st.markdown("Comparação de **Texto Técnico** (Posologia, Concentração, etc).")
-    c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("📂 Bula Referência", type="pdf")
-    f2 = c2.file_uploader("📂 Bula Belfar", type="pdf")
-    if f1 and f2: inputs_ok = True
-
-elif modo == "2. Conferência MKT":
-    st.markdown("Verificação de **Checklist Obrigatório**.")
-    f1 = st.file_uploader("📂 Arquivo para Análise", type="pdf")
-    checklist_text = st.text_area("Itens Obrigatórios:", "VENDA SOB PRESCRIÇÃO MÉDICA\nLogo da Belfar\nFarmacêutico Responsável\nSAC 0800")
-    if f1: inputs_ok = True
-
-elif modo == "3. Gráfica x Arte":
-    st.markdown("Comparação **Visual** (Manchas, cortes, layout).")
-    c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("📂 Arte Final", type="pdf")
-    f2 = c2.file_uploader("📂 Prova Gráfica", type="pdf")
-    if f1 and f2: inputs_ok = True
-
-# --- BOTÃO DE AÇÃO ---
-if st.button("🚀 INICIAR ANÁLISE AGORA", disabled=not (inputs_ok and selected_model_name)):
+            st.error(f"Erro: {err}")
     
-    with st.spinner(f"🤖 A IA ({selected_model_name}) está lendo as bulas..."):
-        try:
-            # 1. Configura a IA
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(selected_model_name)
-            
-            # 2. Prepara as Imagens
-            imgs_payload = []
-            
-            if modo == "2. Conferência MKT":
-                f1.seek(0)
-                imgs_payload = pdf_to_images(f1)
-            else:
-                f1.seek(0); f2.seek(0)
-                # Manda as imagens sequenciadas
-                imgs_payload = pdf_to_images(f1) + pdf_to_images(f2)
-            
-            # 3. Define o Prompt (Comando)
-            prompt = ""
-            if modo == "1. Referência x BELFAR":
-                prompt = """
-                Atue como Especialista Regulatório.
-                O primeiro grupo de imagens é a Bula REFERÊNCIA.
-                O segundo grupo de imagens é a Bula BELFAR.
+    st.divider()
+    tipo_auditoria = st.radio(
+        "Cenário de Análise:",
+        (
+            "1. Comparação Texto (Ref x Bel)", 
+            "2. Conferência MKT (Checklist)", 
+            "3. Gráfica x Arte (Visual)"
+        )
+    )
+    st.info("Visual v107/v105 + Motor Gemini AI")
+
+# ----------------- ÁREA PRINCIPAL -----------------
+
+st.markdown("<h2 style='text-align: center; color: #333;'>🔬 Auditoria de Bulas Inteligente</h2>", unsafe_allow_html=True)
+
+# Variáveis de Upload
+f1, f2 = None, None
+checklist_txt = ""
+inputs_ok = False
+
+# --- CENÁRIO 1: TEXTO (Layout Clássico) ---
+if "Comparação" in tipo_auditoria:
+    st.markdown("Comparação semântica de texto técnico (Posologia, Contraindicações, etc).")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("<div class='section-title ref-title'>📄 Documento Referência</div>", unsafe_allow_html=True)
+        f1 = st.file_uploader("Upload PDF Ref", type=["pdf"], key="ref1")
+    with c2:
+        st.markdown("<div class='section-title bel-title'>📄 Documento BELFAR</div>", unsafe_allow_html=True)
+        f2 = st.file_uploader("Upload PDF Belfar", type=["pdf"], key="bel1")
+    if f1 and f2: inputs_ok = True
+
+# --- CENÁRIO 2: MKT (Layout v107) ---
+elif "MKT" in tipo_auditoria:
+    st.markdown("Validação de itens obrigatórios de Marketing.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("📄 Arquivo ANVISA (Ref)") # Mantendo estilo v107
+        f1 = st.file_uploader("Opcional (para contexto)", type=["pdf"], key="ref2")
+    with c2:
+        st.subheader("📄 Arquivo MKT (Alvo)")   # Mantendo estilo v107
+        f2 = st.file_uploader("Arquivo para Validar", type=["pdf"], key="bel2")
+    
+    checklist_txt = st.text_area("Itens Obrigatórios (Checklist):", 
+        "VENDA SOB PRESCRIÇÃO MÉDICA\nLogo da Belfar\nFarmacêutico Responsável\nSAC 0800\nIndústria Brasileira", height=100)
+    
+    if f2: inputs_ok = True # Só o arquivo MKT é obrigatório aqui
+
+# --- CENÁRIO 3: GRÁFICA (Layout v105) ---
+elif "Gráfica" in tipo_auditoria:
+    st.markdown("Comparação Visual (Pixel-Perfect) para Pré-Impressão.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("📄 Arte Vigente")      # Mantendo estilo v105
+        f1 = st.file_uploader("PDF Original", type=["pdf"], key="ref3")
+    with c2:
+        st.subheader("📄 PDF da Gráfica")    # Mantendo estilo v105
+        f2 = st.file_uploader("Prova Digitalizada", type=["pdf"], key="bel3")
+    if f1 and f2: inputs_ok = True
+
+st.divider()
+
+# --- EXECUÇÃO ---
+if st.button("🔍 Iniciar Auditoria Completa"):
+    if not api_key:
+        st.error("⚠️ Insira a Chave API na barra lateral.")
+    elif not inputs_ok:
+        st.warning("⚠️ Faça o upload dos arquivos necessários.")
+    else:
+        with st.spinner("🤖 A IA está analisando os documentos..."):
+            try:
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel(selected_model)
                 
-                TAREFA: Compare o TEXTO TÉCNICO.
-                Ignore formatação, fontes e quebras de linha.
-                Verifique rigorosamente divergências em: 
-                - Posologia
-                - Concentração (mg/ml)
-                - Contraindicações
+                # Prepara imagens
+                imgs_payload = []
+                if "MKT" in tipo_auditoria:
+                    # No MKT o foco é o arquivo f2 (Belfar/MKT)
+                    f2.seek(0)
+                    imgs_payload = pdf_to_images(f2)
+                else:
+                    f1.seek(0); f2.seek(0)
+                    imgs_payload = pdf_to_images(f1) + pdf_to_images(f2)
                 
-                Responda: "✅ TUDO CONFORME" ou liste as divergências encontradas.
-                """
-            elif modo == "2. Conferência MKT":
-                prompt = f"""
-                Analise visualmente o documento.
-                Verifique se estes itens estão presentes:
-                {checklist_text}
+                # PROMPTS INTELIGENTES (Gerando a saída no estilo antigo)
+                prompt = ""
                 
-                Responda com uma lista: [OK] ou [AUSENTE] para cada item.
-                """
-            elif modo == "3. Gráfica x Arte":
-                prompt = """
-                Atue como Especialista em Pré-Impressão.
-                Compare visualmente a ARTE ORIGINAL (primeiras imagens) com a PROVA GRÁFICA (últimas imagens).
+                if "Comparação" in tipo_auditoria:
+                    prompt = """
+                    Atue como Auditor de Qualidade Farmacêutica.
+                    Compare as Bulas (Primeiro grupo = Ref, Segundo grupo = Belfar).
+                    
+                    Gere uma saída HTML LIMPA (sem tags html, head, body) para ser inserida numa div.
+                    
+                    1. Calcule uma nota estimada de conformidade (0-100%).
+                    2. Crie uma TABELA para: POSOLOGIA, COMPOSIÇÃO, CONTRAINDICAÇÕES.
+                       Colunas: Item | Ref | Belfar | Status.
+                       Se houver divergência, coloque em negrito.
+                    
+                    Formato de saída obrigatório:
+                    SCORE: [Nota]%
+                    <hr>
+                    (Tabela HTML aqui)
+                    """
+                    
+                elif "MKT" in tipo_auditoria:
+                    prompt = f"""
+                    Atue como Auditor de Marketing Farmacêutico.
+                    Analise o documento visualmente.
+                    
+                    Checklist para verificar:
+                    {checklist_txt}
+                    
+                    Gere uma saída estilo Relatório:
+                    1. Nota de Conformidade (baseada em quantos itens achou).
+                    2. Lista detalhada.
+                    
+                    Formato de saída obrigatório:
+                    SCORE: [Nota]%
+                    <hr>
+                    <h3>Checklist de Itens</h3>
+                    <ul>
+                    (Liste cada item com ✅ ou ❌ e uma breve observação de onde está)
+                    </ul>
+                    """
+                    
+                elif "Gráfica" in tipo_auditoria:
+                    prompt = """
+                    Atue como Especialista de Pré-Impressão.
+                    Compare a ARTE VIGENTE (Primeiras imagens) com o PDF DA GRÁFICA (Últimas imagens).
+                    
+                    Procure defeitos visuais:
+                    - Textos cortados ou faltando.
+                    - Manchas de tinta.
+                    - Deslocamento de layout.
+                    - Cores/Fontes visivelmente erradas.
+                    
+                    Formato de saída obrigatório:
+                    SCORE: [Nota]%
+                    <hr>
+                    <h3>Relatório Visual</h3>
+                    (Se perfeito, diga "Aprovado para Impressão". Se não, liste os erros com bullet points).
+                    """
+
+                # Chamada IA
+                resp = model.generate_content([prompt] + imgs_payload)
+                texto_ia = resp.text
                 
-                Procure por:
-                - Textos cortados.
-                - Manchas de impressão.
-                - Elementos faltando.
+                # --- PARSER PARA EXTRAIR NOTA E HTML ---
+                # A IA vai mandar "SCORE: 95%". Vamos pegar isso para o st.metric
+                score_val = "N/A"
+                if "SCORE:" in texto_ia:
+                    parts = texto_ia.split("SCORE:")
+                    try:
+                        score_val = parts[1].split("%")[0].strip() + "%"
+                        # O resto do texto é o relatório
+                        relatorio_html = parts[1].split("%", 1)[1]
+                    except:
+                        relatorio_html = texto_ia
+                else:
+                    relatorio_html = texto_ia
+
+                # --- VISUALIZAÇÃO ESTILO DASHBOARD (IGUAL v107) ---
                 
-                Se a prova estiver fiel à arte, aprove.
-                """
-            
-            # 4. Envia para o Google
-            response = model.generate_content([prompt] + imgs_payload)
-            
-            # 5. Mostra o resultado
-            st.markdown("### 📋 Resultado da Análise:")
-            st.markdown(f'<div class="status-box info">{response.text}</div>', unsafe_allow_html=True)
-            
-        except Exception as e:
-            st.error(f"Ocorreu um erro durante a geração: {str(e)}")
+                # 1. Métricas no Topo
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Conformidade", score_val)
+                c2.metric("Motor IA", selected_model.split("/")[-1])
+                c3.metric("Análise", "Visual + Texto")
+                c4.metric("Status", "Concluído", delta="OK")
+                
+                st.divider()
+                
+                # 2. Relatório dentro da Bula-Box
+                st.subheader("📝 Relatório Detalhado")
+                
+                # Usamos markdown com HTML allow para renderizar a tabela/lista bonita dentro da caixa
+                st.markdown(f"""
+                <div class='bula-box'>
+                    {relatorio_html}
+                </div>
+                """, unsafe_allow_html=True)
+
+            except Exception as e:
+                st.error(f"Erro na análise: {e}")
+
+st.divider()
+st.caption("Sistema de Auditoria v107/v105 (Híbrido) | Powered by Google Gemini")
