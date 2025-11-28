@@ -89,7 +89,6 @@ def feature_card(title, desc, icon, color, link_id):
 
 # ----------------- BARRA LATERAL -----------------
 sidebar = html.Div([
-    # Torna o título clicável para voltar ao Home
     dcc.Link([
         html.Div([
             html.I(className="fas fa-file-medical fa-2x text-primary me-2"),
@@ -114,7 +113,7 @@ content_style = {"marginLeft": "260px", "padding": "2rem", "backgroundColor": "#
 # ----------------- LAYOUTS DINÂMICOS -----------------
 
 def build_home_layout():
-    """Gera o layout da home dinamicamente para resetar os botões."""
+    """Gera o layout da home dinamicamente."""
     return html.Div([
         html.Div([
             html.H1([html.I(className="fas fa-microscope text-primary me-3"), "Validador Inteligente"], className="fw-bold mb-3"),
@@ -188,7 +187,6 @@ def render_page_content(pathname):
         return build_tool_page("Conferência MKT", "Validação MKT.", "2", "fa-tasks", "warning")
     elif pathname == "/graf":
         return build_tool_page("Gráfica x Arte Vigente", "Validação Visual.", "3", "fa-print", "danger")
-    # Retorna uma nova instância da home para evitar estado preso
     return build_home_layout()
 
 @app.callback(Output("url", "pathname"), 
@@ -264,11 +262,12 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
     except Exception as e:
         return dbc.Alert(f"Erro: {str(e)}", color="danger")
 
-# Corrige inputs faltantes na home
+# ----------------- CORREÇÃO DE ERRO NAME ERROR -----------------
+# Aqui usamos a função build_home_layout() em vez da variável home_layout
 app.validation_layout = html.Div([
     upload_box("upload-1",""), upload_box("upload-2",""),
     dcc.Store(id="scenario-store"), dcc.RadioItems(id="radio-tipo-bula"),
-    sidebar, home_layout
+    sidebar, build_home_layout()
 ])
 
 if __name__ == "__main__":
