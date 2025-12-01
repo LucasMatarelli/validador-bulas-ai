@@ -13,7 +13,7 @@ from PIL import Image
 # ----------------- CONFIGURAÇÃO -----------------
 FIXED_API_KEY = "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw"
 
-# Inicializa o App com tema Bootstrap MINTY (Visual Limpo)
+# Inicializa o App
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.MINTY, "https://use.fontawesome.com/releases/v6.4.0/css/all.css"],
@@ -23,14 +23,8 @@ app = dash.Dash(
 )
 server = app.server
 
-# ----------------- CSS PERSONALIZADO (VISUAL + MARCAÇÕES) -----------------
+# ----------------- ESTILOS GLOBAIS -----------------
 GLOBAL_STYLES = {
-    # Marcações no Texto
-    'mark-diff': {'backgroundColor': '#fff3cd', 'color': '#856404', 'padding': '2px 4px', 'borderRadius': '4px', 'border': '1px solid #ffeeba'}, # Amarelo
-    'mark-ort': {'backgroundColor': '#f8d7da', 'color': '#721c24', 'padding': '2px 4px', 'borderRadius': '4px', 'borderBottom': '2px solid #dc3545'}, # Vermelho
-    'mark-anvisa': {'backgroundColor': '#cff4fc', 'color': '#055160', 'padding': '2px 4px', 'borderRadius': '4px', 'border': '1px solid #b6effb', 'fontWeight': 'bold'}, # Azul
-    
-    # Layout
     'upload-box': {
         'width': '100%', 'height': '120px', 'lineHeight': '30px',
         'borderWidth': '2px', 'borderStyle': 'dashed', 'borderRadius': '12px',
@@ -41,11 +35,11 @@ GLOBAL_STYLES = {
         'height': '400px', 'overflowY': 'auto', 'border': '1px solid #e9ecef',
         'borderRadius': '8px', 'padding': '20px', 'backgroundColor': '#ffffff',
         'fontFamily': '"Georgia", serif', 'fontSize': '15px', 'lineHeight': '1.6',
-        'color': '#212529', 'boxShadow': 'inset 0 0 10px rgba(0,0,0,0.02)'
+        'color': '#212529'
     }
 }
 
-# ----------------- LISTAS DE SEÇÕES -----------------
+# ----------------- CONSTANTES DE SEÇÃO -----------------
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -56,14 +50,12 @@ SECOES_PACIENTE = [
     "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
     "DIZERES LEGAIS"
 ]
-
 SECOES_PROFISSIONAL = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
     "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
     "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
-
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- BACKEND -----------------
@@ -87,7 +79,7 @@ def process_uploaded_file(contents, filename):
         elif filename.lower().endswith('.pdf'):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
-            for i in range(min(12, len(doc))): # Aumentei um pouco o limite de páginas
+            for i in range(min(12, len(doc))):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                 img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
@@ -98,13 +90,40 @@ def process_uploaded_file(contents, filename):
         return None
     return None
 
-# ----------------- LAYOUTS (PÁGINAS) -----------------
+def clean_json_response(text):
+    text = text.replace("```json", "").replace("```", "").strip()
+    text = re.sub(r'//.*', '', text)
+    if text.startswith("json"): text = text[4:]
+    return text
+
+# ----------------- COMPONENTES VISUAIS (CORRIGIDO) -----------------
+
+def upload_box(id_name, label):
+    """Componente reutilizável para upload"""
+    return dbc.Card([
+        dbc.CardBody([
+            html.H6(label, className="fw-bold text-primary mb-3 text-center"),
+            dcc.Upload(
+                id=id_name,
+                children=html.Div([
+                    html.I(className="fas fa-cloud-arrow-up fa-3x text-muted mb-3"),
+                    html.Br(),
+                    html.Span("Arraste ou Clique", className="fw-bold")
+                ]),
+                style=GLOBAL_STYLES['upload-box'],
+                multiple=False
+            ),
+            html.Div(id=f"{id_name}-filename", className="text-center small mt-2 text-success fw-bold")
+        ])
+    ], className="mb-3 shadow-sm border-0")
+
+# ----------------- LAYOUTS DE PÁGINA -----------------
 
 def build_home_layout():
     return dbc.Container([
         html.Div([
             html.H1([html.I(className="fas fa-robot text-primary me-3"), "Validador Inteligente"], className="display-5 fw-bold mb-3"),
-            html.P("Central de auditoria e conformidade de bulas farmacêuticas.", className="lead text-muted mb-5"),
+            html.P("Central de auditoria de conformidade de bulas farmacêuticas.", className="lead text-muted mb-5"),
             
             dbc.Alert([
                 html.I(className="fas fa-hand-point-left me-2"), 
@@ -120,7 +139,7 @@ def build_home_layout():
                         html.H5("1. Ref x BELFAR", className="fw-bold"),
                         html.P("Comparação semântica completa. Detecta divergências de texto, erros e datas.", className="text-muted small"),
                     ])
-                ], className="h-100 shadow-sm border-0 hover-card text-center py-4"), md=4),
+                ], className="h-100 shadow-sm border-0 hover-shadow text-center py-4"), md=4),
                 
                 dbc.Col(dbc.Card([
                     dbc.CardBody([
@@ -128,7 +147,7 @@ def build_home_layout():
                         html.H5("2. Conferência MKT", className="fw-bold"),
                         html.P("Validação de arquivos de marketing contra o padrão exigido.", className="text-muted small"),
                     ])
-                ], className="h-100 shadow-sm border-0 hover-card text-center py-4"), md=4),
+                ], className="h-100 shadow-sm border-0 hover-shadow text-center py-4"), md=4),
                 
                 dbc.Col(dbc.Card([
                     dbc.CardBody([
@@ -136,7 +155,7 @@ def build_home_layout():
                         html.H5("3. Gráfica x Arte", className="fw-bold"),
                         html.P("Comparação visual para pré-impressão. Detecta erros gráficos.", className="text-muted small"),
                     ])
-                ], className="h-100 shadow-sm border-0 hover-card text-center py-4"), md=4),
+                ], className="h-100 shadow-sm border-0 hover-shadow text-center py-4"), md=4),
             ])
         ], className="py-5 animate-fade-in")
     ], fluid=True)
@@ -171,25 +190,8 @@ def build_tool_page(title, subtitle, scenario_id, icon, color):
         type_selector,
         
         dbc.Row([
-            dbc.Col([
-                html.H6("📄 Arquivo Referência / Padrão", className="fw-bold text-primary mb-3 text-center"),
-                dcc.Upload(
-                    id="upload-1",
-                    children=html.Div([html.I(className="fas fa-cloud-arrow-up fa-3x text-muted mb-3"), html.Br(), html.Span("Arraste ou Clique", className="fw-bold")]),
-                    style=GLOBAL_STYLES['upload-box'], multiple=False
-                ),
-                html.Div(id="fn-1", className="text-center small mt-2 text-success fw-bold")
-            ], md=6),
-            
-            dbc.Col([
-                html.H6("📄 Arquivo Belfar / Candidato", className="fw-bold text-success mb-3 text-center"),
-                dcc.Upload(
-                    id="upload-2",
-                    children=html.Div([html.I(className="fas fa-cloud-arrow-up fa-3x text-muted mb-3"), html.Br(), html.Span("Arraste ou Clique", className="fw-bold")]),
-                    style=GLOBAL_STYLES['upload-box'], multiple=False
-                ),
-                html.Div(id="fn-2", className="text-center small mt-2 text-success fw-bold")
-            ], md=6),
+            dbc.Col(upload_box("upload-1", "📄 Documento Referência / Padrão"), md=6),
+            dbc.Col(upload_box("upload-2", "📄 Documento Belfar / Candidato"), md=6),
         ], className="mb-5"),
         
         dbc.Button([html.I(className="fas fa-rocket me-2"), "INICIAR AUDITORIA COMPLETA"], 
@@ -200,7 +202,7 @@ def build_tool_page(title, subtitle, scenario_id, icon, color):
         dcc.Store(id="scenario-store", data=scenario_id)
     ], fluid=True, className="py-4")
 
-# ----------------- APP LAYOUT PRINCIPAL -----------------
+# ----------------- APP PRINCIPAL -----------------
 sidebar = html.Div([
     dcc.Link([
         html.Div([
@@ -235,7 +237,7 @@ def render_content(pathname):
         return build_tool_page("Gráfica x Arte Vigente", "Validação visual para impressão.", "3", "fa-print", "danger")
     return build_home_layout()
 
-@app.callback([Output("fn-1", "children"), Output("fn-2", "children")], 
+@app.callback([Output("upload-1-filename", "children"), Output("upload-2-filename", "children")], 
               [Input("upload-1", "filename"), Input("upload-2", "filename")])
 def update_filenames(n1, n2):
     return (f"✅ {n1}" if n1 else ""), (f"✅ {n2}" if n2 else "")
@@ -301,18 +303,19 @@ def run_analysis(n_clicks, c1, c2, scenario, tipo_bula):
         """
 
         response = model.generate_content([prompt] + payload)
-        txt = response.text.replace("```json", "").replace("```", "").strip()
-        # Limpeza extra para json inválido
-        if txt.startswith("json"): txt = txt[4:]
+        txt = clean_json_response(response.text)
         data = json.loads(txt)
         
         # Renderização
         meta = data.get("METADADOS", {})
-        
+        score = meta.get("score", 0)
+        datas = meta.get("datas", []) # Correção: chave 'datas' não 'datas_anvisa' (conforme prompt)
+        if not datas: datas = meta.get("datas_anvisa", []) # Fallback
+
         cards = dbc.Row([
-            dbc.Col(dbc.Card([html.H2(f"{meta.get('score',0)}%", className="text-primary fw-bold"), html.Small("Conformidade Global")], body=True, className="text-center shadow-sm border-0"), md=4),
+            dbc.Col(dbc.Card([html.H2(f"{score}%", className="text-primary fw-bold"), html.Small("Conformidade Global")], body=True, className="text-center shadow-sm border-0"), md=4),
             dbc.Col(dbc.Card([html.H2(str(len(data.get("SECOES", []))), className="text-info fw-bold"), html.Small("Seções Analisadas")], body=True, className="text-center shadow-sm border-0"), md=4),
-            dbc.Col(dbc.Card([html.H2(", ".join(meta.get("datas", [])[:2]), className="text-success fw-bold", style={"fontSize": "1.2rem"}), html.Small("Datas ANVISA")], body=True, className="text-center shadow-sm border-0"), md=4),
+            dbc.Col(dbc.Card([html.H2(", ".join(datas[:2]) if datas else "-", className="text-success fw-bold", style={"fontSize": "1.2rem"}), html.Small("Datas ANVISA")], body=True, className="text-center shadow-sm border-0"), md=4),
         ], className="mb-4")
 
         accordion = []
@@ -320,17 +323,9 @@ def run_analysis(n_clicks, c1, c2, scenario, tipo_bula):
             status = sec.get('status', 'N/A')
             
             icon = "✅"
-            header_class = "text-success"
-            
-            if "DIVERGENTE" in status: 
-                icon = "❌"
-                header_class = "text-danger"
-            elif "FALTANTE" in status:
-                icon = "🚨"
-                header_class = "text-warning"
-            elif "INFORMATIVO" in status:
-                icon = "ℹ️"
-                header_class = "text-info"
+            if "DIVERGENTE" in status: icon = "❌"
+            elif "FALTANTE" in status: icon = "🚨"
+            elif "INFORMATIVO" in status: icon = "ℹ️"
 
             content = dbc.Row([
                 dbc.Col([
@@ -354,7 +349,7 @@ def run_analysis(n_clicks, c1, c2, scenario, tipo_bula):
     except Exception as e:
         return dbc.Alert(f"Erro na análise: {str(e)}", color="danger")
 
-# Handler para callback de input inexistente na home
+# Correção Final: Adicionar input escondido para garantir que o callback funcione
 app.validation_layout = html.Div([
     upload_box("upload-1",""), upload_box("upload-2",""),
     dcc.Store(id="scenario-store"), dcc.RadioItems(id="radio-tipo-bula"),
