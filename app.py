@@ -13,7 +13,6 @@ import gc
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO -----------------
-# Tenta pegar do ambiente. Se não tiver, usa uma string vazia para evitar crash inicial.
 FIXED_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 app = dash.Dash(
@@ -69,29 +68,22 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- BACKEND (IA ULTRA OTIMIZADA) -----------------
+# ----------------- BACKEND (FORÇANDO GEMINI 2.5 FLASH) -----------------
 
 def get_best_model():
     if not FIXED_API_KEY: return None
     try:
         genai.configure(api_key=FIXED_API_KEY)
-        
-        # Prioridade para modelos mais leves e rápidos
-        prefs = [
-            'models/gemini-1.5-flash', # Mais estável e leve
-            'models/gemini-1.5-flash-latest',
-            'models/gemini-2.0-flash-exp'
-        ]
-        
-        # Tenta conectar direto no Flash 1.5 que é o mais garantido para conta free
+        # Tenta conectar DIRETAMENTE no modelo 2.5 Flash
+        # Se este modelo falhar, o try/except vai capturar, mas o objetivo é forçar o uso dele.
+        return genai.GenerativeModel('models/gemini-2.5-flash')
+    except Exception as e:
+        print(f"Erro ao conectar no modelo 2.5: {e}")
+        # Fallback de segurança apenas se o 2.5 não existir na conta
         return genai.GenerativeModel('models/gemini-1.5-flash')
 
-    except Exception as e:
-        print(f"Erro ao configurar modelo: {e}")
-        return None
-
 def process_file(contents, filename):
-    """Versão ULTRA LIGHT para servidor com pouca RAM (512MB)"""
+    """Versão ULTRA LEVE para memória RAM limitada"""
     if not contents: return None
     try:
         _, content_string = contents.split(',')
@@ -106,28 +98,22 @@ def process_file(contents, filename):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
             
-            # --- OTIMIZAÇÃO MÁXIMA DE MEMÓRIA ---
-            # 1. Limita a 3 páginas (Essencial para não travar)
+            # OTIMIZAÇÃO:
+            # 1. Limita a 3 páginas (Essencial para evitar crash de memória no Render Free)
+            # 2. Matrix 1.0 (DPI 72) - Leve e legível para IA
             limit_pages = min(3, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                # Matrix 0.6 = Baixa resolução (~45-50 DPI). 
-                # O texto continua legível para a IA, mas a imagem fica minúscula na RAM.
-                pix = page.get_pixmap(matrix=fitz.Matrix(0.6, 0.6))
-                
-                # Compressão JPEG agressiva (50%) para reduzir tamanho do payload
-                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=50))
-                
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
+                # Compressão JPEG 60%
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=60))
                 images.append(Image.open(img_byte_arr))
-                
-                # Limpeza manual imediata
-                pix = None
-                img_byte_arr = None
+                pix = None # Libera memória imediatamente
             
             doc.close()
             del decoded
-            gc.collect() # Faxina forçada na memória
+            gc.collect() # Faxina na RAM
             
             return {"type": "images", "data": images}
     except Exception as e:
@@ -374,7 +360,7 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
             data = extract_json_from_text(res.text)
             if not data: raise ValueError("Resposta da IA inválida")
         except Exception as e:
-             return dbc.Alert(f"Erro na resposta da IA: {str(e)}", color="danger")
+             return dbc.Alert(f"Erro na resposta da IA (Tente novamente): {str(e)}", color="danger")
 
         meta = data.get("METADADOS", {})
         score = meta.get("score", 0)
