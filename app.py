@@ -13,7 +13,6 @@ from PIL import Image
 # ----------------- CONFIGURAÇÃO -----------------
 FIXED_API_KEY = "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw"
 
-# Inicializa o App com tema MINTY (Verde/Clean)
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.MINTY, "https://use.fontawesome.com/releases/v6.4.0/css/all.css"],
@@ -23,10 +22,8 @@ app = dash.Dash(
 )
 server = app.server
 
-# ----------------- ESTILOS PERSONALIZADOS (VERDE) -----------------
-COLOR_PRIMARY = "#55a68e"  # Verde do seu print
-COLOR_BG = "#ffffff"
-
+# ----------------- ESTILOS -----------------
+COLOR_PRIMARY = "#55a68e" # Verde
 STYLES = {
     'upload_box': {
         'borderWidth': '2px', 'borderStyle': 'dashed', 'borderRadius': '12px',
@@ -35,9 +32,6 @@ STYLES = {
         'minHeight': '180px', 'display': 'flex', 'flexDirection': 'column', 
         'justifyContent': 'center', 'alignItems': 'center',
         'transition': 'all 0.2s ease-in-out'
-    },
-    'upload_box_active': {
-        'borderColor': COLOR_PRIMARY, 'backgroundColor': '#e6fffa',
     },
     'file_card': {
         'border': f'2px solid {COLOR_PRIMARY}', 'borderRadius': '12px',
@@ -49,48 +43,40 @@ STYLES = {
         'height': '400px', 'overflowY': 'auto', 'border': '1px solid #e9ecef',
         'borderRadius': '8px', 'padding': '25px', 'backgroundColor': '#ffffff',
         'fontFamily': '"Georgia", serif', 'fontSize': '15px', 'lineHeight': '1.7',
-        'color': '#212529', 'boxShadow': 'inset 0 2px 4px rgba(0,0,0,0.02)'
-    },
-    'btn_primary': {
-        'backgroundColor': COLOR_PRIMARY, 'border': 'none', 'fontWeight': 'bold',
-        'padding': '15px', 'borderRadius': '8px', 'fontSize': '18px',
-        'width': '100%', 'boxShadow': '0 4px 6px rgba(0,0,0,0.1)', 'color': 'white'
+        'color': '#212529'
     }
 }
 
-# ----------------- BACKEND (IA & ARQUIVOS) -----------------
+# ----------------- CONSTANTES -----------------
+SECOES_PACIENTE = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
+    "DIZERES LEGAIS"
+]
+SECOES_PROFISSIONAL = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
+    "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
+    "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
+    "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
+]
+SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
+# ----------------- BACKEND (IA) -----------------
 def get_best_model():
-    """Descobre qual modelo sua chave aceita (Corrige o erro 404)."""
     try:
         genai.configure(api_key=FIXED_API_KEY)
-        # Tenta listar modelos disponíveis para a chave
+        # Tenta modelos disponíveis na ordem de preferência
         available = [m.name for m in genai.list_models()]
-        
-        # Lista de preferência (Do mais novo para o mais antigo)
-        preferencias = [
-            'models/gemini-2.5-flash', 
-            'models/gemini-2.0-flash', 
-            'models/gemini-2.0-flash-001',
-            'models/gemini-1.5-pro',
-            'models/gemini-1.5-flash'
-        ]
-        
-        # Tenta encontrar o melhor da lista
-        for pref in preferencias:
-            if pref in available:
-                return genai.GenerativeModel(pref)
-        
-        # Se não achou nenhum específico, tenta qualquer um que seja 'gemini'
-        for model_name in available:
-            if 'gemini' in model_name and 'vision' not in model_name:
-                return genai.GenerativeModel(model_name)
-
-        return genai.GenerativeModel('models/gemini-1.5-flash') # Fallback final
-        
-    except Exception as e:
-        print(f"Erro ao conectar API: {e}")
-        return None
+        prefs = ['models/gemini-2.5-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-pro', 'models/gemini-1.5-flash']
+        for p in prefs:
+            if p in available: return genai.GenerativeModel(p)
+        return genai.GenerativeModel('models/gemini-1.5-flash')
+    except: return None
 
 def process_file(contents, filename):
     if not contents: return None
@@ -102,11 +88,10 @@ def process_file(contents, filename):
             doc = docx.Document(io.BytesIO(decoded))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text}
-            
         elif filename.lower().endswith('.pdf'):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
-            # OTIMIZAÇÃO CRÍTICA: Limita a 6 páginas e reduz qualidade para evitar TIMEOUT
+            # OTIMIZAÇÃO: Limita a 6 páginas e reduz qualidade para 1.5x (Evita Timeout)
             for i in range(min(6, len(doc))):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
@@ -126,14 +111,15 @@ def clean_json(text):
 # ----------------- COMPONENTES VISUAIS -----------------
 
 def build_upload_area(id_upload, id_filename, id_clear, label):
+    """Cria área de upload com botão de remover (X)"""
     return html.Div([
         html.H6([html.I(className="far fa-file-alt me-2 text-muted"), label], className="fw-bold mb-2"),
         
-        # Container que troca entre Upload e Arquivo Carregado
+        # Container que alterna entre Upload e Arquivo Carregado
         html.Div([
-            # 1. Estado Vazio (Dropzone)
+            # Estado Vazio
             html.Div(
-                id=f"{id_upload}-container",
+                id=f"{id_upload}-empty",
                 children=dcc.Upload(
                     id=id_upload,
                     children=html.Div([
@@ -143,34 +129,28 @@ def build_upload_area(id_upload, id_filename, id_clear, label):
                     style=STYLES['upload_box'],
                     multiple=False
                 ),
-                style={"display": "block"} 
+                style={"display": "block"}
             ),
             
-            # 2. Estado Preenchido (Card com Nome e Botão X)
+            # Estado Preenchido (Card com Nome e Botão X)
             html.Div(
-                id=f"{id_upload}-success-container",
+                id=f"{id_upload}-filled",
                 children=[
                     html.Div([
                         html.I(className="fas fa-check-circle fa-4x text-success mb-3"),
                         html.H6(id=id_filename, className="text-success fw-bold text-break mb-3"),
-                        
-                        # Botão Remover
                         dbc.Button(
                             [html.I(className="fas fa-trash-alt me-2"), "Remover Arquivo"],
-                            id=id_clear,
-                            color="danger",
-                            outline=True,
-                            size="sm",
-                            className="rounded-pill px-3"
+                            id=id_clear, color="danger", outline=True, size="sm", className="rounded-pill px-3"
                         )
                     ], style=STYLES['file_card'])
                 ],
-                style={"display": "none"} # Inicialmente invisível
+                style={"display": "none"}
             )
         ])
     ])
 
-# ----------------- LAYOUT GERAL -----------------
+# ----------------- LAYOUTS -----------------
 
 sidebar = html.Div([
     html.Div([
@@ -186,14 +166,28 @@ sidebar = html.Div([
     ], vertical=True, pills=True, className="px-3"),
 ], style={"position": "fixed", "top": 0, "left": 0, "bottom": 0, "width": "260px", "backgroundColor": "#fff", "borderRight": "1px solid #f0f0f0", "zIndex": 100})
 
+def build_home_layout():
+    """Layout da Home (Função necessária para evitar erro de definição)"""
+    return dbc.Container([
+        html.Div(className="text-center py-5", children=[
+            html.I(className="fas fa-microscope fa-4x mb-3", style={"color": COLOR_PRIMARY}),
+            html.H1("Validador Inteligente", className="display-4 fw-bold text-dark"),
+            html.P("Selecione uma ferramenta abaixo para começar.", className="lead text-muted")
+        ]),
+        dbc.Row([
+            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Ref x Belfar", className="fw-bold"), dbc.Button("Acessar", href="/ref-bel", style={"backgroundColor": COLOR_PRIMARY, "border":"none"}, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
+            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Conferência MKT", className="fw-bold"), dbc.Button("Acessar", href="/mkt", style={"backgroundColor": COLOR_PRIMARY, "border":"none"}, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
+            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Gráfica x Arte", className="fw-bold"), dbc.Button("Acessar", href="/graf", style={"backgroundColor": COLOR_PRIMARY, "border":"none"}, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
+        ])
+    ])
+
 def build_tool_page(title, subtitle, scenario_id):
-    # Seletor de Tipo (Pills Verdes)
     options_div = html.Div()
     if scenario_id == "1":
         options_div = dbc.Card([
             dbc.CardBody([
                 dbc.Row([
-                    dbc.Col(html.Label("Selecione o Tipo de Bula:", className="fw-bold mt-2 text-end"), width="auto"),
+                    dbc.Col(html.Label("Tipo de Bula:", className="fw-bold mt-2 text-end"), width="auto"),
                     dbc.Col(
                         dbc.RadioItems(
                             options=[
@@ -203,7 +197,7 @@ def build_tool_page(title, subtitle, scenario_id):
                             value="PACIENTE",
                             id="radio-tipo-bula",
                             inline=True,
-                            className="btn-group-radio-green", # Classe customizada se quiser CSS extra
+                            className="btn-group-radio",
                             inputClassName="btn-check",
                             labelClassName="btn btn-outline-success px-4 rounded-pill fw-bold me-2",
                             labelCheckedClassName="active bg-success text-white"
@@ -214,22 +208,25 @@ def build_tool_page(title, subtitle, scenario_id):
         ], className="mb-5 shadow-sm border-0 rounded-pill py-2 bg-white")
 
     return dbc.Container([
-        # options_div vem antes ou depois do título? No seu print é antes.
+        html.Div([
+            html.H2(title, className="fw-bold mb-2", style={"color": "#2c3e50"}),
+            html.P(subtitle, className="text-muted"),
+        ], className="mb-4 border-bottom pb-3"),
+        
         options_div,
-
+        
         dbc.Row([
             dbc.Col(build_upload_area("upload-1", "name-1", "clear-1", "Documento Referência / Padrão"), md=6, className="mb-4"),
             dbc.Col(build_upload_area("upload-2", "name-2", "clear-2", "Documento Belfar / Candidato"), md=6, className="mb-4"),
         ]),
         
-        html.Div([
-            dbc.Button(
-                [html.I(className="fas fa-rocket me-2"), "INICIAR AUDITORIA COMPLETA"],
-                id="btn-run",
-                style=STYLES['btn_primary'],
-                className="hover-scale"
-            )
-        ], className="mt-4 mb-5"),
+        dbc.Button(
+            [html.I(className="fas fa-rocket me-2"), "INICIAR AUDITORIA COMPLETA"],
+            id="btn-run",
+            style={"backgroundColor": COLOR_PRIMARY, "border": "none"},
+            size="lg",
+            className="w-100 py-3 fw-bold shadow hover-scale mb-5"
+        ),
         
         dcc.Loading(id="loading", type="dot", color=COLOR_PRIMARY, children=html.Div(id="output-results")),
         dcc.Store(id="scenario-store", data=scenario_id)
@@ -249,22 +246,9 @@ def render_page(pathname):
     if pathname == "/ref-bel": return build_tool_page("Ref x Belfar", "", "1")
     elif pathname == "/mkt": return build_tool_page("Conferência MKT", "", "2")
     elif pathname == "/graf": return build_tool_page("Gráfica x Arte", "", "3")
-    
-    # Home Page
-    return dbc.Container([
-        html.Div(className="text-center py-5", children=[
-            html.I(className="fas fa-microscope fa-4x mb-3", style={"color": COLOR_PRIMARY}),
-            html.H1("Validador Inteligente", className="display-4 fw-bold text-dark"),
-            html.P("Selecione uma ferramenta abaixo para começar.", className="lead text-muted")
-        ]),
-        dbc.Row([
-            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Ref x Belfar", className="fw-bold"), dbc.Button("Acessar", href="/ref-bel", style={"backgroundColor": COLOR_PRIMARY, "border":"none"}, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
-            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Conferência MKT", className="fw-bold"), dbc.Button("Acessar", href="/mkt", style={"backgroundColor": COLOR_PRIMARY, "border":"none"}, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
-            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Gráfica x Arte", className="fw-bold"), dbc.Button("Acessar", href="/graf", style={"backgroundColor": COLOR_PRIMARY, "border":"none"}, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
-        ])
-    ])
+    return build_home_layout()
 
-# Callback Genérico de Upload (Gerencia estados Vazio/Preenchido)
+# Callback Genérico de Upload (Gerencia estados Vazio/Preenchido + Limpar)
 def manage_upload_state(contents, filename, n_clear):
     ctx = callback_context
     if not ctx.triggered: 
@@ -284,7 +268,7 @@ def manage_upload_state(contents, filename, n_clear):
 
 @app.callback(
     [Output("upload-1", "contents"), Output("name-1", "children"),
-     Output("upload-1-container", "style"), Output("upload-1-success-container", "style")],
+     Output("upload-1-empty", "style"), Output("upload-1-filled", "style")],
     [Input("upload-1", "contents"), Input("clear-1", "n_clicks")],
     [State("upload-1", "filename")]
 )
@@ -292,7 +276,7 @@ def update_u1(c, n_clear, n): return manage_upload_state(c, n, n_clear)
 
 @app.callback(
     [Output("upload-2", "contents"), Output("name-2", "children"),
-     Output("upload-2-container", "style"), Output("upload-2-success-container", "style")],
+     Output("upload-2-empty", "style"), Output("upload-2-filled", "style")],
     [Input("upload-2", "contents"), Input("clear-2", "n_clicks")],
     [State("upload-2", "filename")]
 )
@@ -323,20 +307,8 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         if d2: payload.append("--- ARQUIVO 2 ---"); payload.extend([d2['data']] if d2['type']=='text' else d2['data'])
 
         # Lógica Seções
-        from_paciente = [
-            "APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", 
-            "COMO ESTE MEDICAMENTO FUNCIONA", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO", 
-            "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO", "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO", 
-            "COMO DEVO USAR ESTE MEDICAMENTO", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO", 
-            "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR", "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO", 
-            "DIZERES LEGAIS"
-        ]
-        from_prof = [
-            "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
-            "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
-            "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
-            "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
-        ]
+        from_paciente = SECOES_PACIENTE
+        from_prof = SECOES_PROFISSIONAL
         
         # Define lista ativa
         if scenario == "1" and tipo_bula == "PROFISSIONAL":
@@ -405,12 +377,12 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
     except Exception as e:
         return dbc.Alert(f"Erro: {e}", color="danger")
 
-# Handler final
+# Handler final (com todos os componentes usados nos callbacks)
 app.validation_layout = html.Div([
     build_upload_area("upload-1","","clear-1",""), 
     build_upload_area("upload-2","","clear-2",""),
     dcc.Store(id="scenario-store"), dcc.RadioItems(id="radio-tipo-bula"),
-    sidebar, build_home_layout()
+    sidebar, build_home_layout(), build_tool_page("","", "1")
 ])
 
 if __name__ == "__main__":
