@@ -13,6 +13,7 @@ import gc
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO -----------------
+# Tenta pegar do ambiente. Se não tiver, usa uma string vazia para evitar crash inicial.
 FIXED_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 app = dash.Dash(
@@ -68,29 +69,50 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- BACKEND (IA OTIMIZADA) -----------------
+# ----------------- BACKEND (IA AUTO-DETECT) -----------------
 
 def get_best_model():
     if not FIXED_API_KEY: return None
     try:
         genai.configure(api_key=FIXED_API_KEY)
         
-        # Lista estendida para achar qualquer modelo que funcione
-        modelos_possiveis = [
-            'gemini-1.5-flash',
-            'models/gemini-1.5-flash',
-            'gemini-1.5-flash-latest',
-            'gemini-1.0-pro',
-            'models/gemini-pro'
+        # 1. Tenta listar modelos disponíveis na conta
+        try:
+            available_models = [m.name for m in genai.list_models()]
+        except:
+            # Se falhar listar, tenta conectar direto no 2.5 Flash (o mais novo e leve)
+            return genai.GenerativeModel('models/gemini-2.5-flash')
+
+        # 2. Ordem de preferência (Do mais novo/leve para o mais antigo)
+        preferences = [
+            'models/gemini-2.5-flash',      # Prioridade 1: Novo, rápido e leve
+            'models/gemini-2.0-flash',      # Prioridade 2: Muito bom também
+            'models/gemini-2.0-flash-exp',
+            'models/gemini-1.5-flash',      # Fallback clássico
+            'models/gemini-1.5-flash-latest',
+            'models/gemini-1.5-pro'
         ]
-        
-        # Tenta validar um modelo simples primeiro
-        return genai.GenerativeModel('gemini-1.5-flash')
-    except:
+
+        # 3. Escolhe o primeiro disponível
+        for pref in preferences:
+            if pref in available_models:
+                print(f"Modelo selecionado: {pref}") # Log para debug no Render
+                return genai.GenerativeModel(pref)
+
+        # 4. Se nenhum preferido, tenta qualquer um "flash"
+        for model in available_models:
+            if 'flash' in model:
+                return genai.GenerativeModel(model)
+
+        # Fallback final
+        return genai.GenerativeModel('models/gemini-1.5-flash')
+
+    except Exception as e:
+        print(f"Erro ao configurar modelo: {e}")
         return None
 
 def process_file(contents, filename):
-    """Versão LIGHT: Consome pouca memória RAM"""
+    """Versão Otimizada para Memória"""
     if not contents: return None
     try:
         _, content_string = contents.split(',')
@@ -105,22 +127,18 @@ def process_file(contents, filename):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
             
-            # --- OTIMIZAÇÃO DE MEMÓRIA PARA SERVIDOR GRÁTIS ---
-            # 1. Limita a 3 páginas (geralmente onde está o texto importante)
-            # 2. Usa Matrix 0.8 (diminui resolução levemente, mas a IA ainda lê bem)
-            limit_pages = min(3, len(doc))
+            # OTIMIZAÇÃO: Limita a 4 páginas e qualidade média
+            limit_pages = min(4, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                # Matrix 0.8 reduz muito o peso da imagem
-                pix = page.get_pixmap(matrix=fitz.Matrix(0.8, 0.8))
-                # Comprime JPEG qualidade 60 (muito leve)
-                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=60))
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=75))
                 images.append(Image.open(img_byte_arr))
             
             doc.close()
             del decoded
-            gc.collect() # Faxina na memória
+            gc.collect()
             
             return {"type": "images", "data": images}
     except Exception as e:
@@ -399,8 +417,6 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
                 dbc.Col([html.Strong("Referência", className="text-primary"), html.Div(dcc.Markdown(sec.get('ref',''), dangerously_allow_html=True), style=STYLES['bula_box'])], md=6),
                 dbc.Col([html.Strong("Belfar", className="text-success"), html.Div(dcc.Markdown(sec.get('bel',''), dangerously_allow_html=True), style=STYLES['bula_box'])], md=6)
             ])
-            
-            # Correção aqui: Passando style ou classname correto para o cabeçalho
             items.append(dbc.AccordionItem(content, title=f"{icon} {sec['titulo']} — {status}", item_id=sec['titulo']))
 
         return html.Div([cards, dbc.Accordion(items, start_collapsed=False, always_open=True, className="shadow-sm bg-white rounded")])
