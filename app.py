@@ -13,7 +13,6 @@ from PIL import Image
 # ----------------- CONFIGURAÇÃO -----------------
 FIXED_API_KEY = "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw"
 
-# Inicializa o App com tema MINTY (Verde/Clean)
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.MINTY, "https://use.fontawesome.com/releases/v6.4.0/css/all.css"],
@@ -23,10 +22,8 @@ app = dash.Dash(
 )
 server = app.server
 
-# ----------------- ESTILOS PERSONALIZADOS -----------------
-COLOR_PRIMARY = "#20c997" # Verde Minty
-COLOR_DANGER = "#ff6b6b"
-
+# ----------------- ESTILOS -----------------
+COLOR_PRIMARY = "#20c997"
 STYLES = {
     'upload_box': {
         'borderWidth': '2px', 'borderStyle': 'dashed', 'borderRadius': '15px',
@@ -36,47 +33,39 @@ STYLES = {
         'justifyContent': 'center', 'alignItems': 'center',
         'transition': 'all 0.2s ease-in-out'
     },
-    'upload_box_active': {
-        'borderWidth': '2px', 'borderStyle': 'solid', 'borderRadius': '15px',
-        'borderColor': COLOR_PRIMARY, 'backgroundColor': '#e6fffa',
-    },
     'bula_box': {
         'height': '400px', 'overflowY': 'auto', 'border': '1px solid #e9ecef',
         'borderRadius': '8px', 'padding': '25px', 'backgroundColor': '#ffffff',
         'fontFamily': '"Georgia", serif', 'fontSize': '15px', 'lineHeight': '1.7',
-        'color': '#212529', 'boxShadow': 'inset 0 2px 4px rgba(0,0,0,0.02)'
+        'color': '#212529'
     }
 }
 
-# ----------------- BACKEND (IA & ARQUIVOS) -----------------
+# ----------------- CONSTANTES -----------------
+SECOES_PACIENTE = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
+    "DIZERES LEGAIS"
+]
+SECOES_PROFISSIONAL = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
+    "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
+    "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
+    "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
+]
+SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-def get_best_model():
-    """Descobre qual modelo sua chave aceita (Corrige o erro 404)."""
+# ----------------- BACKEND -----------------
+def get_model():
     try:
         genai.configure(api_key=FIXED_API_KEY)
-        # Tenta listar modelos
-        available = [m.name for m in genai.list_models()]
-        
-        # Lista de preferência (Do mais novo para o mais antigo)
-        preferencias = [
-            'models/gemini-2.5-flash', 
-            'models/gemini-2.0-flash', 
-            'models/gemini-2.0-flash-001',
-            'models/gemini-1.5-pro',
-            'models/gemini-1.5-flash'
-        ]
-        
-        # Tenta encontrar o melhor da lista
-        for pref in preferencias:
-            if pref in available:
-                return genai.GenerativeModel(pref)
-        
-        # Fallback genérico se a lista falhar mas a chave funcionar
         return genai.GenerativeModel('models/gemini-1.5-flash')
-        
-    except Exception as e:
-        print(f"Erro ao conectar API: {e}")
-        return None
+    except: return None
 
 def process_file(contents, filename):
     if not contents: return None
@@ -88,11 +77,10 @@ def process_file(contents, filename):
             doc = docx.Document(io.BytesIO(decoded))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text}
-            
         elif filename.lower().endswith('.pdf'):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
-            # OTIMIZAÇÃO: Reduz qualidade para 1.5x e limita páginas para evitar Timeout
+            # OTIMIZAÇÃO: 8 páginas max e qualidade média para não travar
             for i in range(min(8, len(doc))):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
@@ -112,32 +100,28 @@ def clean_json(text):
 # ----------------- COMPONENTES VISUAIS -----------------
 
 def build_upload_area(id_upload, id_store_name, id_clear, label):
+    """Cria área de upload com botão de remover (X)"""
     return html.Div([
         html.H6([html.I(className="far fa-file-alt me-2 text-muted"), label], className="fw-bold mb-2"),
-        
-        # Container relativo para posicionar o botão X
         html.Div([
             dcc.Upload(
                 id=id_upload,
                 children=html.Div([
-                    # Conteúdo Vazio
+                    # Estado Vazio
                     html.Div([
                         html.I(className="fas fa-cloud-arrow-up fa-3x text-muted mb-2"),
                         html.H6("Arraste ou Clique", className="text-muted small fw-bold")
                     ], id=f"{id_upload}-empty"),
-                    
-                    # Conteúdo Preenchido (Invisível por padrão)
+                    # Estado Preenchido
                     html.Div([
-                        html.I(className="fas fa-file-circle-check fa-3x text-success mb-2"),
+                        html.I(className="fas fa-check-circle fa-3x text-success mb-2"),
                         html.H6(id=id_store_name, className="text-success small fw-bold text-break")
                     ], id=f"{id_upload}-filled", style={"display": "none"})
                 ]),
                 style=STYLES['upload_box'],
-                multiple=False,
-                className="upload-component"
+                multiple=False
             ),
-            
-            # Botão X (Remover)
+            # Botão X
             html.Button(
                 html.I(className="fas fa-times"),
                 id=id_clear,
@@ -148,12 +132,12 @@ def build_upload_area(id_upload, id_store_name, id_clear, label):
         ], className="position-relative")
     ])
 
-# ----------------- LAYOUT GERAL -----------------
+# ----------------- LAYOUTS -----------------
 
 sidebar = html.Div([
     html.Div([
         html.I(className="fas fa-shield-alt fa-2x text-primary me-2"),
-        html.Span("Validador", className="h3 fw-bold align-middle text-dark")
+        html.Span("Validador", className="h3 fw-bold align-middle", style={"color": "#2c3e50"})
     ], className="text-center py-4 border-bottom"),
     
     dbc.Nav([
@@ -164,8 +148,24 @@ sidebar = html.Div([
     ], vertical=True, pills=True, className="px-3 py-4"),
 ], style={"position": "fixed", "top": 0, "left": 0, "bottom": 0, "width": "260px", "backgroundColor": "#fff", "borderRight": "1px solid #dee2e6", "zIndex": 100})
 
+def build_home_layout():
+    """Layout da Página Inicial (Home)"""
+    return dbc.Container([
+        html.Div(className="text-center py-5 animate-fade-in", children=[
+            html.I(className="fas fa-microscope text-primary fa-4x mb-3"),
+            html.H1("Validador Inteligente", className="display-4 fw-bold text-dark"),
+            html.P("Selecione uma ferramenta abaixo para começar a auditoria.", className="lead text-muted mb-5"),
+            
+            dbc.Row([
+                dbc.Col(dbc.Card([dbc.CardBody([html.H4("Ref x Belfar", className="fw-bold"), dbc.Button("Acessar", href="/ref-bel", color="success", outline=True, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4"), md=4),
+                dbc.Col(dbc.Card([dbc.CardBody([html.H4("Conferência MKT", className="fw-bold"), dbc.Button("Acessar", href="/mkt", color="warning", outline=True, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4"), md=4),
+                dbc.Col(dbc.Card([dbc.CardBody([html.H4("Gráfica x Arte", className="fw-bold"), dbc.Button("Acessar", href="/graf", color="danger", outline=True, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4"), md=4),
+            ])
+        ])
+    ])
+
 def build_tool_page(title, subtitle, scenario_id):
-    # Seletor de Tipo (Apenas Cenário 1)
+    """Layout Genérico das Ferramentas"""
     options_div = html.Div()
     if scenario_id == "1":
         options_div = dbc.Card([
@@ -217,54 +217,35 @@ def build_tool_page(title, subtitle, scenario_id):
         dcc.Store(id="scenario-store", data=scenario_id)
     ], fluid=True)
 
-# ----------------- APP -----------------
+# ----------------- APP PRINCIPAL -----------------
 app.layout = html.Div([
     dcc.Location(id="url", refresh="callback-nav"), 
     sidebar,
-    html.Div(id="page-content", style={"marginLeft": "260px", "padding": "2rem", "backgroundColor": "#f8f9fa", "minHeight": "100vh"})
+    html.Div(id="page-content", style={"marginLeft": "260px", "padding": "3rem", "backgroundColor": "#f8f9fa", "minHeight": "100vh"})
 ])
 
-# ----------------- CALLBACKS DE NAVEGAÇÃO -----------------
+# ----------------- CALLBACKS -----------------
+
 @app.callback(Output("page-content", "children"), [Input("url", "pathname")])
 def render_page(pathname):
     if pathname == "/ref-bel": return build_tool_page("Ref x Belfar", "Comparação técnica de conteúdo.", "1")
     elif pathname == "/mkt": return build_tool_page("Conferência MKT", "Validação de itens obrigatórios.", "2")
     elif pathname == "/graf": return build_tool_page("Gráfica x Arte", "Comparação visual de pré-impressão.", "3")
-    
-    # Home Page
-    return dbc.Container([
-        html.Div(className="text-center py-5", children=[
-            html.I(className="fas fa-microscope text-primary fa-4x mb-3"),
-            html.H1("Validador Inteligente", className="display-4 fw-bold text-dark"),
-            html.P("Selecione uma ferramenta abaixo para começar.", className="lead text-muted")
-        ]),
-        dbc.Row([
-            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Ref x Belfar", className="fw-bold"), dbc.Button("Acessar", href="/ref-bel", color="success", outline=True, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
-            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Conferência MKT", className="fw-bold"), dbc.Button("Acessar", href="/mkt", color="warning", outline=True, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
-            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Gráfica x Arte", className="fw-bold"), dbc.Button("Acessar", href="/graf", color="danger", outline=True, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
-        ])
-    ])
+    return build_home_layout()
 
-# ----------------- CALLBACKS DE UPLOAD (ATUALIZADO) -----------------
-# Esta função gerencia o estado visual do upload (Vazio vs Preenchido) e o botão Limpar
 def manage_upload_state(contents, filename, n_clear):
     ctx = callback_context
-    if not ctx.triggered: 
-        return no_update, no_update, no_update, no_update, no_update
-    
+    if not ctx.triggered: return no_update, no_update, no_update, no_update, no_update
     trig_id = ctx.triggered[0]['prop_id'].split('.')[0]
     
-    # Se clicou em limpar
-    if 'clear' in trig_id:
+    if 'clear' in trig_id: # Se clicou no X
         return None, "", {"display": "block"}, {"display": "none"}, {"display": "none"}
     
-    # Se fez upload
-    if contents:
+    if contents: # Se fez upload
         return contents, filename, {"display": "none"}, {"display": "block"}, {"display": "block"}
         
     return no_update, no_update, no_update, no_update, no_update
 
-# Upload 1
 @app.callback(
     [Output("upload-1", "contents"), Output("name-1", "children"),
      Output("upload-1-empty", "style"), Output("upload-1-filled", "style"), Output("clear-1", "style")],
@@ -273,7 +254,6 @@ def manage_upload_state(contents, filename, n_clear):
 )
 def update_u1(c, n_clear, n): return manage_upload_state(c, n, n_clear)
 
-# Upload 2
 @app.callback(
     [Output("upload-2", "contents"), Output("name-2", "children"),
      Output("upload-2-empty", "style"), Output("upload-2-filled", "style"), Output("clear-2", "style")],
@@ -282,7 +262,6 @@ def update_u1(c, n_clear, n): return manage_upload_state(c, n, n_clear)
 )
 def update_u2(c, n_clear, n): return manage_upload_state(c, n, n_clear)
 
-# ----------------- CALLBACK PRINCIPAL (IA) -----------------
 @app.callback(
     Output("output-results", "children"),
     Input("btn-run", "n_clicks"),
@@ -292,70 +271,62 @@ def update_u2(c, n_clear, n): return manage_upload_state(c, n, n_clear)
 )
 def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
     if not n_clicks: return no_update
-    if not c1 and not c2: return dbc.Alert("⚠️ Faça o upload dos dois arquivos!", color="warning", className="fw-bold")
+    if not c1 and not c2: return dbc.Alert("⚠️ Faça o upload dos arquivos!", color="warning")
 
     try:
-        # 1. Obter Modelo (Agora com Auto-Descoberta)
-        model = get_best_model()
-        if not model: return dbc.Alert("Erro: Nenhum modelo de IA disponível na sua conta Google.", color="danger")
+        model = get_model()
+        if not model: return dbc.Alert("Erro API.", color="danger")
 
-        # 2. Processar Arquivos
+        # Processamento
         d1 = process_file(c1, n1) if c1 else None
         d2 = process_file(c2, n2) if c2 else None
         
-        # Monta Payload
         payload = []
-        if d1: payload.append("--- ARQUIVO 1 ---"); payload.extend([d1['data']] if d1['type']=='text' else d1['data'])
-        if d2: payload.append("--- ARQUIVO 2 ---"); payload.extend([d2['data']] if d2['type']=='text' else d2['data'])
+        if d1: payload.append("--- REF ---"); payload.extend([d1['data']] if d1['type']=='text' else d1['data'])
+        if d2: payload.append("--- ALVO ---"); payload.extend([d2['data']] if d2['type']=='text' else d2['data'])
 
-        # 3. Prompt (Mantendo a lógica das seções)
-        secoes_str = "POSOLOGIA, COMPOSIÇÃO" # Default
+        # Lógica Seções
+        lista = SECOES_PACIENTE
+        nome_tipo = "Paciente"
         
         if scenario == "1":
-            from_paciente = [
-                "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA", 
-                "QUANDO NÃO DEVO USAR", "O QUE DEVO SABER ANTES DE USAR", 
-                "ONDE POSSO GUARDAR", "COMO DEVO USAR", "O QUE DEVO FAZER SE ESQUECER", 
-                "QUAIS MALES PODE CAUSAR", "SUPERDOSE"
-            ]
-            from_prof = [
-                "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", "CARACTERÍSTICAS FARMACOLÓGICAS", 
-                "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", "INTERAÇÕES MEDICAMENTOSAS", 
-                "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE"
-            ]
-            lista = from_prof if tipo_bula == "PROFISSIONAL" else from_paciente
-            secoes_str = ", ".join(lista)
-            
-            prompt = f"""
-            Atue como Auditor de Qualidade Farmacêutica.
-            Compare os documentos. Extraia e compare estas seções: {secoes_str}.
-            
-            Retorne um JSON:
-            {{
-                "METADADOS": {{ "score": 90, "datas": ["dd/mm/aaaa"] }},
-                "SECOES": [
-                    {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
-                ]
-            }}
-            
-            Use HTML <mark style='background-color: #fff3cd; color: #856404;'>texto</mark> para diferenças.
-            Use HTML <mark style='background-color: #f8d7da; border-bottom: 2px solid red;'>erro</mark> para erros de português.
-            """
-        elif scenario == "2":
-            prompt = "Verifique MKT: VENDA SOB PRESCRIÇÃO, Logo, SAC. Retorne JSON."
-        else:
-            prompt = "Comparação Visual. Liste defeitos em JSON."
-
-        # 4. Chamada IA
-        response = model.generate_content([prompt] + payload)
-        data = json.loads(clean_json(response.text))
+            if tipo_bula == "PROFISSIONAL":
+                lista = SECOES_PROFISSIONAL
+                nome_tipo = "Profissional"
         
-        # 5. Renderização
+        secoes_str = "\n".join([f"- {s}" for s in lista])
+        nao_comparar_str = ", ".join(SECOES_NAO_COMPARAR)
+
+        prompt = f"""
+        Atue como Auditor de Qualidade Farmacêutica.
+        Analise os documentos (Ref vs Alvo).
+        
+        TAREFA: Extraia o texto COMPLETO de cada seção.
+        LISTA ({nome_tipo}):
+        {secoes_str}
+        
+        REGRAS DE FORMATAÇÃO (Retorne texto com estas tags HTML):
+        1. Divergências de sentido: <mark style='background-color: #fff3cd; color: #856404; padding: 2px 4px; border: 1px solid #ffeeba;'>texto</mark>
+           (IGNORE divergências nas seções: {nao_comparar_str}).
+        2. Erros de Português: <mark style='background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545;'>erro</mark>
+        3. Datas ANVISA: <mark style='background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold;'>dd/mm/aaaa</mark>
+        
+        SAÍDA JSON:
+        {{
+            "METADADOS": {{ "score": 90, "datas": ["..."] }},
+            "SECOES": [
+                {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" | "INFORMATIVO" }}
+            ]
+        }}
+        """
+        
+        res = model.generate_content([prompt] + payload)
+        data = json.loads(clean_json(res.text))
+        
         meta = data.get("METADADOS", {})
-        score = meta.get("score", 0)
         
         cards = dbc.Row([
-            dbc.Col(dbc.Card([html.H2(f"{score}%", className="text-success fw-bold"), "Conformidade"], body=True, className="text-center shadow-sm"), md=4),
+            dbc.Col(dbc.Card([html.H2(f"{meta.get('score',0)}%", className="text-success fw-bold"), "Conformidade"], body=True, className="text-center shadow-sm"), md=4),
             dbc.Col(dbc.Card([html.H2(str(len(data.get("SECOES", []))), className="text-primary fw-bold"), "Seções"], body=True, className="text-center shadow-sm"), md=4),
             dbc.Col(dbc.Card([html.H2(", ".join(meta.get("datas", [])[:2]) or "-", className="text-info fw-bold", style={"fontSize":"1rem"}), "Datas"], body=True, className="text-center shadow-sm"), md=4),
         ], className="mb-4")
@@ -370,19 +341,19 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
                 dbc.Col([html.Strong("Referência", className="text-primary"), html.Div(dcc.Markdown(sec.get('ref',''), dangerously_allow_html=True), style=STYLES['bula_box'])], md=6),
                 dbc.Col([html.Strong("Belfar", className="text-success"), html.Div(dcc.Markdown(sec.get('bel',''), dangerously_allow_html=True), style=STYLES['bula_box'])], md=6)
             ])
-            items.append(dbc.AccordionItem(content, title=f"{icon} {sec['titulo']} — {sec['status']}", item_id=sec['titulo']))
+            items.append(dbc.AccordionItem(content, title=f"{icon} {sec['titulo']} — {sec['status']}"))
 
         return html.Div([cards, dbc.Accordion(items, start_collapsed=False, always_open=True)])
 
     except Exception as e:
-        return dbc.Alert(f"Erro na análise: {str(e)}", color="danger")
+        return dbc.Alert(f"Erro: {e}", color="danger")
 
-# Handler final
+# Handler final (inclui todos os inputs possíveis para não quebrar callbacks)
 app.validation_layout = html.Div([
     build_upload_area("upload-1","","clear-1",""), 
     build_upload_area("upload-2","","clear-2",""),
     dcc.Store(id="scenario-store"), dcc.RadioItems(id="radio-tipo-bula"),
-    sidebar, build_home_layout()
+    sidebar, build_home_layout(), build_tool_page("","", "1")
 ])
 
 if __name__ == "__main__":
