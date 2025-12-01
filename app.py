@@ -68,22 +68,19 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- BACKEND (FORÇANDO GEMINI 2.5 FLASH) -----------------
+# ----------------- BACKEND (IA OTIMIZADA COM JSON MODE) -----------------
 
 def get_best_model():
     if not FIXED_API_KEY: return None
     try:
         genai.configure(api_key=FIXED_API_KEY)
-        # Tenta conectar DIRETAMENTE no modelo 2.5 Flash
-        # Se este modelo falhar, o try/except vai capturar, mas o objetivo é forçar o uso dele.
-        return genai.GenerativeModel('models/gemini-2.5-flash')
-    except Exception as e:
-        print(f"Erro ao conectar no modelo 2.5: {e}")
-        # Fallback de segurança apenas se o 2.5 não existir na conta
+        # Usando o modelo 1.5 Flash que é estável, rápido e suporta JSON Mode nativo
         return genai.GenerativeModel('models/gemini-1.5-flash')
+    except Exception as e:
+        print(f"Erro config IA: {e}")
+        return None
 
 def process_file(contents, filename):
-    """Versão ULTRA LEVE para memória RAM limitada"""
     if not contents: return None
     try:
         _, content_string = contents.split(',')
@@ -98,44 +95,23 @@ def process_file(contents, filename):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
             
-            # OTIMIZAÇÃO:
-            # 1. Limita a 3 páginas (Essencial para evitar crash de memória no Render Free)
-            # 2. Matrix 1.0 (DPI 72) - Leve e legível para IA
+            # OTIMIZAÇÃO AGRESSIVA PARA MEMÓRIA (3 PÁGINAS, BAIXA RESOLUÇÃO)
             limit_pages = min(3, len(doc))
-            
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
-                # Compressão JPEG 60%
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0)) # 72 DPI
                 img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=60))
                 images.append(Image.open(img_byte_arr))
-                pix = None # Libera memória imediatamente
+                pix = None
             
             doc.close()
             del decoded
-            gc.collect() # Faxina na RAM
-            
+            gc.collect()
             return {"type": "images", "data": images}
     except Exception as e:
         print(f"Erro processamento: {e}")
         return None
     return None
-
-def clean_json(text):
-    text = text.replace("```json", "").replace("```", "").strip()
-    text = re.sub(r'//.*', '', text)
-    if text.startswith("json"): text = text[4:]
-    return text
-
-def extract_json_from_text(text):
-    try:
-        clean_text = clean_json(text)
-        start = clean_text.find('{')
-        end = clean_text.rfind('}') + 1
-        if start != -1 and end != -1:
-            return json.loads(clean_text[start:end])
-        return json.loads(clean_text)
-    except: return None
 
 # ----------------- COMPONENTES VISUAIS -----------------
 
@@ -143,13 +119,12 @@ def build_upload_area(id_upload, id_filename, id_clear, label):
     return html.Div([
         html.H6([html.I(className="far fa-file-alt me-2 text-muted"), label], className="fw-bold mb-2"),
         html.Div([
-            # Vazio
             html.Div(
                 id=f"{id_upload}-empty",
                 children=dcc.Upload(
                     id=id_upload,
                     children=html.Div([
-                        html.I(className="fas fa-cloud-arrow-up fa-3x", style={"color": "#adb5bd"}),
+                        html.I(className="fas fa-cloud-upload-alt fa-3x", style={"color": "#adb5bd"}),
                         html.H6("Arraste ou Clique", className="mt-3 text-muted fw-bold")
                     ]),
                     style=STYLES['upload_box'],
@@ -157,7 +132,6 @@ def build_upload_area(id_upload, id_filename, id_clear, label):
                 ),
                 style={"display": "block"}
             ),
-            # Preenchido
             html.Div(
                 id=f"{id_upload}-filled",
                 children=[
@@ -312,19 +286,19 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
     try:
         model = get_best_model()
         if not model: 
-            return dbc.Alert("Erro: Chave API não encontrada ou modelo indisponível.", color="danger")
+            return dbc.Alert("Erro de API: Verifique a chave no Render.", color="danger")
 
         d1 = process_file(c1, n1) if c1 else None
         d2 = process_file(c2, n2) if c2 else None
-        gc.collect() 
+        gc.collect()
 
         payload = []
         if d1: payload.append("--- ARQUIVO 1 ---"); payload.extend([d1['data']] if d1['type']=='text' else d1['data'])
         if d2: payload.append("--- ARQUIVO 2 ---"); payload.extend([d2['data']] if d2['type']=='text' else d2['data'])
 
+        # Lógica Seções
         lista = SECOES_PACIENTE
         nome_tipo = "Paciente"
-        
         if scenario == "1" and tipo_bula == "PROFISSIONAL":
             lista = SECOES_PROFISSIONAL
             nome_tipo = "Profissional"
@@ -333,39 +307,36 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         nao_comparar_str = "APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS"
 
         prompt = f"""
-        Atue como Auditor de Qualidade Farmacêutica.
-        Analise os documentos (Ref vs Alvo).
+        Atue como Auditor Farmacêutico.
+        Analise os documentos fornecidos.
         
-        TAREFA: Extraia o texto COMPLETO de cada seção.
-        LISTA ({nome_tipo}):
+        TAREFA: Extraia e compare o texto das seguintes seções:
         {secoes_str}
         
-        REGRAS DE FORMATAÇÃO (Retorne texto com estas tags HTML):
-        1. Divergências de sentido: <mark style='background-color: #fff3cd; color: #856404; padding: 2px 4px; border: 1px solid #ffeeba;'>texto diferente</mark>
-           (IGNORE divergências nas seções: {nao_comparar_str}).
-        2. Erros de Português: <mark style='background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545;'>erro</mark>
-        3. Datas ANVISA: <mark style='background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold;'>dd/mm/aaaa</mark>
+        REGRAS HTML PARA O TEXTO:
+        1. Divergências: <mark style='background-color: #fff3cd; color: #856404;'>texto</mark>
+        2. Erros PT: <mark style='background-color: #f8d7da; color: #721c24;'>erro</mark>
+        3. Datas: <mark style='background-color: #cff4fc; color: #055160; font-weight:bold;'>data</mark>
         
-        SAÍDA JSON (Sem markdown ```json):
+        SAÍDA JSON OBRIGATÓRIA:
         {{
-            "METADADOS": {{ "score": 90, "datas": ["..."] }},
+            "METADADOS": {{ "score": 90, "datas": ["dd/mm/aaaa"] }},
             "SECOES": [
-                {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" | "INFORMATIVO" }}
+                {{ "titulo": "NOME DA SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" }}
             ]
         }}
         """
-        
-        try:
-            res = model.generate_content([prompt] + payload)
-            data = extract_json_from_text(res.text)
-            if not data: raise ValueError("Resposta da IA inválida")
-        except Exception as e:
-             return dbc.Alert(f"Erro na resposta da IA (Tente novamente): {str(e)}", color="danger")
 
+        # JSON MODE ATIVADO (Corrige o erro "Resposta da IA inválida")
+        response = model.generate_content(
+            [prompt] + payload,
+            generation_config={"response_mime_type": "application/json"}
+        )
+        
+        data = json.loads(response.text)
         meta = data.get("METADADOS", {})
         score = meta.get("score", 0)
         datas = meta.get("datas", []) 
-        if not datas: datas = meta.get("datas_anvisa", []) 
 
         cards = dbc.Row([
             dbc.Col(dbc.Card([html.H2(f"{score}%", className="text-success fw-bold"), "Conformidade"], body=True, className="text-center shadow-sm border-0"), md=4),
@@ -377,16 +348,9 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         for sec in data.get("SECOES", []):
             status = sec.get('status', 'N/A')
             icon = "✅"
-            header_class = "text-success"
-            if "DIVERGENTE" in status: 
-                icon = "❌"
-                header_class = "text-danger"
-            elif "FALTANTE" in status: 
-                icon = "🚨"
-                header_class = "text-warning"
-            elif "INFORMATIVO" in status: 
-                icon = "ℹ️"
-                header_class = "text-info"
+            if "DIVERGENTE" in status: icon = "❌"
+            elif "FALTANTE" in status: icon = "🚨"
+            elif "INFORMATIVO" in status: icon = "ℹ️"
 
             content = dbc.Row([
                 dbc.Col([html.Strong("Referência", className="text-primary"), html.Div(dcc.Markdown(sec.get('ref',''), dangerously_allow_html=True), style=STYLES['bula_box'])], md=6),
@@ -397,7 +361,7 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         return html.Div([cards, dbc.Accordion(items, start_collapsed=False, always_open=True, className="shadow-sm bg-white rounded")])
 
     except Exception as e:
-        return dbc.Alert(f"Erro Geral: {e}", color="danger")
+        return dbc.Alert(f"Erro durante análise: {str(e)}", color="danger")
 
 # Handler final
 app.validation_layout = html.Div([
