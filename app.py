@@ -13,6 +13,7 @@ import gc
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO -----------------
+# Tenta pegar do ambiente. Se não tiver, usa uma string vazia.
 FIXED_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 app = dash.Dash(
@@ -68,19 +69,57 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- BACKEND (IA OTIMIZADA COM JSON MODE) -----------------
+# ----------------- BACKEND (IA AUTO-DETECT AVANÇADO) -----------------
 
 def get_best_model():
     if not FIXED_API_KEY: return None
     try:
         genai.configure(api_key=FIXED_API_KEY)
-        # Usando o modelo 1.5 Flash que é estável, rápido e suporta JSON Mode nativo
-        return genai.GenerativeModel('models/gemini-1.5-flash')
+        
+        # 1. Tenta listar modelos disponíveis na conta
+        available_models = []
+        try:
+            available_models = [m.name for m in genai.list_models()]
+        except:
+            pass # Se falhar listar, continua para tentativa direta
+
+        # 2. Lista de TODOS os modelos possíveis que queremos tentar
+        preferences = [
+            'models/gemini-2.5-flash',      # Prioridade 1: Novo, rápido e leve
+            'models/gemini-2.0-flash',      # Prioridade 2: Muito bom também
+            'models/gemini-2.0-flash-exp',
+            'models/gemini-1.5-flash',      # Fallback clássico
+            'models/gemini-1.5-flash-latest',
+            'models/gemini-1.5-pro',
+            'models/gemini-pro',
+            'models/gemini-1.0-pro'
+        ]
+
+        # 3. Se conseguiu listar, escolhe o melhor da lista
+        if available_models:
+            for pref in preferences:
+                if pref in available_models:
+                    return genai.GenerativeModel(pref)
+            # Se nenhum preferido, tenta qualquer um "flash"
+            for model in available_models:
+                if 'flash' in model:
+                    return genai.GenerativeModel(model)
+            # Se não tem flash, tenta qualquer "gemini" que não seja vision puro
+            for model in available_models:
+                if 'gemini' in model and 'vision' not in model:
+                    return genai.GenerativeModel(model)
+
+        # 4. Se não conseguiu listar ou não achou na lista, tenta conectar direto nos mais prováveis
+        # O Python vai tentar instanciar um por um. O primeiro que não der erro na chamada ganha.
+        # Como aqui só instanciamos, vamos retornar o 1.5-flash-latest que costuma ser um alias seguro
+        return genai.GenerativeModel('models/gemini-1.5-flash-latest')
+
     except Exception as e:
-        print(f"Erro config IA: {e}")
+        print(f"Erro ao configurar modelo: {e}")
         return None
 
 def process_file(contents, filename):
+    """Versão Otimizada para Memória"""
     if not contents: return None
     try:
         _, content_string = contents.split(',')
@@ -95,23 +134,41 @@ def process_file(contents, filename):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
             
-            # OTIMIZAÇÃO AGRESSIVA PARA MEMÓRIA (3 PÁGINAS, BAIXA RESOLUÇÃO)
+            # OTIMIZAÇÃO: Limita a 3 páginas e qualidade média
+            # Isso é crucial para o plano gratuito do Render não matar o processo
             limit_pages = min(3, len(doc))
+            
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0)) # 72 DPI
-                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=60))
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=70))
                 images.append(Image.open(img_byte_arr))
-                pix = None
             
             doc.close()
             del decoded
             gc.collect()
+            
             return {"type": "images", "data": images}
     except Exception as e:
         print(f"Erro processamento: {e}")
         return None
     return None
+
+def clean_json(text):
+    text = text.replace("```json", "").replace("```", "").strip()
+    text = re.sub(r'//.*', '', text)
+    if text.startswith("json"): text = text[4:]
+    return text
+
+def extract_json_from_text(text):
+    try:
+        clean_text = clean_json(text)
+        start = clean_text.find('{')
+        end = clean_text.rfind('}') + 1
+        if start != -1 and end != -1:
+            return json.loads(clean_text[start:end])
+        return json.loads(clean_text)
+    except: return None
 
 # ----------------- COMPONENTES VISUAIS -----------------
 
@@ -119,12 +176,13 @@ def build_upload_area(id_upload, id_filename, id_clear, label):
     return html.Div([
         html.H6([html.I(className="far fa-file-alt me-2 text-muted"), label], className="fw-bold mb-2"),
         html.Div([
+            # Vazio
             html.Div(
                 id=f"{id_upload}-empty",
                 children=dcc.Upload(
                     id=id_upload,
                     children=html.Div([
-                        html.I(className="fas fa-cloud-upload-alt fa-3x", style={"color": "#adb5bd"}),
+                        html.I(className="fas fa-cloud-arrow-up fa-3x", style={"color": "#adb5bd"}),
                         html.H6("Arraste ou Clique", className="mt-3 text-muted fw-bold")
                     ]),
                     style=STYLES['upload_box'],
@@ -132,6 +190,7 @@ def build_upload_area(id_upload, id_filename, id_clear, label):
                 ),
                 style={"display": "block"}
             ),
+            # Preenchido
             html.Div(
                 id=f"{id_upload}-filled",
                 children=[
@@ -286,19 +345,19 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
     try:
         model = get_best_model()
         if not model: 
-            return dbc.Alert("Erro de API: Verifique a chave no Render.", color="danger")
+            return dbc.Alert("Erro: Chave API não encontrada ou modelo indisponível. Verifique o Render.", color="danger")
 
         d1 = process_file(c1, n1) if c1 else None
         d2 = process_file(c2, n2) if c2 else None
-        gc.collect()
+        gc.collect() 
 
         payload = []
         if d1: payload.append("--- ARQUIVO 1 ---"); payload.extend([d1['data']] if d1['type']=='text' else d1['data'])
         if d2: payload.append("--- ARQUIVO 2 ---"); payload.extend([d2['data']] if d2['type']=='text' else d2['data'])
 
-        # Lógica Seções
         lista = SECOES_PACIENTE
         nome_tipo = "Paciente"
+        
         if scenario == "1" and tipo_bula == "PROFISSIONAL":
             lista = SECOES_PROFISSIONAL
             nome_tipo = "Profissional"
@@ -307,36 +366,39 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         nao_comparar_str = "APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS"
 
         prompt = f"""
-        Atue como Auditor Farmacêutico.
-        Analise os documentos fornecidos.
+        Atue como Auditor de Qualidade Farmacêutica.
+        Analise os documentos (Ref vs Alvo).
         
-        TAREFA: Extraia e compare o texto das seguintes seções:
+        TAREFA: Extraia o texto COMPLETO de cada seção.
+        LISTA ({nome_tipo}):
         {secoes_str}
         
-        REGRAS HTML PARA O TEXTO:
-        1. Divergências: <mark style='background-color: #fff3cd; color: #856404;'>texto</mark>
-        2. Erros PT: <mark style='background-color: #f8d7da; color: #721c24;'>erro</mark>
-        3. Datas: <mark style='background-color: #cff4fc; color: #055160; font-weight:bold;'>data</mark>
+        REGRAS DE FORMATAÇÃO (Retorne texto com estas tags HTML):
+        1. Divergências de sentido: <mark style='background-color: #fff3cd; color: #856404; padding: 2px 4px; border: 1px solid #ffeeba;'>texto diferente</mark>
+           (IGNORE divergências nas seções: {nao_comparar_str}).
+        2. Erros de Português: <mark style='background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545;'>erro</mark>
+        3. Datas ANVISA: <mark style='background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold;'>dd/mm/aaaa</mark>
         
-        SAÍDA JSON OBRIGATÓRIA:
+        SAÍDA JSON (Sem markdown ```json):
         {{
-            "METADADOS": {{ "score": 90, "datas": ["dd/mm/aaaa"] }},
+            "METADADOS": {{ "score": 90, "datas": ["..."] }},
             "SECOES": [
-                {{ "titulo": "NOME DA SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" }}
+                {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" | "INFORMATIVO" }}
             ]
         }}
         """
-
-        # JSON MODE ATIVADO (Corrige o erro "Resposta da IA inválida")
-        response = model.generate_content(
-            [prompt] + payload,
-            generation_config={"response_mime_type": "application/json"}
-        )
         
-        data = json.loads(response.text)
+        try:
+            res = model.generate_content([prompt] + payload)
+            data = extract_json_from_text(res.text)
+            if not data: raise ValueError(f"Resposta da IA inválida ou vazia. Tente novamente. Resposta bruta: {res.text[:50]}...")
+        except Exception as e:
+             return dbc.Alert(f"Erro na resposta da IA: {str(e)}", color="danger")
+
         meta = data.get("METADADOS", {})
         score = meta.get("score", 0)
         datas = meta.get("datas", []) 
+        if not datas: datas = meta.get("datas_anvisa", []) 
 
         cards = dbc.Row([
             dbc.Col(dbc.Card([html.H2(f"{score}%", className="text-success fw-bold"), "Conformidade"], body=True, className="text-center shadow-sm border-0"), md=4),
@@ -348,9 +410,16 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         for sec in data.get("SECOES", []):
             status = sec.get('status', 'N/A')
             icon = "✅"
-            if "DIVERGENTE" in status: icon = "❌"
-            elif "FALTANTE" in status: icon = "🚨"
-            elif "INFORMATIVO" in status: icon = "ℹ️"
+            header_class = "text-success"
+            if "DIVERGENTE" in status: 
+                icon = "❌"
+                header_class = "text-danger"
+            elif "FALTANTE" in status: 
+                icon = "🚨"
+                header_class = "text-warning"
+            elif "INFORMATIVO" in status: 
+                icon = "ℹ️"
+                header_class = "text-info"
 
             content = dbc.Row([
                 dbc.Col([html.Strong("Referência", className="text-primary"), html.Div(dcc.Markdown(sec.get('ref',''), dangerously_allow_html=True), style=STYLES['bula_box'])], md=6),
