@@ -13,7 +13,7 @@ from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DE SEGURANÇA -----------------
 # O código agora busca a chave no servidor do Render.
-# Se estiver rodando no seu PC e não tiver a variável, ele tenta pegar uma string vazia (dará erro de API, mas não vaza a chave).
+# Se estiver rodando no seu PC e não tiver a variável, ele tenta pegar uma string vazia.
 FIXED_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Inicializa o App
@@ -79,11 +79,11 @@ def get_best_model():
     try:
         genai.configure(api_key=FIXED_API_KEY)
         # Tenta modelos disponíveis na ordem de preferência
-        # Importante: A lista de modelos depende da chave. Se a chave for nova, ela deve ter acesso aos modelos mais recentes.
+        # Importante: A lista de modelos depende da chave.
         try:
             available = [m.name for m in genai.list_models()]
         except:
-            # Se falhar ao listar, tenta conectar direto no flash que é o padrão gratuito
+            # Se falhar ao listar, tenta conectar direto no flash
             return genai.GenerativeModel('models/gemini-1.5-flash')
 
         prefs = ['models/gemini-2.5-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-pro', 'models/gemini-1.5-flash']
