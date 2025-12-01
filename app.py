@@ -194,7 +194,7 @@ const HomePage = ({ setActiveTab }) => (
       />
       <HomeCard 
         title="Conferência MKT" 
-        desc="Checklist rápido de itens obrigatórios (Logos, SAC, Farmacêutico) para aprovação de materiais de marketing."
+        desc="Checklist rápido de itens obrigatórios de marketing e legal na bula."
         onClick={() => setActiveTab('mkt')}
         icon={<AlertTriangle className="text-orange-600 w-8 h-8" />}
         color="orange"
@@ -236,7 +236,6 @@ const ValidatorTool = ({ scenario, title }) => {
   const [bulaType, setBulaType] = useState('paciente');
 
   // Simula processamento (Para ambiente sem backend Node)
-  // Em produção, aqui entraria a lógica de pdfjs-dist e mammoth
   const processFileMock = async (file) => {
     if (!file) return null;
     return new Promise(resolve => {
