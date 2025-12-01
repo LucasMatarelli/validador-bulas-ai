@@ -19,22 +19,17 @@ st.set_page_config(
 )
 
 # ----------------- CHAVE API (FIXA) -----------------
-# CUIDADO: Não compartilhe este código publicamente com a chave exposta.
+# CUIDADO: Não compartilhe publicamente.
 API_KEY_FIXA = "AIzaSyAYYHDUsjDmA4qU728BwuTiEErnqYeilNQ"
 
 # ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
     /* Ajuste de Fundo e Fontes */
-    .main {
-        background-color: #f4f6f8;
-    }
-    h1, h2, h3 {
-        color: #2c3e50;
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    }
+    .main { background-color: #f4f6f8; }
+    h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    /* Card Estilizado Melhorado */
+    /* Card Estilizado */
     .stCard {
         background-color: white;
         padding: 25px;
@@ -52,65 +47,25 @@ st.markdown("""
     }
 
     /* Títulos dos Cards */
-    .card-title {
-        color: #55a68e;
-        font-size: 1.2rem;
-        font-weight: bold;
-        margin-bottom: 15px;
-        border-bottom: 2px solid #f0f2f5;
-        padding-bottom: 10px;
-    }
-
-    /* Texto descritivo */
-    .card-text {
-        font-size: 0.95rem;
-        color: #555;
-        line-height: 1.6;
-    }
+    .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
+    .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
     
-    /* Destaques de cores no texto */
+    /* Destaques */
     .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0 4px; border-radius: 4px; font-weight: 500; }
     .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; font-weight: 500; }
     .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
 
     /* Box de Curva */
-    .curve-box {
-        background-color: #f8f9fa;
-        border-left: 4px solid #55a68e;
-        padding: 10px 15px;
-        margin-top: 15px;
-        font-size: 0.9rem;
-        color: #666;
-    }
+    .curve-box { background-color: #f8f9fa; border-left: 4px solid #55a68e; padding: 10px 15px; margin-top: 15px; font-size: 0.9rem; color: #666; }
 
     /* Botões */
-    .stButton>button {
-        width: 100%;
-        background-color: #55a68e;
-        color: white;
-        font-weight: bold;
-        border-radius: 10px;
-        height: 55px;
-        border: none;
-        font-size: 16px;
-        box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2);
-    }
-    .stButton>button:hover {
-        background-color: #448c75;
-        box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3);
-    }
+    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); }
+    .stButton>button:hover { background-color: #448c75; box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); }
 
-    /* Marcações de Texto (Resultado) */
+    /* Marcações de Texto */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
-
-    /* Upload Area */
-    .uploadedFile {
-        border: 2px dashed #55a68e;
-        background-color: #e6fffa;
-        border-radius: 10px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -136,24 +91,32 @@ SECOES_NAO_COMPARAR = "APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS"
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    # Usa a chave fixa definida no topo
-    if not API_KEY_FIXA: return None
-    try:
-        genai.configure(api_key=API_KEY_FIXA)
-        # Tenta conectar no modelo mais novo disponível (2.5 Flash)
+    """Tenta conectar nos modelos em ordem de prioridade: 2.5 -> 2.0 -> 1.5 -> 1.0"""
+    if not API_KEY_FIXA: return None, "Sem Chave"
+    
+    genai.configure(api_key=API_KEY_FIXA)
+    
+    # Lista de prioridade
+    modelos_para_testar = [
+        'models/gemini-2.5-flash',       # Prioridade 1 (Se existir)
+        'models/gemini-2.0-flash-exp',   # Prioridade 2 (Experimental)
+        'models/gemini-1.5-flash',       # Prioridade 3 (Estável Rápido)
+        'models/gemini-pro'              # Prioridade 4 (Legado/1.0)
+    ]
+
+    for model_name in modelos_para_testar:
         try:
-            return genai.GenerativeModel('models/gemini-2.5-flash')
-        except:
-            try:
-                return genai.GenerativeModel('models/gemini-2.0-flash')
-            except:
-                # Fallback para o 1.5 Flash (Estável e Rápido)
-                return genai.GenerativeModel('models/gemini-1.5-flash')
-    except:
-        return None
+            # Tenta instanciar
+            model = genai.GenerativeModel(model_name)
+            return model, model_name
+        except Exception:
+            continue # Se falhar, tenta o próximo
+            
+    # Se nenhum funcionar, retorna o padrão seguro
+    return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
-    """Processa o arquivo enviado (PDF ou DOCX) de forma otimizada."""
+    """Processa o arquivo enviado (PDF ou DOCX) de forma otimizada e corrigida."""
     if not uploaded_file: return None
     
     try:
@@ -169,13 +132,24 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
             
-            # OTIMIZAÇÃO: Limita a 4 páginas e reduz qualidade
+            # OTIMIZAÇÃO: Limita a 4 páginas
             limit_pages = min(4, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # Melhor resolução para leitura
-                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=80))
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # 1.5x zoom para melhor OCR
+                
+                # CORREÇÃO CRÍTICA AQUI (quality -> jpg_quality)
+                try:
+                    # Tenta usar jpg_quality (versões novas do PyMuPDF)
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=80))
+                except TypeError:
+                    # Se der erro (versão antiga ou incompatível), usa PNG (seguro)
+                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                except Exception:
+                    # Último recurso: JPEG padrão
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
+                    
                 images.append(Image.open(img_byte_arr))
                 pix = None
             
@@ -209,8 +183,13 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador Belfar")
     
-    # Exibe status da conexão (simulado, já que a chave é fixa)
-    st.success("✅ Sistema Conectado")
+    # Inicializa modelo para mostrar qual está sendo usado
+    model_instance, model_name_used = get_gemini_model()
+    
+    if model_instance:
+        st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
+    else:
+        st.error("❌ Erro de Conexão")
     
     st.divider()
     
@@ -221,7 +200,6 @@ with st.sidebar:
     )
     
     st.divider()
-    st.caption(f"v3.0 - Gemini 2.5 Integration")
     st.caption("Desenvolvido para Belfar")
 
 # ----------------- PÁGINA INICIAL -----------------
@@ -233,7 +211,6 @@ if pagina == "🏠 Início":
     </div>
     """, unsafe_allow_html=True)
     
-    # Colunas para os Cards Descritivos
     c1, c2, c3 = st.columns(3)
     
     with c1:
@@ -287,7 +264,7 @@ if pagina == "🏠 Início":
             <div class="curve-box">
                 <b>O que é um arquivo 'em curva'?</b><br>
                 É um PDF onde o texto foi convertido em vetores (desenhos).<br>
-                Visualmente parece texto, mas para o computador são imagens, exigindo OCR avançado para leitura.
+                Visualmente parece texto, mas para o computador são imagens.
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -320,16 +297,17 @@ else:
         f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
         
     # Botão de Ação
-    st.write("") # Espaçamento
+    st.write("") 
     if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
         if not f1 or not f2:
             st.warning("⚠️ Por favor, faça o upload dos dois arquivos para continuar.")
         else:
-            with st.spinner("🤖 A IA está lendo e comparando os documentos..."):
+            with st.spinner(f"🤖 Analisando com {model_name_used.split('/')[-1]}..."):
                 try:
-                    model = get_gemini_model()
+                    # Garante uso do modelo selecionado no início
+                    model = model_instance 
                     if not model:
-                        st.error("Erro na configuração da API Key.")
+                        st.error("Erro crítico: Modelo não carregado.")
                         st.stop()
 
                     # Processamento
@@ -404,10 +382,9 @@ else:
                         for sec in data.get("SECOES", []):
                             status = sec.get('status', 'N/A')
                             icon = "✅"
-                            color = "green"
-                            if "DIVERGENTE" in status: icon = "❌"; color="red"
-                            elif "FALTANTE" in status: icon = "🚨"; color="orange"
-                            elif "INFORMATIVO" in status: icon = "ℹ️"; color="blue"
+                            if "DIVERGENTE" in status: icon = "❌"
+                            elif "FALTANTE" in status: icon = "🚨"
+                            elif "INFORMATIVO" in status: icon = "ℹ️"
                             
                             with st.expander(f"{icon} {sec['titulo']} — {status}"):
                                 cA, cB = st.columns(2)
