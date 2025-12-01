@@ -8,11 +8,15 @@ import io
 import base64
 import json
 import re
+import os  # <--- Biblioteca necessária para ler o ambiente
 from PIL import Image
 
-# ----------------- CONFIGURAÇÃO -----------------
-FIXED_API_KEY = "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw"
+# ----------------- CONFIGURAÇÃO DE SEGURANÇA -----------------
+# O código agora busca a chave no servidor do Render.
+# Se estiver rodando no seu PC e não tiver a variável, ele tenta pegar uma string vazia (dará erro de API, mas não vaza a chave).
+FIXED_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# Inicializa o App
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.MINTY, "https://use.fontawesome.com/releases/v6.4.0/css/all.css"],
@@ -68,15 +72,28 @@ SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- BACKEND (IA) -----------------
 def get_best_model():
+    if not FIXED_API_KEY:
+        print("ERRO: Chave API não encontrada nas variáveis de ambiente.")
+        return None
+        
     try:
         genai.configure(api_key=FIXED_API_KEY)
         # Tenta modelos disponíveis na ordem de preferência
-        available = [m.name for m in genai.list_models()]
+        # Importante: A lista de modelos depende da chave. Se a chave for nova, ela deve ter acesso aos modelos mais recentes.
+        try:
+            available = [m.name for m in genai.list_models()]
+        except:
+            # Se falhar ao listar, tenta conectar direto no flash que é o padrão gratuito
+            return genai.GenerativeModel('models/gemini-1.5-flash')
+
         prefs = ['models/gemini-2.5-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-pro', 'models/gemini-1.5-flash']
         for p in prefs:
             if p in available: return genai.GenerativeModel(p)
+            
         return genai.GenerativeModel('models/gemini-1.5-flash')
-    except: return None
+    except Exception as e: 
+        print(f"Erro ao configurar IA: {e}")
+        return None
 
 def process_file(contents, filename):
     if not contents: return None
@@ -167,7 +184,7 @@ sidebar = html.Div([
 ], style={"position": "fixed", "top": 0, "left": 0, "bottom": 0, "width": "260px", "backgroundColor": "#fff", "borderRight": "1px solid #f0f0f0", "zIndex": 100})
 
 def build_home_layout():
-    """Layout da Home (Função necessária para evitar erro de definição)"""
+    """Layout da Home"""
     return dbc.Container([
         html.Div(className="text-center py-5", children=[
             html.I(className="fas fa-microscope fa-4x mb-3", style={"color": COLOR_PRIMARY}),
@@ -296,7 +313,7 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
 
     try:
         model = get_best_model()
-        if not model: return dbc.Alert("Erro: Nenhum modelo de IA disponível na sua conta Google.", color="danger")
+        if not model: return dbc.Alert("Erro: Verifique a GEMINI_API_KEY nas variáveis de ambiente do Render.", color="danger")
 
         # Processamento
         d1 = process_file(c1, n1) if c1 else None
