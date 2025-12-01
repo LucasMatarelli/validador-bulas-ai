@@ -8,15 +8,13 @@ import io
 import base64
 import json
 import re
-import os  # <--- Biblioteca necessária para ler o ambiente
+import os
 from PIL import Image
 
-# ----------------- CONFIGURAÇÃO DE SEGURANÇA -----------------
-# O código agora busca a chave no servidor do Render.
-# Se estiver rodando no seu PC e não tiver a variável, ele tenta pegar uma string vazia.
-FIXED_API_KEY = os.environ.get("GEMINI_API_KEY")
+# ----------------- CONFIGURAÇÃO -----------------
+# Tenta pegar do ambiente. Se não tiver, usa uma string vazia para evitar crash inicial.
+FIXED_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# Inicializa o App
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.MINTY, "https://use.fontawesome.com/releases/v6.4.0/css/all.css"],
@@ -27,13 +25,13 @@ app = dash.Dash(
 server = app.server
 
 # ----------------- ESTILOS -----------------
-COLOR_PRIMARY = "#55a68e" # Verde
+COLOR_PRIMARY = "#55a68e"
 STYLES = {
     'upload_box': {
         'borderWidth': '2px', 'borderStyle': 'dashed', 'borderRadius': '12px',
         'borderColor': '#dee2e6', 'backgroundColor': '#f8f9fa',
-        'padding': '30px', 'textAlign': 'center', 'cursor': 'pointer',
-        'minHeight': '180px', 'display': 'flex', 'flexDirection': 'column', 
+        'padding': '20px', 'textAlign': 'center', 'cursor': 'pointer',
+        'minHeight': '160px', 'display': 'flex', 'flexDirection': 'column', 
         'justifyContent': 'center', 'alignItems': 'center',
         'transition': 'all 0.2s ease-in-out'
     },
@@ -70,30 +68,22 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- BACKEND (IA) -----------------
+# ----------------- BACKEND -----------------
+
 def get_best_model():
     if not FIXED_API_KEY:
-        print("ERRO: Chave API não encontrada nas variáveis de ambiente.")
         return None
-        
     try:
         genai.configure(api_key=FIXED_API_KEY)
-        # Tenta modelos disponíveis na ordem de preferência
-        # Importante: A lista de modelos depende da chave.
-        try:
-            available = [m.name for m in genai.list_models()]
-        except:
-            # Se falhar ao listar, tenta conectar direto no flash
-            return genai.GenerativeModel('models/gemini-1.5-flash')
-
+        # Tenta modelos novos primeiro
         prefs = ['models/gemini-2.5-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-pro', 'models/gemini-1.5-flash']
-        for p in prefs:
-            if p in available: return genai.GenerativeModel(p)
-            
-        return genai.GenerativeModel('models/gemini-1.5-flash')
-    except Exception as e: 
-        print(f"Erro ao configurar IA: {e}")
-        return None
+        return genai.GenerativeModel(prefs[0]) # Tenta o mais novo direto, se falhar o try/except pega
+    except:
+        # Fallback seguro
+        try:
+            return genai.GenerativeModel('models/gemini-1.5-flash')
+        except:
+            return None
 
 def process_file(contents, filename):
     if not contents: return None
@@ -108,8 +98,8 @@ def process_file(contents, filename):
         elif filename.lower().endswith('.pdf'):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
-            # OTIMIZAÇÃO: Limita a 6 páginas e reduz qualidade para 1.5x (Evita Timeout)
-            for i in range(min(6, len(doc))):
+            # OTIMIZAÇÃO: 5 páginas max e qualidade média (Evita Timeout do Render Free)
+            for i in range(min(5, len(doc))):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                 img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
@@ -119,40 +109,35 @@ def process_file(contents, filename):
         return None
     return None
 
-def clean_json(text):
-    text = text.replace("```json", "").replace("```", "").strip()
-    text = re.sub(r'//.*', '', text)
-    if text.startswith("json"): text = text[4:]
-    return text
+def extract_json_from_text(text):
+    """Extrai JSON válido mesmo se a IA falar antes ou depois."""
+    try:
+        # Tenta limpar markdown
+        text = text.replace("```json", "").replace("```", "").strip()
+        # Tenta achar o primeiro { e o último }
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        if start != -1 and end != -1:
+            json_str = text[start:end]
+            return json.loads(json_str)
+        return json.loads(text) # Tenta direto se não achou chaves
+    except Exception as e:
+        print(f"Erro JSON Parse: {e}")
+        return None
 
 # ----------------- COMPONENTES VISUAIS -----------------
 
 def build_upload_area(id_upload, id_filename, id_clear, label):
-    """Cria área de upload com botão de remover (X)"""
     return html.Div([
         html.H6([html.I(className="far fa-file-alt me-2 text-muted"), label], className="fw-bold mb-2"),
-        
-        # Container que alterna entre Upload e Arquivo Carregado
         html.Div([
-            # Estado Vazio
-            html.Div(
-                id=f"{id_upload}-empty",
-                children=dcc.Upload(
-                    id=id_upload,
-                    children=html.Div([
-                        html.I(className="fas fa-cloud-upload-alt fa-3x", style={"color": "#adb5bd"}),
+            dcc.Upload(
+                id=id_upload,
+                children=html.Div([
+                    html.Div([
+                        html.I(className="fas fa-cloud-arrow-up fa-3x", style={"color": "#adb5bd"}),
                         html.H6("Arraste ou Clique", className="mt-3 text-muted fw-bold")
-                    ]),
-                    style=STYLES['upload_box'],
-                    multiple=False
-                ),
-                style={"display": "block"}
-            ),
-            
-            # Estado Preenchido (Card com Nome e Botão X)
-            html.Div(
-                id=f"{id_upload}-filled",
-                children=[
+                    ], id=f"{id_upload}-empty"),
                     html.Div([
                         html.I(className="fas fa-check-circle fa-4x text-success mb-3"),
                         html.H6(id=id_filename, className="text-success fw-bold text-break mb-3"),
@@ -160,9 +145,10 @@ def build_upload_area(id_upload, id_filename, id_clear, label):
                             [html.I(className="fas fa-trash-alt me-2"), "Remover Arquivo"],
                             id=id_clear, color="danger", outline=True, size="sm", className="rounded-pill px-3"
                         )
-                    ], style=STYLES['file_card'])
-                ],
-                style={"display": "none"}
+                    ], id=f"{id_upload}-filled", style={"display": "none"})
+                ]),
+                style=STYLES['upload_box'],
+                multiple=False
             )
         ])
     ])
@@ -184,7 +170,6 @@ sidebar = html.Div([
 ], style={"position": "fixed", "top": 0, "left": 0, "bottom": 0, "width": "260px", "backgroundColor": "#fff", "borderRight": "1px solid #f0f0f0", "zIndex": 100})
 
 def build_home_layout():
-    """Layout da Home"""
     return dbc.Container([
         html.Div(className="text-center py-5", children=[
             html.I(className="fas fa-microscope fa-4x mb-3", style={"color": COLOR_PRIMARY}),
@@ -199,30 +184,31 @@ def build_home_layout():
     ])
 
 def build_tool_page(title, subtitle, scenario_id):
-    options_div = html.Div()
-    if scenario_id == "1":
-        options_div = dbc.Card([
-            dbc.CardBody([
-                dbc.Row([
-                    dbc.Col(html.Label("Tipo de Bula:", className="fw-bold mt-2 text-end"), width="auto"),
-                    dbc.Col(
-                        dbc.RadioItems(
-                            options=[
-                                {"label": "Paciente", "value": "PACIENTE"},
-                                {"label": "Profissional", "value": "PROFISSIONAL"},
-                            ],
-                            value="PACIENTE",
-                            id="radio-tipo-bula",
-                            inline=True,
-                            className="btn-group-radio",
-                            inputClassName="btn-check",
-                            labelClassName="btn btn-outline-success px-4 rounded-pill fw-bold me-2",
-                            labelCheckedClassName="active bg-success text-white"
-                        )
+    # Opções (Visível apenas no cenário 1, mas presente no DOM em todos para evitar erro de callback)
+    display_style = {"display": "block"} if scenario_id == "1" else {"display": "none"}
+    
+    options_div = dbc.Card([
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col(html.Label("Tipo de Bula:", className="fw-bold mt-2 text-end"), width="auto"),
+                dbc.Col(
+                    dbc.RadioItems(
+                        options=[
+                            {"label": "Paciente", "value": "PACIENTE"},
+                            {"label": "Profissional", "value": "PROFISSIONAL"},
+                        ],
+                        value="PACIENTE",
+                        id="radio-tipo-bula",
+                        inline=True,
+                        className="btn-group-radio",
+                        inputClassName="btn-check",
+                        labelClassName="btn btn-outline-success px-4 rounded-pill fw-bold me-2",
+                        labelCheckedClassName="active bg-success text-white"
                     )
-                ], className="justify-content-center align-items-center")
-            ])
-        ], className="mb-5 shadow-sm border-0 rounded-pill py-2 bg-white")
+                )
+            ], className="justify-content-center align-items-center")
+        ])
+    ], className="mb-5 shadow-sm border-0 rounded-pill py-2 bg-white", style=display_style)
 
     return dbc.Container([
         html.Div([
@@ -265,22 +251,13 @@ def render_page(pathname):
     elif pathname == "/graf": return build_tool_page("Gráfica x Arte", "", "3")
     return build_home_layout()
 
-# Callback Genérico de Upload (Gerencia estados Vazio/Preenchido + Limpar)
 def manage_upload_state(contents, filename, n_clear):
     ctx = callback_context
-    if not ctx.triggered: 
-        return no_update, no_update, no_update, no_update
-    
+    if not ctx.triggered: return no_update, no_update, no_update, no_update
     trig_id = ctx.triggered[0]['prop_id'].split('.')[0]
     
-    # Se clicou em limpar
-    if 'clear' in trig_id:
-        return None, "", {"display": "block"}, {"display": "none"}
-    
-    # Se fez upload
-    if contents:
-        return contents, filename, {"display": "none"}, {"display": "block"}
-        
+    if 'clear' in trig_id: return None, "", {"display": "block"}, {"display": "none"}
+    if contents: return contents, filename, {"display": "none"}, {"display": "block"}
     return no_update, no_update, no_update, no_update
 
 @app.callback(
@@ -299,7 +276,7 @@ def update_u1(c, n_clear, n): return manage_upload_state(c, n, n_clear)
 )
 def update_u2(c, n_clear, n): return manage_upload_state(c, n, n_clear)
 
-# Callback PRINCIPAL (IA)
+# Callback PRINCIPAL
 @app.callback(
     Output("output-results", "children"),
     Input("btn-run", "n_clicks"),
@@ -313,7 +290,8 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
 
     try:
         model = get_best_model()
-        if not model: return dbc.Alert("Erro: Verifique a GEMINI_API_KEY nas variáveis de ambiente do Render.", color="danger")
+        if not model: 
+            return dbc.Alert("Erro: Chave API não encontrada! Verifique as variáveis de ambiente do Render.", color="danger")
 
         # Processamento
         d1 = process_file(c1, n1) if c1 else None
@@ -324,16 +302,12 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         if d2: payload.append("--- ARQUIVO 2 ---"); payload.extend([d2['data']] if d2['type']=='text' else d2['data'])
 
         # Lógica Seções
-        from_paciente = SECOES_PACIENTE
-        from_prof = SECOES_PROFISSIONAL
+        lista = SECOES_PACIENTE
+        nome_tipo = "Paciente"
         
-        # Define lista ativa
         if scenario == "1" and tipo_bula == "PROFISSIONAL":
-            lista = from_prof
+            lista = SECOES_PROFISSIONAL
             nome_tipo = "Profissional"
-        else:
-            lista = from_paciente
-            nome_tipo = "Paciente"
         
         secoes_str = "\n".join([f"- {s}" for s in lista])
         nao_comparar_str = "APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS"
@@ -352,7 +326,7 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         2. Erros de Português: <mark style='background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545;'>erro</mark>
         3. Datas ANVISA: <mark style='background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold;'>dd/mm/aaaa</mark>
         
-        SAÍDA JSON:
+        SAÍDA JSON (Sem markdown ```json):
         {{
             "METADADOS": {{ "score": 90, "datas": ["..."] }},
             "SECOES": [
@@ -361,9 +335,13 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         }}
         """
         
-        res = model.generate_content([prompt] + payload)
-        data = json.loads(clean_json(res.text))
-        
+        try:
+            res = model.generate_content([prompt] + payload)
+            data = extract_json_from_text(res.text)
+            if not data: raise ValueError("IA não retornou JSON válido")
+        except Exception as e:
+             return dbc.Alert(f"Erro na resposta da IA: {str(e)}", color="danger")
+
         meta = data.get("METADADOS", {})
         score = meta.get("score", 0)
         datas = meta.get("datas", []) 
@@ -392,7 +370,7 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         return html.Div([cards, dbc.Accordion(items, start_collapsed=False, always_open=True, className="shadow-sm bg-white rounded")])
 
     except Exception as e:
-        return dbc.Alert(f"Erro: {e}", color="danger")
+        return dbc.Alert(f"Erro Geral: {e}", color="danger")
 
 # Handler final (com todos os componentes usados nos callbacks)
 app.validation_layout = html.Div([
