@@ -13,7 +13,6 @@ import gc
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO -----------------
-# Tenta pegar do ambiente. Se não tiver, usa uma string vazia.
 FIXED_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 app = dash.Dash(
@@ -69,57 +68,24 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- BACKEND (IA AUTO-DETECT AVANÇADO) -----------------
+# ----------------- BACKEND (IA + PROCESSAMENTO ULTRA LEVE) -----------------
 
 def get_best_model():
     if not FIXED_API_KEY: return None
     try:
         genai.configure(api_key=FIXED_API_KEY)
-        
-        # 1. Tenta listar modelos disponíveis na conta
-        available_models = []
-        try:
-            available_models = [m.name for m in genai.list_models()]
-        except:
-            pass # Se falhar listar, continua para tentativa direta
-
-        # 2. Lista de TODOS os modelos possíveis que queremos tentar
-        preferences = [
-            'models/gemini-2.5-flash',      # Prioridade 1: Novo, rápido e leve
-            'models/gemini-2.0-flash',      # Prioridade 2: Muito bom também
-            'models/gemini-2.0-flash-exp',
-            'models/gemini-1.5-flash',      # Fallback clássico
-            'models/gemini-1.5-flash-latest',
-            'models/gemini-1.5-pro',
-            'models/gemini-pro',
-            'models/gemini-1.0-pro'
-        ]
-
-        # 3. Se conseguiu listar, escolhe o melhor da lista
-        if available_models:
-            for pref in preferences:
-                if pref in available_models:
-                    return genai.GenerativeModel(pref)
-            # Se nenhum preferido, tenta qualquer um "flash"
-            for model in available_models:
-                if 'flash' in model:
-                    return genai.GenerativeModel(model)
-            # Se não tem flash, tenta qualquer "gemini" que não seja vision puro
-            for model in available_models:
-                if 'gemini' in model and 'vision' not in model:
-                    return genai.GenerativeModel(model)
-
-        # 4. Se não conseguiu listar ou não achou na lista, tenta conectar direto nos mais prováveis
-        # O Python vai tentar instanciar um por um. O primeiro que não der erro na chamada ganha.
-        # Como aqui só instanciamos, vamos retornar o 1.5-flash-latest que costuma ser um alias seguro
-        return genai.GenerativeModel('models/gemini-1.5-flash-latest')
-
+        # Tenta conectar DIRETAMENTE no modelo 2.5 Flash
+        return genai.GenerativeModel('models/gemini-2.5-flash')
     except Exception as e:
-        print(f"Erro ao configurar modelo: {e}")
-        return None
+        print(f"Erro ao conectar no modelo 2.5 (Tentando fallback): {e}")
+        try:
+             # Se o 2.5 falhar (por conta nova), tenta o 2.0 ou 1.5
+             return genai.GenerativeModel('models/gemini-1.5-flash')
+        except:
+             return None
 
 def process_file(contents, filename):
-    """Versão Otimizada para Memória"""
+    """Versão ULTRA LEVE para servidor com 512MB RAM"""
     if not contents: return None
     try:
         _, content_string = contents.split(',')
@@ -134,19 +100,26 @@ def process_file(contents, filename):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
             
-            # OTIMIZAÇÃO: Limita a 3 páginas e qualidade média
-            # Isso é crucial para o plano gratuito do Render não matar o processo
-            limit_pages = min(3, len(doc))
+            # OTIMIZAÇÃO EXTREMA:
+            # 1. Limita a apenas 2 PÁGINAS (Reduz memória pela metade em relação a 4)
+            # 2. Matrix 0.8 (Qualidade baixa, mas legível para IA)
+            limit_pages = min(2, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
-                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=70))
+                # Renderiza em baixa resolução
+                pix = page.get_pixmap(matrix=fitz.Matrix(0.8, 0.8))
+                
+                # Converte para JPEG com compressão alta (qualidade 50%)
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=50))
+                
+                # Carrega a imagem e limpa o buffer imediatamente
                 images.append(Image.open(img_byte_arr))
+                pix = None 
             
             doc.close()
             del decoded
-            gc.collect()
+            gc.collect() # Força limpeza da RAM agora
             
             return {"type": "images", "data": images}
     except Exception as e:
@@ -345,11 +318,12 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
     try:
         model = get_best_model()
         if not model: 
-            return dbc.Alert("Erro: Chave API não encontrada ou modelo indisponível. Verifique o Render.", color="danger")
+            return dbc.Alert("Erro: Chave API não encontrada ou modelo indisponível.", color="danger")
 
+        # Processamento OTIMIZADO
         d1 = process_file(c1, n1) if c1 else None
         d2 = process_file(c2, n2) if c2 else None
-        gc.collect() 
+        gc.collect() # Limpeza extra
 
         payload = []
         if d1: payload.append("--- ARQUIVO 1 ---"); payload.extend([d1['data']] if d1['type']=='text' else d1['data'])
@@ -369,7 +343,7 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         Atue como Auditor de Qualidade Farmacêutica.
         Analise os documentos (Ref vs Alvo).
         
-        TAREFA: Extraia o texto COMPLETO de cada seção.
+        TAREFA: Extraia o texto COMPLETO de cada seção abaixo.
         LISTA ({nome_tipo}):
         {secoes_str}
         
@@ -391,7 +365,7 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         try:
             res = model.generate_content([prompt] + payload)
             data = extract_json_from_text(res.text)
-            if not data: raise ValueError(f"Resposta da IA inválida ou vazia. Tente novamente. Resposta bruta: {res.text[:50]}...")
+            if not data: raise ValueError(f"Resposta da IA inválida ou vazia.")
         except Exception as e:
              return dbc.Alert(f"Erro na resposta da IA: {str(e)}", color="danger")
 
