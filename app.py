@@ -184,31 +184,30 @@ def build_home_layout():
     ])
 
 def build_tool_page(title, subtitle, scenario_id):
-    # Opções (Visível apenas no cenário 1, mas presente no DOM em todos para evitar erro de callback)
-    display_style = {"display": "block"} if scenario_id == "1" else {"display": "none"}
-    
-    options_div = dbc.Card([
-        dbc.CardBody([
-            dbc.Row([
-                dbc.Col(html.Label("Tipo de Bula:", className="fw-bold mt-2 text-end"), width="auto"),
-                dbc.Col(
-                    dbc.RadioItems(
-                        options=[
-                            {"label": "Paciente", "value": "PACIENTE"},
-                            {"label": "Profissional", "value": "PROFISSIONAL"},
-                        ],
-                        value="PACIENTE",
-                        id="radio-tipo-bula",
-                        inline=True,
-                        className="btn-group-radio",
-                        inputClassName="btn-check",
-                        labelClassName="btn btn-outline-success px-4 rounded-pill fw-bold me-2",
-                        labelCheckedClassName="active bg-success text-white"
+    options_div = html.Div()
+    if scenario_id == "1":
+        options_div = dbc.Card([
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col(html.Label("Tipo de Bula:", className="fw-bold mt-2 text-end"), width="auto"),
+                    dbc.Col(
+                        dbc.RadioItems(
+                            options=[
+                                {"label": "Paciente", "value": "PACIENTE"},
+                                {"label": "Profissional", "value": "PROFISSIONAL"},
+                            ],
+                            value="PACIENTE",
+                            id="radio-tipo-bula",
+                            inline=True,
+                            className="btn-group-radio",
+                            inputClassName="btn-check",
+                            labelClassName="btn btn-outline-success px-4 rounded-pill fw-bold me-2",
+                            labelCheckedClassName="active bg-success text-white"
+                        )
                     )
-                )
-            ], className="justify-content-center align-items-center")
-        ])
-    ], className="mb-5 shadow-sm border-0 rounded-pill py-2 bg-white", style=display_style)
+                ], className="justify-content-center align-items-center")
+            ])
+        ], className="mb-5 shadow-sm border-0 rounded-pill py-2 bg-white")
 
     return dbc.Container([
         html.Div([
