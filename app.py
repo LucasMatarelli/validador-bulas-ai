@@ -2,6 +2,7 @@ import dash
 from dash import dcc, html, Input, Output, State, callback_context, no_update
 import dash_bootstrap_components as dbc
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import fitz  # PyMuPDF
 import docx
 import io
@@ -13,7 +14,8 @@ import gc
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO -----------------
-FIXED_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Coloque sua chave aqui para rodar localmente, ou use variável de ambiente
+FIXED_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw")
 
 app = dash.Dash(
     __name__, 
@@ -25,7 +27,7 @@ app = dash.Dash(
 server = app.server
 
 # ----------------- ESTILOS -----------------
-COLOR_PRIMARY = "#55a68e"
+COLOR_PRIMARY = "#55a68e" # Verde Minty
 STYLES = {
     'upload_box': {
         'borderWidth': '2px', 'borderStyle': 'dashed', 'borderRadius': '12px',
@@ -68,24 +70,29 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- BACKEND (IA + PROCESSAMENTO ULTRA LEVE) -----------------
+# ----------------- BACKEND (IA) -----------------
 
 def get_best_model():
     if not FIXED_API_KEY: return None
     try:
         genai.configure(api_key=FIXED_API_KEY)
-        # Tenta conectar DIRETAMENTE no modelo 2.5 Flash
-        return genai.GenerativeModel('models/gemini-2.5-flash')
-    except Exception as e:
-        print(f"Erro ao conectar no modelo 2.5 (Tentando fallback): {e}")
+        
+        # Tenta o modelo mais novo primeiro
         try:
-             # Se o 2.5 falhar (por conta nova), tenta o 2.0 ou 1.5
-             return genai.GenerativeModel('models/gemini-1.5-flash')
+            return genai.GenerativeModel('models/gemini-2.5-flash')
         except:
-             return None
+            # Se não der, tenta o 2.0
+            try:
+                 return genai.GenerativeModel('models/gemini-2.0-flash')
+            except:
+                # Fallback final para o 1.5
+                return genai.GenerativeModel('models/gemini-1.5-flash')
+
+    except Exception as e:
+        print(f"Erro config modelo: {e}")
+        return None
 
 def process_file(contents, filename):
-    """Versão ULTRA LEVE para servidor com 512MB RAM"""
     if not contents: return None
     try:
         _, content_string = contents.split(',')
@@ -100,26 +107,14 @@ def process_file(contents, filename):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
             
-            # OTIMIZAÇÃO EXTREMA:
-            # 1. Limita a apenas 2 PÁGINAS (Reduz memória pela metade em relação a 4)
-            # 2. Matrix 0.8 (Qualidade baixa, mas legível para IA)
-            limit_pages = min(2, len(doc))
+            # Otimização: 4 páginas, 72 DPI
+            limit_pages = min(4, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                # Renderiza em baixa resolução
-                pix = page.get_pixmap(matrix=fitz.Matrix(0.8, 0.8))
-                
-                # Converte para JPEG com compressão alta (qualidade 50%)
-                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=50))
-                
-                # Carrega a imagem e limpa o buffer imediatamente
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=80))
                 images.append(Image.open(img_byte_arr))
-                pix = None 
-            
-            doc.close()
-            del decoded
-            gc.collect() # Força limpeza da RAM agora
             
             return {"type": "images", "data": images}
     except Exception as e:
@@ -282,7 +277,6 @@ def manage_upload_state(contents, filename, n_clear):
     ctx = callback_context
     if not ctx.triggered: return no_update, no_update, no_update, no_update
     trig_id = ctx.triggered[0]['prop_id'].split('.')[0]
-    
     if 'clear' in trig_id: return None, "", {"display": "block"}, {"display": "none"}
     if contents: return contents, filename, {"display": "none"}, {"display": "block"}
     return no_update, no_update, no_update, no_update
@@ -318,12 +312,11 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
     try:
         model = get_best_model()
         if not model: 
-            return dbc.Alert("Erro: Chave API não encontrada ou modelo indisponível.", color="danger")
+            return dbc.Alert("Erro: Chave API não encontrada.", color="danger")
 
-        # Processamento OTIMIZADO
         d1 = process_file(c1, n1) if c1 else None
         d2 = process_file(c2, n2) if c2 else None
-        gc.collect() # Limpeza extra
+        gc.collect()
 
         payload = []
         if d1: payload.append("--- ARQUIVO 1 ---"); payload.extend([d1['data']] if d1['type']=='text' else d1['data'])
@@ -331,7 +324,6 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
 
         lista = SECOES_PACIENTE
         nome_tipo = "Paciente"
-        
         if scenario == "1" and tipo_bula == "PROFISSIONAL":
             lista = SECOES_PROFISSIONAL
             nome_tipo = "Profissional"
@@ -343,7 +335,7 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         Atue como Auditor de Qualidade Farmacêutica.
         Analise os documentos (Ref vs Alvo).
         
-        TAREFA: Extraia o texto COMPLETO de cada seção abaixo.
+        TAREFA: Extraia o texto COMPLETO de cada seção.
         LISTA ({nome_tipo}):
         {secoes_str}
         
@@ -363,11 +355,20 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         """
         
         try:
-            res = model.generate_content([prompt] + payload)
-            data = extract_json_from_text(res.text)
-            if not data: raise ValueError(f"Resposta da IA inválida ou vazia.")
+            response = model.generate_content(
+                [prompt] + payload,
+                generation_config={"response_mime_type": "application/json"},
+                safety_settings={
+                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                }
+            )
+            data = extract_json_from_text(response.text)
+            if not data: raise ValueError("Resposta da IA inválida.")
         except Exception as e:
-             return dbc.Alert(f"Erro na resposta da IA: {str(e)}", color="danger")
+             return dbc.Alert(f"Erro IA: {str(e)}", color="danger")
 
         meta = data.get("METADADOS", {})
         score = meta.get("score", 0)
@@ -404,7 +405,7 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         return html.Div([cards, dbc.Accordion(items, start_collapsed=False, always_open=True, className="shadow-sm bg-white rounded")])
 
     except Exception as e:
-        return dbc.Alert(f"Erro durante análise: {str(e)}", color="danger")
+        return dbc.Alert(f"Erro na análise: {str(e)}", color="danger")
 
 # Handler final
 app.validation_layout = html.Div([
