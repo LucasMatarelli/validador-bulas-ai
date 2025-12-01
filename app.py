@@ -9,6 +9,7 @@ import base64
 import json
 import re
 import os
+import gc # Garbage Collector para limpar memória
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO -----------------
@@ -68,19 +69,17 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- BACKEND -----------------
+# ----------------- BACKEND (OTIMIZADO PARA MEMÓRIA BAIXA) -----------------
 
 def get_best_model():
-    if not FIXED_API_KEY:
-        return None
+    if not FIXED_API_KEY: return None
     try:
         genai.configure(api_key=FIXED_API_KEY)
-        # Tenta usar o modelo Flash 1.5 que é o mais rápido e leve
         return genai.GenerativeModel('models/gemini-1.5-flash')
-    except:
-        return None
+    except: return None
 
 def process_file(contents, filename):
+    """Processa arquivo com foco total em economia de memória RAM."""
     if not contents: return None
     try:
         _, content_string = contents.split(',')
@@ -90,37 +89,50 @@ def process_file(contents, filename):
             doc = docx.Document(io.BytesIO(decoded))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text}
+            
         elif filename.lower().endswith('.pdf'):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
-            # OTIMIZAÇÃO MÁXIMA: Limita a 4 páginas e reduz qualidade para 1.0 (DPI 72)
-            # Isso reduz drasticamente o tamanho do payload e o tempo de processamento
-            for i in range(min(4, len(doc))):
+            
+            # OTIMIZAÇÃO AGRESSIVA:
+            # 1. Limita a 4 páginas (Geralmente o suficiente para pegar o início das seções importantes)
+            # 2. Matrix(1.0, 1.0) = 72 DPI (Qualidade Padrão, muito mais leve que o 2.0/High Def anterior)
+            # 3. Qualidade JPEG 70%
+            
+            limit_pages = min(4, len(doc))
+            
+            for i in range(limit_pages):
                 page = doc[i]
-                # Matrix(1, 1) = 72 DPI (padrão), suficiente para texto legível pela IA
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
-                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=80)) # Compressão JPEG
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0)) 
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=70))
                 images.append(Image.open(img_byte_arr))
+            
+            doc.close() # Fecha o documento para liberar memória
+            del decoded # Remove o binário da memória
+            gc.collect() # Força limpeza da RAM
+            
             return {"type": "images", "data": images}
     except Exception as e:
+        print(f"Erro processamento: {e}")
         return None
     return None
 
+def clean_json(text):
+    text = text.replace("```json", "").replace("```", "").strip()
+    text = re.sub(r'//.*', '', text)
+    if text.startswith("json"): text = text[4:]
+    return text
+
 def extract_json_from_text(text):
-    """Extrai JSON válido mesmo se a IA falar antes ou depois."""
     try:
-        # Tenta limpar markdown
-        text = text.replace("```json", "").replace("```", "").strip()
-        # Tenta achar o primeiro { e o último }
-        start = text.find('{')
-        end = text.rfind('}') + 1
+        clean_text = clean_json(text)
+        # Tenta achar chaves se houver lixo antes/depois
+        start = clean_text.find('{')
+        end = clean_text.rfind('}') + 1
         if start != -1 and end != -1:
-            json_str = text[start:end]
-            return json.loads(json_str)
-        return json.loads(text) # Tenta direto se não achou chaves
-    except Exception as e:
-        print(f"Erro JSON Parse: {e}")
-        return None
+            return json.loads(clean_text[start:end])
+        return json.loads(clean_text)
+    except: return None
 
 # ----------------- COMPONENTES VISUAIS -----------------
 
@@ -128,13 +140,26 @@ def build_upload_area(id_upload, id_filename, id_clear, label):
     return html.Div([
         html.H6([html.I(className="far fa-file-alt me-2 text-muted"), label], className="fw-bold mb-2"),
         html.Div([
-            dcc.Upload(
-                id=id_upload,
-                children=html.Div([
-                    html.Div([
-                        html.I(className="fas fa-cloud-arrow-up fa-3x", style={"color": "#adb5bd"}),
-                        html.H6("Arraste ou Clique", className="mt-3 text-muted fw-bold")
-                    ], id=f"{id_upload}-empty"),
+            # Estado Vazio
+            html.Div(
+                id=f"{id_upload}-empty",
+                children=dcc.Upload(
+                    id=id_upload,
+                    children=html.Div([
+                        html.Div([
+                            html.I(className="fas fa-cloud-arrow-up fa-3x", style={"color": "#adb5bd"}),
+                            html.H6("Arraste ou Clique", className="mt-3 text-muted fw-bold")
+                        ]),
+                    ]),
+                    style=STYLES['upload_box'],
+                    multiple=False
+                ),
+                style={"display": "block"}
+            ),
+            # Estado Preenchido
+            html.Div(
+                id=f"{id_upload}-filled",
+                children=[
                     html.Div([
                         html.I(className="fas fa-check-circle fa-4x text-success mb-3"),
                         html.H6(id=id_filename, className="text-success fw-bold text-break mb-3"),
@@ -142,10 +167,9 @@ def build_upload_area(id_upload, id_filename, id_clear, label):
                             [html.I(className="fas fa-trash-alt me-2"), "Remover Arquivo"],
                             id=id_clear, color="danger", outline=True, size="sm", className="rounded-pill px-3"
                         )
-                    ], id=f"{id_upload}-filled", style={"display": "none"})
-                ]),
-                style=STYLES['upload_box'],
-                multiple=False
+                    ], style=STYLES['file_card'])
+                ],
+                style={"display": "none"}
             )
         ])
     ])
@@ -287,12 +311,13 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
     try:
         model = get_best_model()
         if not model: 
-            return dbc.Alert("Erro: Chave API não encontrada! Verifique as variáveis de ambiente do Render.", color="danger")
+            return dbc.Alert("Erro: Chave API não encontrada! Verifique as variáveis de ambiente.", color="danger")
 
-        # Processamento
+        # Processamento (COM LIMPEZA DE MEMÓRIA)
         d1 = process_file(c1, n1) if c1 else None
         d2 = process_file(c2, n2) if c2 else None
-        
+        gc.collect() # Limpa memória após processamento
+
         payload = []
         if d1: payload.append("--- ARQUIVO 1 ---"); payload.extend([d1['data']] if d1['type']=='text' else d1['data'])
         if d2: payload.append("--- ARQUIVO 2 ---"); payload.extend([d2['data']] if d2['type']=='text' else d2['data'])
@@ -353,22 +378,30 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         for sec in data.get("SECOES", []):
             status = sec.get('status', 'N/A')
             icon = "✅"
-            if "DIVERGENTE" in status: icon = "❌"
-            elif "FALTANTE" in status: icon = "🚨"
-            elif "INFORMATIVO" in status: icon = "ℹ️"
+            header_color = "text-success"
+            
+            if "DIVERGENTE" in status: 
+                icon = "❌"
+                header_color = "text-danger"
+            elif "FALTANTE" in status: 
+                icon = "🚨"
+                header_color = "text-warning"
+            elif "INFORMATIVO" in status: 
+                icon = "ℹ️"
+                header_color = "text-info"
 
             content = dbc.Row([
                 dbc.Col([html.Strong("Referência", className="text-primary"), html.Div(dcc.Markdown(sec.get('ref',''), dangerously_allow_html=True), style=STYLES['bula_box'])], md=6),
                 dbc.Col([html.Strong("Belfar", className="text-success"), html.Div(dcc.Markdown(sec.get('bel',''), dangerously_allow_html=True), style=STYLES['bula_box'])], md=6)
             ])
-            items.append(dbc.AccordionItem(content, title=f"{icon} {sec['titulo']} — {status}", item_id=sec['titulo']))
+            items.append(dbc.AccordionItem(content, title=f"{icon} {sec['titulo']} — {status}", item_id=sec['titulo'], className=header_color))
 
         return html.Div([cards, dbc.Accordion(items, start_collapsed=False, always_open=True, className="shadow-sm bg-white rounded")])
 
     except Exception as e:
         return dbc.Alert(f"Erro Geral: {e}", color="danger")
 
-# Handler final (com todos os componentes usados nos callbacks)
+# Handler final
 app.validation_layout = html.Div([
     build_upload_area("upload-1","","clear-1",""), 
     build_upload_area("upload-2","","clear-2",""),
