@@ -75,15 +75,10 @@ def get_best_model():
         return None
     try:
         genai.configure(api_key=FIXED_API_KEY)
-        # Tenta modelos novos primeiro
-        prefs = ['models/gemini-2.5-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-pro', 'models/gemini-1.5-flash']
-        return genai.GenerativeModel(prefs[0]) # Tenta o mais novo direto, se falhar o try/except pega
+        # Tenta usar o modelo Flash 1.5 que é o mais rápido e leve
+        return genai.GenerativeModel('models/gemini-1.5-flash')
     except:
-        # Fallback seguro
-        try:
-            return genai.GenerativeModel('models/gemini-1.5-flash')
-        except:
-            return None
+        return None
 
 def process_file(contents, filename):
     if not contents: return None
@@ -98,11 +93,13 @@ def process_file(contents, filename):
         elif filename.lower().endswith('.pdf'):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
-            # OTIMIZAÇÃO: 5 páginas max e qualidade média (Evita Timeout do Render Free)
-            for i in range(min(5, len(doc))):
+            # OTIMIZAÇÃO MÁXIMA: Limita a 4 páginas e reduz qualidade para 1.0 (DPI 72)
+            # Isso reduz drasticamente o tamanho do payload e o tempo de processamento
+            for i in range(min(4, len(doc))):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
+                # Matrix(1, 1) = 72 DPI (padrão), suficiente para texto legível pela IA
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=80)) # Compressão JPEG
                 images.append(Image.open(img_byte_arr))
             return {"type": "images", "data": images}
     except Exception as e:
