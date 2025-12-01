@@ -13,7 +13,6 @@ from PIL import Image
 # ----------------- CONFIGURAÇÃO -----------------
 FIXED_API_KEY = "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw"
 
-# Inicializa o App
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.MINTY, "https://use.fontawesome.com/releases/v6.4.0/css/all.css"],
@@ -23,23 +22,33 @@ app = dash.Dash(
 )
 server = app.server
 
-# ----------------- ESTILOS GLOBAIS -----------------
-GLOBAL_STYLES = {
-    'upload-box': {
-        'width': '100%', 'height': '120px', 'lineHeight': '30px',
-        'borderWidth': '2px', 'borderStyle': 'dashed', 'borderRadius': '12px',
-        'textAlign': 'center', 'borderColor': '#dee2e6', 'backgroundColor': '#f8f9fa',
-        'cursor': 'pointer', 'padding': '25px', 'transition': 'all 0.3s ease'
+# ----------------- ESTILOS (IGUAL AO SEU PRINT) -----------------
+COLOR_PRIMARY = "#55a68e" # Verde do seu print
+COLOR_BG = "#f8f9fa"
+
+STYLES = {
+    'upload_box': {
+        'borderWidth': '2px', 'borderStyle': 'dashed', 'borderRadius': '15px',
+        'borderColor': '#dee2e6', 'backgroundColor': '#ffffff',
+        'padding': '30px', 'textAlign': 'center', 'cursor': 'pointer',
+        'minHeight': '180px', 'display': 'flex', 'flexDirection': 'column', 
+        'justifyContent': 'center', 'alignItems': 'center',
+        'transition': 'all 0.2s'
     },
-    'bula-box': {
+    'bula_box': {
         'height': '400px', 'overflowY': 'auto', 'border': '1px solid #e9ecef',
-        'borderRadius': '8px', 'padding': '20px', 'backgroundColor': '#ffffff',
-        'fontFamily': '"Georgia", serif', 'fontSize': '15px', 'lineHeight': '1.6',
-        'color': '#212529'
+        'borderRadius': '8px', 'padding': '25px', 'backgroundColor': '#ffffff',
+        'fontFamily': '"Georgia", serif', 'fontSize': '15px', 'lineHeight': '1.7',
+        'color': '#212529', 'boxShadow': 'inset 0 2px 4px rgba(0,0,0,0.02)'
+    },
+    'btn_primary': {
+        'backgroundColor': COLOR_PRIMARY, 'border': 'none', 'fontWeight': 'bold',
+        'padding': '12px 24px', 'borderRadius': '8px', 'fontSize': '16px',
+        'width': '100%', 'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'
     }
 }
 
-# ----------------- CONSTANTES DE SEÇÃO -----------------
+# ----------------- LISTAS DE SEÇÕES -----------------
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -50,310 +59,312 @@ SECOES_PACIENTE = [
     "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
     "DIZERES LEGAIS"
 ]
+
 SECOES_PROFISSIONAL = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
     "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
     "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
+
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- BACKEND -----------------
-def get_gemini_model():
+def get_model():
     try:
         genai.configure(api_key=FIXED_API_KEY)
         return genai.GenerativeModel('models/gemini-1.5-flash')
     except: return None
 
-def process_uploaded_file(contents, filename):
+def process_file(contents, filename):
     if not contents: return None
     try:
-        content_type, content_string = contents.split(',')
+        _, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
         
         if filename.lower().endswith('.docx'):
             doc = docx.Document(io.BytesIO(decoded))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text}
-
         elif filename.lower().endswith('.pdf'):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
-            for i in range(min(12, len(doc))):
+            # OTIMIZAÇÃO: Reduz resolução (1.5) e limita páginas (8) para não dar timeout
+            for i in range(min(8, len(doc))):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                 img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
                 images.append(Image.open(img_byte_arr))
             return {"type": "images", "data": images}
     except Exception as e:
-        print(f"Erro processamento: {e}")
+        print(f"Erro: {e}")
         return None
     return None
 
-def clean_json_response(text):
+def clean_json(text):
     text = text.replace("```json", "").replace("```", "").strip()
     text = re.sub(r'//.*', '', text)
     if text.startswith("json"): text = text[4:]
     return text
 
-# ----------------- COMPONENTES VISUAIS (CORRIGIDO) -----------------
+# ----------------- COMPONENTES VISUAIS -----------------
 
-def upload_box(id_name, label):
-    """Componente reutilizável para upload"""
-    return dbc.Card([
-        dbc.CardBody([
-            html.H6(label, className="fw-bold text-primary mb-3 text-center"),
-            dcc.Upload(
-                id=id_name,
-                children=html.Div([
-                    html.I(className="fas fa-cloud-arrow-up fa-3x text-muted mb-3"),
-                    html.Br(),
-                    html.Span("Arraste ou Clique", className="fw-bold")
-                ]),
-                style=GLOBAL_STYLES['upload-box'],
-                multiple=False
-            ),
-            html.Div(id=f"{id_name}-filename", className="text-center small mt-2 text-success fw-bold")
-        ])
-    ], className="mb-3 shadow-sm border-0")
-
-# ----------------- LAYOUTS DE PÁGINA -----------------
-
-def build_home_layout():
-    return dbc.Container([
-        html.Div([
-            html.H1([html.I(className="fas fa-robot text-primary me-3"), "Validador Inteligente"], className="display-5 fw-bold mb-3"),
-            html.P("Central de auditoria de conformidade de bulas farmacêuticas.", className="lead text-muted mb-5"),
-            
-            dbc.Alert([
-                html.I(className="fas fa-hand-point-left me-2"), 
-                html.Strong("Como usar: "), "Selecione a ferramenta desejada no menu lateral esquerdo."
-            ], color="primary", className="d-inline-block px-4 py-3 rounded-pill shadow-sm mb-5"),
-            
-            html.H4("Ferramentas Disponíveis:", className="fw-bold text-dark mb-4 border-bottom pb-2"),
-            
-            dbc.Row([
-                dbc.Col(dbc.Card([
-                    dbc.CardBody([
-                        html.Div(html.I(className="fas fa-pills fa-2x text-primary"), className="mb-3 bg-light rounded-circle p-3 d-inline-block"),
-                        html.H5("1. Ref x BELFAR", className="fw-bold"),
-                        html.P("Comparação semântica completa. Detecta divergências de texto, erros e datas.", className="text-muted small"),
-                    ])
-                ], className="h-100 shadow-sm border-0 hover-shadow text-center py-4"), md=4),
-                
-                dbc.Col(dbc.Card([
-                    dbc.CardBody([
-                        html.Div(html.I(className="fas fa-clipboard-check fa-2x text-warning"), className="mb-3 bg-light rounded-circle p-3 d-inline-block"),
-                        html.H5("2. Conferência MKT", className="fw-bold"),
-                        html.P("Validação de arquivos de marketing contra o padrão exigido.", className="text-muted small"),
-                    ])
-                ], className="h-100 shadow-sm border-0 hover-shadow text-center py-4"), md=4),
-                
-                dbc.Col(dbc.Card([
-                    dbc.CardBody([
-                        html.Div(html.I(className="fas fa-print fa-2x text-danger"), className="mb-3 bg-light rounded-circle p-3 d-inline-block"),
-                        html.H5("3. Gráfica x Arte", className="fw-bold"),
-                        html.P("Comparação visual para pré-impressão. Detecta erros gráficos.", className="text-muted small"),
-                    ])
-                ], className="h-100 shadow-sm border-0 hover-shadow text-center py-4"), md=4),
-            ])
-        ], className="py-5 animate-fade-in")
-    ], fluid=True)
-
-def build_tool_page(title, subtitle, scenario_id, icon, color):
-    # Seletor de Tipo (Apenas Cenário 1)
-    type_selector = html.Div()
-    if scenario_id == "1":
-        type_selector = html.Div([
-            html.Label("Selecione o Tipo de Bula:", className="fw-bold text-dark me-3"),
-            dbc.RadioItems(
-                options=[
-                    {"label": "Paciente", "value": "PACIENTE"},
-                    {"label": "Profissional", "value": "PROFISSIONAL"},
-                ],
-                value="PACIENTE",
-                id="radio-tipo-bula",
-                inline=True,
-                className="btn-group-toggle",
-                inputClassName="btn-check",
-                labelClassName="btn btn-outline-primary px-4 py-2 rounded-pill fw-bold",
-                labelCheckedClassName="active"
-            )
-        ], className="d-flex align-items-center justify-content-center bg-white p-3 rounded-pill shadow-sm mb-5 border")
-
-    return dbc.Container([
-        html.Div([
-            html.H2([html.I(className=f"fas {icon} text-{color} me-3"), title], className="fw-bold"),
-            html.P(subtitle, className="text-muted"),
-        ], className="mb-5 border-bottom pb-3"),
+def build_upload_area(id_upload, id_filename, id_clear, label):
+    return html.Div([
+        html.H6([html.I(className="far fa-file-alt me-2"), label], className="fw-bold text-secondary mb-3"),
         
-        type_selector,
+        # Área de Upload
+        dcc.Upload(
+            id=id_upload,
+            children=html.Div([
+                html.Div([
+                    html.I(className="fas fa-cloud-arrow-up fa-3x", style={"color": "#adb5bd"}),
+                    html.H6("Arraste ou Clique", className="mt-3 text-muted fw-bold")
+                ], id=f"{id_upload}-placeholder"),
+                
+                # Mostra quando arquivo carregado
+                html.Div([
+                    html.I(className="fas fa-check-circle fa-3x text-success mb-2"),
+                    html.H6(id=id_filename, className="text-success fw-bold text-break")
+                ], id=f"{id_upload}-success", style={"display": "none"})
+            ]),
+            style=STYLES['upload_box'],
+            multiple=False,
+            className="shadow-sm hover-shadow"
+        ),
+        
+        # Botão Limpar (X)
+        dbc.Button(
+            [html.I(className="fas fa-trash-alt me-2"), "Remover Arquivo"],
+            id=id_clear,
+            color="danger",
+            outline=True,
+            size="sm",
+            className="mt-2 w-100",
+            style={"display": "none"} # Inicialmente escondido
+        )
+    ])
+
+# ----------------- LAYOUTS -----------------
+
+sidebar = html.Div([
+    html.Div([
+        html.I(className="fas fa-shield-alt fa-2x text-primary me-2"),
+        html.Span("Validador", className="h3 fw-bold align-middle", style={"color": "#2c3e50"})
+    ], className="px-3 py-4 mb-4"),
+    
+    dbc.Nav([
+        dbc.NavLink([html.I(className="fas fa-home me-3"), "Início"], href="/", active="exact", className="py-3 fw-bold"),
+        dbc.NavLink([html.I(className="fas fa-pills me-3"), "Ref x Belfar"], href="/ref-bel", active="exact", className="py-3 fw-bold"),
+        dbc.NavLink([html.I(className="fas fa-file-contract me-3"), "Conferência MKT"], href="/mkt", active="exact", className="py-3 fw-bold"),
+        dbc.NavLink([html.I(className="fas fa-print me-3"), "Gráfica x Arte"], href="/graf", active="exact", className="py-3 fw-bold"),
+    ], vertical=True, pills=True, className="px-3"),
+], style={"position": "fixed", "top": 0, "left": 0, "bottom": 0, "width": "260px", "backgroundColor": "#fff", "borderRight": "1px solid #dee2e6", "zIndex": 100})
+
+def build_tool_page(title, subtitle, scenario_id):
+    # Seletor estilo "pill" verde
+    options_div = html.Div()
+    if scenario_id == "1":
+        options_div = dbc.Card([
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col(html.Label("Selecione o Tipo de Bula:", className="fw-bold mt-2"), width="auto"),
+                    dbc.Col(
+                        dbc.RadioItems(
+                            options=[
+                                {"label": "Paciente", "value": "PACIENTE"},
+                                {"label": "Profissional", "value": "PROFISSIONAL"},
+                            ],
+                            value="PACIENTE",
+                            id="radio-tipo-bula",
+                            inline=True,
+                            className="btn-group-radio",
+                            inputClassName="btn-check",
+                            labelClassName="btn btn-outline-success px-4 rounded-pill fw-bold",
+                            labelCheckedClassName="active"
+                        )
+                    )
+                ], justify="center")
+            ])
+        ], className="mb-5 shadow-sm border-0 rounded-4")
+
+    return dbc.Container([
+        html.H2(title, className="fw-bold mb-2", style={"color": "#2c3e50"}),
+        html.P(subtitle, className="text-muted mb-5"),
+        
+        options_div,
         
         dbc.Row([
-            dbc.Col(upload_box("upload-1", "📄 Documento Referência / Padrão"), md=6),
-            dbc.Col(upload_box("upload-2", "📄 Documento Belfar / Candidato"), md=6),
-        ], className="mb-5"),
+            dbc.Col(build_upload_area("upload-1", "file-name-1", "clear-1", "Documento Referência / Padrão"), md=6, className="mb-4"),
+            dbc.Col(build_upload_area("upload-2", "file-name-2", "clear-2", "Documento Belfar / Candidato"), md=6, className="mb-4"),
+        ]),
         
-        dbc.Button([html.I(className="fas fa-rocket me-2"), "INICIAR AUDITORIA COMPLETA"], 
-                   id="btn-run", color=color, size="lg", className="w-100 py-3 fw-bold shadow hover-lift"),
+        html.Div([
+            dbc.Button(
+                [html.I(className="fas fa-rocket me-2"), "INICIAR AUDITORIA COMPLETA"],
+                id="btn-run",
+                style=STYLES['btn_primary'],
+                className="hover-lift"
+            )
+        ], className="mt-4 mb-5"),
         
-        dcc.Loading(id="loading", type="dot", color=color, children=html.Div(id="output-results", className="mt-5")),
-        
+        dcc.Loading(id="loading", type="dot", color=COLOR_PRIMARY, children=html.Div(id="output-results")),
         dcc.Store(id="scenario-store", data=scenario_id)
     ], fluid=True, className="py-4")
 
-# ----------------- APP PRINCIPAL -----------------
-sidebar = html.Div([
-    dcc.Link([
-        html.Div([
-            html.I(className="fas fa-shield-alt fa-2x text-primary me-2"),
-            html.Span("Validador", className="h4 fw-bold align-middle text-dark")
-        ], className="text-center py-4 border-bottom bg-light")
-    ], href="/", className="text-decoration-none"),
-    
-    dbc.Nav([
-        dbc.NavLink([html.I(className="fas fa-home w-25"), "Início"], href="/", active="exact", className="py-3 fw-bold"),
-        dbc.NavLink([html.I(className="fas fa-pills w-25"), "Ref x Belfar"], href="/ref-bel", active="exact", className="py-3 fw-bold"),
-        dbc.NavLink([html.I(className="fas fa-file-contract w-25"), "Conferência MKT"], href="/mkt", active="exact", className="py-3 fw-bold"),
-        dbc.NavLink([html.I(className="fas fa-print w-25"), "Gráfica x Arte"], href="/graf", active="exact", className="py-3 fw-bold"),
-    ], vertical=True, pills=True, className="px-3 py-4"),
-], style={"position": "fixed", "top": 0, "left": 0, "bottom": 0, "width": "260px", "backgroundColor": "#fff", "borderRight": "1px solid #dee2e6", "zIndex": 100})
-
+# ----------------- APP -----------------
 app.layout = html.Div([
-    dcc.Location(id="url", refresh=False),
+    dcc.Location(id="url", refresh="callback-nav"), 
     sidebar,
-    html.Div(id="page-content", style={"marginLeft": "260px", "padding": "2rem", "backgroundColor": "#fcfcfc", "minHeight": "100vh"})
+    html.Div(id="page-content", style={"marginLeft": "260px", "padding": "3rem", "backgroundColor": "#f8f9fa", "minHeight": "100vh"})
 ])
 
 # ----------------- CALLBACKS -----------------
 
+# Navegação
 @app.callback(Output("page-content", "children"), [Input("url", "pathname")])
-def render_content(pathname):
-    if pathname == "/ref-bel":
-        return build_tool_page("Medicamento Ref x BELFAR", "Comparação de Bula Paciente ou Profissional.", "1", "fa-pills", "primary")
-    elif pathname == "/mkt":
-        return build_tool_page("Conferência MKT", "Validação de itens obrigatórios.", "2", "fa-clipboard-check", "warning")
-    elif pathname == "/graf":
-        return build_tool_page("Gráfica x Arte Vigente", "Validação visual para impressão.", "3", "fa-print", "danger")
-    return build_home_layout()
+def render_page(pathname):
+    if pathname == "/ref-bel": return build_tool_page("Ref x Belfar", "Comparação de Bula.", "1")
+    elif pathname == "/mkt": return build_tool_page("Conferência MKT", "Validação MKT.", "2")
+    elif pathname == "/graf": return build_tool_page("Gráfica x Arte", "Validação Visual.", "3")
+    
+    # Home
+    return dbc.Container([
+        html.H1("Validador Inteligente", className="display-4 fw-bold text-center mb-5", style={"color": "#2c3e50"}),
+        dbc.Row([
+            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Ref x Belfar", className="fw-bold"), dbc.Button("Acessar", href="/ref-bel", color="success", outline=True, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
+            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Conferência MKT", className="fw-bold"), dbc.Button("Acessar", href="/mkt", color="warning", outline=True, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
+            dbc.Col(dbc.Card([dbc.CardBody([html.H4("Gráfica x Arte", className="fw-bold"), dbc.Button("Acessar", href="/graf", color="danger", outline=True, className="mt-3 w-100")])], className="shadow-sm border-0 h-100 p-4 text-center"), md=4),
+        ])
+    ])
 
-@app.callback([Output("upload-1-filename", "children"), Output("upload-2-filename", "children")], 
-              [Input("upload-1", "filename"), Input("upload-2", "filename")])
-def update_filenames(n1, n2):
-    return (f"✅ {n1}" if n1 else ""), (f"✅ {n2}" if n2 else "")
+# Callbacks de Upload (Mostrar nome / Limpar)
+def manage_upload(contents, filename, n_clear):
+    ctx = callback_context
+    if not ctx.triggered: return no_update, no_update, no_update, no_update
+    
+    trig_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    if 'clear' in trig_id:
+        return None, "", {"display": "block"}, {"display": "none"} # Limpa tudo
+    
+    if contents:
+        return contents, filename, {"display": "none"}, {"display": "block"} # Mostra sucesso
+        
+    return no_update, no_update, no_update, no_update
 
+# Callback Upload 1
+@app.callback(
+    [Output("upload-1", "contents"), Output("file-name-1", "children"),
+     Output("upload-1-placeholder", "style"), Output("upload-1-success", "style"), Output("clear-1", "style")],
+    [Input("upload-1", "contents"), Input("clear-1", "n_clicks")],
+    [State("upload-1", "filename")]
+)
+def update_u1(cont, n_clear, name):
+    c, n, s1, s2 = manage_upload(cont, name, n_clear)
+    # Mostra botão limpar se tiver arquivo
+    btn_style = {"display": "block"} if c else {"display": "none"}
+    return c, n, s1, s2, btn_style
+
+# Callback Upload 2
+@app.callback(
+    [Output("upload-2", "contents"), Output("file-name-2", "children"),
+     Output("upload-2-placeholder", "style"), Output("upload-2-success", "style"), Output("clear-2", "style")],
+    [Input("upload-2", "contents"), Input("clear-2", "n_clicks")],
+    [State("upload-2", "filename")]
+)
+def update_u2(cont, n_clear, name):
+    c, n, s1, s2 = manage_upload(cont, name, n_clear)
+    btn_style = {"display": "block"} if c else {"display": "none"}
+    return c, n, s1, s2, btn_style
+
+# Callback PRINCIPAL (IA)
 @app.callback(
     Output("output-results", "children"),
     Input("btn-run", "n_clicks"),
-    [State("upload-1", "contents"), State("upload-2", "contents"),
+    [State("upload-1", "contents"), State("upload-1", "filename"),
+     State("upload-2", "contents"), State("upload-2", "filename"),
      State("scenario-store", "data"), State("radio-tipo-bula", "value")]
 )
-def run_analysis(n_clicks, c1, c2, scenario, tipo_bula):
+def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
     if not n_clicks: return no_update
-    if not c1 and not c2: return dbc.Alert("⚠️ Por favor, faça o upload dos arquivos.", color="warning", className="fw-bold")
+    if not c1 and not c2: return dbc.Alert("⚠️ Faça o upload dos arquivos!", color="warning")
 
     try:
-        model = get_gemini_model()
-        if not model: return dbc.Alert("Erro na API Key.", color="danger")
-
-        # Processamento
-        d1 = process_uploaded_file(c1, "f1.pdf") if c1 else None
-        d2 = process_uploaded_file(c2, "f2.pdf") if c2 else None
+        model = get_model()
+        d1 = process_file(c1, n1) if c1 else None
+        d2 = process_file(c2, n2) if c2 else None
         
         payload = []
-        if d1: payload.append("--- REF ---") if d1['type']=='text' else None; payload.extend(d1['data'] if d1['type']=='images' else [d1['data']])
-        if d2: payload.append("--- BELFAR ---") if d2['type']=='text' else None; payload.extend(d2['data'] if d2['type']=='images' else [d2['data']])
+        if d1: payload.append("--- REF ---"); payload.extend([d1['data']] if d1['type']=='text' else d1['data'])
+        if d2: payload.append("--- ALVO ---"); payload.extend([d2['data']] if d2['type']=='text' else d2['data'])
 
-        # Definição de Seções e Prompt
-        lista_ativa = SECOES_PACIENTE # Default para MKT e Grafica
+        # Lógica Seções
+        lista = SECOES_PACIENTE
         nome_tipo = "Paciente"
-
+        
         if scenario == "1":
             if tipo_bula == "PROFISSIONAL":
-                lista_ativa = SECOES_PROFISSIONAL
+                lista = SECOES_PROFISSIONAL
                 nome_tipo = "Profissional"
-            else:
-                lista_ativa = SECOES_PACIENTE
-                nome_tipo = "Paciente"
+        # Cenários 2 e 3 sempre usam PACIENTE como base
         
-        secoes_str = "\n".join([f"- {s}" for s in lista_ativa])
-        nao_comparar_str = ", ".join(SECOES_NAO_COMPARAR)
-
+        secoes_str = "\n".join([f"- {s}" for s in lista])
+        
         prompt = f"""
-        Atue como Auditor de Qualidade Farmacêutica.
-        Analise os documentos (Ref vs Belfar).
+        Atue como Auditor. Compare os dois documentos (Ref vs Alvo).
         
-        TAREFA: Extraia o texto COMPLETO de cada seção abaixo.
+        TAREFA: Extraia o texto COMPLETO de cada seção.
         LISTA ({nome_tipo}):
         {secoes_str}
         
-        REGRAS DE FORMATAÇÃO (Retorne texto com estas tags HTML):
-        1. Divergências de sentido: <mark style="background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba;">texto diferente</mark>
-           (IGNORE divergências nas seções: {nao_comparar_str}).
-        2. Erros de Português: <mark style="background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545;">erro</mark>
-        3. Datas ANVISA: <mark style="background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold;">dd/mm/aaaa</mark>
+        Retorne texto com HTML:
+        - Divergências: <mark style='background-color: #fff3cd; color: #856404; padding: 2px 4px; border: 1px solid #ffeeba;'>texto</mark>
+        - Erros PT: <mark style='background-color: #f8d7da; color: #721c24; border-bottom: 2px solid red;'>erro</mark>
+        - Datas: <mark style='background-color: #cff4fc; color: #055160; font-weight: bold;'>data</mark>
         
         SAÍDA JSON:
         {{
-            "METADADOS": {{ "score": 90, "datas": ["..."] }},
-            "SECOES": [
-                {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" | "INFORMATIVO" }}
-            ]
+            "METADADOS": {{ "score": 90, "datas": [] }},
+            "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }} ]
         }}
         """
-
-        response = model.generate_content([prompt] + payload)
-        txt = clean_json_response(response.text)
-        data = json.loads(txt)
         
-        # Renderização
+        res = model.generate_content([prompt] + payload)
+        data = json.loads(clean_json(res.text))
+        
+        # Render
         meta = data.get("METADADOS", {})
-        score = meta.get("score", 0)
-        datas = meta.get("datas", []) # Correção: chave 'datas' não 'datas_anvisa' (conforme prompt)
-        if not datas: datas = meta.get("datas_anvisa", []) # Fallback
-
+        
         cards = dbc.Row([
-            dbc.Col(dbc.Card([html.H2(f"{score}%", className="text-primary fw-bold"), html.Small("Conformidade Global")], body=True, className="text-center shadow-sm border-0"), md=4),
-            dbc.Col(dbc.Card([html.H2(str(len(data.get("SECOES", []))), className="text-info fw-bold"), html.Small("Seções Analisadas")], body=True, className="text-center shadow-sm border-0"), md=4),
-            dbc.Col(dbc.Card([html.H2(", ".join(datas[:2]) if datas else "-", className="text-success fw-bold", style={"fontSize": "1.2rem"}), html.Small("Datas ANVISA")], body=True, className="text-center shadow-sm border-0"), md=4),
+            dbc.Col(dbc.Card([html.H2(f"{meta.get('score',0)}%", className="text-success fw-bold"), "Conformidade"], body=True, className="text-center shadow-sm"), md=4),
+            dbc.Col(dbc.Card([html.H2(str(len(data.get("SECOES", []))), className="text-primary fw-bold"), "Seções"], body=True, className="text-center shadow-sm"), md=4),
+            dbc.Col(dbc.Card([html.H2(", ".join(meta.get("datas", [])[:2]) or "-", className="text-info fw-bold", style={"fontSize":"1rem"}), "Datas"], body=True, className="text-center shadow-sm"), md=4),
         ], className="mb-4")
 
-        accordion = []
+        items = []
         for sec in data.get("SECOES", []):
-            status = sec.get('status', 'N/A')
-            
             icon = "✅"
-            if "DIVERGENTE" in status: icon = "❌"
-            elif "FALTANTE" in status: icon = "🚨"
-            elif "INFORMATIVO" in status: icon = "ℹ️"
-
-            content = dbc.Row([
-                dbc.Col([
-                    html.Div("REFERÊNCIA", className="small fw-bold text-primary mb-2"),
-                    html.Div(dcc.Markdown(sec.get('ref', ''), dangerously_allow_html=True), style=GLOBAL_STYLES['bula-box'])
-                ], md=6),
-                dbc.Col([
-                    html.Div("BELFAR (Candidata)", className="small fw-bold text-success mb-2"),
-                    html.Div(dcc.Markdown(sec.get('bel', ''), dangerously_allow_html=True), style=GLOBAL_STYLES['bula-box'])
-                ], md=6)
-            ])
+            if "DIVERGENTE" in sec['status']: icon = "❌"
+            elif "FALTANTE" in sec['status']: icon = "🚨"
             
-            accordion.append(dbc.AccordionItem(content, title=f"{icon} {sec['titulo']} — {status}", item_id=sec['titulo']))
+            content = dbc.Row([
+                dbc.Col([html.Strong("Referência", className="text-primary"), html.Div(dcc.Markdown(sec.get('ref',''), dangerously_allow_html=True), style=STYLES['bula_box'])], md=6),
+                dbc.Col([html.Strong("Belfar", className="text-success"), html.Div(dcc.Markdown(sec.get('bel',''), dangerously_allow_html=True), style=STYLES['bula_box'])], md=6)
+            ])
+            items.append(dbc.AccordionItem(content, title=f"{icon} {sec['titulo']} — {sec['status']}"))
 
-        return html.Div([
-            html.H4("📊 Resultado da Análise", className="fw-bold mb-4"),
-            cards,
-            dbc.Accordion(accordion, start_collapsed=False, always_open=True, className="shadow-sm bg-white rounded")
-        ], className="animate-fade-in")
+        return html.Div([cards, dbc.Accordion(items, start_collapsed=False, always_open=True)])
 
     except Exception as e:
-        return dbc.Alert(f"Erro na análise: {str(e)}", color="danger")
+        return dbc.Alert(f"Erro: {e}", color="danger")
 
-# Correção Final: Adicionar input escondido para garantir que o callback funcione
+# Dummy inputs para callbacks funcionarem em paginas diferentes
 app.validation_layout = html.Div([
-    upload_box("upload-1",""), upload_box("upload-2",""),
+    build_upload_area("upload-1","","clear-1",""), 
+    build_upload_area("upload-2","","clear-2",""),
     dcc.Store(id="scenario-store"), dcc.RadioItems(id="radio-tipo-bula"),
-    sidebar, build_home_layout()
+    sidebar, build_tool_page("","", "1")
 ])
 
 if __name__ == "__main__":
