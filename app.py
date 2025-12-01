@@ -14,7 +14,9 @@ import gc
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO -----------------
-# Coloque sua chave aqui para rodar localmente, ou use variável de ambiente
+# Tenta pegar a chave do ambiente (Recomendado para segurança).
+# Se for rodar localmente e quiser testar rápido, você pode substituir por sua chave direta aqui,
+# mas NÃO suba para o GitHub com a chave exposta.
 FIXED_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyB3ctao9sOsQmAylMoYni_1QvgZFxJ02tw")
 
 app = dash.Dash(
@@ -77,11 +79,11 @@ def get_best_model():
     try:
         genai.configure(api_key=FIXED_API_KEY)
         
-        # Tenta o modelo mais novo primeiro
+        # Tenta forçar o modelo mais novo
         try:
             return genai.GenerativeModel('models/gemini-2.5-flash')
         except:
-            # Se não der, tenta o 2.0
+            # Se falhar, tenta o 2.0
             try:
                  return genai.GenerativeModel('models/gemini-2.0-flash')
             except:
@@ -107,7 +109,7 @@ def process_file(contents, filename):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
             
-            # Otimização: 4 páginas, 72 DPI
+            # Otimização: 4 páginas, 72 DPI (Leve e rápido)
             limit_pages = min(4, len(doc))
             
             for i in range(limit_pages):
@@ -277,6 +279,7 @@ def manage_upload_state(contents, filename, n_clear):
     ctx = callback_context
     if not ctx.triggered: return no_update, no_update, no_update, no_update
     trig_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
     if 'clear' in trig_id: return None, "", {"display": "block"}, {"display": "none"}
     if contents: return contents, filename, {"display": "none"}, {"display": "block"}
     return no_update, no_update, no_update, no_update
@@ -335,7 +338,7 @@ def run_analysis(n_clicks, c1, n1, c2, n2, scenario, tipo_bula):
         Atue como Auditor de Qualidade Farmacêutica.
         Analise os documentos (Ref vs Alvo).
         
-        TAREFA: Extraia o texto COMPLETO de cada seção.
+        TAREFA: Extraia o texto COMPLETO de cada seção abaixo.
         LISTA ({nome_tipo}):
         {secoes_str}
         
