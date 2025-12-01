@@ -69,42 +69,21 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_NAO_COMPARAR = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- BACKEND (IA AUTO-DETECT) -----------------
+# ----------------- BACKEND (IA ULTRA OTIMIZADA) -----------------
 
 def get_best_model():
     if not FIXED_API_KEY: return None
     try:
         genai.configure(api_key=FIXED_API_KEY)
         
-        # 1. Tenta listar modelos disponíveis na conta
-        try:
-            available_models = [m.name for m in genai.list_models()]
-        except:
-            # Se falhar listar, tenta conectar direto no 2.5 Flash (o mais novo e leve)
-            return genai.GenerativeModel('models/gemini-2.5-flash')
-
-        # 2. Ordem de preferência (Do mais novo/leve para o mais antigo)
-        preferences = [
-            'models/gemini-2.5-flash',      # Prioridade 1: Novo, rápido e leve
-            'models/gemini-2.0-flash',      # Prioridade 2: Muito bom também
-            'models/gemini-2.0-flash-exp',
-            'models/gemini-1.5-flash',      # Fallback clássico
+        # Prioridade para modelos mais leves e rápidos
+        prefs = [
+            'models/gemini-1.5-flash', # Mais estável e leve
             'models/gemini-1.5-flash-latest',
-            'models/gemini-1.5-pro'
+            'models/gemini-2.0-flash-exp'
         ]
-
-        # 3. Escolhe o primeiro disponível
-        for pref in preferences:
-            if pref in available_models:
-                print(f"Modelo selecionado: {pref}") # Log para debug no Render
-                return genai.GenerativeModel(pref)
-
-        # 4. Se nenhum preferido, tenta qualquer um "flash"
-        for model in available_models:
-            if 'flash' in model:
-                return genai.GenerativeModel(model)
-
-        # Fallback final
+        
+        # Tenta conectar direto no Flash 1.5 que é o mais garantido para conta free
         return genai.GenerativeModel('models/gemini-1.5-flash')
 
     except Exception as e:
@@ -112,7 +91,7 @@ def get_best_model():
         return None
 
 def process_file(contents, filename):
-    """Versão Otimizada para Memória"""
+    """Versão ULTRA LIGHT para servidor com pouca RAM (512MB)"""
     if not contents: return None
     try:
         _, content_string = contents.split(',')
@@ -127,18 +106,28 @@ def process_file(contents, filename):
             doc = fitz.open(stream=decoded, filetype="pdf")
             images = []
             
-            # OTIMIZAÇÃO: Limita a 4 páginas e qualidade média
-            limit_pages = min(4, len(doc))
+            # --- OTIMIZAÇÃO MÁXIMA DE MEMÓRIA ---
+            # 1. Limita a 3 páginas (Essencial para não travar)
+            limit_pages = min(3, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
-                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=75))
+                # Matrix 0.6 = Baixa resolução (~45-50 DPI). 
+                # O texto continua legível para a IA, mas a imagem fica minúscula na RAM.
+                pix = page.get_pixmap(matrix=fitz.Matrix(0.6, 0.6))
+                
+                # Compressão JPEG agressiva (50%) para reduzir tamanho do payload
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=50))
+                
                 images.append(Image.open(img_byte_arr))
+                
+                # Limpeza manual imediata
+                pix = None
+                img_byte_arr = None
             
             doc.close()
             del decoded
-            gc.collect()
+            gc.collect() # Faxina forçada na memória
             
             return {"type": "images", "data": images}
     except Exception as e:
