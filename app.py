@@ -339,14 +339,16 @@ else:
                     - Você deve APENAS transcrever o texto.
                     - Você pode apontar erros ortográficos com <mark class='ort'>.
 
-                    === REGRA 2: DIZERES LEGAIS E A DATA ANVISA ===
-                    Atenção para a imagem enviada:
-                    1. A seção "DIZERES LEGAIS" NÃO TERMINA no endereço, nem no SAC.
-                    2. Ela continua após a frase "Siga corretamente o modo de usar...".
-                    3. Você DEVE ler até a ÚLTIMA LINHA DO RODAPÉ.
-                    4. Busque especificamente a frase: "Esta bula foi aprovada pela Anvisa em...".
-                    5. Envolva a data encontrada com <mark class='anvisa'>dd/mm/aaaa</mark>.
-                    6. Transcreva TUDO o que encontrar nesta seção, incluindo essa data final.
+                    === REGRA 2: DIZERES LEGAIS E DATA (ATENÇÃO MÁXIMA) ===
+                    1. A seção "DIZERES LEGAIS" estende-se até o rodapé. Leia tudo.
+                    2. VERIFIQUE SE EXISTE visualmente uma frase de "Aprovado pela Anvisa" no final do texto extraído.
+                    3. CASO A DATA EXISTA NO TEXTO:
+                       - Copie a data e a frase.
+                       - Envolva a data com <mark class='anvisa'>dd/mm/aaaa</mark>.
+                    4. CASO A DATA NÃO EXISTA NO TEXTO:
+                       - NÃO INVENTE UMA DATA.
+                       - NÃO use a tag <mark class='anvisa'>.
+                       - Se não tiver data, apenas transcreva o texto que existe.
 
                     === REGRA 3: DEMAIS SEÇÕES ===
                     - Marque divergências de sentido: <mark class='diff'>texto diferente</mark>
@@ -354,7 +356,7 @@ else:
                     
                     SAÍDA JSON:
                     {{
-                        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas"] }},
+                        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas reais encontradas"] }},
                         "SECOES": [
                             {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
                         ]
