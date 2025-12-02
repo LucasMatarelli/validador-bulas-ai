@@ -25,9 +25,14 @@ API_KEY_FIXA = "AIzaSyDvNe_SXvqEP-aeh62iE0TTsCDdJyMaaiE"
 st.markdown("""
 <style>
     /* --- REGRA NOVA: OCULTA A BARRA SUPERIOR (TOOLBAR) --- */
-    div[data-testid="stHeader"] {
-        visibility: hidden;
-        height: 0%; # Opcional: tenta reduzir o espaço ocupado
+    /* Remove completamente a barra com botões Stop, Share, GitHub, etc. */
+    header[data-testid="stHeader"] {
+        display: none !important;
+    }
+    
+    /* Remove margens superiores extras que podem sobrar */
+    .main .block-container {
+        padding-top: 20px !important;
     }
 
     /* Ajuste de Fundo e Fontes */
