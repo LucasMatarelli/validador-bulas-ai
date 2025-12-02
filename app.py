@@ -24,6 +24,12 @@ API_KEY_FIXA = "AIzaSyDvNe_SXvqEP-aeh62iE0TTsCDdJyMaaiE"
 # ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
+    /* --- REGRA NOVA: OCULTA A BARRA SUPERIOR (TOOLBAR) --- */
+    div[data-testid="stHeader"] {
+        visibility: hidden;
+        height: 0%; # Opcional: tenta reduzir o espaço ocupado
+    }
+
     /* Ajuste de Fundo e Fontes */
     .main { background-color: #f4f6f8; }
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
