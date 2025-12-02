@@ -85,7 +85,7 @@ SECOES_PROFISSIONAL = [
     "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
-# Definindo explicitamente para usar no prompt
+# Definindo explicitamente para usar no prompt e na visualização
 SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
@@ -139,7 +139,6 @@ def process_uploaded_file(uploaded_file):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # 1.5x zoom para melhor OCR
                 
-                # Tratamento de compatibilidade para versoes PyMuPDF
                 try:
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=80))
                 except TypeError:
@@ -327,34 +326,35 @@ else:
                     # Prompt
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
-                    # PROMPT SUPER REFORÇADO
+                    # PROMPT SUPER ESPECÍFICO PARA FORÇAR LEITURA ATÉ O FIM
                     prompt = f"""
-                    Atue como Auditor de Qualidade Farmacêutica RÍGIDO na empresa Belfar.
-                    Analise os documentos.
-                    
-                    LISTA DE SEÇÕES A ANALISAR ({nome_tipo}):
+                    Atue como Auditor Farmacêutico. Analise os textos e gere o JSON.
+
+                    LISTA DE SEÇÕES ({nome_tipo}):
                     {secoes_str}
 
-                    === REGRA ABSOLUTA DE DIVERGÊNCIA ===
-                    Nas seções: APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS
-                    VOCÊ ESTÁ PROIBIDO DE USAR A TAG <mark class='diff'>.
-                    Nestas 3 seções específicas:
-                    1. APENAS transcreva o texto original.
-                    2. APENAS aponte erros ortográficos (<mark class='ort'>) se houver.
-                    3. JAMAIS aponte diferenças de conteúdo ou formatação como erro.
+                    === REGRA 1: SEÇÕES PROIBIDAS DE TER DIVERGÊNCIA ===
+                    Nas seções: "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS".
+                    - Você NÃO pode usar <mark class='diff'>.
+                    - Você deve APENAS transcrever o texto.
+                    - Você pode apontar erros ortográficos com <mark class='ort'>.
+
+                    === REGRA 2: DIZERES LEGAIS E A DATA ANVISA ===
+                    Atenção para a imagem enviada:
+                    1. A seção "DIZERES LEGAIS" NÃO TERMINA no endereço, nem no SAC.
+                    2. Ela continua após a frase "Siga corretamente o modo de usar...".
+                    3. Você DEVE ler até a ÚLTIMA LINHA DO RODAPÉ.
+                    4. Busque especificamente a frase: "Esta bula foi aprovada pela Anvisa em...".
+                    5. Envolva a data encontrada com <mark class='anvisa'>dd/mm/aaaa</mark>.
+                    6. Transcreva TUDO o que encontrar nesta seção, incluindo essa data final.
+
+                    === REGRA 3: DEMAIS SEÇÕES ===
+                    - Marque divergências de sentido: <mark class='diff'>texto diferente</mark>
+                    - Marque erros de português: <mark class='ort'>erro</mark>
                     
-                    === REGRA CRÍTICA PARA "DIZERES LEGAIS" ===
-                    1. A seção "DIZERES LEGAIS" NÃO TERMINA no ponto final do texto legal.
-                    2. Você É OBRIGADO a continuar lendo até o final visual do documento (rodapé) para encontrar a DATA DE PUBLICAÇÃO / DATA DA BULA.
-                    3. Quando encontrar a data (formato dd/mm/aaaa ou similar) no final, envolva-a com: <mark class='anvisa'>DATA</mark>.
-                    
-                    === COMPORTAMENTO PARA AS OUTRAS SEÇÕES ===
-                    - Marque divergências de sentido/texto com: <mark class='diff'>texto diferente</mark>
-                    - Marque erros de português com: <mark class='ort'>erro</mark>
-                    
-                    SAÍDA JSON OBRIGATÓRIA:
+                    SAÍDA JSON:
                     {{
-                        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas encontradas"] }},
+                        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas"] }},
                         "SECOES": [
                             {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
                         ]
@@ -391,15 +391,18 @@ else:
                             status = sec.get('status', 'N/A')
                             titulo = sec.get('titulo', '').upper()
                             
-                            # Ícones
+                            # Lógica visual para ícones
                             icon = "✅"
                             if "DIVERGENTE" in status: icon = "❌"
                             elif "FALTANTE" in status: icon = "🚨"
                             
-                            # Tratamento especial visual para as seções que não devem ter divergência
+                            # Se for uma das seções que não deve ter divergência, muda o visual
                             if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
-                                icon = "👁️" # Olho indicando apenas visualização
-                                status = "VISUALIZAÇÃO (SEM COMPARAÇÃO)"
+                                icon = "👁️" # Olho = Apenas visualização
+                                if "DIVERGENTE" in status:
+                                    status = "VISUALIZAÇÃO (Divergências Ignoradas)"
+                                else:
+                                    status = "VISUALIZAÇÃO"
                             
                             with st.expander(f"{icon} {sec['titulo']} — {status}"):
                                 cA, cB = st.columns(2)
