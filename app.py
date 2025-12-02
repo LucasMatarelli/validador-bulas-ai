@@ -326,37 +326,35 @@ else:
                     # Prompt
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
-                    # PROMPT SUPER ESPECÍFICO PARA FORÇAR LEITURA ATÉ O FIM
+                    # PROMPT ANTI-ALUCINAÇÃO
                     prompt = f"""
-                    Atue como Auditor Farmacêutico. Analise os textos e gere o JSON.
+                    Atue como Auditor Farmacêutico RÍGIDO. Analise os textos e gere o JSON.
 
                     LISTA DE SEÇÕES ({nome_tipo}):
                     {secoes_str}
 
-                    === REGRA 1: SEÇÕES PROIBIDAS DE TER DIVERGÊNCIA ===
+                    === REGRA 1: SEÇÕES SEM DIVERGÊNCIA ===
                     Nas seções: "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS".
-                    - Você NÃO pode usar <mark class='diff'>.
-                    - Você deve APENAS transcrever o texto.
-                    - Você pode apontar erros ortográficos com <mark class='ort'>.
+                    - PROIBIDO usar <mark class='diff'>.
+                    - APENAS transcreva o texto.
+                    - Erros ortográficos podem ser marcados com <mark class='ort'>.
 
-                    === REGRA 2: DIZERES LEGAIS E DATA (ATENÇÃO MÁXIMA) ===
-                    1. A seção "DIZERES LEGAIS" estende-se até o rodapé. Leia tudo.
-                    2. VERIFIQUE SE EXISTE visualmente uma frase de "Aprovado pela Anvisa" no final do texto extraído.
-                    3. CASO A DATA EXISTA NO TEXTO:
-                       - Copie a data e a frase.
-                       - Envolva a data com <mark class='anvisa'>dd/mm/aaaa</mark>.
-                    4. CASO A DATA NÃO EXISTA NO TEXTO:
-                       - NÃO INVENTE UMA DATA.
-                       - NÃO use a tag <mark class='anvisa'>.
-                       - Se não tiver data, apenas transcreva o texto que existe.
+                    === REGRA 2: DATA DA ANVISA (TRAVA ANTI-ALUCINAÇÃO) ===
+                    1. Em "DIZERES LEGAIS", leia até o último caractere visual do documento.
+                    2. VERIFICAÇÃO VISUAL OBRIGATÓRIA:
+                       - A frase "Esta bula foi aprovada pela Anvisa em..." está escrita lá?
+                       - Se SIM: Copie a data e envolva com <mark class='anvisa'>dd/mm/aaaa</mark>.
+                       - Se NÃO: **NÃO INVENTE DATA NENHUMA**. Pare a transcrição onde o texto termina (ex: no código BUL...).
+                    
+                    ATENÇÃO: Se você inventar uma data que não existe no texto, a auditoria falhará. Seja LITERAL.
 
                     === REGRA 3: DEMAIS SEÇÕES ===
-                    - Marque divergências de sentido: <mark class='diff'>texto diferente</mark>
-                    - Marque erros de português: <mark class='ort'>erro</mark>
+                    - Divergências de sentido: <mark class='diff'>texto diferente</mark>
+                    - Erros de português: <mark class='ort'>erro</mark>
                     
                     SAÍDA JSON:
                     {{
-                        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas reais encontradas"] }},
+                        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas REAIS encontradas"] }},
                         "SECOES": [
                             {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
                         ]
@@ -385,7 +383,7 @@ else:
                         m1, m2, m3 = st.columns(3)
                         m1.metric("Conformidade", f"{meta.get('score', 0)}%")
                         m2.metric("Seções Analisadas", len(data.get("SECOES", [])))
-                        m3.metric("Datas Encontradas", ", ".join(meta.get("datas", [])) or "-")
+                        m3.metric("Datas Encontradas", ", ".join(meta.get("datas", [])) or "Nenhuma data")
                         
                         st.divider()
                         
