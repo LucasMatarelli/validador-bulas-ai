@@ -338,15 +338,24 @@ else:
                     LISTA DE SEÇÕES ({nome_tipo}):
                     {secoes_str}
                     
-                    REGRAS DE FORMATAÇÃO (Retorne texto com estas tags HTML):
-                    1. Divergências de sentido: <mark class='diff'>texto diferente</mark>
-                       (IGNORE divergências nas seções: {SECOES_NAO_COMPARAR}).
-                    2. Erros de Português ou Digitação: <mark class='ort'>erro</mark>
-                    3. Datas ANVISA encontradas: <mark class='anvisa'>dd/mm/aaaa</mark>
+                    REGRAS CRÍTICAS PARA "DIZERES LEGAIS":
+                    1. A seção "DIZERES LEGAIS" deve incluir TODO o texto final, estendendo-se até o rodapé para incluir a DATA DA ANVISA / DATA DE PUBLICAÇÃO.
+                    2. Encontre a DATA (formato dd/mm/aaaa) no final e envolva-a ESTRITAMENTE com a tag <mark class='anvisa'>data aqui</mark> (azul).
+                    
+                    REGRAS DE COMPARAÇÃO (Retorne texto com estas tags HTML):
+                    1. Nas seções "{SECOES_NAO_COMPARAR}":
+                       - NÃO marque divergências (NÃO use <mark class='diff'>).
+                       - Apenas transcreva o texto fielmente.
+                       - Identifique erros de português/digitação com <mark class='ort'>.
+                       - No caso de Dizeres Legais, lembre-se de marcar a data em azul no final.
+                       
+                    2. Nas DEMAIS seções:
+                       - Marque divergências de sentido com: <mark class='diff'>texto diferente</mark>
+                       - Marque erros de português com: <mark class='ort'>erro</mark>
                     
                     SAÍDA JSON OBRIGATÓRIA (Sem markdown ```json):
                     {{
-                        "METADADOS": {{ "score": 90, "datas": ["..."] }},
+                        "METADADOS": {{ "score": 90, "datas": ["dd/mm/aaaa"] }},
                         "SECOES": [
                             {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" | "INFORMATIVO" }}
                         ]
