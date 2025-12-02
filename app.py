@@ -19,7 +19,6 @@ st.set_page_config(
 )
 
 # ----------------- CHAVE API (FIXA) -----------------
-# CUIDADO: Não compartilhe publicamente.
 API_KEY_FIXA = "AIzaSyDvNe_SXvqEP-aeh62iE0TTsCDdJyMaaiE"
 
 # ----------------- ESTILOS CSS PERSONALIZADOS -----------------
@@ -86,7 +85,8 @@ SECOES_PROFISSIONAL = [
     "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
-SECOES_NAO_COMPARAR = "APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS"
+# Definindo explicitamente para usar no prompt
+SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
@@ -139,15 +139,12 @@ def process_uploaded_file(uploaded_file):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # 1.5x zoom para melhor OCR
                 
-                # CORREÇÃO CRÍTICA AQUI (quality -> jpg_quality)
+                # Tratamento de compatibilidade para versoes PyMuPDF
                 try:
-                    # Tenta usar jpg_quality (versões novas do PyMuPDF)
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=80))
                 except TypeError:
-                    # Se der erro (versão antiga ou incompatível), usa PNG (seguro)
                     img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 except Exception:
-                    # Último recurso: JPEG padrão
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
                     
                 images.append(Image.open(img_byte_arr))
@@ -330,34 +327,36 @@ else:
                     # Prompt
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
+                    # PROMPT SUPER REFORÇADO
                     prompt = f"""
-                    Atue como Auditor de Qualidade Farmacêutica na empresa Belfar.
-                    Analise os documentos (Ref vs Belfar).
+                    Atue como Auditor de Qualidade Farmacêutica RÍGIDO na empresa Belfar.
+                    Analise os documentos.
                     
-                    TAREFA: Extraia o texto COMPLETO de cada seção abaixo e compare.
-                    LISTA DE SEÇÕES ({nome_tipo}):
+                    LISTA DE SEÇÕES A ANALISAR ({nome_tipo}):
                     {secoes_str}
+
+                    === REGRA ABSOLUTA DE DIVERGÊNCIA ===
+                    Nas seções: APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS
+                    VOCÊ ESTÁ PROIBIDO DE USAR A TAG <mark class='diff'>.
+                    Nestas 3 seções específicas:
+                    1. APENAS transcreva o texto original.
+                    2. APENAS aponte erros ortográficos (<mark class='ort'>) se houver.
+                    3. JAMAIS aponte diferenças de conteúdo ou formatação como erro.
                     
-                    REGRAS CRÍTICAS PARA "DIZERES LEGAIS":
-                    1. A seção "DIZERES LEGAIS" deve incluir TODO o texto final, estendendo-se até o rodapé para incluir a DATA DA ANVISA / DATA DE PUBLICAÇÃO.
-                    2. Encontre a DATA (formato dd/mm/aaaa) no final e envolva-a ESTRITAMENTE com a tag <mark class='anvisa'>data aqui</mark> (azul).
+                    === REGRA CRÍTICA PARA "DIZERES LEGAIS" ===
+                    1. A seção "DIZERES LEGAIS" NÃO TERMINA no ponto final do texto legal.
+                    2. Você É OBRIGADO a continuar lendo até o final visual do documento (rodapé) para encontrar a DATA DE PUBLICAÇÃO / DATA DA BULA.
+                    3. Quando encontrar a data (formato dd/mm/aaaa ou similar) no final, envolva-a com: <mark class='anvisa'>DATA</mark>.
                     
-                    REGRAS DE COMPARAÇÃO (Retorne texto com estas tags HTML):
-                    1. Nas seções "{SECOES_NAO_COMPARAR}":
-                       - NÃO marque divergências (NÃO use <mark class='diff'>).
-                       - Apenas transcreva o texto fielmente.
-                       - Identifique erros de português/digitação com <mark class='ort'>.
-                       - No caso de Dizeres Legais, lembre-se de marcar a data em azul no final.
-                       
-                    2. Nas DEMAIS seções:
-                       - Marque divergências de sentido com: <mark class='diff'>texto diferente</mark>
-                       - Marque erros de português com: <mark class='ort'>erro</mark>
+                    === COMPORTAMENTO PARA AS OUTRAS SEÇÕES ===
+                    - Marque divergências de sentido/texto com: <mark class='diff'>texto diferente</mark>
+                    - Marque erros de português com: <mark class='ort'>erro</mark>
                     
-                    SAÍDA JSON OBRIGATÓRIA (Sem markdown ```json):
+                    SAÍDA JSON OBRIGATÓRIA:
                     {{
-                        "METADADOS": {{ "score": 90, "datas": ["dd/mm/aaaa"] }},
+                        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas encontradas"] }},
                         "SECOES": [
-                            {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" | "INFORMATIVO" }}
+                            {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
                         ]
                     }}
                     """
@@ -390,10 +389,17 @@ else:
                         
                         for sec in data.get("SECOES", []):
                             status = sec.get('status', 'N/A')
+                            titulo = sec.get('titulo', '').upper()
+                            
+                            # Ícones
                             icon = "✅"
                             if "DIVERGENTE" in status: icon = "❌"
                             elif "FALTANTE" in status: icon = "🚨"
-                            elif "INFORMATIVO" in status: icon = "ℹ️"
+                            
+                            # Tratamento especial visual para as seções que não devem ter divergência
+                            if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
+                                icon = "👁️" # Olho indicando apenas visualização
+                                status = "VISUALIZAÇÃO (SEM COMPARAÇÃO)"
                             
                             with st.expander(f"{icon} {sec['titulo']} — {status}"):
                                 cA, cB = st.columns(2)
