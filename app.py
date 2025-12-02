@@ -20,7 +20,7 @@ st.set_page_config(
 
 # ----------------- CHAVE API (FIXA) -----------------
 # CUIDADO: Não compartilhe publicamente.
-API_KEY_FIXA = "AIzaSyAYYHDUsjDmA4qU728BwuTiEErnqYeilNQ"
+API_KEY_FIXA = "AIzaSyDvNe_SXvqEP-aeh62iE0TTsCDdJyMaaiE"
 
 # ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
