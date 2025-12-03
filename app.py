@@ -21,7 +21,7 @@ st.set_page_config(
 # ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
-    /* --- REGRA: OCULTA A BARRA SUPERIOR (TOOLBAR) --- */
+    /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
     header[data-testid="stHeader"] {
         display: none !important;
     }
@@ -34,7 +34,7 @@ st.markdown("""
     .main { background-color: #f4f6f8; }
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    /* ESTILO DO MENU DE NAVEGAÇÃO (BOTÕES LATERAIS) */
+    /* ESTILO DO MENU DE NAVEGAÇÃO */
     .stRadio > div[role="radiogroup"] > label {
         background-color: white;
         border: 1px solid #e1e4e8;
@@ -114,17 +114,16 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    # 1. Tenta pegar a chave dos Secrets (Prioridade Total)
+    # Tenta puxar a chave dos secrets do Streamlit
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
-        # Se falhar, avisa o usuário para configurar
-        st.error("⚠️ A chave 'GEMINI_API_KEY' não foi encontrada nos Secrets.")
-        return None, "Sem Chave nos Secrets"
+        st.error("⚠️ Chave API não configurada nos Secrets!")
+        return None, "Sem Chave"
 
     genai.configure(api_key=api_key)
     
-    # LISTA DE PRIORIDADE DOS MODELOS
+    # LISTA DE MODELOS SOLICITADA
     modelos_para_testar = [
         'models/gemini-2.5-flash', 
         'models/gemini-2.0-flash-exp', 
@@ -138,8 +137,7 @@ def get_gemini_model():
             return model, model_name
         except Exception:
             continue
-            
-    # Se nenhum da lista funcionar, tenta o fallback
+    # Fallback final
     return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
@@ -155,11 +153,14 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
             
-            # --- CONFIGURAÇÃO DE LEITURA (12 Páginas + Zoom 2.0) ---
+            # --- CORREÇÃO IMPORTANTE: 12 PÁGINAS ---
+            # Se deixar só 4, ele não lê o meio da bula e dá "FALTANTE"
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
+                # --- CORREÇÃO IMPORTANTE: ZOOM 2.0 ---
+                # Aumenta a qualidade para a IA ler letras pequenas
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
@@ -200,11 +201,11 @@ with st.sidebar:
     if model_instance:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
     else:
-        st.error("❌ Verifique os Secrets")
+        st.error("❌ Erro de Conexão")
     
     st.divider()
     
-    # Menu de Navegação Estilizado
+    # Menu de Navegação
     pagina = st.radio(
         "Navegação:",
         ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"]
@@ -303,7 +304,7 @@ else:
     
     st.divider()
     
-    # Área de Upload com Labels Dinâmicos
+    # Área de Upload
     c1, c2 = st.columns(2)
     with c1:
         st.markdown(f"##### {label_box1}")
@@ -320,13 +321,11 @@ else:
         else:
             with st.spinner(f"🤖 Analisando com {model_name_used.split('/')[-1]}..."):
                 try:
-                    # Garante uso do modelo selecionado no início
                     model = model_instance 
                     if not model:
-                        st.error("Erro crítico: Modelo não carregado (Verifique a Chave).")
+                        st.error("Erro crítico: Modelo não carregado.")
                         st.stop()
 
-                    # Processamento
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
                     gc.collect()
@@ -335,9 +334,7 @@ else:
                         st.error("Falha ao ler os arquivos.")
                         st.stop()
 
-                    # Payload
                     payload = []
-                    # Ajustando nomes internos para o prompt com base na tela
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
 
@@ -347,12 +344,11 @@ else:
                     if d2['type'] == 'text': payload.append(f"--- {nome_doc2} ---\n{d2['data']}")
                     else: payload.append(f"--- {nome_doc2} ---"); payload.extend(d2['data'])
 
-                    # Prompt
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
-                    # PROMPT BLINDADO E AJUSTADO PARA OS NOMES DOS ARQUIVOS
+                    # --- PROMPT REFORÇADO PARA NÃO INVENTAR DATA ---
                     prompt = f"""
-                    Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens fornecidas (até 12 páginas) para encontrar o texto.
+                    Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens (até 12 páginas) para encontrar o texto.
                     
                     DOCUMENTOS:
                     1. {nome_doc1} (Referência/Padrão)
@@ -361,7 +357,7 @@ else:
                     LISTA DE SEÇÕES ({nome_tipo}):
                     {secoes_str}
 
-                    IMPORTANTE: O texto pode estar dividido em colunas ou em páginas diferentes. Leia o documento inteiro.
+                    IMPORTANTE: O texto pode estar dividido em colunas ou páginas. Leia o documento inteiro.
 
                     === REGRA 1: SEÇÕES SEM DIVERGÊNCIA ===
                     Nas seções: "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS".
@@ -369,12 +365,13 @@ else:
                     - APENAS transcreva o texto.
                     - Erros ortográficos podem ser marcados com <mark class='ort'>.
 
-                    === REGRA 2: DATA DA ANVISA (TRAVA ANTI-ALUCINAÇÃO) ===
-                    1. Em "DIZERES LEGAIS", leia até o último caractere visual do documento.
-                    2. VERIFICAÇÃO VISUAL OBRIGATÓRIA:
-                       - A frase "Esta bula foi aprovada pela Anvisa em..." está escrita lá?
-                       - Se SIM: Copie a data e envolva com <mark class='anvisa'>dd/mm/aaaa</mark>.
-                       - Se NÃO: **NÃO INVENTE DATA NENHUMA**. Pare a transcrição onde o texto termina.
+                    === REGRA 2: DATA DA ANVISA (PROIBIDO ALUCINAR) ===
+                    1. Em "DIZERES LEGAIS", vá até o rodapé final.
+                    2. Você SÓ pode marcar a data se encontrar EXATAMENTE a frase:
+                       "Esta bula foi aprovada pela Anvisa em" (ou similar explícito).
+                    3. Se a frase existir: Copie a data e envolva com <mark class='anvisa'>dd/mm/aaaa</mark>.
+                    4. Se a frase NÃO existir: **NÃO COLOQUE NENHUMA DATA**. Deixe sem marcação azul.
+                    5. NÃO use datas de revisão ou códigos (ex: BUL...) como data de aprovação. Seja literal.
                     
                     === REGRA 3: DEMAIS SEÇÕES ===
                     - Marque divergências de sentido: <mark class='diff'>texto diferente</mark>
@@ -389,7 +386,6 @@ else:
                     }}
                     """
 
-                    # Chamada IA
                     response = model.generate_content(
                         [prompt] + payload,
                         generation_config={"response_mime_type": "application/json"},
@@ -405,7 +401,6 @@ else:
                     if not data:
                         st.error("A IA não retornou um JSON válido. Tente novamente.")
                     else:
-                        # Exibição
                         meta = data.get("METADADOS", {})
                         
                         m1, m2, m3 = st.columns(3)
@@ -419,14 +414,12 @@ else:
                             status = sec.get('status', 'N/A')
                             titulo = sec.get('titulo', '').upper()
                             
-                            # Lógica visual para ícones
                             icon = "✅"
                             if "DIVERGENTE" in status: icon = "❌"
                             elif "FALTANTE" in status: icon = "🚨"
                             
-                            # Se for uma das seções que não deve ter divergência, muda o visual
                             if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
-                                icon = "👁️" # Olho = Apenas visualização
+                                icon = "👁️" 
                                 if "DIVERGENTE" in status:
                                     status = "VISUALIZAÇÃO (Divergências Ignoradas)"
                                 else:
