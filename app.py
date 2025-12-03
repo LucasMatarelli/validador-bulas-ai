@@ -21,13 +21,11 @@ st.set_page_config(
 # ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
-    /* --- REGRA NOVA: OCULTA A BARRA SUPERIOR (TOOLBAR) --- */
-    /* Remove completamente a barra com botões Stop, Share, GitHub, etc. */
+    /* --- REGRA: OCULTA A BARRA SUPERIOR (TOOLBAR) --- */
     header[data-testid="stHeader"] {
         display: none !important;
     }
     
-    /* Remove margens superiores extras que podem sobrar */
     .main .block-container {
         padding-top: 20px !important;
     }
@@ -124,7 +122,8 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    modelos_para_testar = ['models/gemini-2.5-flash', 'models/gemini-2.0-flash-exp', 'models/gemini-1.5-flash', 'models/gemini-pro']
+    # Modelos: prioridade para o Flash que aceita muito contexto
+    modelos_para_testar = ['models/gemini-1.5-flash', 'models/gemini-2.0-flash-exp', 'models/gemini-1.5-pro']
     for model_name in modelos_para_testar:
         try:
             model = genai.GenerativeModel(model_name)
@@ -145,14 +144,20 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
-            limit_pages = min(4, len(doc))
+            
+            # --- AJUSTE CRÍTICO: AUMENTO DO LIMITE DE PÁGINAS ---
+            # Antes era 4, agora 12 para garantir que leia a bula toda
+            limit_pages = min(12, len(doc))
+            
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=80))
+                # --- AJUSTE CRÍTICO: MELHORA DE RESOLUÇÃO (2.0) ---
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
                 pix = None
+            
             doc.close()
             gc.collect()
             return {"type": "images", "data": images}
@@ -310,7 +315,7 @@ else:
                     # Garante uso do modelo selecionado no início
                     model = model_instance 
                     if not model:
-                        st.error("Erro crítico: Modelo não carregado.")
+                        st.error("Erro crítico: Chave API não configurada.")
                         st.stop()
 
                     # Processamento
@@ -339,7 +344,7 @@ else:
                     
                     # PROMPT BLINDADO E AJUSTADO PARA OS NOMES DOS ARQUIVOS
                     prompt = f"""
-                    Atue como Auditor Farmacêutico RÍGIDO. Analise os textos e gere o JSON.
+                    Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens fornecidas (até 12 páginas) para encontrar o texto.
                     
                     DOCUMENTOS:
                     1. {nome_doc1} (Referência/Padrão)
@@ -347,6 +352,8 @@ else:
 
                     LISTA DE SEÇÕES ({nome_tipo}):
                     {secoes_str}
+
+                    IMPORTANTE: O texto pode estar dividido em colunas ou em páginas diferentes. Leia o documento inteiro.
 
                     === REGRA 1: SEÇÕES SEM DIVERGÊNCIA ===
                     Nas seções: "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS".
