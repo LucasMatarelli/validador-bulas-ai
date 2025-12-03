@@ -18,19 +18,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- CHAVE API (FIXA) -----------------
-API_KEY_FIXA = "AIzaSyDvNe_SXvqEP-aeh62iE0TTsCDdJyMaaiE"
-
 # ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
-    /* --- REGRA NOVA: OCULTA A BARRA SUPERIOR (TOOLBAR) --- */
-    /* Remove completamente a barra com botões Stop, Share, GitHub, etc. */
+    /* --- REGRA: OCULTA A BARRA SUPERIOR (TOOLBAR) --- */
     header[data-testid="stHeader"] {
         display: none !important;
     }
     
-    /* Remove margens superiores extras que podem sobrar */
     .main .block-container {
         padding-top: 20px !important;
     }
@@ -119,8 +114,17 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    if not API_KEY_FIXA: return None, "Sem Chave"
-    genai.configure(api_key=API_KEY_FIXA)
+    # Tenta pegar a chave dos Segredos do Streamlit
+    # Isso evita que a chave fique exposta no GitHub
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except:
+        st.error("🚨 ERRO CRÍTICO: Chave API não encontrada!")
+        st.info("Para consertar: Vá no painel do Streamlit Cloud > Settings > Secrets e adicione: GEMINI_API_KEY = 'sua_chave'")
+        return None, "Sem Chave"
+
+    genai.configure(api_key=api_key)
+    
     modelos_para_testar = ['models/gemini-2.5-flash', 'models/gemini-2.0-flash-exp', 'models/gemini-1.5-flash', 'models/gemini-pro']
     for model_name in modelos_para_testar:
         try:
@@ -183,8 +187,6 @@ with st.sidebar:
     
     if model_instance:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
-    else:
-        st.error("❌ Erro de Conexão")
     
     st.divider()
     
@@ -307,7 +309,7 @@ else:
                     # Garante uso do modelo selecionado no início
                     model = model_instance 
                     if not model:
-                        st.error("Erro crítico: Modelo não carregado.")
+                        st.error("Erro crítico: Chave API não configurada.")
                         st.stop()
 
                     # Processamento
@@ -334,7 +336,7 @@ else:
                     # Prompt
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
-                    # PROMPT BLINDADO E AJUSTADO PARA OS NOMES DOS ARQUIVOS
+                    # PROMPT BLINDADO
                     prompt = f"""
                     Atue como Auditor Farmacêutico RÍGIDO. Analise os textos e gere o JSON.
                     
