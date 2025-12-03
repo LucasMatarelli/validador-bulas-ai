@@ -114,22 +114,32 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    # Tenta puxar a chave dos secrets do Streamlit
+    # 1. Tenta pegar a chave dos Secrets (Prioridade Total)
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
-        return None, "Chave não configurada em Secrets"
+        # Se falhar, avisa o usuário para configurar
+        st.error("⚠️ A chave 'GEMINI_API_KEY' não foi encontrada nos Secrets.")
+        return None, "Sem Chave nos Secrets"
 
     genai.configure(api_key=api_key)
     
-    # Modelos: prioridade para o Flash que aceita muito contexto
-    modelos_para_testar = ['models/gemini-1.5-flash', 'models/gemini-2.0-flash-exp', 'models/gemini-1.5-pro']
+    # LISTA DE PRIORIDADE DOS MODELOS
+    modelos_para_testar = [
+        'models/gemini-2.5-flash', 
+        'models/gemini-2.0-flash-exp', 
+        'models/gemini-1.5-flash', 
+        'models/gemini-pro'
+    ]
+    
     for model_name in modelos_para_testar:
         try:
             model = genai.GenerativeModel(model_name)
             return model, model_name
         except Exception:
             continue
+            
+    # Se nenhum da lista funcionar, tenta o fallback
     return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
@@ -145,13 +155,11 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
             
-            # --- AJUSTE CRÍTICO: AUMENTO DO LIMITE DE PÁGINAS ---
-            # Antes era 4, agora 12 para garantir que leia a bula toda
+            # --- CONFIGURAÇÃO DE LEITURA (12 Páginas + Zoom 2.0) ---
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                # --- AJUSTE CRÍTICO: MELHORA DE RESOLUÇÃO (2.0) ---
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
@@ -192,7 +200,7 @@ with st.sidebar:
     if model_instance:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
     else:
-        st.error("❌ Erro de Conexão (Verifique Secrets)")
+        st.error("❌ Verifique os Secrets")
     
     st.divider()
     
@@ -315,7 +323,7 @@ else:
                     # Garante uso do modelo selecionado no início
                     model = model_instance 
                     if not model:
-                        st.error("Erro crítico: Chave API não configurada.")
+                        st.error("Erro crítico: Modelo não carregado (Verifique a Chave).")
                         st.stop()
 
                     # Processamento
