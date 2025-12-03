@@ -21,11 +21,13 @@ st.set_page_config(
 # ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
-    /* --- REGRA: OCULTA A BARRA SUPERIOR (TOOLBAR) --- */
+    /* --- REGRA NOVA: OCULTA A BARRA SUPERIOR (TOOLBAR) --- */
+    /* Remove completamente a barra com botões Stop, Share, GitHub, etc. */
     header[data-testid="stHeader"] {
         display: none !important;
     }
     
+    /* Remove margens superiores extras que podem sobrar */
     .main .block-container {
         padding-top: 20px !important;
     }
@@ -114,14 +116,11 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    # Tenta pegar a chave dos Segredos do Streamlit
-    # Isso evita que a chave fique exposta no GitHub
+    # Tenta puxar a chave dos secrets do Streamlit
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
-    except:
-        st.error("🚨 ERRO CRÍTICO: Chave API não encontrada!")
-        st.info("Para consertar: Vá no painel do Streamlit Cloud > Settings > Secrets e adicione: GEMINI_API_KEY = 'sua_chave'")
-        return None, "Sem Chave"
+    except Exception:
+        return None, "Chave não configurada em Secrets"
 
     genai.configure(api_key=api_key)
     
@@ -187,6 +186,8 @@ with st.sidebar:
     
     if model_instance:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
+    else:
+        st.error("❌ Erro de Conexão (Verifique Secrets)")
     
     st.divider()
     
@@ -309,7 +310,7 @@ else:
                     # Garante uso do modelo selecionado no início
                     model = model_instance 
                     if not model:
-                        st.error("Erro crítico: Chave API não configurada.")
+                        st.error("Erro crítico: Modelo não carregado.")
                         st.stop()
 
                     # Processamento
@@ -336,7 +337,7 @@ else:
                     # Prompt
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
-                    # PROMPT BLINDADO
+                    # PROMPT BLINDADO E AJUSTADO PARA OS NOMES DOS ARQUIVOS
                     prompt = f"""
                     Atue como Auditor Farmacêutico RÍGIDO. Analise os textos e gere o JSON.
                     
