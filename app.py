@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS (SEU LAYOUT) -----------------
+# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
@@ -114,22 +114,24 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    # BLINDAGEM 1: Busca a chave nos Secrets (Seguro para Repo Público)
+    # 1. TENTA PEGAR A CHAVE DO ST.SECRETS
+    api_key = None
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
-        # Tenta pegar de variável de ambiente (backup)
-        api_key = os.environ.get("GEMINI_API_KEY")
+        pass # Se falhar, tenta outra coisa ou avisa
 
+    # Se não achou a chave, para tudo e avisa
     if not api_key:
-        return None, "Chave API não encontrada nos Secrets!"
+        return None, "Erro: Chave API não encontrada nos Secrets!"
 
     genai.configure(api_key=api_key)
     
-    # LISTA DE MODELOS (Prioridade 2.5 Flash, com backup para Pro)
+    # LISTA DE MODELOS BLINDADA
+    # Tenta conectar em ordem. O Pro ajuda a evitar o erro de Copyright.
     modelos_para_testar = [
+        'models/gemini-1.5-pro',
         'models/gemini-2.5-flash', 
-        'models/gemini-1.5-pro',      # Pro é melhor para evitar Copyright
         'models/gemini-2.0-flash-exp', 
         'models/gemini-1.5-flash'
     ]
@@ -156,23 +158,23 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
             
-            # --- BLINDAGEM 2: ERRO 'QUALITY' CORRIGIDO ---
+            # Limite de páginas para não estourar a memória
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 
-                # Sistema triplo para não falhar na conversão da imagem
+                # --- CORREÇÃO DO ERRO 'QUALITY' ---
                 try:
-                    # Tenta jpg_quality (novo PyMuPDF)
+                    # Tenta o novo padrão
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except TypeError:
                     try:
-                        # Tenta quality (velho PyMuPDF/Pillow)
+                        # Tenta o padrão antigo
                         img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
                     except:
-                        # Se tudo falhar, PNG sempre funciona
+                        # Se tudo der errado, usa PNG (infalível)
                         img_byte_arr = io.BytesIO(pix.tobytes("png"))
                         
                 images.append(Image.open(img_byte_arr))
@@ -212,8 +214,7 @@ with st.sidebar:
     if model_instance:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
     else:
-        st.error("❌ Erro de Conexão")
-        st.caption("Verifique se a chave está nos Secrets.")
+        st.error(f"❌ {model_name_used}") # Mostra o erro da chave
     
     st.divider()
     
@@ -335,7 +336,7 @@ else:
                 try:
                     model = model_instance 
                     if not model:
-                        st.error("Erro crítico: Modelo não carregado. Verifique a chave nos Secrets.")
+                        st.error("Erro crítico: Chave API não configurada.")
                         st.stop()
 
                     d1 = process_uploaded_file(f1)
@@ -347,7 +348,7 @@ else:
                         st.stop()
 
                     payload = []
-                    # Contexto adicionado para evitar Copyright
+                    # Contexto para tentar evitar Copyright
                     payload.append("CONTEXTO: Auditoria Interna Confidencial. Documentos de propriedade da empresa Belfar.")
 
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
@@ -411,10 +412,16 @@ else:
                         }
                     )
                     
-                    # --- BLINDAGEM 3: ERRO COPYRIGHT (FINISH REASON 4) ---
+                    # --- CORREÇÃO DO ERRO DE COPYRIGHT ---
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-                        st.error("⚠️ **Bloqueio de Copyright detectado**")
-                        st.warning("O modelo identificou que o texto contém material protegido (Bula) e se recusou a reproduzi-lo integralmente.")
+                        st.error("⚠️ **Bloqueio de Direitos Autorais pelo Google Gemini**")
+                        st.warning("""
+                        O modelo identificou que o texto contém material protegido (Bula do Buscoplex) e se recusou a reproduzi-lo integralmente.
+                        
+                        **Soluções:**
+                        1. Tente recortar e enviar apenas a parte da bula que você quer analisar.
+                        2. O código já tentou alternar para o modelo Gemini 1.5 Pro, mas ele também bloqueou.
+                        """)
                     else:
                         data = extract_json(response.text)
                         if not data:
