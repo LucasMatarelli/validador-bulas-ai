@@ -59,26 +59,31 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
 def get_gemini_model():
-    # Puxa do Secret do Streamlit (já configurado por você)
+    # Tenta pegar dos secrets primeiro
+    api_key = None
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except:
-        st.error("⚠️ Chave API não encontrada nos Secrets.")
-        return None, "Sem Chave"
+        # SE FALHAR (não tiver secrets.toml), USA ESTA CHAVE FIXA:
+        api_key = "AIzaSyCEbzkqzeqfMq6IcVwtL_uycWUDEoj_qVU"
+
+    if not api_key:
+        return None, "Sem Chave Configurada"
 
     genai.configure(api_key=api_key)
     
-    # Tenta usar o 1.5 Pro primeiro (Melhor para evitar Copyright)
+    # Tenta conectar nos modelos (ordem de prioridade para evitar bloqueio)
     modelos = [
         'models/gemini-1.5-pro',
         'models/gemini-1.5-flash',
-        'models/gemini-2.5-flash'
+        'models/gemini-2.0-flash-exp'
     ]
     
     for m in modelos:
         try:
             return genai.GenerativeModel(m), m
         except: continue
+        
     return genai.GenerativeModel('models/gemini-1.5-flash'), "Fallback (Flash)"
 
 def process_uploaded_file(uploaded_file):
@@ -95,16 +100,17 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
-            limit_pages = min(12, len(doc))
+            limit_pages = min(12, len(doc)) # Lê até 12 páginas
             
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                # --- CORREÇÃO DO ERRO DE QUALITY ---
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) # Zoom 2x
                 try:
+                    # Tenta criar imagem JPEG com qualidade alta
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except:
-                    img_byte_arr = io.BytesIO(pix.tobytes("png")) # Fallback seguro
+                    # Se der erro no parâmetro quality, faz PNG
+                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             
             doc.close()
@@ -117,14 +123,22 @@ def process_uploaded_file(uploaded_file):
 
 def clean_json_response(text):
     text = text.replace("```json", "").replace("```", "").strip()
+    # Remove comentários do tipo // se houver
+    text = re.sub(r'//.*', '', text) 
     return json.loads(text) if text else None
 
-# ----------------- UI -----------------
+# ----------------- INTERFACE -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
+    
     model, model_name = get_gemini_model()
-    if model: st.success(f"✅ Conectado: {model_name.replace('models/', '')}")
+    
+    if model: 
+        st.success(f"✅ Conectado: {model_name.replace('models/', '')}")
+    else:
+        st.error("❌ Erro na Chave API")
+        
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
 
@@ -168,21 +182,21 @@ else:
                     d2 = process_uploaded_file(f2)
                     if not d1 or not d2: st.stop()
 
-                    # Prompt Anti-Copyright
+                    # Prompt Anti-Copyright (Para evitar bloqueio do Gemini)
                     prompt = f"""
-                    Você é um Auditor de Qualidade da Belfar (Uso Interno).
+                    Você é um Auditor de Qualidade da Belfar (Uso Interno e Confidencial).
                     Sua função é verificar a conformidade regulatória entre os documentos anexos.
                     
                     TAREFA: Compare as seções listadas abaixo.
-                    LISTA: {lista_secoes}
+                    LISTA DE SEÇÕES: {lista_secoes}
                     
                     REGRAS CRÍTICAS:
                     1. Em "DIZERES LEGAIS", busque a data de aprovação da ANVISA no rodapé. Se achar, marque com <mark class='anvisa'>dd/mm/aaaa</mark>. Se não achar, não invente.
                     2. Aponte divergências de texto com <mark class='diff'>texto</mark>.
                     3. Aponte erros ortográficos com <mark class='ort'>erro</mark>.
-                    4. Ignore formatação e quebras de linha. Foque no conteúdo.
+                    4. Nas seções {SECOES_SEM_DIVERGENCIA}, apenas transcreva o texto sem marcar diferenças (somente erros de português).
                     
-                    SAÍDA JSON:
+                    SAÍDA JSON OBRIGATÓRIA:
                     {{
                         "METADADOS": {{ "score": 0-100, "datas": [] }},
                         "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "CONFORME/DIVERGENTE" }} ]
@@ -209,7 +223,7 @@ else:
                     # Tratamento de erro de Copyright (Finish Reason 4)
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                         st.error("⚠️ **Bloqueio de Direitos Autorais**")
-                        st.warning("O Google detectou que este texto é protegido e bloqueou a transcrição completa. Tente enviar apenas as páginas específicas onde há dúvidas ou recortar o cabeçalho/rodapé das imagens.")
+                        st.warning("O Google detectou que este texto é protegido e bloqueou a resposta. Tente enviar apenas as páginas específicas onde há dúvidas.")
                     else:
                         data = clean_json_response(response.text)
                         if data:
@@ -222,12 +236,17 @@ else:
                             st.divider()
                             for sec in data.get("SECOES", []):
                                 icon = "✅" if "CONFORME" in sec['status'] else "❌"
+                                
+                                # Seções apenas informativas ganham ícone de olho
+                                if any(s in sec['titulo'] for s in SECOES_SEM_DIVERGENCIA):
+                                    icon = "👁️"
+                                    
                                 with st.expander(f"{icon} {sec['titulo']} - {sec['status']}"):
                                     ca, cb = st.columns(2)
                                     ca.markdown(f"**Referência:**<br>{sec.get('ref')}", unsafe_allow_html=True)
                                     cb.markdown(f"**Belfar:**<br>{sec.get('bel')}", unsafe_allow_html=True)
                         else:
-                            st.error("Erro ao gerar JSON.")
+                            st.error("Erro ao gerar JSON. Tente novamente.")
 
                 except Exception as e:
-                    st.error(f"Erro fatal: {e}")
+                    st.error(f"Erro técnico: {e}")
