@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
+# ----------------- ESTILOS CSS PERSONALIZADOS (MANTIDOS) -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
@@ -108,21 +108,24 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    # 1. TENTA PEGAR A CHAVE DO ST.SECRETS
+    # 1. TENTA LER A CHAVE DOS SECRETS DE FORMA SEGURA
     api_key = None
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
-        pass 
+        pass # Se falhar, segue para checagem
 
-    # Se não achou a chave, para tudo e avisa
     if not api_key:
-        return None, "Erro: Chave API não encontrada nos Secrets! Verifique a configuração no Streamlit Cloud."
+        # Tenta ler do ambiente como backup
+        api_key = os.environ.get("GEMINI_API_KEY")
+
+    if not api_key:
+        return None, "Chave API não configurada nos Secrets!"
 
     genai.configure(api_key=api_key)
     
-    # LISTA DE MODELOS BLINDADA (2.5 Flash Primeiro)
-    # Adicionado o Pro como fallback caso o Flash bloqueie por Copyright
+    # 2. LISTA DE MODELOS COM PRIORIDADE PARA O 2.5 FLASH
+    # Inclui fallbacks (1.5 Pro) caso o Flash bloqueie por Copyright
     modelos_para_testar = [
         'models/gemini-2.5-flash', 
         'models/gemini-1.5-pro',
@@ -136,6 +139,7 @@ def get_gemini_model():
             return model, model_name
         except Exception:
             continue
+    # Se nenhum funcionar
     return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
@@ -151,23 +155,23 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
             
-            # --- OTIMIZAÇÃO: 12 PÁGINAS ---
+            # Limite de páginas para performance
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 
-                # --- CORREÇÃO BLINDADA PARA ERRO 'QUALITY' ---
+                # 3. BLINDAGEM CONTRA ERRO DE QUALITY (PyMuPDF versions)
                 try:
-                    # Tenta a sintaxe nova (PyMuPDF atualizado)
+                    # Tenta sintaxe nova
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except TypeError:
                     try:
-                        # Tenta a sintaxe antiga (PyMuPDF antigo/Pillow)
+                        # Tenta sintaxe antiga
                         img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
                     except:
-                        # Fallback infalível para PNG (não usa quality)
+                        # Fallback infalível (PNG)
                         img_byte_arr = io.BytesIO(pix.tobytes("png"))
                         
                 images.append(Image.open(img_byte_arr))
@@ -201,13 +205,14 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
     
+    # Inicializa modelo
     model_instance, model_name_used = get_gemini_model()
     
     if model_instance:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
     else:
-        st.error(f"❌ Erro na Chave API")
-        st.caption("Verifique seus Secrets no Streamlit Cloud.")
+        st.error("❌ Erro de Conexão")
+        st.caption("Verifique se a chave está correta em Secrets.")
     
     st.divider()
     
@@ -278,15 +283,13 @@ if pagina == "🏠 Início":
         </div>
         """, unsafe_allow_html=True)
 
-# ----------------- PÁGINAS DE FERRAMENTA -----------------
+# ----------------- FERRAMENTA -----------------
 else:
     st.markdown(f"## {pagina}")
     
-    # Variáveis de Controle
     lista_secoes = SECOES_PACIENTE
     nome_tipo = "Paciente"
     
-    # Configuração dos Nomes das Caixas de Upload
     label_box1 = "Arquivo 1"
     label_box2 = "Arquivo 2"
     
@@ -310,7 +313,6 @@ else:
     
     st.divider()
     
-    # Área de Upload
     c1, c2 = st.columns(2)
     with c1:
         st.markdown(f"##### {label_box1}")
@@ -319,7 +321,6 @@ else:
         st.markdown(f"##### {label_box2}")
         f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
         
-    # Botão de Ação
     st.write("") 
     if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
         if not f1 or not f2:
@@ -329,7 +330,7 @@ else:
                 try:
                     model = model_instance 
                     if not model:
-                        st.error("Erro crítico: Chave API não configurada. Verifique os Secrets.")
+                        st.error("Erro crítico: Chave API não detectada.")
                         st.stop()
 
                     d1 = process_uploaded_file(f1)
@@ -337,13 +338,13 @@ else:
                     gc.collect()
 
                     if not d1 or not d2:
-                        st.error("Falha ao ler os arquivos. Tente novamente.")
+                        st.error("Falha ao ler os arquivos.")
                         st.stop()
 
                     payload = []
-                    # Contexto adicionado para evitar Copyright
-                    payload.append("CONTEXTO: Auditoria Interna Confidencial. Documentos de propriedade da empresa Belfar.")
-
+                    # Contexto adicionado para evitar bloqueio total de Copyright
+                    payload.append("CONTEXTO: Auditoria Interna Confidencial. Uso proprietário da Belfar.")
+                    
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
 
@@ -355,7 +356,7 @@ else:
 
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
-                    # PROMPT BLINDADO CONTRA REPETIÇÕES E TÍTULOS
+                    # 4. PROMPT BLINDADO CONTRA TÍTULOS E SUJEIRA
                     prompt = f"""
                     Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens (até 12 páginas) para encontrar o texto.
                     
@@ -363,36 +364,27 @@ else:
                     1. {nome_doc1} (Referência/Padrão)
                     2. {nome_doc2} (Candidato/BELFAR)
 
-                    LISTA DE SEÇÕES ({nome_tipo}):
+                    LISTA DE SEÇÕES A ANALISAR ({nome_tipo}):
                     {secoes_str}
 
-                    IMPORTANTE: O texto pode estar dividido em colunas ou páginas.
-                    
-                    === REGRA 0: LIMPEZA DE TÍTULOS (RIGOROSO) ===
-                    1. Ao extrair o conteúdo, NÃO COPIE O TÍTULO DA SEÇÃO. Quero apenas o parágrafo de texto que vem depois dele.
-                    2. Se o título da seção se repetir no meio do texto (por quebra de página), DELETE-O. Mantenha apenas o texto fluido.
-                    3. Assim que a próxima seção começar, PARE DE COPIAR.
+                    === REGRA ZERO: LIMPEZA ABSOLUTA DE TEXTO ===
+                    1. EXTRAÇÃO PURA: Ao extrair o conteúdo de uma seção, copie APENAS O PARÁGRAFO DE TEXTO.
+                    2. PROIBIDO TÍTULOS: NÃO inclua o título da seção (ex: NÃO escreva "4. O QUE DEVO SABER..." no início do texto extraído).
+                    3. SEM REPETIÇÕES: Se houver quebra de página e o título da seção aparecer de novo, DELETE-O. Mantenha o texto fluido.
+                    4. LIMITES: Pare de copiar assim que o título da PRÓXIMA seção aparecer.
 
-                    === REGRA 1: SEÇÕES SEM DIVERGÊNCIA ===
-                    Nas seções: "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS".
-                    - PROIBIDO usar <mark class='diff'>.
-                    - APENAS transcreva o texto.
-                    - Erros ortográficos podem ser marcados com <mark class='ort'>.
+                    === REGRA 1: COMPARAÇÃO ===
+                    - Seções normais: Use <mark class='diff'> para divergências de sentido e <mark class='ort'> para erros de português.
+                    - Seções informativas (Apresentações, Composição, Dizeres Legais): Apenas transcreva o texto limpo (sem títulos).
 
-                    === REGRA 2: DATA DA ANVISA (PROIBIDO ALUCINAR) ===
-                    1. Em "DIZERES LEGAIS", vá até o rodapé final.
-                    2. Se encontrar "Aprovado em dd/mm/aaaa", copie a data e use <mark class='anvisa'>dd/mm/aaaa</mark>.
-                    3. Se não encontrar, NÃO INVENTE. Deixe sem data.
-                    
-                    === REGRA 3: DEMAIS SEÇÕES ===
-                    - Marque divergências de sentido: <mark class='diff'>texto diferente</mark>
-                    - Marque erros de português: <mark class='ort'>erro</mark>
+                    === REGRA 2: DATA DA ANVISA ===
+                    - Busque no rodapé de "DIZERES LEGAIS". Se achar "Aprovado em dd/mm/aaaa", use <mark class='anvisa'>dd/mm/aaaa</mark>. Se não, deixe vazio.
                     
                     SAÍDA JSON:
                     {{
-                        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas REAIS encontradas"] }},
+                        "METADADOS": {{ "score": 0 a 100, "datas": ["datas reais"] }},
                         "SECOES": [
-                            {{ "titulo": "NOME SEÇÃO", "ref": "texto limpo...", "bel": "texto limpo...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
+                            {{ "titulo": "NOME SEÇÃO", "ref": "texto limpo sem título...", "bel": "texto limpo sem título...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
                         ]
                     }}
                     """
@@ -408,25 +400,30 @@ else:
                         }
                     )
                     
-                    # --- CORREÇÃO DO ERRO DE COPYRIGHT (FINISH_REASON 4) ---
+                    # 5. TRATAMENTO DE BLOQUEIO DE COPYRIGHT (FINISH REASON 4)
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-                        st.error("⚠️ **Bloqueio de Copyright do Modelo**")
+                        st.error("⚠️ **Alerta de Conteúdo Protegido (Copyright)**")
                         st.warning("""
-                        O modelo Gemini 2.5 Flash identificou este texto como protegido e bloqueou a saída.
+                        O Google Gemini interrompeu a leitura por detectar conteúdo protegido (Bula).
                         
-                        **Sugestão:** Recorte e envie apenas a parte da bula que você deseja auditar, em vez do arquivo inteiro.
-                        O sistema tentará usar o modelo Gemini 1.5 Pro automaticamente na próxima tentativa se disponível.
+                        **Ações Sugeridas:**
+                        1. Tente recortar e enviar apenas a parte da bula que você quer analisar.
+                        2. O sistema tentará usar um modelo alternativo automaticamente na próxima vez.
                         """)
                     else:
-                        data = clean_json_response(response.text)
-                        if data:
+                        data = extract_json(response.text)
+                        if not data:
+                            st.error("A IA não retornou um JSON válido. Tente novamente.")
+                        else:
                             meta = data.get("METADADOS", {})
-                            k1, k2, k3 = st.columns(3)
-                            k1.metric("Score", f"{meta.get('score')}%")
-                            k2.metric("Seções", len(data.get("SECOES", [])))
-                            k3.metric("Datas", ", ".join(meta.get("datas", [])) or "-")
+                            
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric("Conformidade", f"{meta.get('score', 0)}%")
+                            m2.metric("Seções Analisadas", len(data.get("SECOES", [])))
+                            m3.metric("Datas Encontradas", ", ".join(meta.get("datas", [])) or "Nenhuma data")
                             
                             st.divider()
+                            
                             for sec in data.get("SECOES", []):
                                 status = sec.get('status', 'N/A')
                                 titulo = sec.get('titulo', '').upper()
@@ -450,8 +447,6 @@ else:
                                     with cB:
                                         st.markdown(f"**{nome_doc2}**")
                                         st.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
-                        else:
-                            st.error("Erro ao gerar JSON. Tente novamente.")
 
                 except Exception as e:
                     st.error(f"Erro durante a análise: {e}")
