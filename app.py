@@ -20,7 +20,7 @@ st.set_page_config(
 
 # ----------------- CHAVE API (FIXA) -----------------
 # Inserida diretamente para facilitar o uso imediato
-API_KEY_FIXA = "AIzaSyAYYHDUsjDmA4qU728BwuTiEErnqYeilNQ"
+API_KEY_FIXA = "GEMINI_API_KEY"
 
 # ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
