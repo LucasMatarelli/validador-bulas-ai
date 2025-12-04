@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS (SEU CSS ORIGINAL) -----------------
+# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
@@ -118,18 +118,19 @@ def get_gemini_model():
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
-        # Se não achar, não quebra, mas retorna erro depois
-        return None, "Sem Chave nos Secrets"
+        # Tenta pegar de variável de ambiente (backup)
+        api_key = os.environ.get("GEMINI_API_KEY")
 
     if not api_key:
-         return None, "Chave Vazia"
+        st.error("⚠️ Chave API não encontrada nos Secrets!")
+        return None, "Sem Chave"
 
     genai.configure(api_key=api_key)
     
-    # LISTA DE MODELOS (Prioridade 2.5 Flash)
+    # LISTA DE MODELOS (Blindagem: Tenta vários se um falhar)
     modelos_para_testar = [
         'models/gemini-2.5-flash', 
-        'models/gemini-1.5-pro',      # Pro é bom para evitar Copyright
+        'models/gemini-1.5-pro',      # Pro é menos restritivo com Copyright
         'models/gemini-2.0-flash-exp', 
         'models/gemini-1.5-flash'
     ]
@@ -156,24 +157,24 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
             
-            # --- CORREÇÃO IMPORTANTE: 12 PÁGINAS ---
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                # --- CORREÇÃO IMPORTANTE: ZOOM 2.0 ---
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 
-                # --- BLINDAGEM DO ERRO 'QUALITY' ---
-                # Tenta todas as formas possíveis para não travar
+                # --- BLINDAGEM DE ERRO 'QUALITY' ---
                 try:
+                    # Tenta jpg_quality (novo PyMuPDF)
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except TypeError:
                     try:
+                        # Tenta quality (velho PyMuPDF/Pillow)
                         img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
                     except:
-                        img_byte_arr = io.BytesIO(pix.tobytes("png")) # Se tudo falhar, PNG resolve
-                
+                        # Se tudo falhar, PNG sempre funciona
+                        img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                        
                 images.append(Image.open(img_byte_arr))
                 pix = None
             
@@ -212,7 +213,7 @@ with st.sidebar:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
     else:
         st.error("❌ Erro de Conexão")
-        st.caption("Verifique seus Secrets.")
+        st.caption("Verifique a chave nos Secrets.")
     
     st.divider()
     
@@ -334,7 +335,7 @@ else:
                 try:
                     model = model_instance 
                     if not model:
-                        st.error("Erro crítico: Modelo não carregado.")
+                        st.error("Erro crítico: Modelo não carregado. Verifique a API Key.")
                         st.stop()
 
                     d1 = process_uploaded_file(f1)
@@ -342,13 +343,13 @@ else:
                     gc.collect()
 
                     if not d1 or not d2:
-                        st.error("Falha ao ler os arquivos.")
+                        st.error("Falha ao ler os arquivos. Tente novamente.")
                         st.stop()
 
                     payload = []
-                    # Contexto adicionado para evitar Copyright
-                    payload.append("CONTEXTO: Auditoria Interna Confidencial. Documentos de propriedade da empresa Belfar.")
-                    
+                    # Contexto para tentar evitar Copyright
+                    payload.append("CONTEXTO: Auditoria Interna Confidencial de Bula. Documentos de propriedade da empresa Belfar.")
+
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
 
@@ -410,10 +411,16 @@ else:
                         }
                     )
                     
-                    # --- BLINDAGEM DE COPYRIGHT (FINISH REASON 4) ---
+                    # --- BLINDAGEM DE COPYRIGHT (ERRO FINISH_REASON 4) ---
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-                        st.error("⚠️ **Bloqueio de Copyright detectado**")
-                        st.warning("O modelo se recusou a processar o texto completo. Tente enviar menos páginas ou apenas as seções que você precisa revisar.")
+                        st.error("⚠️ **Bloqueio de Direitos Autorais pelo Google**")
+                        st.warning("""
+                        O modelo identificou que o texto é protegido (Bula/Medicamento) e bloqueou a leitura completa.
+                        
+                        **O que fazer?**
+                        1. Tente enviar apenas as páginas específicas da bula onde você tem dúvida (corte o PDF).
+                        2. O sistema tentará usar um modelo diferente na próxima vez (ex: Gemini 1.5 Pro).
+                        """)
                     else:
                         data = extract_json(response.text)
                         if not data:
