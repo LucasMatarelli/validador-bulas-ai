@@ -59,20 +59,19 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
 def get_gemini_model():
-    # Tenta pegar dos secrets primeiro
+    # SÓ busca dos secrets. Não tem mais chave fixa no código.
     api_key = None
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except:
-        # SE FALHAR (não tiver secrets.toml), USA ESTA CHAVE FIXA:
-        api_key = "AIzaSyCEbzkqzeqfMq6IcVwtL_uycWUDEoj_qVU"
+        pass # Vai tratar abaixo
 
     if not api_key:
-        return None, "Sem Chave Configurada"
+        return None, "Chave API não configurada nos Secrets"
 
     genai.configure(api_key=api_key)
     
-    # Tenta conectar nos modelos (ordem de prioridade para evitar bloqueio)
+    # Tenta conectar nos modelos 
     modelos = [
         'models/gemini-1.5-pro',
         'models/gemini-1.5-flash',
@@ -100,16 +99,14 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
-            limit_pages = min(12, len(doc)) # Lê até 12 páginas
+            limit_pages = min(12, len(doc)) 
             
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) # Zoom 2x
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) 
                 try:
-                    # Tenta criar imagem JPEG com qualidade alta
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except:
-                    # Se der erro no parâmetro quality, faz PNG
                     img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             
@@ -123,7 +120,6 @@ def process_uploaded_file(uploaded_file):
 
 def clean_json_response(text):
     text = text.replace("```json", "").replace("```", "").strip()
-    # Remove comentários do tipo // se houver
     text = re.sub(r'//.*', '', text) 
     return json.loads(text) if text else None
 
@@ -137,7 +133,8 @@ with st.sidebar:
     if model: 
         st.success(f"✅ Conectado: {model_name.replace('models/', '')}")
     else:
-        st.error("❌ Erro na Chave API")
+        st.error("❌ Erro: Chave não encontrada")
+        st.caption("Verifique se a chave está nos Secrets do Streamlit.")
         
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
@@ -182,7 +179,6 @@ else:
                     d2 = process_uploaded_file(f2)
                     if not d1 or not d2: st.stop()
 
-                    # Prompt Anti-Copyright (Para evitar bloqueio do Gemini)
                     prompt = f"""
                     Você é um Auditor de Qualidade da Belfar (Uso Interno e Confidencial).
                     Sua função é verificar a conformidade regulatória entre os documentos anexos.
@@ -220,10 +216,9 @@ else:
                         }
                     )
 
-                    # Tratamento de erro de Copyright (Finish Reason 4)
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                         st.error("⚠️ **Bloqueio de Direitos Autorais**")
-                        st.warning("O Google detectou que este texto é protegido e bloqueou a resposta. Tente enviar apenas as páginas específicas onde há dúvidas.")
+                        st.warning("O Google detectou que este texto é protegido e bloqueou a resposta.")
                     else:
                         data = clean_json_response(response.text)
                         if data:
@@ -236,11 +231,8 @@ else:
                             st.divider()
                             for sec in data.get("SECOES", []):
                                 icon = "✅" if "CONFORME" in sec['status'] else "❌"
-                                
-                                # Seções apenas informativas ganham ícone de olho
                                 if any(s in sec['titulo'] for s in SECOES_SEM_DIVERGENCIA):
                                     icon = "👁️"
-                                    
                                 with st.expander(f"{icon} {sec['titulo']} - {sec['status']}"):
                                     ca, cb = st.columns(2)
                                     ca.markdown(f"**Referência:**<br>{sec.get('ref')}", unsafe_allow_html=True)
