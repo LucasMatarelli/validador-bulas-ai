@@ -18,16 +18,17 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- CHAVE API (FIXA) -----------------
-# Inserida diretamente para facilitar o uso imediato
-API_KEY_FIXA = "GEMINI_API_KEY"
-
 # ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
-    header[data-testid="stHeader"] { display: none !important; }
-    .main .block-container { padding-top: 20px !important; }
+    header[data-testid="stHeader"] {
+        display: none !important;
+    }
+    
+    .main .block-container {
+        padding-top: 20px !important;
+    }
 
     /* Ajuste de Fundo e Fontes */
     .main { background-color: #f4f6f8; }
@@ -43,6 +44,7 @@ st.markdown("""
         transition: all 0.2s;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02);
     }
+    
     .stRadio > div[role="radiogroup"] > label:hover {
         background-color: #f0fbf7;
         border-color: #55a68e;
@@ -112,16 +114,21 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    if not API_KEY_FIXA: return None, "Sem Chave"
+    # Tenta puxar a chave dos secrets do Streamlit
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        st.error("⚠️ Chave API não configurada nos Secrets!")
+        return None, "Sem Chave"
 
-    genai.configure(api_key=API_KEY_FIXA)
+    genai.configure(api_key=api_key)
     
-    # LISTA DE MODELOS (Priorizando Pro para evitar Copyright)
+    # LISTA DE MODELOS SOLICITADA
     modelos_para_testar = [
-        'models/gemini-1.5-pro',         # Mais robusto contra Copyright
         'models/gemini-2.5-flash', 
         'models/gemini-2.0-flash-exp', 
-        'models/gemini-1.5-flash'
+        'models/gemini-1.5-flash', 
+        'models/gemini-pro'
     ]
     
     for model_name in modelos_para_testar:
@@ -130,6 +137,7 @@ def get_gemini_model():
             return model, model_name
         except Exception:
             continue
+    # Fallback final
     return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
@@ -145,22 +153,17 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
             
-            # --- CONFIGURAÇÃO: 12 PÁGINAS ---
+            # --- CORREÇÃO IMPORTANTE: 12 PÁGINAS ---
+            # Se deixar só 4, ele não lê o meio da bula e dá "FALTANTE"
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                # --- ZOOM 2.0 (Mantido do seu código) ---
+                # --- CORREÇÃO IMPORTANTE: ZOOM 2.0 ---
+                # Aumenta a qualidade para a IA ler letras pequenas
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                
-                # --- CORREÇÃO DE COMPATIBILIDADE (JPG vs PNG) ---
-                try:
-                    # Tenta usar jpg_quality (versões novas) ou quality (antigas)
-                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
-                except Exception:
-                    # Se falhar qualquer parâmetro de qualidade, usa PNG (infalível)
-                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
-                    
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
                 pix = None
             
@@ -220,3 +223,216 @@ if pagina == "🏠 Início":
     """, unsafe_allow_html=True)
     
     c1, c2, c3 = st.columns(3)
+    
+    with c1:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">💊 Medicamento Referência x BELFAR</div>
+            <div class="card-text">
+                Compara a bula de referência com a bula BELFAR.
+                <br><br>
+                <ul>
+                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
+                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
+                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">📋 Conferência MKT</div>
+            <div class="card-text">
+                Compara arquivo ANVISA com PDF MKT.
+                <br><br>
+                <ul>
+                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
+                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
+                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c3:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">🎨 Gráfica x Arte Vigente</div>
+            <div class="card-text">
+                Compara PDF Gráfica com Arte Vigente (Lê curvas).
+                <br><br>
+                <ul>
+                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
+                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
+                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ----------------- PÁGINAS DE FERRAMENTA -----------------
+else:
+    st.markdown(f"## {pagina}")
+    
+    # Variáveis de Controle
+    lista_secoes = SECOES_PACIENTE
+    nome_tipo = "Paciente"
+    
+    # Configuração dos Nomes das Caixas de Upload
+    label_box1 = "Arquivo 1"
+    label_box2 = "Arquivo 2"
+    
+    if pagina == "💊 Ref x BELFAR":
+        label_box1 = "📄 Documento de Referência"
+        label_box2 = "📄 Documento BELFAR"
+        col_tipo, _ = st.columns([1, 2])
+        with col_tipo:
+            tipo_bula = st.radio("Tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
+            if tipo_bula == "Profissional":
+                lista_secoes = SECOES_PROFISSIONAL
+                nome_tipo = "Profissional"
+
+    elif pagina == "📋 Conferência MKT":
+        label_box1 = "📄 Arquivo ANVISA"
+        label_box2 = "📄 Arquivo MKT"
+
+    elif pagina == "🎨 Gráfica x Arte":
+        label_box1 = "📄 Arte Vigente"
+        label_box2 = "📄 PDF da Gráfica"
+    
+    st.divider()
+    
+    # Área de Upload
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"##### {label_box1}")
+        f1 = st.file_uploader("", type=["pdf", "docx"], key="f1")
+    with c2:
+        st.markdown(f"##### {label_box2}")
+        f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
+        
+    # Botão de Ação
+    st.write("") 
+    if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
+        if not f1 or not f2:
+            st.warning("⚠️ Por favor, faça o upload dos dois arquivos para continuar.")
+        else:
+            with st.spinner(f"🤖 Analisando com {model_name_used.split('/')[-1]}..."):
+                try:
+                    model = model_instance 
+                    if not model:
+                        st.error("Erro crítico: Modelo não carregado.")
+                        st.stop()
+
+                    d1 = process_uploaded_file(f1)
+                    d2 = process_uploaded_file(f2)
+                    gc.collect()
+
+                    if not d1 or not d2:
+                        st.error("Falha ao ler os arquivos.")
+                        st.stop()
+
+                    payload = []
+                    nome_doc1 = label_box1.replace("📄 ", "").upper()
+                    nome_doc2 = label_box2.replace("📄 ", "").upper()
+
+                    if d1['type'] == 'text': payload.append(f"--- {nome_doc1} ---\n{d1['data']}")
+                    else: payload.append(f"--- {nome_doc1} ---"); payload.extend(d1['data'])
+                    
+                    if d2['type'] == 'text': payload.append(f"--- {nome_doc2} ---\n{d2['data']}")
+                    else: payload.append(f"--- {nome_doc2} ---"); payload.extend(d2['data'])
+
+                    secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
+                    
+                    # --- PROMPT REFORÇADO PARA NÃO INVENTAR DATA ---
+                    prompt = f"""
+                    Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens (até 12 páginas) para encontrar o texto.
+                    
+                    DOCUMENTOS:
+                    1. {nome_doc1} (Referência/Padrão)
+                    2. {nome_doc2} (Candidato/BELFAR)
+
+                    LISTA DE SEÇÕES ({nome_tipo}):
+                    {secoes_str}
+
+                    IMPORTANTE: O texto pode estar dividido em colunas ou páginas. Leia o documento inteiro.
+
+                    === REGRA 1: SEÇÕES SEM DIVERGÊNCIA ===
+                    Nas seções: "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS".
+                    - PROIBIDO usar <mark class='diff'>.
+                    - APENAS transcreva o texto.
+                    - Erros ortográficos podem ser marcados com <mark class='ort'>.
+
+                    === REGRA 2: DATA DA ANVISA (PROIBIDO ALUCINAR) ===
+                    1. Em "DIZERES LEGAIS", vá até o rodapé final.
+                    2. Você SÓ pode marcar a data se encontrar EXATAMENTE a frase:
+                       "Esta bula foi aprovada pela Anvisa em" (ou similar explícito).
+                    3. Se a frase existir: Copie a data e envolva com <mark class='anvisa'>dd/mm/aaaa</mark>.
+                    4. Se a frase NÃO existir: **NÃO COLOQUE NENHUMA DATA**. Deixe sem marcação azul.
+                    5. NÃO use datas de revisão ou códigos (ex: BUL...) como data de aprovação. Seja literal.
+                    
+                    === REGRA 3: DEMAIS SEÇÕES ===
+                    - Marque divergências de sentido: <mark class='diff'>texto diferente</mark>
+                    - Marque erros de português: <mark class='ort'>erro</mark>
+                    
+                    SAÍDA JSON:
+                    {{
+                        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas REAIS encontradas"] }},
+                        "SECOES": [
+                            {{ "titulo": "NOME SEÇÃO", "ref": "texto do {nome_doc1}...", "bel": "texto do {nome_doc2}...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
+                        ]
+                    }}
+                    """
+
+                    response = model.generate_content(
+                        [prompt] + payload,
+                        generation_config={"response_mime_type": "application/json"},
+                        safety_settings={
+                            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                        }
+                    )
+                    
+                    data = extract_json(response.text)
+                    if not data:
+                        st.error("A IA não retornou um JSON válido. Tente novamente.")
+                    else:
+                        meta = data.get("METADADOS", {})
+                        
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Conformidade", f"{meta.get('score', 0)}%")
+                        m2.metric("Seções Analisadas", len(data.get("SECOES", [])))
+                        m3.metric("Datas Encontradas", ", ".join(meta.get("datas", [])) or "Nenhuma data")
+                        
+                        st.divider()
+                        
+                        for sec in data.get("SECOES", []):
+                            status = sec.get('status', 'N/A')
+                            titulo = sec.get('titulo', '').upper()
+                            
+                            icon = "✅"
+                            if "DIVERGENTE" in status: icon = "❌"
+                            elif "FALTANTE" in status: icon = "🚨"
+                            
+                            if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
+                                icon = "👁️" 
+                                if "DIVERGENTE" in status:
+                                    status = "VISUALIZAÇÃO (Divergências Ignoradas)"
+                                else:
+                                    status = "VISUALIZAÇÃO"
+                            
+                            with st.expander(f"{icon} {sec['titulo']} — {status}"):
+                                cA, cB = st.columns(2)
+                                with cA:
+                                    st.markdown(f"**{nome_doc1}**")
+                                    st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
+                                with cB:
+                                    st.markdown(f"**{nome_doc2}**")
+                                    st.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"Erro durante a análise: {e}")
