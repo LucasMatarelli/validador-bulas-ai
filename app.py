@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
+# ----------------- ESTILOS CSS PERSONALIZADOS (SEU LAYOUT) -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
@@ -114,7 +114,7 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    # Tenta puxar a chave dos secrets do Streamlit
+    # BLINDAGEM 1: Busca a chave nos Secrets (Seguro para Repo Público)
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
@@ -122,15 +122,14 @@ def get_gemini_model():
         api_key = os.environ.get("GEMINI_API_KEY")
 
     if not api_key:
-        st.error("⚠️ Chave API não encontrada nos Secrets!")
-        return None, "Sem Chave"
+        return None, "Chave API não encontrada nos Secrets!"
 
     genai.configure(api_key=api_key)
     
-    # LISTA DE MODELOS (Blindagem: Tenta vários se um falhar)
+    # LISTA DE MODELOS (Prioridade 2.5 Flash, com backup para Pro)
     modelos_para_testar = [
         'models/gemini-2.5-flash', 
-        'models/gemini-1.5-pro',      # Pro é menos restritivo com Copyright
+        'models/gemini-1.5-pro',      # Pro é melhor para evitar Copyright
         'models/gemini-2.0-flash-exp', 
         'models/gemini-1.5-flash'
     ]
@@ -157,13 +156,14 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
             
+            # --- BLINDAGEM 2: ERRO 'QUALITY' CORRIGIDO ---
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 
-                # --- BLINDAGEM DE ERRO 'QUALITY' ---
+                # Sistema triplo para não falhar na conversão da imagem
                 try:
                     # Tenta jpg_quality (novo PyMuPDF)
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
@@ -213,7 +213,7 @@ with st.sidebar:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
     else:
         st.error("❌ Erro de Conexão")
-        st.caption("Verifique a chave nos Secrets.")
+        st.caption("Verifique se a chave está nos Secrets.")
     
     st.divider()
     
@@ -335,7 +335,7 @@ else:
                 try:
                     model = model_instance 
                     if not model:
-                        st.error("Erro crítico: Modelo não carregado. Verifique a API Key.")
+                        st.error("Erro crítico: Modelo não carregado. Verifique a chave nos Secrets.")
                         st.stop()
 
                     d1 = process_uploaded_file(f1)
@@ -347,8 +347,8 @@ else:
                         st.stop()
 
                     payload = []
-                    # Contexto para tentar evitar Copyright
-                    payload.append("CONTEXTO: Auditoria Interna Confidencial de Bula. Documentos de propriedade da empresa Belfar.")
+                    # Contexto adicionado para evitar Copyright
+                    payload.append("CONTEXTO: Auditoria Interna Confidencial. Documentos de propriedade da empresa Belfar.")
 
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
@@ -411,16 +411,10 @@ else:
                         }
                     )
                     
-                    # --- BLINDAGEM DE COPYRIGHT (ERRO FINISH_REASON 4) ---
+                    # --- BLINDAGEM 3: ERRO COPYRIGHT (FINISH REASON 4) ---
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-                        st.error("⚠️ **Bloqueio de Direitos Autorais pelo Google**")
-                        st.warning("""
-                        O modelo identificou que o texto é protegido (Bula/Medicamento) e bloqueou a leitura completa.
-                        
-                        **O que fazer?**
-                        1. Tente enviar apenas as páginas específicas da bula onde você tem dúvida (corte o PDF).
-                        2. O sistema tentará usar um modelo diferente na próxima vez (ex: Gemini 1.5 Pro).
-                        """)
+                        st.error("⚠️ **Bloqueio de Copyright detectado**")
+                        st.warning("O modelo identificou que o texto contém material protegido (Bula) e se recusou a reproduzi-lo integralmente.")
                     else:
                         data = extract_json(response.text)
                         if not data:
