@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
+# ----------------- ESTILOS CSS PERSONALIZADOS (SEU CSS ORIGINAL) -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
@@ -118,17 +118,20 @@ def get_gemini_model():
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
-        st.error("⚠️ Chave API não configurada nos Secrets!")
-        return None, "Sem Chave"
+        # Se não achar, não quebra, mas retorna erro depois
+        return None, "Sem Chave nos Secrets"
+
+    if not api_key:
+         return None, "Chave Vazia"
 
     genai.configure(api_key=api_key)
     
-    # LISTA DE MODELOS SOLICITADA
+    # LISTA DE MODELOS (Prioridade 2.5 Flash)
     modelos_para_testar = [
         'models/gemini-2.5-flash', 
+        'models/gemini-1.5-pro',      # Pro é bom para evitar Copyright
         'models/gemini-2.0-flash-exp', 
-        'models/gemini-1.5-flash', 
-        'models/gemini-pro'
+        'models/gemini-1.5-flash'
     ]
     
     for model_name in modelos_para_testar:
@@ -154,16 +157,23 @@ def process_uploaded_file(uploaded_file):
             images = []
             
             # --- CORREÇÃO IMPORTANTE: 12 PÁGINAS ---
-            # Se deixar só 4, ele não lê o meio da bula e dá "FALTANTE"
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
                 # --- CORREÇÃO IMPORTANTE: ZOOM 2.0 ---
-                # Aumenta a qualidade para a IA ler letras pequenas
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
-                except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                
+                # --- BLINDAGEM DO ERRO 'QUALITY' ---
+                # Tenta todas as formas possíveis para não travar
+                try:
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                except TypeError:
+                    try:
+                        img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
+                    except:
+                        img_byte_arr = io.BytesIO(pix.tobytes("png")) # Se tudo falhar, PNG resolve
+                
                 images.append(Image.open(img_byte_arr))
                 pix = None
             
@@ -202,6 +212,7 @@ with st.sidebar:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
     else:
         st.error("❌ Erro de Conexão")
+        st.caption("Verifique seus Secrets.")
     
     st.divider()
     
@@ -335,6 +346,9 @@ else:
                         st.stop()
 
                     payload = []
+                    # Contexto adicionado para evitar Copyright
+                    payload.append("CONTEXTO: Auditoria Interna Confidencial. Documentos de propriedade da empresa Belfar.")
+                    
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
 
@@ -346,7 +360,6 @@ else:
 
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
-                    # --- PROMPT REFORÇADO PARA NÃO INVENTAR DATA ---
                     prompt = f"""
                     Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens (até 12 páginas) para encontrar o texto.
                     
@@ -368,7 +381,7 @@ else:
                     === REGRA 2: DATA DA ANVISA (PROIBIDO ALUCINAR) ===
                     1. Em "DIZERES LEGAIS", vá até o rodapé final.
                     2. Você SÓ pode marcar a data se encontrar EXATAMENTE a frase:
-                       "Esta bula foi aprovada pela Anvisa em" (ou similar explícito).
+                        "Esta bula foi aprovada pela Anvisa em" (ou similar explícito).
                     3. Se a frase existir: Copie a data e envolva com <mark class='anvisa'>dd/mm/aaaa</mark>.
                     4. Se a frase NÃO existir: **NÃO COLOQUE NENHUMA DATA**. Deixe sem marcação azul.
                     5. NÃO use datas de revisão ou códigos (ex: BUL...) como data de aprovação. Seja literal.
@@ -397,42 +410,47 @@ else:
                         }
                     )
                     
-                    data = extract_json(response.text)
-                    if not data:
-                        st.error("A IA não retornou um JSON válido. Tente novamente.")
+                    # --- BLINDAGEM DE COPYRIGHT (FINISH REASON 4) ---
+                    if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
+                        st.error("⚠️ **Bloqueio de Copyright detectado**")
+                        st.warning("O modelo se recusou a processar o texto completo. Tente enviar menos páginas ou apenas as seções que você precisa revisar.")
                     else:
-                        meta = data.get("METADADOS", {})
-                        
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("Conformidade", f"{meta.get('score', 0)}%")
-                        m2.metric("Seções Analisadas", len(data.get("SECOES", [])))
-                        m3.metric("Datas Encontradas", ", ".join(meta.get("datas", [])) or "Nenhuma data")
-                        
-                        st.divider()
-                        
-                        for sec in data.get("SECOES", []):
-                            status = sec.get('status', 'N/A')
-                            titulo = sec.get('titulo', '').upper()
+                        data = extract_json(response.text)
+                        if not data:
+                            st.error("A IA não retornou um JSON válido. Tente novamente.")
+                        else:
+                            meta = data.get("METADADOS", {})
                             
-                            icon = "✅"
-                            if "DIVERGENTE" in status: icon = "❌"
-                            elif "FALTANTE" in status: icon = "🚨"
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric("Conformidade", f"{meta.get('score', 0)}%")
+                            m2.metric("Seções Analisadas", len(data.get("SECOES", [])))
+                            m3.metric("Datas Encontradas", ", ".join(meta.get("datas", [])) or "Nenhuma data")
                             
-                            if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
-                                icon = "👁️" 
-                                if "DIVERGENTE" in status:
-                                    status = "VISUALIZAÇÃO (Divergências Ignoradas)"
-                                else:
-                                    status = "VISUALIZAÇÃO"
+                            st.divider()
                             
-                            with st.expander(f"{icon} {sec['titulo']} — {status}"):
-                                cA, cB = st.columns(2)
-                                with cA:
-                                    st.markdown(f"**{nome_doc1}**")
-                                    st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
-                                with cB:
-                                    st.markdown(f"**{nome_doc2}**")
-                                    st.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
+                            for sec in data.get("SECOES", []):
+                                status = sec.get('status', 'N/A')
+                                titulo = sec.get('titulo', '').upper()
+                                
+                                icon = "✅"
+                                if "DIVERGENTE" in status: icon = "❌"
+                                elif "FALTANTE" in status: icon = "🚨"
+                                
+                                if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
+                                    icon = "👁️" 
+                                    if "DIVERGENTE" in status:
+                                        status = "VISUALIZAÇÃO (Divergências Ignoradas)"
+                                    else:
+                                        status = "VISUALIZAÇÃO"
+                                
+                                with st.expander(f"{icon} {sec['titulo']} — {status}"):
+                                    cA, cB = st.columns(2)
+                                    with cA:
+                                        st.markdown(f"**{nome_doc1}**")
+                                        st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
+                                    with cB:
+                                        st.markdown(f"**{nome_doc2}**")
+                                        st.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
 
                 except Exception as e:
                     st.error(f"Erro durante a análise: {e}")
