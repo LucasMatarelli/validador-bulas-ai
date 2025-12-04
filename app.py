@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
+# ----------------- ESTILOS CSS (SEU LAYOUT ORIGINAL) -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
@@ -108,26 +108,21 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    # Tenta puxar a chave dos secrets (BLINDADO)
-    api_key = None
+    # Puxa dos Secrets (Segurança)
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
-        pass # Falha silenciosa para tentar tratar depois
-
-    if not api_key:
-        # Tenta fallback de variável de ambiente
         api_key = os.environ.get("GEMINI_API_KEY")
-    
+
     if not api_key:
         return None, "Chave API não encontrada nos Secrets!"
 
     genai.configure(api_key=api_key)
     
-    # LISTA DE MODELOS (Prioridade 2.5 Flash)
+    # Prioridade para o 2.5 Flash
     modelos_para_testar = [
         'models/gemini-2.5-flash', 
-        'models/gemini-1.5-pro',      # Backup robusto
+        'models/gemini-1.5-pro',
         'models/gemini-2.0-flash-exp', 
         'models/gemini-1.5-flash'
     ]
@@ -138,7 +133,6 @@ def get_gemini_model():
             return model, model_name
         except Exception:
             continue
-    # Fallback final
     return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
@@ -161,16 +155,13 @@ def process_uploaded_file(uploaded_file):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 
-                # --- BLINDAGEM DE IMAGEM (TRY/EXCEPT TRIPLO) ---
+                # --- BLINDAGEM DE IMAGEM (Anti-erro Quality) ---
                 try:
-                    # Tenta jpg_quality (novo)
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except Exception:
                     try:
-                        # Tenta quality (antigo)
                         img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
                     except Exception:
-                        # Se tudo falhar, vai de PNG (infalível)
                         img_byte_arr = io.BytesIO(pix.tobytes("png"))
                         
                 images.append(Image.open(img_byte_arr))
@@ -204,14 +195,13 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
     
-    # Inicializa modelo
     model_instance, model_name_used = get_gemini_model()
     
     if model_instance:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
     else:
         st.error("❌ Erro de Conexão")
-        st.caption("Verifique se a chave está em Secrets.")
+        st.caption("Verifique os Secrets.")
     
     st.divider()
     
@@ -282,15 +272,13 @@ if pagina == "🏠 Início":
         </div>
         """, unsafe_allow_html=True)
 
-# ----------------- PÁGINAS DE FERRAMENTA -----------------
+# ----------------- FERRAMENTA -----------------
 else:
     st.markdown(f"## {pagina}")
     
-    # Variáveis de Controle
     lista_secoes = SECOES_PACIENTE
     nome_tipo = "Paciente"
     
-    # Configuração dos Nomes das Caixas de Upload
     label_box1 = "Arquivo 1"
     label_box2 = "Arquivo 2"
     
@@ -314,7 +302,6 @@ else:
     
     st.divider()
     
-    # Área de Upload
     c1, c2 = st.columns(2)
     with c1:
         st.markdown(f"##### {label_box1}")
@@ -323,7 +310,6 @@ else:
         st.markdown(f"##### {label_box2}")
         f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
         
-    # Botão de Ação
     st.write("") 
     if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
         if not f1 or not f2:
@@ -333,7 +319,7 @@ else:
                 try:
                     model = model_instance 
                     if not model:
-                        st.error("Erro crítico: Modelo não carregado. Verifique os Secrets.")
+                        st.error("Erro crítico: Chave API não configurada. Verifique os Secrets.")
                         st.stop()
 
                     d1 = process_uploaded_file(f1)
@@ -345,7 +331,7 @@ else:
                         st.stop()
 
                     payload = []
-                    # Contexto adicionado para evitar Copyright
+                    # Contexto para evitar copyright total
                     payload.append("CONTEXTO: Auditoria Interna Confidencial. Documentos de propriedade da empresa Belfar.")
                     
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
@@ -359,6 +345,7 @@ else:
 
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
+                    # --- PROMPT CORRIGIDO PARA EVITAR INVASÃO DE SEÇÃO ---
                     prompt = f"""
                     Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens (até 12 páginas) para encontrar o texto.
                     
@@ -366,34 +353,28 @@ else:
                     1. {nome_doc1} (Referência/Padrão)
                     2. {nome_doc2} (Candidato/BELFAR)
 
-                    LISTA DE SEÇÕES ({nome_tipo}):
+                    LISTA DE SEÇÕES A ANALISAR ({nome_tipo}):
                     {secoes_str}
 
-                    IMPORTANTE: O texto pode estar dividido em colunas ou páginas. Leia o documento inteiro.
-
-                    === REGRA 1: SEÇÕES SEM DIVERGÊNCIA ===
-                    Nas seções: "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS".
-                    - PROIBIDO usar <mark class='diff'>.
-                    - APENAS transcreva o texto.
-                    - Erros ortográficos podem ser marcados com <mark class='ort'>.
-
-                    === REGRA 2: DATA DA ANVISA (PROIBIDO ALUCINAR) ===
-                    1. Em "DIZERES LEGAIS", vá até o rodapé final.
-                    2. Você SÓ pode marcar a data se encontrar EXATAMENTE a frase:
-                        "Esta bula foi aprovada pela Anvisa em" (ou similar explícito).
-                    3. Se a frase existir: Copie a data e envolva com <mark class='anvisa'>dd/mm/aaaa</mark>.
-                    4. Se a frase NÃO existir: **NÃO COLOQUE NENHUMA DATA**. Deixe sem marcação azul.
-                    5. NÃO use datas de revisão ou códigos (ex: BUL...) como data de aprovação. Seja literal.
+                    === REGRA CRÍTICA DE EXTRAÇÃO (SEM TÍTULOS MISTURADOS) ===
+                    1. Para cada seção da lista, encontre onde ela começa e onde termina (logo antes do título da próxima seção).
+                    2. Extraia APENAS o corpo do texto dessa seção.
+                    3. NÃO COPIE o título da seção (ex: não quero ver "4. O QUE DEVO SABER..." escrito no início do texto extraído).
+                    4. Se houver quebra de coluna e o título se repetir no meio, IGNORE a repetição. Quero o texto limpo e contínuo.
+                    5. Se a seção seguinte começar, PARE IMEDIATAMENTE. Não traga o título da próxima seção junto.
                     
-                    === REGRA 3: DEMAIS SEÇÕES ===
-                    - Marque divergências de sentido: <mark class='diff'>texto diferente</mark>
-                    - Marque erros de português: <mark class='ort'>erro</mark>
+                    === REGRA 1: COMPARAÇÃO ===
+                    - Nas seções normais: Marque divergências de sentido com <mark class='diff'>texto diferente</mark> e erros de português com <mark class='ort'>erro</mark>.
+                    - Nas seções "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS": APENAS transcreva o texto. Não marque diferenças (exceto ortografia).
+
+                    === REGRA 2: DATA DA ANVISA ===
+                    - Procure no rodapé de "DIZERES LEGAIS". Se achar "Aprovado em dd/mm/aaaa", marque com <mark class='anvisa'>dd/mm/aaaa</mark>. Se não achar, deixe vazio.
                     
                     SAÍDA JSON:
                     {{
-                        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas REAIS encontradas"] }},
+                        "METADADOS": {{ "score": 0 a 100, "datas": ["datas encontradas"] }},
                         "SECOES": [
-                            {{ "titulo": "NOME SEÇÃO", "ref": "texto do {nome_doc1}...", "bel": "texto do {nome_doc2}...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
+                            {{ "titulo": "NOME SEÇÃO", "ref": "texto limpo da seção...", "bel": "texto limpo da seção...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
                         ]
                     }}
                     """
@@ -412,7 +393,7 @@ else:
                     # --- BLINDAGEM DE COPYRIGHT (FINISH REASON 4) ---
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                         st.error("⚠️ **Bloqueio de Copyright detectado**")
-                        st.warning("O modelo se recusou a processar o texto completo (Conteúdo Protegido). Tente enviar menos páginas ou apenas as seções que você precisa revisar.")
+                        st.warning("A IA bloqueou a reprodução deste texto por conter material protegido. Tente recortar apenas o trecho necessário.")
                     else:
                         data = extract_json(response.text)
                         if not data:
