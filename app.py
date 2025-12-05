@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
+# ----------------- ESTILOS CSS PERSONALIZADOS (COMPLETO) -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
@@ -108,7 +108,7 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    # 1. TENTA LER A CHAVE DOS SECRETS
+    # 1. TENTA LER A CHAVE DOS SECRETS DE FORMA SEGURA
     api_key = None
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
@@ -116,6 +116,7 @@ def get_gemini_model():
         pass 
 
     if not api_key:
+        # Tenta ler do ambiente como backup
         api_key = os.environ.get("GEMINI_API_KEY")
 
     if not api_key:
@@ -123,12 +124,11 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    # 2. LISTA DE MODELOS COM O GEMINI 3 E O 2.0 FLASH
+    # 2. LISTA DE MODELOS (PRIORIDADE PARA POTÊNCIA)
     modelos_para_testar = [
-        'models/gemini-2.0-flash-exp',   # Prioridade 1 (Mais rápido e estável)
-        'models/gemini-3-pro-preview',   # Prioridade 2 (Tentativa de usar o 3.0)
-        'models/gemini-1.5-pro',         # Fallback
-        'models/gemini-1.5-flash'
+        'models/gemini-2.0-flash-exp', # Prioridade 1: O mais novo e potente (Experimental)
+        'models/gemini-1.5-pro',       # Prioridade 2: O Pro Estável (Alta inteligência)
+        'models/gemini-1.5-flash'      # Prioridade 3: Apenas se os outros falharem
     ]
     
     for model_name in modelos_para_testar:
@@ -137,12 +137,13 @@ def get_gemini_model():
             return model, model_name
         except Exception:
             continue
+    # Se nenhum funcionar
     return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
     """
-    CORREÇÃO DO COPYRIGHT: 
-    Tenta ler como TEXTO primeiro. Se conseguir, não manda imagem pro Google.
+    Função blindada contra Copyright: Tenta extrair texto primeiro.
+    Se falhar (imagem escaneada), extrai imagens.
     """
     if not uploaded_file: return None
     try:
@@ -159,17 +160,17 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # --- TENTATIVA A: EXTRAIR TEXTO PURO (Solução para Copyright) ---
+            # TENTATIVA A: EXTRAIR TEXTO PURO (Evita Copyright e é mais rápido)
             full_text = ""
             for page in doc:
                 full_text += page.get_text() + "\n"
             
-            # Se tiver texto extraível (não for só imagem escaneada)
+            # Verifica se extraiu texto útil (se não for página em branco ou só imagem)
             if len(full_text.strip()) > 50:
                 doc.close()
                 return {"type": "text", "data": full_text}
             
-            # --- TENTATIVA B: SE FOR IMAGEM (Falhou o texto), TENTA O MODO VISUAL ---
+            # TENTATIVA B: SE FOR PDF ESCANEADO (IMAGEM), VAI PARA O MÉTODO DE OCR/VISÃO
             images = []
             limit_pages = min(12, len(doc))
             
@@ -178,8 +179,12 @@ def process_uploaded_file(uploaded_file):
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 try:
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
-                except:
-                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                except TypeError:
+                    try:
+                        img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
+                    except:
+                        img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                        
                 images.append(Image.open(img_byte_arr))
                 pix = None
             
@@ -349,12 +354,12 @@ else:
                         st.stop()
 
                     payload = []
+                    # Contexto adicionado para evitar bloqueio total de Copyright
                     payload.append("CONTEXTO: Auditoria Interna Confidencial. Uso proprietário da Belfar.")
                     
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
 
-                    # Lógica para enviar Texto ou Imagem para a IA
                     if d1['type'] == 'text': payload.append(f"--- {nome_doc1} ---\n{d1['data']}")
                     else: payload.append(f"--- {nome_doc1} ---"); payload.extend(d1['data'])
                     
