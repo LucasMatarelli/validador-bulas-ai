@@ -63,7 +63,12 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
-def get_gemini_model():
+@st.cache_resource
+def get_working_gemini_model():
+    """
+    Testa qual modelo está funcionando para a API Key fornecida.
+    Retorna o primeiro que responder sem erro 404.
+    """
     api_key = None
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
@@ -75,23 +80,33 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    # TENTATIVA DE CARREGAR MODELOS (Blindagem contra erro 404)
-    modelos_para_testar = [
-        "gemini-1.5-flash",          # Preferido
-        "gemini-1.5-flash-latest",   # Alternativa atualizada
-        "gemini-1.5-pro",            # Mais robusto
-        "gemini-pro"                 # Legado (estável)
+    # LISTA DE PRIORIDADE: Do mais novo/rápido para o mais estável/antigo
+    candidatos = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-latest",
+        "gemini-pro",         # Versão 1.0 Pro
+        "gemini-1.0-pro"      # Nome alternativo
     ]
 
-    for nome_modelo in modelos_para_testar:
+    print("🔍 Iniciando teste de conexão com a API do Google...")
+
+    for nome_modelo in candidatos:
         try:
             model = genai.GenerativeModel(nome_modelo)
-            # Teste simples não faz chamada de rede, então assumimos sucesso se instanciou
+            # TESTE REAL: Tenta gerar 1 token. Se o modelo não existir, dará erro aqui.
+            model.generate_content("teste", generation_config={"max_output_tokens": 1})
+            
+            print(f"✅ CONECTADO COM SUCESSO: {nome_modelo}")
             return model, f"Modelo Ativo: {nome_modelo}"
-        except:
+            
+        except Exception as e:
+            # Se der erro (404, permissão, etc), apenas loga e tenta o próximo
+            print(f"⚠️ Falha ao conectar no {nome_modelo}: {e}")
             continue
             
-    return None, "Erro: Nenhum modelo disponível"
+    return None, "ERRO CRÍTICO: Nenhum modelo disponível para esta API Key."
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -99,27 +114,21 @@ def process_uploaded_file(uploaded_file):
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
         
-        # 1. DOCX (Melhor opção - Nunca dá erro de Copyright)
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text, "is_image": False}
             
-        # 2. PDF (Processamento Inteligente)
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            
-            # ESTRATÉGIA 1: Tenta pegar o TEXTO (Anti-Copyright)
             full_text = ""
             for page in doc:
                 full_text += page.get_text() + "\n"
             
-            # Se tiver texto suficiente, usa ele e ignora imagens
             if len(full_text.strip()) > 50:
                 doc.close()
                 return {"type": "text", "data": full_text, "is_image": False}
             
-            # ESTRATÉGIA 2: Se for SCAN (Imagem), não tem jeito, manda imagem
             images = []
             limit_pages = min(12, len(doc))
             for i in range(limit_pages):
@@ -160,12 +169,14 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
     
-    model_instance, model_name = get_gemini_model()
+    # CHAMA A FUNÇÃO DE TESTE NA INICIALIZAÇÃO
+    model_instance, model_msg = get_working_gemini_model()
     
     if model_instance:
-        st.success(f"✅ {model_name}")
+        st.success(f"✅ {model_msg}")
     else:
-        st.error("❌ Verifique a Chave API")
+        st.error(f"❌ {model_msg}")
+        st.info("Dica: Verifique se sua API Key está ativa no Google AI Studio.")
     
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
@@ -198,7 +209,9 @@ else:
     f2 = c2.file_uploader(label2, type=["pdf", "docx"], key="f2")
         
     if st.button("🚀 INICIAR AUDITORIA"):
-        if f1 and f2 and model_instance:
+        if not model_instance:
+            st.error("⚠️ Impossível continuar: API do Google não conectou.")
+        elif f1 and f2:
             with st.spinner("Analisando documentos..."):
                 try:
                     d1 = process_uploaded_file(f1)
@@ -206,7 +219,6 @@ else:
                     gc.collect()
 
                     if d1 and d2:
-                        # Verifica se algum arquivo é imagem (risco de copyright)
                         risco_copyright = d1['is_image'] or d2['is_image']
                         
                         payload = ["CONTEXTO: Comparação de textos técnicos."]
@@ -230,22 +242,18 @@ else:
                         """
 
                         try:
-                            # Tenta gerar conteúdo. Se o modelo escolhido falhar (404), tentamos fallback manual
+                            # AQUI USAMOS O MODELO QUE JÁ FOI TESTADO E VALIDADO
                             response = model_instance.generate_content(
                                 [prompt] + payload,
                                 generation_config={"response_mime_type": "application/json"}
                             )
                             
-                            # TRATAMENTO ESPECÍFICO DE COPYRIGHT
                             if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                                 st.error("⚠️ Bloqueio de Segurança (Copyright)")
                                 if risco_copyright:
-                                    st.warning("""
-                                    **O motivo:** Um dos seus arquivos é um PDF escaneado (imagem). O Google detectou que se parece com uma publicação protegida e bloqueou.
-                                    **A solução:** Tente conseguir o PDF original (onde dá para selecionar o texto) ou converta para Word.
-                                    """)
+                                    st.warning("Motivo: PDF escaneado identificado como conteúdo protegido. Use a versão original (texto selecionável) do PDF.")
                                 else:
-                                    st.warning("O sistema bloqueou a leitura por segurança. Tente novamente em instantes.")
+                                    st.warning("O sistema bloqueou a leitura por segurança.")
                             else:
                                 data = extract_json(response.text)
                                 if data:
@@ -267,11 +275,10 @@ else:
                                             cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                                             cB.markdown(f"**Belfar**\n<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Erro ao ler resposta da IA.")
+                                    st.error("A IA respondeu, mas não no formato esperado (JSON). Tente novamente.")
                                     
                         except Exception as e:
-                            st.error(f"Erro na análise (API): {e}")
-                            st.caption("Dica: Se o erro for 404, tente recarregar a página para o sistema tentar outro modelo.")
+                            st.error(f"Erro durante a geração: {e}")
                             
                 except Exception as e:
-                    st.error(f"Erro geral: {e}")
+                    st.error(f"Erro no processamento dos arquivos: {e}")
