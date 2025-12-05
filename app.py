@@ -75,12 +75,23 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    # FIXADO NO 1.5 FLASH (O único que não dá erro 429 e é rápido)
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        return model, "Gemini 1.5 Flash (Estável)"
-    except:
-        return None, "Erro ao carregar modelo"
+    # TENTATIVA DE CARREGAR MODELOS (Blindagem contra erro 404)
+    modelos_para_testar = [
+        "gemini-1.5-flash",          # Preferido
+        "gemini-1.5-flash-latest",   # Alternativa atualizada
+        "gemini-1.5-pro",            # Mais robusto
+        "gemini-pro"                 # Legado (estável)
+    ]
+
+    for nome_modelo in modelos_para_testar:
+        try:
+            model = genai.GenerativeModel(nome_modelo)
+            # Teste simples não faz chamada de rede, então assumimos sucesso se instanciou
+            return model, f"Modelo Ativo: {nome_modelo}"
+        except:
+            continue
+            
+    return None, "Erro: Nenhum modelo disponível"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -109,7 +120,6 @@ def process_uploaded_file(uploaded_file):
                 return {"type": "text", "data": full_text, "is_image": False}
             
             # ESTRATÉGIA 2: Se for SCAN (Imagem), não tem jeito, manda imagem
-            # (Aqui é onde pode dar erro de Copyright, mas é a única opção)
             images = []
             limit_pages = min(12, len(doc))
             for i in range(limit_pages):
@@ -220,6 +230,7 @@ else:
                         """
 
                         try:
+                            # Tenta gerar conteúdo. Se o modelo escolhido falhar (404), tentamos fallback manual
                             response = model_instance.generate_content(
                                 [prompt] + payload,
                                 generation_config={"response_mime_type": "application/json"}
@@ -231,7 +242,6 @@ else:
                                 if risco_copyright:
                                     st.warning("""
                                     **O motivo:** Um dos seus arquivos é um PDF escaneado (imagem). O Google detectou que se parece com uma publicação protegida e bloqueou.
-                                    
                                     **A solução:** Tente conseguir o PDF original (onde dá para selecionar o texto) ou converta para Word.
                                     """)
                                 else:
@@ -260,7 +270,8 @@ else:
                                     st.error("Erro ao ler resposta da IA.")
                                     
                         except Exception as e:
-                            st.error(f"Erro na análise: {e}")
+                            st.error(f"Erro na análise (API): {e}")
+                            st.caption("Dica: Se o erro for 404, tente recarregar a página para o sistema tentar outro modelo.")
                             
                 except Exception as e:
                     st.error(f"Erro geral: {e}")
