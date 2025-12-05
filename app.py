@@ -8,7 +8,7 @@ import json
 import re
 import os
 import gc
-import time  # Importante para a espera automática
+import time
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
@@ -19,43 +19,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
+# ----------------- ESTILOS CSS -----------------
 st.markdown("""
 <style>
-    /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
-
-    /* Ajuste de Fundo e Fontes */
     .main { background-color: #f4f6f8; }
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    /* ESTILO DO MENU DE NAVEGAÇÃO */
-    .stRadio > div[role="radiogroup"] > label {
-        background-color: white; border: 1px solid #e1e4e8; padding: 12px 15px;
-        border-radius: 8px; margin-bottom: 8px; transition: all 0.2s;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-    }
-    .stRadio > div[role="radiogroup"] > label:hover {
-        background-color: #f0fbf7; border-color: #55a68e; color: #55a68e; cursor: pointer;
-    }
-
-    /* Card Estilizado */
     .stCard {
         background-color: white; padding: 25px; border-radius: 15px;
         box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px;
         border: 1px solid #e1e4e8; transition: transform 0.2s; height: 100%;
     }
-    .stCard:hover {
-        transform: translateY(-5px); box-shadow: 0 15px 30px rgba(0,0,0,0.1); border-color: #55a68e;
-    }
-
-    /* Títulos e Botões */
+    .stCard:hover { transform: translateY(-5px); border-color: #55a68e; }
     .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
-    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); }
-    .stButton>button:hover { background-color: #448c75; box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); }
-
-    /* Marcações */
+    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
+    .stButton>button:hover { background-color: #448c75; }
+    
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
@@ -245,18 +226,14 @@ else:
                 {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "..." }} ] }}
                 """
 
-                # LISTA DE MODELOS COM LÓGICA DE RETRY
-                # 1. Tenta o Power (2.0 Experimental)
-                # 2. Se der erro 429, espera e tenta de novo
-                # 3. Se falhar, vai pro Pro (1.5 Pro)
-                
+                # SISTEMA DE RETRY INTELIGENTE
                 response = None
                 model_used = ""
                 
                 # --- TENTATIVA 1: GEMINI 2.0 FLASH EXP (POWER) ---
                 try:
                     status_text.info("⚡ Analisando com Gemini 2.0 Flash Exp (Modo Power)...")
-                    model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
+                    model = genai.GenerativeModel('gemini-2.0-flash-exp') # Nome corrigido sem 'models/'
                     response = model.generate_content(
                         [prompt] + payload,
                         generation_config={"response_mime_type": "application/json"}
@@ -264,45 +241,32 @@ else:
                     model_used = "Gemini 2.0 Flash Exp"
                 except Exception as e:
                     if "429" in str(e):
-                        # ESPERA AUTOMÁTICA
-                        status_text.warning("⚠️ Alto tráfego no modelo Power. Aguardando 12s para nova tentativa...")
-                        time.sleep(12) 
+                        status_text.warning("⚠️ Alto tráfego no modelo Power. Aguardando 12s...")
+                        time.sleep(12)
                         try:
-                            status_text.info("⚡ Tentando Gemini 2.0 novamente...")
                             response = model.generate_content(
                                 [prompt] + payload,
                                 generation_config={"response_mime_type": "application/json"}
                             )
                             model_used = "Gemini 2.0 Flash Exp (Retry)"
-                        except Exception as e2:
-                            # FALHOU DE NOVO? VAI PRO PRO
-                            status_text.warning("⚠️ Gemini 2.0 lotado. Alternando para 1.5 Pro...")
+                        except:
                             pass
                     else:
-                        pass # Outro erro, tenta o proximo
+                        print(f"Erro 2.0: {e}")
 
-                # --- TENTATIVA 2: GEMINI 1.5 PRO (FALLBACK DE QUALIDADE) ---
+                # --- TENTATIVA 2: GEMINI 1.5 FLASH (A GARANTIA) ---
+                # Se o 2.0 falhou (por cota ou erro), usamos o 1.5 Flash que é blindado contra erros.
                 if not response:
                     try:
-                        status_text.info("🧠 Analisando com Gemini 1.5 Pro...")
-                        model = genai.GenerativeModel('models/gemini-1.5-pro')
+                        status_text.info("🚀 Alternando para Gemini 1.5 Flash (Modo Rápido e Seguro)...")
+                        model = genai.GenerativeModel('gemini-1.5-flash') # Nome corrigido sem 'models/'
                         response = model.generate_content(
                             [prompt] + payload,
                             generation_config={"response_mime_type": "application/json"}
                         )
-                        model_used = "Gemini 1.5 Pro"
+                        model_used = "Gemini 1.5 Flash"
                     except Exception as e:
-                         # --- TENTATIVA 3: GEMINI 1.5 FLASH (GARANTIA FINAL) ---
-                        if "429" in str(e):
-                            status_text.info("🚀 Alternando para Gemini 1.5 Flash (Modo Rápido)...")
-                            model = genai.GenerativeModel('models/gemini-1.5-flash')
-                            response = model.generate_content(
-                                [prompt] + payload,
-                                generation_config={"response_mime_type": "application/json"}
-                            )
-                            model_used = "Gemini 1.5 Flash"
-                        else:
-                            st.error(f"Erro fatal: {e}")
+                        st.error(f"Erro fatal em todos os modelos: {e}")
 
                 # PROCESSA O RESULTADO
                 if response:
