@@ -8,7 +8,6 @@ import json
 import re
 import os
 import gc
-import time
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
@@ -64,15 +63,24 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
-def get_api_key():
+def get_gemini_model():
     api_key = None
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
-    except Exception:
-        pass
-    if not api_key:
+    except:
         api_key = os.environ.get("GEMINI_API_KEY")
-    return api_key
+    
+    if not api_key:
+        return None, "Sem Chave API"
+
+    genai.configure(api_key=api_key)
+    
+    # FIXADO NO 1.5 FLASH (O único que não dá erro 429 e é rápido)
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        return model, "Gemini 1.5 Flash (Estável)"
+    except:
+        return None, "Erro ao carregar modelo"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -80,40 +88,42 @@ def process_uploaded_file(uploaded_file):
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
         
-        # 1. DOCX
+        # 1. DOCX (Melhor opção - Nunca dá erro de Copyright)
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
-            return {"type": "text", "data": text}
+            return {"type": "text", "data": text, "is_image": False}
             
-        # 2. PDF (Híbrido - Prioriza Texto)
+        # 2. PDF (Processamento Inteligente)
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # Tenta extrair texto puro
+            # ESTRATÉGIA 1: Tenta pegar o TEXTO (Anti-Copyright)
             full_text = ""
             for page in doc:
                 full_text += page.get_text() + "\n"
             
+            # Se tiver texto suficiente, usa ele e ignora imagens
             if len(full_text.strip()) > 50:
                 doc.close()
-                return {"type": "text", "data": full_text}
+                return {"type": "text", "data": full_text, "is_image": False}
             
-            # Se falhar (imagem), extrai imagens
+            # ESTRATÉGIA 2: Se for SCAN (Imagem), não tem jeito, manda imagem
+            # (Aqui é onde pode dar erro de Copyright, mas é a única opção)
             images = []
             limit_pages = min(12, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 try:
-                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=85))
                 except:
                     img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             
             doc.close()
             gc.collect()
-            return {"type": "images", "data": images}
+            return {"type": "images", "data": images, "is_image": True}
             
     except Exception as e:
         st.error(f"Erro no arquivo: {e}")
@@ -140,12 +150,12 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
     
-    api_key = get_api_key()
-    if api_key:
-        genai.configure(api_key=api_key)
-        st.success("✅ Sistema Conectado")
+    model_instance, model_name = get_gemini_model()
+    
+    if model_instance:
+        st.success(f"✅ {model_name}")
     else:
-        st.error("❌ Erro de Chave API")
+        st.error("❌ Verifique a Chave API")
     
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
@@ -178,16 +188,19 @@ else:
     f2 = c2.file_uploader(label2, type=["pdf", "docx"], key="f2")
         
     if st.button("🚀 INICIAR AUDITORIA"):
-        if f1 and f2:
-            status_text = st.empty()
-            with st.spinner("Preparando análise..."):
+        if f1 and f2 and model_instance:
+            with st.spinner("Analisando documentos..."):
                 try:
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
                     gc.collect()
 
                     if d1 and d2:
-                        payload = ["CONTEXTO: Auditoria Farmacêutica."]
+                        # Verifica se algum arquivo é imagem (risco de copyright)
+                        risco_copyright = d1['is_image'] or d2['is_image']
+                        
+                        payload = ["CONTEXTO: Comparação de textos técnicos."]
+                        
                         if d1['type'] == 'text': payload.append(f"--- DOC 1 ---\n{d1['data']}")
                         else: payload.append("--- DOC 1 ---"); payload.extend(d1['data'])
                         
@@ -197,59 +210,32 @@ else:
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
                         prompt = f"""
-                        Atue como Auditor Farmacêutico RÍGIDO.
-                        Compare DOC 1 (Referência) com DOC 2 (Candidato).
-                        
-                        SEÇÕES:
-                        {secoes_str}
-
+                        Atue como Auditor. Compare DOC 1 e DOC 2.
+                        SEÇÕES: {secoes_str}
                         REGRAS:
-                        1. Extraia APENAS o texto. Sem títulos.
-                        2. Indique divergências com <mark class='diff'> e erros ortográficos com <mark class='ort'>.
-                        3. Data Anvisa: <mark class='anvisa'>dd/mm/aaaa</mark>.
-
-                        SAÍDA JSON:
-                        {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "..." }} ] }}
+                        1. Extraia o texto. Sem títulos.
+                        2. Marque diferenças com <mark class='diff'> e erros com <mark class='ort'>.
+                        3. Data: <mark class='anvisa'>dd/mm/aaaa</mark>.
+                        SAÍDA JSON: {{ "METADADOS": {{ "score": 0, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "..." }} ] }}
                         """
 
-                        # --- LÓGICA DE FALLBACK (TROCA DE MODELO INTELIGENTE) ---
-                        response = None
-                        model_used = ""
-                        
-                        # TENTATIVA 1: GEMINI 2.0 (O Potente)
                         try:
-                            status_text.info("⚡ Tentando Gemini 2.0 Flash Exp...")
-                            # Usamos o nome 'gemini-2.0-flash-exp' direto (sem 'models/')
-                            model = genai.GenerativeModel('gemini-2.0-flash-exp')
-                            response = model.generate_content(
+                            response = model_instance.generate_content(
                                 [prompt] + payload,
                                 generation_config={"response_mime_type": "application/json"}
                             )
-                            model_used = "Gemini 2.0 Flash Exp"
-                        
-                        except Exception as e:
-                            # Se der erro 429 (Cota) ou 404 (Não achou), pula para o 1.5 Flash
-                            if "429" in str(e) or "404" in str(e):
-                                status_text.warning("⚠️ Modelo 2.0 lotado/indisponível. Trocando para 1.5 Flash...")
-                                time.sleep(1) # Pequena pausa de segurança
-                                try:
-                                    model = genai.GenerativeModel('gemini-1.5-flash')
-                                    response = model.generate_content(
-                                        [prompt] + payload,
-                                        generation_config={"response_mime_type": "application/json"}
-                                    )
-                                    model_used = "Gemini 1.5 Flash (Backup)"
-                                except Exception as e2:
-                                    st.error(f"Erro no backup: {e2}")
-                            else:
-                                st.error(f"Erro desconhecido no 2.0: {e}")
-
-                        # --- PROCESSAMENTO DO RESULTADO ---
-                        if response:
-                            status_text.success(f"✅ Análise feita com: {model_used}")
                             
+                            # TRATAMENTO ESPECÍFICO DE COPYRIGHT
                             if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-                                st.error("⚠️ Bloqueio de Copyright. Use PDF Texto ou Word.")
+                                st.error("⚠️ Bloqueio de Segurança (Copyright)")
+                                if risco_copyright:
+                                    st.warning("""
+                                    **O motivo:** Um dos seus arquivos é um PDF escaneado (imagem). O Google detectou que se parece com uma publicação protegida e bloqueou.
+                                    
+                                    **A solução:** Tente conseguir o PDF original (onde dá para selecionar o texto) ou converta para Word.
+                                    """)
+                                else:
+                                    st.warning("O sistema bloqueou a leitura por segurança. Tente novamente em instantes.")
                             else:
                                 data = extract_json(response.text)
                                 if data:
@@ -271,6 +257,10 @@ else:
                                             cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                                             cB.markdown(f"**Belfar**\n<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Erro ao processar JSON da resposta.")
+                                    st.error("Erro ao ler resposta da IA.")
+                                    
+                        except Exception as e:
+                            st.error(f"Erro na análise: {e}")
+                            
                 except Exception as e:
                     st.error(f"Erro geral: {e}")
