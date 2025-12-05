@@ -74,55 +74,23 @@ def get_api_key():
         api_key = os.environ.get("GEMINI_API_KEY")
     return api_key
 
-def find_best_model():
-    """
-    Função INTELIGENTE: Lista os modelos disponíveis na sua conta e escolhe o melhor.
-    Isso evita o erro 404 de modelo não encontrado.
-    """
-    try:
-        # Pega todos os modelos disponíveis
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        
-        # Ordem de preferência (do mais rápido/potente para o backup)
-        preferences = [
-            'models/gemini-2.0-flash-exp',
-            'models/gemini-1.5-flash',
-            'models/gemini-1.5-pro',
-            'models/gemini-1.0-pro'
-        ]
-        
-        # Tenta achar o melhor da lista de preferências
-        for pref in preferences:
-            if pref in available_models:
-                return pref
-        
-        # Se não achar nenhum preferido, pega o primeiro que tiver "gemini" no nome
-        for m in available_models:
-            if 'gemini' in m:
-                return m
-                
-        return 'models/gemini-1.5-flash' # Fallback final
-    except Exception as e:
-        return 'models/gemini-1.5-flash'
-
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
         
+        # 1. DOCX
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text}
             
+        # 2. PDF (Híbrido - Prioriza Texto)
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # 1. Tenta extrair texto (Anti-Copyright)
+            # Tenta extrair texto puro
             full_text = ""
             for page in doc:
                 full_text += page.get_text() + "\n"
@@ -131,7 +99,7 @@ def process_uploaded_file(uploaded_file):
                 doc.close()
                 return {"type": "text", "data": full_text}
             
-            # 2. Se for imagem, extrai imagens
+            # Se falhar (imagem), extrai imagens
             images = []
             limit_pages = min(12, len(doc))
             for i in range(limit_pages):
@@ -175,12 +143,9 @@ with st.sidebar:
     api_key = get_api_key()
     if api_key:
         genai.configure(api_key=api_key)
-        # Descobre o melhor modelo automaticamente
-        best_model_name = find_best_model()
-        st.success(f"✅ Conectado: {best_model_name.replace('models/', '')}")
+        st.success("✅ Sistema Conectado")
     else:
         st.error("❌ Erro de Chave API")
-        best_model_name = None
     
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
@@ -213,9 +178,9 @@ else:
     f2 = c2.file_uploader(label2, type=["pdf", "docx"], key="f2")
         
     if st.button("🚀 INICIAR AUDITORIA"):
-        if f1 and f2 and best_model_name:
+        if f1 and f2:
             status_text = st.empty()
-            with st.spinner(f"Analisando com {best_model_name.split('/')[-1]}..."):
+            with st.spinner("Preparando análise..."):
                 try:
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
@@ -247,49 +212,65 @@ else:
                         {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "..." }} ] }}
                         """
 
-                        model = genai.GenerativeModel(best_model_name)
+                        # --- LÓGICA DE FALLBACK (TROCA DE MODELO INTELIGENTE) ---
+                        response = None
+                        model_used = ""
                         
-                        # TENTATIVA COM RETRY AUTOMÁTICO (Caso dê erro 429)
+                        # TENTATIVA 1: GEMINI 2.0 (O Potente)
                         try:
+                            status_text.info("⚡ Tentando Gemini 2.0 Flash Exp...")
+                            # Usamos o nome 'gemini-2.0-flash-exp' direto (sem 'models/')
+                            model = genai.GenerativeModel('gemini-2.0-flash-exp')
                             response = model.generate_content(
                                 [prompt] + payload,
                                 generation_config={"response_mime_type": "application/json"}
                             )
+                            model_used = "Gemini 2.0 Flash Exp"
+                        
                         except Exception as e:
-                            if "429" in str(e):
-                                status_text.warning("⚠️ Tráfego alto (429). Aguardando 10s...")
-                                time.sleep(10)
-                                response = model.generate_content(
-                                    [prompt] + payload,
-                                    generation_config={"response_mime_type": "application/json"}
-                                )
+                            # Se der erro 429 (Cota) ou 404 (Não achou), pula para o 1.5 Flash
+                            if "429" in str(e) or "404" in str(e):
+                                status_text.warning("⚠️ Modelo 2.0 lotado/indisponível. Trocando para 1.5 Flash...")
+                                time.sleep(1) # Pequena pausa de segurança
+                                try:
+                                    model = genai.GenerativeModel('gemini-1.5-flash')
+                                    response = model.generate_content(
+                                        [prompt] + payload,
+                                        generation_config={"response_mime_type": "application/json"}
+                                    )
+                                    model_used = "Gemini 1.5 Flash (Backup)"
+                                except Exception as e2:
+                                    st.error(f"Erro no backup: {e2}")
                             else:
-                                raise e
+                                st.error(f"Erro desconhecido no 2.0: {e}")
 
-                        if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-                            st.error("⚠️ Bloqueio de Copyright. O Google detectou livro/bula protegida nas imagens.")
-                            st.info("Dica: Converta o PDF para texto selecionável ou Word.")
-                        else:
-                            data = extract_json(response.text)
-                            if data:
-                                meta = data.get("METADADOS", {})
-                                cM1, cM2, cM3 = st.columns(3)
-                                cM1.metric("Score", f"{meta.get('score',0)}%")
-                                cM2.metric("Seções", len(data.get("SECOES", [])))
-                                cM3.metric("Datas", str(meta.get("datas", [])))
-                                st.divider()
-                                
-                                for sec in data.get("SECOES", []):
-                                    status = sec.get('status', 'N/A')
-                                    icon = "✅"
-                                    if "DIVERGENTE" in status: icon = "❌"
-                                    elif "FALTANTE" in status: icon = "🚨"
-                                    
-                                    with st.expander(f"{icon} {sec['titulo']} - {status}"):
-                                        cA, cB = st.columns(2)
-                                        cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                                        cB.markdown(f"**Belfar**\n<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                        # --- PROCESSAMENTO DO RESULTADO ---
+                        if response:
+                            status_text.success(f"✅ Análise feita com: {model_used}")
+                            
+                            if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
+                                st.error("⚠️ Bloqueio de Copyright. Use PDF Texto ou Word.")
                             else:
-                                st.error("Erro JSON inválido.")
+                                data = extract_json(response.text)
+                                if data:
+                                    meta = data.get("METADADOS", {})
+                                    cM1, cM2, cM3 = st.columns(3)
+                                    cM1.metric("Score", f"{meta.get('score',0)}%")
+                                    cM2.metric("Seções", len(data.get("SECOES", [])))
+                                    cM3.metric("Datas", str(meta.get("datas", [])))
+                                    st.divider()
+                                    
+                                    for sec in data.get("SECOES", []):
+                                        status = sec.get('status', 'N/A')
+                                        icon = "✅"
+                                        if "DIVERGENTE" in status: icon = "❌"
+                                        elif "FALTANTE" in status: icon = "🚨"
+                                        
+                                        with st.expander(f"{icon} {sec['titulo']} - {status}"):
+                                            cA, cB = st.columns(2)
+                                            cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                                            cB.markdown(f"**Belfar**\n<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                                else:
+                                    st.error("Erro ao processar JSON da resposta.")
                 except Exception as e:
-                    st.error(f"Erro: {e}")
+                    st.error(f"Erro geral: {e}")
