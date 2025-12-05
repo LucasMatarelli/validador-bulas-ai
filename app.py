@@ -9,7 +9,6 @@ import re
 import os
 import gc
 from PIL import Image
-import pytesseract  # ← nova dependência
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
@@ -106,44 +105,90 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- FUNÇÕES DE LEITURA/EXTRAÇÃO -----------------
+# ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
-def extract_text_from_file(uploaded_file):
-    """
-    Extrai texto de DOCX ou PDF. Se for PDF, realiza OCR nas páginas (máx. 12 páginas).
-    """
-    file_bytes = uploaded_file.read()
-    filename = uploaded_file.name.lower()
+def get_gemini_model():
+    # 1. TENTA LER A CHAVE DOS SECRETS DE FORMA SEGURA
+    api_key = None
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        pass # Se falhar, segue para checagem
 
-    if filename.endswith('.docx'):
-        doc = docx.Document(io.BytesIO(file_bytes))
-        text = "\n".join([p.text for p in doc.paragraphs])
-        return text
+    if not api_key:
+        # Tenta ler do ambiente como backup
+        api_key = os.environ.get("GEMINI_API_KEY")
 
-    elif filename.endswith('.pdf'):
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-        texts = []
-        limit_pages = min(12, len(doc))
-        for i in range(limit_pages):
-            page = doc[i]
-            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-            img = Image.open(io.BytesIO(pix.tobytes("png")))
-            txt = pytesseract.image_to_string(img, lang="por")
-            texts.append(txt)
-            pix = None
-            img = None
+    if not api_key:
+        return None, "Chave API não configurada nos Secrets!"
+
+    genai.configure(api_key=api_key)
+    
+    # 2. LISTA DE MODELOS COM PRIORIDADE PARA O 2.5 FLASH
+    # Inclui fallbacks (1.5 Pro) caso o Flash bloqueie por Copyright
+    modelos_para_testar = [
+        'models/gemini-2.5-flash', 
+        'models/gemini-1.5-pro',
+        'models/gemini-2.0-flash-exp', 
+        'models/gemini-1.5-flash'
+    ]
+    
+    for model_name in modelos_para_testar:
+        try:
+            model = genai.GenerativeModel(model_name)
+            return model, model_name
+        except Exception:
+            continue
+    # Se nenhum funcionar
+    return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
+
+def process_uploaded_file(uploaded_file):
+    if not uploaded_file: return None
+    try:
+        file_bytes = uploaded_file.read()
+        filename = uploaded_file.name.lower()
+        if filename.endswith('.docx'):
+            doc = docx.Document(io.BytesIO(file_bytes))
+            text = "\n".join([p.text for p in doc.paragraphs])
+            return {"type": "text", "data": text}
+        elif filename.endswith('.pdf'):
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            images = []
+            
+            # Limite de páginas para performance
+            limit_pages = min(12, len(doc))
+            
+            for i in range(limit_pages):
+                page = doc[i]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                
+                # 3. BLINDAGEM CONTRA ERRO DE QUALITY (PyMuPDF versions)
+                try:
+                    # Tenta sintaxe nova
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                except TypeError:
+                    try:
+                        # Tenta sintaxe antiga
+                        img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
+                    except:
+                        # Fallback infalível (PNG)
+                        img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                        
+                images.append(Image.open(img_byte_arr))
+                pix = None
+            
+            doc.close()
             gc.collect()
-        doc.close()
-        return "\n".join(texts)
-
-    else:
+            return {"type": "images", "data": images}
+    except Exception as e:
+        st.error(f"Erro ao processar arquivo {uploaded_file.name}: {e}")
         return None
+    return None
 
 def clean_json_response(text):
     text = text.replace("```json", "").replace("```", "").strip()
     text = re.sub(r'//.*', '', text)
-    if text.startswith("json"):
-        text = text[4:]
+    if text.startswith("json"): text = text[4:]
     return text
 
 def extract_json(text):
@@ -151,48 +196,32 @@ def extract_json(text):
         clean = clean_json_response(text)
         start = clean.find('{')
         end = clean.rfind('}') + 1
-        if start != -1 and end != -1:
-            return json.loads(clean[start:end])
+        if start != -1 and end != -1: return json.loads(clean[start:end])
         return json.loads(clean)
-    except Exception:
-        return None
-
-# ----------------- FUNÇÃO DE CONFIGURAÇÃO DO MODELO -----------------
-
-def get_gemini_model():
-    api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        return None, "Chave API não configurada nos Secrets!"
-    genai.configure(api_key=api_key)
-    modelos_para_testar = [
-        'models/gemini-2.5-flash',
-        'models/gemini-1.5-pro',
-        'models/gemini-2.0-flash-exp',
-        'models/gemini-1.5-flash'
-    ]
-    for model_name in modelos_para_testar:
-        try:
-            model = genai.GenerativeModel(model_name)
-            return model, model_name
-        except Exception:
-            continue
-    return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
+    except: return None
 
 # ----------------- BARRA LATERAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
+    
+    # Inicializa modelo
     model_instance, model_name_used = get_gemini_model()
+    
     if model_instance:
         st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
     else:
         st.error("❌ Erro de Conexão")
         st.caption("Verifique se a chave está correta em Secrets.")
+    
     st.divider()
+    
+    # Menu de Navegação
     pagina = st.radio(
         "Navegação:",
         ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"]
     )
+    
     st.divider()
 
 # ----------------- PÁGINA INICIAL -----------------
@@ -203,13 +232,16 @@ if pagina == "🏠 Início":
         <p style="font-size: 20px; color: #7f8c8d;">Central de auditoria e conformidade de bulas farmacêuticas com IA.</p>
     </div>
     """, unsafe_allow_html=True)
+    
     c1, c2, c3 = st.columns(3)
+    
     with c1:
         st.markdown("""
         <div class="stCard">
             <div class="card-title">💊 Medicamento Referência x BELFAR</div>
             <div class="card-text">
-                Compara a bula de referência com a bula BELFAR.<br><br>
+                Compara a bula de referência com a bula BELFAR.
+                <br><br>
                 <ul>
                     <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
                     <li>Ortografia: <span class="highlight-pink">rosa</span></li>
@@ -218,12 +250,14 @@ if pagina == "🏠 Início":
             </div>
         </div>
         """, unsafe_allow_html=True)
+
     with c2:
         st.markdown("""
         <div class="stCard">
             <div class="card-title">📋 Conferência MKT</div>
             <div class="card-text">
-                Compara arquivo ANVISA com PDF MKT.<br><br>
+                Compara arquivo ANVISA com PDF MKT.
+                <br><br>
                 <ul>
                     <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
                     <li>Ortografia: <span class="highlight-pink">rosa</span></li>
@@ -232,12 +266,14 @@ if pagina == "🏠 Início":
             </div>
         </div>
         """, unsafe_allow_html=True)
+
     with c3:
         st.markdown("""
         <div class="stCard">
             <div class="card-title">🎨 Gráfica x Arte Vigente</div>
             <div class="card-text">
-                Compara PDF Gráfica com Arte Vigente (Lê curvas).<br><br>
+                Compara PDF Gráfica com Arte Vigente (Lê curvas).
+                <br><br>
                 <ul>
                     <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
                     <li>Ortografia: <span class="highlight-pink">rosa</span></li>
@@ -247,16 +283,16 @@ if pagina == "🏠 Início":
         </div>
         """, unsafe_allow_html=True)
 
-# ----------------- FERRAMENTA (Auditoria) -----------------
+# ----------------- FERRAMENTA -----------------
 else:
     st.markdown(f"## {pagina}")
-
+    
     lista_secoes = SECOES_PACIENTE
     nome_tipo = "Paciente"
-
+    
     label_box1 = "Arquivo 1"
     label_box2 = "Arquivo 2"
-
+    
     if pagina == "💊 Ref x BELFAR":
         label_box1 = "📄 Documento de Referência"
         label_box2 = "📄 Documento BELFAR"
@@ -274,9 +310,9 @@ else:
     elif pagina == "🎨 Gráfica x Arte":
         label_box1 = "📄 Arte Vigente"
         label_box2 = "📄 PDF da Gráfica"
-
+    
     st.divider()
-
+    
     c1, c2 = st.columns(2)
     with c1:
         st.markdown(f"##### {label_box1}")
@@ -284,54 +320,74 @@ else:
     with c2:
         st.markdown(f"##### {label_box2}")
         f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
-
-    st.write("")
+        
+    st.write("") 
     if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
         if not f1 or not f2:
             st.warning("⚠️ Por favor, faça o upload dos dois arquivos para continuar.")
         else:
             with st.spinner(f"🤖 Analisando com {model_name_used.split('/')[-1]}..."):
                 try:
-                    model = model_instance
+                    model = model_instance 
                     if not model:
                         st.error("Erro crítico: Chave API não detectada.")
                         st.stop()
 
-                    text1 = extract_text_from_file(f1)
-                    text2 = extract_text_from_file(f2)
+                    d1 = process_uploaded_file(f1)
+                    d2 = process_uploaded_file(f2)
                     gc.collect()
 
-                    if not text1 or not text2:
-                        st.error("Falha ao extrair texto dos arquivos.")
+                    if not d1 or not d2:
+                        st.error("Falha ao ler os arquivos.")
                         st.stop()
 
-                    # monta payload apenas com texto — sem imagem
-                    payload = [
-                        "CONTEXTO: Auditoria Interna Confidencial. Uso proprietário da empresa.",
-                        f"--- {label_box1.upper()} ---\n{text1}",
-                        f"--- {label_box2.upper()} ---\n{text2}"
-                    ]
+                    payload = []
+                    # Contexto adicionado para evitar bloqueio total de Copyright
+                    payload.append("CONTEXTO: Auditoria Interna Confidencial. Uso proprietário da Belfar.")
+                    
+                    nome_doc1 = label_box1.replace("📄 ", "").upper()
+                    nome_doc2 = label_box2.replace("📄 ", "").upper()
+
+                    if d1['type'] == 'text': payload.append(f"--- {nome_doc1} ---\n{d1['data']}")
+                    else: payload.append(f"--- {nome_doc1} ---"); payload.extend(d1['data'])
+                    
+                    if d2['type'] == 'text': payload.append(f"--- {nome_doc2} ---\n{d2['data']}")
+                    else: payload.append(f"--- {nome_doc2} ---"); payload.extend(d2['data'])
 
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
-
+                    
+                    # 4. PROMPT BLINDADO CONTRA TÍTULOS E SUJEIRA
                     prompt = f"""
-Atue como Auditor Farmacêutico RÍGIDO. Analise o texto dos dois documentos fornecidos:
+                    Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens (até 12 páginas) para encontrar o texto.
+                    
+                    DOCUMENTOS:
+                    1. {nome_doc1} (Referência/Padrão)
+                    2. {nome_doc2} (Candidato/BELFAR)
 
-1. {label_box1}
-2. {label_box2}
+                    LISTA DE SEÇÕES A ANALISAR ({nome_tipo}):
+                    {secoes_str}
 
-LISTA DE SEÇÕES A ANALISAR ({nome_tipo}):
-{secoes_str}
+                    === REGRA ZERO: LIMPEZA ABSOLUTA DE TEXTO ===
+                    1. EXTRAÇÃO PURA: Ao extrair o conteúdo de uma seção, copie APENAS O PARÁGRAFO DE TEXTO.
+                    2. PROIBIDO TÍTULOS: NÃO inclua o título da seção (ex: NÃO escreva "4. O QUE DEVO SABER..." no início do texto extraído).
+                    3. SEM REPETIÇÕES: Se houver quebra de página e o título da seção aparecer de novo, DELETE-O. Mantenha o texto fluido.
+                    4. LIMITES: Pare de copiar assim que o título da PRÓXIMA seção aparecer.
 
-=== REGRAS DE EXTRAÇÃO E COMPARAÇÃO ===
-1. Ao extrair o conteúdo de cada seção, copie APENAS o parágrafo de texto (sem título da seção).  
-2. Não repita títulos.  
-3. Pare a cópia quando o título da próxima seção aparecer.  
-4. Para seções normais: utilize <mark class='diff'> para divergências de sentido, <mark class='ort'> para erros de ortografia.  
-5. Para seções informativas (Apresentações, Composição, Dizeres Legais): apenas transcreva o texto limpo (sem títulos).  
-6. Para a data da ANVISA: procure no rodapé da seção 'DIZERES LEGAIS'. Se houver data no formato dd/mm/aaaa, marque com <mark class='anvisa'>dd/mm/aaaa</mark>.  
-Retorne um JSON com a estrutura especificada no README.
-"""
+                    === REGRA 1: COMPARAÇÃO ===
+                    - Seções normais: Use <mark class='diff'> para divergências de sentido e <mark class='ort'> para erros de português.
+                    - Seções informativas (Apresentações, Composição, Dizeres Legais): Apenas transcreva o texto limpo (sem títulos).
+
+                    === REGRA 2: DATA DA ANVISA ===
+                    - Busque no rodapé de "DIZERES LEGAIS". Se achar "Aprovado em dd/mm/aaaa", use <mark class='anvisa'>dd/mm/aaaa</mark>. Se não, deixe vazio.
+                    
+                    SAÍDA JSON:
+                    {{
+                        "METADADOS": {{ "score": 0 a 100, "datas": ["datas reais"] }},
+                        "SECOES": [
+                            {{ "titulo": "NOME SEÇÃO", "ref": "texto limpo sem título...", "bel": "texto limpo sem título...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
+                        ]
+                    }}
+                    """
 
                     response = model.generate_content(
                         [prompt] + payload,
@@ -343,46 +399,54 @@ Retorne um JSON com a estrutura especificada no README.
                             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
                         }
                     )
-
-                    data = extract_json(response.text)
-                    if not data:
-                        st.error("A IA não retornou um JSON válido. Tente novamente.")
+                    
+                    # 5. TRATAMENTO DE BLOQUEIO DE COPYRIGHT (FINISH REASON 4)
+                    if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
+                        st.error("⚠️ **Alerta de Conteúdo Protegido (Copyright)**")
+                        st.warning("""
+                        O Google Gemini interrompeu a leitura por detectar conteúdo protegido (Bula).
+                        
+                        **Ações Sugeridas:**
+                        1. Tente recortar e enviar apenas a parte da bula que você quer analisar.
+                        2. O sistema tentará usar um modelo alternativo automaticamente na próxima vez.
+                        """)
                     else:
-                        meta = data.get("METADADOS", {})
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("Conformidade", f"{meta.get('score', 0)}%")
-                        m2.metric("Seções Analisadas", len(data.get("SECOES", [])))
-                        m3.metric("Datas Encontradas", ", ".join(meta.get("datas", [])) or "Nenhuma data")
-
-                        st.divider()
-
-                        for sec in data.get("SECOES", []):
-                            status = sec.get('status', 'N/A')
-                            titulo = sec.get('titulo', '').upper()
-                            icon = "✅"
-                            if "DIVERGENTE" in status: icon = "❌"
-                            elif "FALTANTE" in status: icon = "🚨"
-                            if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
-                                icon = "👁️"
-                                if "DIVERGENTE" in status:
-                                    status = "VISUALIZAÇÃO (Divergências Ignoradas)"
-                                else:
-                                    status = "VISUALIZAÇÃO"
-
-                            with st.expander(f"{icon} {sec['titulo']} — {status}"):
-                                cA, cB = st.columns(2)
-                                with cA:
-                                    st.markdown(f"**{label_box1.upper()}**")
-                                    st.markdown(
-                                        f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref','')}</div>",
-                                        unsafe_allow_html=True
-                                    )
-                                with cB:
-                                    st.markdown(f"**{label_box2.upper()}**")
-                                    st.markdown(
-                                        f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel','')}</div>",
-                                        unsafe_allow_html=True
-                                    )
+                        data = extract_json(response.text)
+                        if not data:
+                            st.error("A IA não retornou um JSON válido. Tente novamente.")
+                        else:
+                            meta = data.get("METADADOS", {})
+                            
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric("Conformidade", f"{meta.get('score', 0)}%")
+                            m2.metric("Seções Analisadas", len(data.get("SECOES", [])))
+                            m3.metric("Datas Encontradas", ", ".join(meta.get("datas", [])) or "Nenhuma data")
+                            
+                            st.divider()
+                            
+                            for sec in data.get("SECOES", []):
+                                status = sec.get('status', 'N/A')
+                                titulo = sec.get('titulo', '').upper()
+                                
+                                icon = "✅"
+                                if "DIVERGENTE" in status: icon = "❌"
+                                elif "FALTANTE" in status: icon = "🚨"
+                                
+                                if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
+                                    icon = "👁️" 
+                                    if "DIVERGENTE" in status:
+                                        status = "VISUALIZAÇÃO (Divergências Ignoradas)"
+                                    else:
+                                        status = "VISUALIZAÇÃO"
+                                
+                                with st.expander(f"{icon} {sec['titulo']} — {status}"):
+                                    cA, cB = st.columns(2)
+                                    with cA:
+                                        st.markdown(f"**{nome_doc1}**")
+                                        st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
+                                    with cB:
+                                        st.markdown(f"**{nome_doc2}**")
+                                        st.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
 
                 except Exception as e:
                     st.error(f"Erro durante a análise: {e}")
