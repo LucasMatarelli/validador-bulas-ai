@@ -32,9 +32,6 @@ st.markdown("""
         border: 1px solid #e1e4e8; transition: transform 0.2s; height: 100%;
     }
     .stCard:hover { transform: translateY(-5px); border-color: #55a68e; }
-    .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
-    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
-    .stButton>button:hover { background-color: #448c75; }
     
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
@@ -59,54 +56,57 @@ SECOES_PROFISSIONAL = [
     "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
-SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
-@st.cache_resource
-def get_working_gemini_model():
+def get_gemini_model(api_key_input):
     """
-    Testa qual modelo está funcionando para a API Key fornecida.
-    Retorna o primeiro que responder sem erro 404.
+    Tenta configurar a API com a chave fornecida e encontrar um modelo ativo.
     """
-    api_key = None
-    try:
-        api_key = st.secrets["GEMINI_API_KEY"]
-    except:
-        api_key = os.environ.get("GEMINI_API_KEY")
+    # 1. Tenta pegar a chave do input manual ou do secrets/env
+    api_key = api_key_input
+    if not api_key:
+        try:
+            api_key = st.secrets["GEMINI_API_KEY"]
+        except:
+            api_key = os.environ.get("GEMINI_API_KEY")
     
     if not api_key:
-        return None, "Sem Chave API"
+        return None, "⚠️ Chave API não encontrada. Insira na barra lateral."
 
+    # 2. Configura a biblioteca
     genai.configure(api_key=api_key)
     
-    # LISTA DE PRIORIDADE: Do mais novo/rápido para o mais estável/antigo
+    # 3. Lista de modelos para testar (Fallback em cascata)
     candidatos = [
         "gemini-1.5-flash",
         "gemini-1.5-flash-latest",
         "gemini-1.5-pro",
         "gemini-1.5-pro-latest",
-        "gemini-pro",         # Versão 1.0 Pro
-        "gemini-1.0-pro"      # Nome alternativo
+        "gemini-pro"
     ]
 
-    print("🔍 Iniciando teste de conexão com a API do Google...")
+    erro_detalhado = ""
 
+    # 4. Loop de Teste: Tenta conectar em cada um até funcionar
     for nome_modelo in candidatos:
         try:
             model = genai.GenerativeModel(nome_modelo)
-            # TESTE REAL: Tenta gerar 1 token. Se o modelo não existir, dará erro aqui.
-            model.generate_content("teste", generation_config={"max_output_tokens": 1})
-            
-            print(f"✅ CONECTADO COM SUCESSO: {nome_modelo}")
-            return model, f"Modelo Ativo: {nome_modelo}"
-            
+            # Teste rápido de ping (gera 1 token) para ver se a chave e o modelo batem
+            model.generate_content("Oi", generation_config={"max_output_tokens": 1})
+            return model, f"Conectado: {nome_modelo}"
         except Exception as e:
-            # Se der erro (404, permissão, etc), apenas loga e tenta o próximo
-            print(f"⚠️ Falha ao conectar no {nome_modelo}: {e}")
+            # Guarda o erro para mostrar ao usuário se tudo falhar
+            erro_detalhado = str(e)
             continue
             
-    return None, "ERRO CRÍTICO: Nenhum modelo disponível para esta API Key."
+    # Se chegou aqui, nenhum modelo funcionou
+    if "403" in erro_detalhado or "API_KEY_INVALID" in erro_detalhado:
+        return None, "🚫 Erro de Permissão: Sua API Key parece inválida ou expirada."
+    elif "429" in erro_detalhado:
+        return None, "⏳ Quota Excedida: Sua conta atingiu o limite gratuito do Google."
+    else:
+        return None, f"❌ Erro Técnico: {erro_detalhado}"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -169,14 +169,19 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
     
-    # CHAMA A FUNÇÃO DE TESTE NA INICIALIZAÇÃO
-    model_instance, model_msg = get_working_gemini_model()
+    st.markdown("### Configuração")
+    # CAMPO MANUAL PARA INSERIR A API KEY CASO NÃO CARREGUE DO ARQUIVO
+    manual_key = st.text_input("Cole sua API Key aqui (Opcional):", type="password")
+    
+    # Tenta conectar e mostra o status real
+    model_instance, status_msg = get_gemini_model(manual_key)
     
     if model_instance:
-        st.success(f"✅ {model_msg}")
+        st.success(f"✅ {status_msg}")
     else:
-        st.error(f"❌ {model_msg}")
-        st.info("Dica: Verifique se sua API Key está ativa no Google AI Studio.")
+        st.error(status_msg)
+        if "Chave API não encontrada" in status_msg:
+            st.info("👉 Cole sua chave no campo acima para corrigir.")
     
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
@@ -210,9 +215,9 @@ else:
         
     if st.button("🚀 INICIAR AUDITORIA"):
         if not model_instance:
-            st.error("⚠️ Impossível continuar: API do Google não conectou.")
+            st.error("⚠️ PARE: A API não está conectada. Verifique a mensagem de erro na barra lateral esquerda.")
         elif f1 and f2:
-            with st.spinner("Analisando documentos..."):
+            with st.spinner("Lendo documentos e analisando com IA..."):
                 try:
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
@@ -232,36 +237,42 @@ else:
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
                         prompt = f"""
-                        Atue como Auditor. Compare DOC 1 e DOC 2.
-                        SEÇÕES: {secoes_str}
+                        Atue como Auditor Farmacêutico. Compare DOC 1 e DOC 2.
+                        SEÇÕES PARA ANALISAR: {secoes_str}
+                        
                         REGRAS:
-                        1. Extraia o texto. Sem títulos.
-                        2. Marque diferenças com <mark class='diff'> e erros com <mark class='ort'>.
-                        3. Data: <mark class='anvisa'>dd/mm/aaaa</mark>.
-                        SAÍDA JSON: {{ "METADADOS": {{ "score": 0, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "..." }} ] }}
+                        1. Ignore formatação, foca apenas no CONTEÚDO do texto.
+                        2. Marque diferenças críticas com <mark class='diff'> texto </mark>.
+                        3. Marque erros ortográficos com <mark class='ort'> texto </mark>.
+                        4. Data de publicação deve estar marcada como <mark class='anvisa'>dd/mm/aaaa</mark>.
+                        
+                        SAÍDA OBRIGATÓRIA EM JSON: 
+                        {{ 
+                            "METADADOS": {{ "score": 100, "datas": [] }}, 
+                            "SECOES": [ 
+                                {{ "titulo": "NOME DA SEÇÃO", "ref": "Texto doc 1", "bel": "Texto doc 2", "status": "OK ou DIVERGENTE" }} 
+                            ] 
+                        }}
                         """
 
                         try:
-                            # AQUI USAMOS O MODELO QUE JÁ FOI TESTADO E VALIDADO
                             response = model_instance.generate_content(
                                 [prompt] + payload,
                                 generation_config={"response_mime_type": "application/json"}
                             )
                             
+                            # Verifica se o Google bloqueou por Copyright
                             if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                                 st.error("⚠️ Bloqueio de Segurança (Copyright)")
-                                if risco_copyright:
-                                    st.warning("Motivo: PDF escaneado identificado como conteúdo protegido. Use a versão original (texto selecionável) do PDF.")
-                                else:
-                                    st.warning("O sistema bloqueou a leitura por segurança.")
+                                st.warning("O arquivo enviado foi identificado como protegido. Tente usar a versão DOCX ou copiar o texto para o Word.")
                             else:
                                 data = extract_json(response.text)
                                 if data:
                                     meta = data.get("METADADOS", {})
                                     cM1, cM2, cM3 = st.columns(3)
-                                    cM1.metric("Score", f"{meta.get('score',0)}%")
-                                    cM2.metric("Seções", len(data.get("SECOES", [])))
-                                    cM3.metric("Datas", str(meta.get("datas", [])))
+                                    cM1.metric("Score de Igualdade", f"{meta.get('score',0)}%")
+                                    cM2.metric("Seções Analisadas", len(data.get("SECOES", [])))
+                                    cM3.metric("Datas Encontradas", str(meta.get("datas", [])))
                                     st.divider()
                                     
                                     for sec in data.get("SECOES", []):
@@ -272,10 +283,10 @@ else:
                                         
                                         with st.expander(f"{icon} {sec['titulo']} - {status}"):
                                             cA, cB = st.columns(2)
-                                            cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                                            cB.markdown(f"**Belfar**\n<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                                            cA.markdown(f"**Referência (Original)**\n<div style='background:#f9f9f9;padding:10px;border-radius:5px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                                            cB.markdown(f"**Belfar (Comparação)**\n<div style='background:#e6fffa;padding:10px;border-radius:5px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("A IA respondeu, mas não no formato esperado (JSON). Tente novamente.")
+                                    st.error("Erro na interpretação da resposta. Tente novamente.")
                                     
                         except Exception as e:
                             st.error(f"Erro durante a geração: {e}")
