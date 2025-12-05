@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS (MANTIDOS) -----------------
+# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
@@ -108,15 +108,14 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (IA) -----------------
 
 def get_gemini_model():
-    # 1. TENTA LER A CHAVE DOS SECRETS DE FORMA SEGURA
+    # 1. TENTA LER A CHAVE DOS SECRETS
     api_key = None
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
-        pass # Se falhar, segue para checagem
+        pass 
 
     if not api_key:
-        # Tenta ler do ambiente como backup
         api_key = os.environ.get("GEMINI_API_KEY")
 
     if not api_key:
@@ -124,12 +123,11 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    # 2. LISTA DE MODELOS COM PRIORIDADE PARA O 2.5 FLASH
-    # Inclui fallbacks (1.5 Pro) caso o Flash bloqueie por Copyright
+    # 2. LISTA DE MODELOS COM O GEMINI 3 E O 2.0 FLASH
     modelos_para_testar = [
-        'models/gemini-2.5-flash', 
-        'models/gemini-1.5-pro',
-        'models/gemini-2.0-flash-exp', 
+        'models/gemini-2.0-flash-exp',   # Prioridade 1 (Mais rápido e estável)
+        'models/gemini-3-pro-preview',   # Prioridade 2 (Tentativa de usar o 3.0)
+        'models/gemini-1.5-pro',         # Fallback
         'models/gemini-1.5-flash'
     ]
     
@@ -139,47 +137,56 @@ def get_gemini_model():
             return model, model_name
         except Exception:
             continue
-    # Se nenhum funcionar
     return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
+    """
+    CORREÇÃO DO COPYRIGHT: 
+    Tenta ler como TEXTO primeiro. Se conseguir, não manda imagem pro Google.
+    """
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
+        
+        # 1. PROCESSAMENTO DE DOCX
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text}
+            
+        # 2. PROCESSAMENTO DE PDF (HÍBRIDO)
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            images = []
             
-            # Limite de páginas para performance
+            # --- TENTATIVA A: EXTRAIR TEXTO PURO (Solução para Copyright) ---
+            full_text = ""
+            for page in doc:
+                full_text += page.get_text() + "\n"
+            
+            # Se tiver texto extraível (não for só imagem escaneada)
+            if len(full_text.strip()) > 50:
+                doc.close()
+                return {"type": "text", "data": full_text}
+            
+            # --- TENTATIVA B: SE FOR IMAGEM (Falhou o texto), TENTA O MODO VISUAL ---
+            images = []
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                
-                # 3. BLINDAGEM CONTRA ERRO DE QUALITY (PyMuPDF versions)
                 try:
-                    # Tenta sintaxe nova
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
-                except TypeError:
-                    try:
-                        # Tenta sintaxe antiga
-                        img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
-                    except:
-                        # Fallback infalível (PNG)
-                        img_byte_arr = io.BytesIO(pix.tobytes("png"))
-                        
+                except:
+                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
                 pix = None
             
             doc.close()
             gc.collect()
             return {"type": "images", "data": images}
+            
     except Exception as e:
         st.error(f"Erro ao processar arquivo {uploaded_file.name}: {e}")
         return None
@@ -342,12 +349,12 @@ else:
                         st.stop()
 
                     payload = []
-                    # Contexto adicionado para evitar bloqueio total de Copyright
                     payload.append("CONTEXTO: Auditoria Interna Confidencial. Uso proprietário da Belfar.")
                     
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
 
+                    # Lógica para enviar Texto ou Imagem para a IA
                     if d1['type'] == 'text': payload.append(f"--- {nome_doc1} ---\n{d1['data']}")
                     else: payload.append(f"--- {nome_doc1} ---"); payload.extend(d1['data'])
                     
@@ -356,9 +363,9 @@ else:
 
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
-                    # 4. PROMPT BLINDADO CONTRA TÍTULOS E SUJEIRA
+                    # 4. PROMPT BLINDADO
                     prompt = f"""
-                    Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens (até 12 páginas) para encontrar o texto.
+                    Atue como Auditor Farmacêutico RÍGIDO.
                     
                     DOCUMENTOS:
                     1. {nome_doc1} (Referência/Padrão)
@@ -404,11 +411,11 @@ else:
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                         st.error("⚠️ **Alerta de Conteúdo Protegido (Copyright)**")
                         st.warning("""
-                        O Google Gemini interrompeu a leitura por detectar conteúdo protegido (Bula).
+                        O Google Gemini interrompeu a leitura.
                         
-                        **Ações Sugeridas:**
-                        1. Tente recortar e enviar apenas a parte da bula que você quer analisar.
-                        2. O sistema tentará usar um modelo alternativo automaticamente na próxima vez.
+                        **Motivo:** O documento enviado (PDF escaneado/imagem) foi confundido com livro protegido.
+                        
+                        **Solução:** Tente enviar o arquivo em formato WORD (.docx) ou PDF texto (selecionável).
                         """)
                     else:
                         data = extract_json(response.text)
