@@ -8,6 +8,7 @@ import re
 import os
 import gc
 import base64
+import time
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
@@ -40,7 +41,6 @@ st.markdown("""
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 50px; border: none; font-size: 16px; }
     .stButton>button:hover { background-color: #448c75; }
 
-    /* CSS para as Tags HTML funcionarem dentro do texto */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
@@ -76,9 +76,13 @@ def get_mistral_client():
     return Mistral(api_key=api_key)
 
 def image_to_base64(image):
+    # REDIMENSIONAMENTO DE SEGURANÇA: Se a imagem for gigante, reduz para max 1024px
+    max_size = (1024, 1024)
+    image.thumbnail(max_size, Image.Resampling.LANCZOS)
+    
     buffered = io.BytesIO()
-    # Otimização: Qualidade 80 é suficiente e gera payload menor (mais rápido)
-    image.save(buffered, format="JPEG", quality=80) 
+    # Otimização: Qualidade 70 é o suficiente para OCR e muito mais leve
+    image.save(buffered, format="JPEG", quality=70) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def process_uploaded_file(uploaded_file):
@@ -87,22 +91,17 @@ def process_uploaded_file(uploaded_file):
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
         
-        # 1. DOCX (Extração Direta - Super Rápido)
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text}
             
-        # 2. PDF (Lógica Híbrida Otimizada)
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # TESTE RÁPIDO DE TEXTO: Verifica apenas a 1ª página
-            # Se tiver texto, assume que o doc todo é digital (muito mais rápido que renderizar imagens)
+            # Tenta texto primeiro (muito mais rápido)
             first_page_text = doc[0].get_text() if len(doc) > 0 else ""
-            
             if len(first_page_text.strip()) > 50:
-                # É um PDF digital (texto selecionável)
                 full_text = ""
                 for page in doc:
                     full_text += page.get_text() + "\n"
@@ -110,14 +109,14 @@ def process_uploaded_file(uploaded_file):
                 return {"type": "text", "data": full_text}
             
             else:
-                # É um PDF Escaneado (Imagem)
-                # Otimização: Matrix 2.0 (antes era 3.0) -> 50% mais rápido para renderizar
+                # PDF Imagem: Otimização Matrix 1.5 (Mais rápido e evita erro 502)
                 images = []
-                limit_pages = min(5, len(doc)) # Lê até 5 páginas
+                limit_pages = min(5, len(doc)) 
                 for i in range(limit_pages):
                     page = doc[i]
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                    try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=80))
+                    # Matrix 1.5 é o equilíbrio perfeito entre velocidade e leitura
+                    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                    try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=70))
                     except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                     images.append(Image.open(img_byte_arr))
                     pix = None
@@ -131,20 +130,37 @@ def process_uploaded_file(uploaded_file):
     return None
 
 def repair_json(json_str):
-    """Tenta consertar erros comuns no JSON retornado pela IA"""
     try:
-        # Remove blocos markdown
         json_str = json_str.replace("```json", "").replace("```", "").strip()
-        
-        # Encontra o primeiro { e o último }
         start = json_str.find('{')
         end = json_str.rfind('}') + 1
         if start != -1 and end != -1:
             json_str = json_str[start:end]
-            
         return json.loads(json_str)
     except json.JSONDecodeError:
         return None
+
+def call_mistral_with_retry(client, messages, max_retries=3):
+    """Função de resiliência: Tenta chamar a API 3x se der erro de servidor"""
+    for attempt in range(max_retries):
+        try:
+            chat_response = client.chat.complete(
+                model="pixtral-large-latest",
+                messages=[{"role": "user", "content": messages}],
+                response_format={"type": "json_object"},
+                max_tokens=8000
+            )
+            return chat_response
+        except Exception as e:
+            error_msg = str(e)
+            # Se for erro de servidor (500, 502, 503) ou limite de taxa (429), espera e tenta de novo
+            if "500" in error_msg or "502" in error_msg or "503" in error_msg or "429" in error_msg:
+                if attempt < max_retries - 1:
+                    wait_time = 2 * (attempt + 1)
+                    st.toast(f"Servidor ocupado (Erro 502). Tentando novamente em {wait_time}s...", icon="⏳")
+                    time.sleep(wait_time)
+                    continue
+            raise e # Se for outro erro ou acabou as tentativas, estoura o erro
 
 # ----------------- UI -----------------
 with st.sidebar:
@@ -157,7 +173,7 @@ with st.sidebar:
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
 
 if pagina == "🏠 Início":
-    st.markdown("""<div style="text-align: center; padding: 30px 20px;"><h1 style="color: #55a68e;">Validador Inteligente</h1><p>Auditoria de bulas otimizada para velocidade.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div style="text-align: center; padding: 30px 20px;"><h1 style="color: #55a68e;">Validador Inteligente</h1><p>Auditoria de bulas com <b>retry automático</b> e otimização de velocidade.</p></div>""", unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     with c1: st.markdown("""<div class="stCard"><div class="card-title">💊 Ref x BELFAR</div>Compara referência com BELFAR.<br><br>Legenda:<br>🟡 Divergência<br>🔴 Erro PT<br>🔵 Data Anvisa</div>""", unsafe_allow_html=True)
     with c2: st.markdown("""<div class="stCard"><div class="card-title">📋 Conferência MKT</div>Compara ANVISA com MKT.<br><br>Legenda:<br>🟡 Divergência<br>🔴 Erro PT<br>🔵 Data Anvisa</div>""", unsafe_allow_html=True)
@@ -185,44 +201,40 @@ else:
     with c2: st.markdown(f"##### {label_box2}"); f2 = st.file_uploader("Upload 2", type=["pdf", "docx"], key="f2")
         
     st.write("") 
-    if st.button("🚀 INICIAR AUDITORIA RÁPIDA"):
+    if st.button("🚀 INICIAR AUDITORIA"):
         if not f1 or not f2: st.warning("⚠️ Faça upload dos dois arquivos.")
         else:
-            with st.spinner(f"⚡ Processando arquivos e analisando com IA..."):
+            with st.spinner(f"⚡ Processando (com sistema anti-falha 502)..."):
                 try:
                     if not client: st.error("Sem chave API."); st.stop()
                     
-                    # Processamento Otimizado
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
-                    gc.collect() # Limpa memória rápido
+                    gc.collect() 
 
                     if not d1 or not d2: st.error("Erro na leitura dos arquivos."); st.stop()
 
-                    secoes_str = ", ".join(lista_secoes) # String mais curta economiza tokens
+                    secoes_str = ", ".join(lista_secoes) 
 
-                    # --- PROMPT OTIMIZADO PARA VELOCIDADE E ROBUSTEZ ---
                     prompt_text = f"""
                     Atue como Auditor Farmacêutico.
-                    Compare os documentos: 1. REFERÊNCIA vs 2. BELFAR.
-
-                    SEÇÕES: {secoes_str}
+                    Compare: 1. REFERÊNCIA vs 2. BELFAR.
+                    SEÇÕES ALVO: {secoes_str}
 
                     INSTRUÇÕES:
-                    1. Extraia o texto COMPLETO das seções encontradas.
-                    2. Ignore títulos, pegue o conteúdo.
-                    3. Se não encontrar uma seção, marque status "FALTANTE".
+                    1. Extraia o texto COMPLETO das seções (ignore apenas o título).
+                    2. Se não encontrar, marque "FALTANTE".
                     
-                    MARCAÇÃO HTML OBRIGATÓRIA NO TEXTO 'bel':
-                    - Divergência de sentido: <mark class='diff'>texto diferente</mark>
-                    - Erro ortográfico: <mark class='ort'>texto errado</mark>
-                    - Data Anvisa (procure no fim): <mark class='anvisa'>dd/mm/aaaa</mark>
+                    MARCAÇÃO HTML OBRIGATÓRIA (Use <mark>):
+                    - Divergência: <mark class='diff'>texto diferente</mark>
+                    - Erro PT: <mark class='ort'>texto errado</mark>
+                    - Data Anvisa: <mark class='anvisa'>dd/mm/aaaa</mark>
 
-                    Retorne APENAS este JSON válido (sem markdown, sem comentários):
+                    JSON APENAS:
                     {{
                         "METADADOS": {{ "score": 0 a 100, "datas": ["dd/mm/aaaa"] }},
                         "SECOES": [
-                            {{ "titulo": "NOME SEÇÃO", "ref": "texto doc 1", "bel": "texto doc 2 com tags html...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
+                            {{ "titulo": "NOME SEÇÃO", "ref": "texto 1...", "bel": "texto 2...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
                         ]
                     }}
                     """
@@ -231,7 +243,7 @@ else:
 
                     def add_content(doc_data, label):
                         if doc_data['type'] == 'text':
-                            messages_content.append({"type": "text", "text": f"\n--- TEXTO {label} ---\n{doc_data['data'][:50000]}"}) # Limite de segurança de caracteres
+                            messages_content.append({"type": "text", "text": f"\n--- TEXTO {label} ---\n{doc_data['data'][:50000]}"})
                         else:
                             messages_content.append({"type": "text", "text": f"\n--- IMAGENS {label} ---"})
                             for img in doc_data['data']:
@@ -240,18 +252,14 @@ else:
                     add_content(d1, "REFERÊNCIA")
                     add_content(d2, "BELFAR")
 
-                    chat_response = client.chat.complete(
-                        model="pixtral-large-latest", # Pixtral Large é necessário para seguir HTML tags
-                        messages=[{"role": "user", "content": messages_content}],
-                        response_format={"type": "json_object"},
-                        max_tokens=8000
-                    )
+                    # Chamada com Retry Automático
+                    chat_response = call_mistral_with_retry(client, messages_content)
 
                     data = repair_json(chat_response.choices[0].message.content)
                     
                     if not data: 
-                        st.error("Erro ao processar resposta da IA. Tente novamente.")
-                        st.expander("Debug").write(chat_response.choices[0].message.content)
+                        st.error("A IA respondeu, mas o JSON veio quebrado.")
+                        st.code(chat_response.choices[0].message.content)
                     else:
                         meta = data.get("METADADOS", {})
                         datas_limpas = [re.sub(r'<[^>]+>', '', d) for d in meta.get("datas", [])]
@@ -280,4 +288,4 @@ else:
                                     st.markdown(f"**{label_box2}**")
                                     st.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
 
-                except Exception as e: st.error(f"Erro: {e}")
+                except Exception as e: st.error(f"Erro Fatal: {e}")
