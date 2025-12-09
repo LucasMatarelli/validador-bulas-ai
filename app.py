@@ -8,78 +8,35 @@ import re
 import os
 import gc
 import base64
+import time
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador de Bulas",
-    page_icon="🔬",
+    page_title="Validador de Bulas Pro",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS (SEU ESTILO) -----------------
+# ----------------- ESTILOS CSS OTIMIZADOS -----------------
 st.markdown("""
 <style>
-    /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
-
-    /* Ajuste de Fundo e Fontes */
     .main { background-color: #f4f6f8; }
-    h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    /* ESTILO DO MENU DE NAVEGAÇÃO */
-    .stRadio > div[role="radiogroup"] > label {
-        background-color: white;
-        border: 1px solid #e1e4e8;
-        padding: 12px 15px;
-        border-radius: 8px;
-        margin-bottom: 8px;
-        transition: all 0.2s;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-    }
-    .stRadio > div[role="radiogroup"] > label:hover {
-        background-color: #f0fbf7;
-        border-color: #55a68e;
-        color: #55a68e;
-        cursor: pointer;
-    }
-
-    /* Card Estilizado */
     .stCard {
-        background-color: white;
-        padding: 25px;
-        border-radius: 15px;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.05);
-        margin-bottom: 25px;
+        background-color: white; padding: 20px; border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 15px;
         border: 1px solid #e1e4e8;
-        transition: transform 0.2s;
-        height: 100%;
     }
-    .stCard:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 15px 30px rgba(0,0,0,0.1);
-        border-color: #55a68e;
-    }
-
-    /* Títulos dos Cards */
-    .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
-    .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
+    .card-title { color: #55a68e; font-size: 1.1rem; font-weight: bold; margin-bottom: 10px; border-bottom: 2px solid #f0f2f5; padding-bottom: 5px; }
     
-    /* Destaques (Legenda) */
-    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0 4px; border-radius: 4px; font-weight: 500; }
-    .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; font-weight: 500; }
-    .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 8px; height: 50px; border: none; font-size: 16px; }
+    .stButton>button:hover { background-color: #448c75; }
 
-    /* Box de Curva */
-    .curve-box { background-color: #f8f9fa; border-left: 4px solid #55a68e; padding: 10px 15px; margin-top: 15px; font-size: 0.9rem; color: #666; }
-
-    /* Botões */
-    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); }
-    .stButton>button:hover { background-color: #448c75; box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); }
-
-    /* Marcações de Texto (Destaques no Texto) */
+    /* TAGS HTML no Texto */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
@@ -105,334 +62,245 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- FUNÇÕES DE BACKEND (MISTRAL) -----------------
-
+# ----------------- BACKEND ROBUSTO -----------------
 def get_mistral_client():
-    # Tenta ler a chave dos secrets ou ambiente
     api_key = None
-    try:
-        api_key = st.secrets["MISTRAL_API_KEY"]
-    except Exception:
-        pass 
-
-    if not api_key:
-        api_key = os.environ.get("MISTRAL_API_KEY")
-
-    if not api_key:
-        return None
-    
+    try: api_key = st.secrets["MISTRAL_API_KEY"]
+    except: pass 
+    if not api_key: api_key = os.environ.get("MISTRAL_API_KEY")
+    if not api_key: return None
     return Mistral(api_key=api_key)
 
 def image_to_base64(image):
-    """Converte imagem PIL para string base64"""
+    # Otimização: Redimensiona se for gigante (>1500px) para não travar o envio
+    if image.width > 1500 or image.height > 1500:
+        image.thumbnail((1500, 1500), Image.Resampling.LANCZOS)
+    
     buffered = io.BytesIO()
-    image.save(buffered, format="JPEG", quality=90)
+    # JPEG Quality 85: Equilíbrio perfeito entre leitura de letras pequenas e velocidade
+    image.save(buffered, format="JPEG", quality=85) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def process_uploaded_file(uploaded_file):
+    """Lê o arquivo priorizando velocidade (Texto) mas garantindo leitura (OCR)"""
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
+        
+        # 1. DOCX (Extração Instantânea)
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text}
+            
+        # 2. PDF (Processo Híbrido)
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            images = []
             
-            # --- CORREÇÃO DO ERRO 400 ---
-            # O Mistral aceita no MÁXIMO 8 imagens por request.
-            # Como são 2 arquivos, limitamos a 4 páginas por arquivo.
-            limit_pages = min(4, len(doc))
+            # TESTE DE TEXTO DIGITAL:
+            # Verifica se as primeiras páginas têm texto real selecionável.
+            # Se tiver, usamos isso. É 100x mais rápido que ler imagem.
+            digital_text = ""
+            pages_to_check = min(3, len(doc))
+            has_text = False
+            for i in range(pages_to_check):
+                if len(doc[i].get_text().strip()) > 100:
+                    has_text = True
+                    break
             
-            for i in range(limit_pages):
-                page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                
-                try:
-                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
-                except TypeError:
-                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
-                        
-                images.append(Image.open(img_byte_arr))
-                pix = None
+            if has_text:
+                # PDF DIGITAL: Extrai TUDO de uma vez
+                full_text = ""
+                for page in doc:
+                    full_text += page.get_text() + "\n"
+                doc.close()
+                return {"type": "text", "data": full_text}
             
-            doc.close()
-            gc.collect()
-            return {"type": "images", "data": images}
+            else:
+                # PDF ESCANEADO (IMAGEM):
+                # Usa renderização de imagem de alta qualidade
+                images = []
+                # Mistral aceita max 8 imagens. Pegamos as primeiras 8 páginas.
+                # Geralmente bulas cabem nisso.
+                limit_pages = min(8, len(doc)) 
+                for i in range(limit_pages):
+                    page = doc[i]
+                    # Matrix 2.0 garante que letras pequenas (4pt) sejam lidas
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                    try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=85))
+                    except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                    images.append(Image.open(img_byte_arr))
+                    pix = None
+                doc.close()
+                gc.collect()
+                return {"type": "images", "data": images}
+            
     except Exception as e:
-        st.error(f"Erro ao processar arquivo {uploaded_file.name}: {e}")
+        st.error(f"Erro no arquivo {uploaded_file.name}: {e}")
         return None
     return None
 
-def clean_json_response(text):
-    text = text.replace("```json", "").replace("```", "").strip()
-    text = re.sub(r'//.*', '', text)
-    if text.startswith("json"): text = text[4:]
-    return text
-
-def extract_json(text):
+def repair_json(json_str):
     try:
-        clean = clean_json_response(text)
-        start = clean.find('{')
-        end = clean.rfind('}') + 1
-        if start != -1 and end != -1: return json.loads(clean[start:end])
-        return json.loads(clean)
-    except: return None
+        json_str = json_str.replace("```json", "").replace("```", "").strip()
+        start = json_str.find('{')
+        end = json_str.rfind('}') + 1
+        if start != -1 and end != -1:
+            json_str = json_str[start:end]
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        return None
 
-# ----------------- BARRA LATERAL -----------------
+def call_mistral_with_retry(client, messages, max_retries=3):
+    """Tenta chamar a API e re-tenta se der erro 502 (Server Overload)"""
+    for attempt in range(max_retries):
+        try:
+            # max_tokens alto para garantir que não corte o texto no meio
+            return client.chat.complete(
+                model="pixtral-large-latest",
+                messages=[{"role": "user", "content": messages}],
+                response_format={"type": "json_object"},
+                max_tokens=14000 
+            )
+        except Exception as e:
+            error_msg = str(e)
+            if "502" in error_msg or "429" in error_msg or "500" in error_msg:
+                time.sleep(2) # Espera 2 segundos antes de tentar de novo
+                continue
+            raise e
+
+# ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.title("Validador de Bulas")
-    
-    # Inicializa cliente Mistral
+    st.title("Validador Pro")
     client = get_mistral_client()
-    
-    if client:
-        st.success(f"✅ Mistral Conectado")
-    else:
-        st.error("❌ Erro de Conexão")
-        st.caption("Configure MISTRAL_API_KEY nos Secrets.")
-    
+    if client: st.success(f"✅ Mistral Ativo")
+    else: st.error("❌ Configure MISTRAL_API_KEY")
     st.divider()
-    
-    # Menu de Navegação
-    pagina = st.radio(
-        "Navegação:",
-        ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"]
-    )
-    
-    st.divider()
+    pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
 
-# ----------------- PÁGINA INICIAL -----------------
 if pagina == "🏠 Início":
-    st.markdown("""
-    <div style="text-align: center; padding: 30px 20px;">
-        <h1 style="color: #55a68e; font-size: 3rem; margin-bottom: 10px;">Validador Inteligente</h1>
-        <p style="font-size: 20px; color: #7f8c8d;">Central de auditoria e conformidade de bulas farmacêuticas com IA (Mistral).</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
+    st.markdown("""<div style="text-align: center; padding: 30px 20px;"><h1 style="color: #55a68e;">Validador Inteligente</h1><p>Sistema otimizado para leitura completa e rápida.</p></div>""", unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    
-    with c1:
-        st.markdown("""
-        <div class="stCard">
-            <div class="card-title">💊 Medicamento Referência x BELFAR</div>
-            <div class="card-text">
-                Compara a bula de referência com a bula BELFAR.
-                <br><br>
-                <ul>
-                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
-                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
-                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
-                </ul>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    with c1: st.markdown("""<div class="stCard"><div class="card-title">💊 Ref x BELFAR</div>Compara referência com BELFAR.<br><br>Legenda:<br>🟡 Divergência<br>🔴 Erro PT<br>🔵 Data Anvisa</div>""", unsafe_allow_html=True)
+    with c2: st.markdown("""<div class="stCard"><div class="card-title">📋 Conferência MKT</div>Compara ANVISA com MKT.<br><br>Legenda:<br>🟡 Divergência<br>🔴 Erro PT<br>🔵 Data Anvisa</div>""", unsafe_allow_html=True)
+    with c3: st.markdown("""<div class="stCard"><div class="card-title">🎨 Gráfica x Arte</div>Compara Gráfica com Arte.<br><br>Legenda:<br>🟡 Divergência<br>🔴 Erro PT<br>🔵 Data Anvisa</div>""", unsafe_allow_html=True)
 
-    with c2:
-        st.markdown("""
-        <div class="stCard">
-            <div class="card-title">📋 Conferência MKT</div>
-            <div class="card-text">
-                Compara arquivo ANVISA com PDF MKT.
-                <br><br>
-                <ul>
-                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
-                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
-                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
-                </ul>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c3:
-        st.markdown("""
-        <div class="stCard">
-            <div class="card-title">🎨 Gráfica x Arte Vigente</div>
-            <div class="card-text">
-                Compara PDF Gráfica com Arte Vigente (Lê curvas).
-                <br><br>
-                <ul>
-                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
-                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
-                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
-                </ul>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-# ----------------- FERRAMENTA -----------------
 else:
     st.markdown(f"## {pagina}")
-    
     lista_secoes = SECOES_PACIENTE
-    nome_tipo = "Paciente"
-    
-    label_box1 = "Arquivo 1"
-    label_box2 = "Arquivo 2"
+    label_box1 = "Arquivo 1"; label_box2 = "Arquivo 2"
     
     if pagina == "💊 Ref x BELFAR":
-        label_box1 = "📄 Documento de Referência"
-        label_box2 = "📄 Documento BELFAR"
+        label_box1 = "📄 Documento de Referência"; label_box2 = "📄 Documento BELFAR"
         col_tipo, _ = st.columns([1, 2])
         with col_tipo:
             tipo_bula = st.radio("Tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
-            if tipo_bula == "Profissional":
-                lista_secoes = SECOES_PROFISSIONAL
-                nome_tipo = "Profissional"
-
-    elif pagina == "📋 Conferência MKT":
-        label_box1 = "📄 Arquivo ANVISA"
-        label_box2 = "📄 Arquivo MKT"
-
-    elif pagina == "🎨 Gráfica x Arte":
-        label_box1 = "📄 Arte Vigente"
-        label_box2 = "📄 PDF da Gráfica"
+            if tipo_bula == "Profissional": lista_secoes = SECOES_PROFISSIONAL
+    elif pagina == "📋 Conferência MKT": label_box1 = "📄 Arquivo ANVISA"; label_box2 = "📄 Arquivo MKT"
+    elif pagina == "🎨 Gráfica x Arte": label_box1 = "📄 Arte Vigente"; label_box2 = "📄 PDF da Gráfica"
     
     st.divider()
-    
     c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f"##### {label_box1}")
-        f1 = st.file_uploader("", type=["pdf", "docx"], key="f1")
-    with c2:
-        st.markdown(f"##### {label_box2}")
-        f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
+    with c1: st.markdown(f"##### {label_box1}"); f1 = st.file_uploader("Upload 1", type=["pdf", "docx"], key="f1")
+    with c2: st.markdown(f"##### {label_box2}"); f2 = st.file_uploader("Upload 2", type=["pdf", "docx"], key="f2")
         
     st.write("") 
     if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
-        if not f1 or not f2:
-            st.warning("⚠️ Por favor, faça o upload dos dois arquivos para continuar.")
+        if not f1 or not f2: st.warning("⚠️ Faça upload dos dois arquivos.")
         else:
-            with st.spinner(f"🤖 Analisando com Mistral (Pixtral)..."):
+            with st.spinner(f"⚡ Processando arquivos e extraindo conteúdo..."):
                 try:
-                    if not client:
-                        st.error("Erro crítico: Chave API não detectada.")
-                        st.stop()
-
+                    if not client: st.error("Sem chave API."); st.stop()
+                    
+                    # Leitura Otimizada
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
                     gc.collect()
 
-                    if not d1 or not d2:
-                        st.error("Falha ao ler os arquivos.")
-                        st.stop()
+                    if not d1 or not d2: st.error("Erro na leitura."); st.stop()
 
-                    # Montagem do Payload para o Mistral
-                    nome_doc1 = label_box1.replace("📄 ", "").upper()
-                    nome_doc2 = label_box2.replace("📄 ", "").upper()
-                    secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
+                    secoes_str = ", ".join(lista_secoes)
 
-                    # 1. Criação do Texto do Prompt
+                    # --- PROMPT DE "TRANSCRIÇÃO PURA" ---
                     prompt_text = f"""
-                    Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens anexadas para encontrar o texto.
-                    CONTEXTO: Auditoria Interna Confidencial.
+                    Atue como Auditor Farmacêutico Meticuloso.
+                    Compare: 1. REFERÊNCIA vs 2. BELFAR.
+                    SEÇÕES ALVO: {secoes_str}
 
-                    DOCUMENTOS ENVIADOS:
-                    1. {nome_doc1} (Referência/Padrão)
-                    2. {nome_doc2} (Candidato/BELFAR)
-
-                    LISTA DE SEÇÕES A ANALISAR ({nome_tipo}):
-                    {secoes_str}
-
-                    === REGRA ZERO: LIMPEZA ABSOLUTA DE TEXTO ===
-                    1. EXTRAÇÃO PURA: Ao extrair o conteúdo de uma seção, copie APENAS O PARÁGRAFO DE TEXTO.
-                    2. PROIBIDO TÍTULOS: NÃO inclua o título da seção (ex: NÃO escreva "4. O QUE DEVO SABER..." no início do texto extraído).
-                    3. SEM REPETIÇÕES: Se houver quebra de página e o título da seção aparecer de novo, DELETE-O. Mantenha o texto fluido.
-                    4. LIMITES: Pare de copiar assim que o título da PRÓXIMA seção aparecer.
-
-                    === REGRA 1: COMPARAÇÃO ===
-                    - Seções normais: Use <mark class='diff'> para divergências de sentido e <mark class='ort'> para erros de português.
-                    - Seções informativas (Apresentações, Composição, Dizeres Legais): Apenas transcreva o texto limpo (sem títulos).
-
-                    === REGRA 2: DATA DA ANVISA ===
-                    - Busque no rodapé de "DIZERES LEGAIS". Se achar "Aprovado em dd/mm/aaaa", use <mark class='anvisa'>dd/mm/aaaa</mark> NO TEXTO DA SEÇÃO.
+                    === ORDEM IMPERATIVA: TRANSCRIÇÃO INTEGRAL ===
+                    1. Você NÃO PODE resumir. Você deve extrair TODO o conteúdo de texto de cada seção.
+                    2. Se a seção tiver 5 parágrafos, retorne os 5 parágrafos.
+                    3. Se o texto for longo, escreva ele até o fim. Não pare no meio.
+                    4. Ignore apenas os títulos das seções (ex: não escreva "COMO USAR", escreva o que vem depois).
+                    5. Se não encontrar a seção, marque status "FALTANTE".
                     
-                    SAÍDA JSON OBRIGATÓRIA:
+                    === REGRAS DE MARCAÇÃO HTML (OBRIGATÓRIO) ===
+                    Use estas tags exatas no texto extraído do documento BELFAR ('bel'):
+                    - Para diferenças de sentido: <mark class='diff'>texto divergente</mark>
+                    - Para erros ortográficos: <mark class='ort'>texto com erro</mark>
+                    - Para Data da Anvisa (rodapé/final): <mark class='anvisa'>dd/mm/aaaa</mark>
+
+                    FORMATO JSON DE SAÍDA:
                     {{
-                        "METADADOS": {{ "score": 0 a 100, "datas": ["apenas a data dd/mm/aaaa sem html"] }},
+                        "METADADOS": {{ "score": 0 a 100, "datas": ["dd/mm/aaaa"] }},
                         "SECOES": [
-                            {{ "titulo": "NOME SEÇÃO", "ref": "texto limpo...", "bel": "texto limpo...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
+                            {{ "titulo": "NOME SEÇÃO", "ref": "TEXTO COMPLETO SEM CORTES DOC 1", "bel": "TEXTO COMPLETO SEM CORTES DOC 2", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
                         ]
                     }}
                     """
 
-                    # 2. Montagem da lista de conteúdo (Multimodal)
                     messages_content = [{"type": "text", "text": prompt_text}]
 
-                    # Adiciona Texto do Doc 1
-                    if d1['type'] == 'text':
-                        messages_content.append({"type": "text", "text": f"\n--- CONTEÚDO TEXTO {nome_doc1} ---\n{d1['data']}"})
-                    # Adiciona Imagens do Doc 1
-                    else:
-                        messages_content.append({"type": "text", "text": f"\n--- IMAGENS {nome_doc1} ---"})
-                        for img in d1['data']:
-                            b64 = image_to_base64(img)
-                            messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
+                    def add_content(doc_data, label):
+                        if doc_data['type'] == 'text':
+                            # Limite seguro de caracteres para texto puro (aprox 15k tokens)
+                            # Suficiente para bulas imensas.
+                            messages_content.append({"type": "text", "text": f"\n--- TEXTO COMPLETO {label} ---\n{doc_data['data'][:60000]}"})
+                        else:
+                            messages_content.append({"type": "text", "text": f"\n--- IMAGENS {label} (LEIA TUDO) ---"})
+                            for img in doc_data['data']:
+                                messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{image_to_base64(img)}"})
 
-                    # Adiciona Texto do Doc 2
-                    if d2['type'] == 'text':
-                        messages_content.append({"type": "text", "text": f"\n--- CONTEÚDO TEXTO {nome_doc2} ---\n{d2['data']}"})
-                    # Adiciona Imagens do Doc 2
-                    else:
-                        messages_content.append({"type": "text", "text": f"\n--- IMAGENS {nome_doc2} ---"})
-                        for img in d2['data']:
-                            b64 = image_to_base64(img)
-                            messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
+                    add_content(d1, "REFERÊNCIA")
+                    add_content(d2, "BELFAR")
 
-                    # CHAMADA API MISTRAL
-                    chat_response = client.chat.complete(
-                        model="pixtral-large-latest",
-                        messages=[{"role": "user", "content": messages_content}],
-                        response_format={"type": "json_object"}
-                    )
-
-                    response_text = chat_response.choices[0].message.content
-                    data = extract_json(response_text)
+                    # Chamada com Retry e Max Tokens Alto
+                    chat_response = call_mistral_with_retry(client, messages_content)
                     
-                    if not data:
-                        st.error("O Mistral não retornou um JSON válido. Tente novamente.")
+                    response_content = chat_response.choices[0].message.content
+                    data = repair_json(response_content)
+                    
+                    if not data: 
+                        st.error("Erro no processamento da IA. O texto pode ser muito longo ou o JSON quebrou.")
+                        st.expander("Ver resposta bruta").code(response_content)
                     else:
                         meta = data.get("METADADOS", {})
-                        
-                        # --- CORREÇÃO DA DATA (REMOÇÃO DE TAGS HTML) ---
-                        datas_brutas = meta.get("datas", [])
-                        datas_limpas = [re.sub(r'<[^>]+>', '', d) for d in datas_brutas]
-                        
+                        datas_limpas = [re.sub(r'<[^>]+>', '', d) for d in meta.get("datas", [])]
+                        display_data = ", ".join(datas_limpas) if datas_limpas else "⚠️ Não possui data ANVISA"
+
                         m1, m2, m3 = st.columns(3)
                         m1.metric("Conformidade", f"{meta.get('score', 0)}%")
-                        m2.metric("Seções Analisadas", len(data.get("SECOES", [])))
-                        m3.metric("Datas Encontradas", ", ".join(datas_limpas) or "Nenhuma data")
-                        
+                        m2.metric("Seções", len(data.get("SECOES", [])))
+                        m3.metric("Datas", display_data)
                         st.divider()
                         
                         for sec in data.get("SECOES", []):
-                            status = sec.get('status', 'N/A')
-                            titulo = sec.get('titulo', '').upper()
-                            
+                            status = sec.get('status', 'N/A'); titulo = sec.get('titulo', '').upper()
                             icon = "✅"
                             if "DIVERGENTE" in status: icon = "❌"
                             elif "FALTANTE" in status: icon = "🚨"
-                            
                             if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
-                                icon = "👁️" 
-                                if "DIVERGENTE" in status:
-                                    status = "VISUALIZAÇÃO (Divergências Ignoradas)"
-                                else:
-                                    status = "VISUALIZAÇÃO"
+                                icon = "👁️"; status = "VISUALIZAÇÃO"
                             
                             with st.expander(f"{icon} {sec['titulo']} — {status}"):
                                 cA, cB = st.columns(2)
                                 with cA:
-                                    st.markdown(f"**{nome_doc1}**")
+                                    st.markdown(f"**{label_box1}**")
                                     st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
                                 with cB:
-                                    st.markdown(f"**{nome_doc2}**")
+                                    st.markdown(f"**{label_box2}**")
                                     st.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
 
-                except Exception as e:
-                    st.error(f"Erro durante a análise Mistral: {e}")
+                except Exception as e: st.error(f"Erro Fatal: {e}")
