@@ -1,13 +1,13 @@
 import streamlit as st
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
-import fitz  # PyMuPDF (Isso funciona pois instalamos o PyMuPDF)
+import requests
+import fitz  # PyMuPDF
 import docx
 import io
 import json
 import re
 import os
 import gc
+import base64
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
@@ -34,105 +34,127 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- FUNÇÃO DE CONEXÃO BLINDADA (A SOLUÇÃO) -----------------
-def get_gemini_model():
-    # 1. Pega a chave
+# ----------------- FUNÇÃO DE CONEXÃO DIRETA (REST API) -----------------
+def call_gemini_api_direct(prompt, parts_payload):
+    """
+    Faz a chamada HTTP direta para o Google, sem usar biblioteca.
+    Isso evita erros de versão e 404.
+    """
+    # 1. Pega a Chave
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
     except: pass
     if not api_key: api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key: return None, "Chave Ausente"
+    if not api_key: return {"error": "Chave API não encontrada"}
 
-    genai.configure(api_key=api_key)
-
-    # 2. Configuração de Segurança (Evita Copyright)
-    safety_config = {
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-    }
-
-    # 3. Lógica de Tentativa e Erro (Fallback)
-    # Tenta o modelo novo (Flash). Se der 404, cai para o modelo antigo (Pro) automaticamente.
+    # 2. URL Fixa (Modelo 1.5 Flash - Estável e Grátis)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     
-    lista_tentativas = [
-        'gemini-1.5-flash', # O ideal (Rápido e Barato)
-        'gemini-pro'        # O "Velho de Guerra" (Funciona em libs antigas)
+    # 3. Cabeçalhos
+    headers = {"Content-Type": "application/json"}
+
+    # 4. Configuração de Segurança (Block None)
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
     ]
 
-    model_final = None
-    nome_final = ""
+    # 5. Monta o JSON final
+    final_payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt}
+            ] + parts_payload # Adiciona imagens ou textos processados
+        }],
+        "safetySettings": safety_settings,
+        "generationConfig": {
+            "response_mime_type": "application/json"
+        }
+    }
 
-    # Teste de conexão silencioso
-    for modelo in lista_tentativas:
-        try:
-            teste_model = genai.GenerativeModel(modelo, safety_settings=safety_config)
-            # Tenta gerar um "oi" simples para ver se o modelo responde ou dá erro 404
-            # Se a lib for velha, isso vai dar erro aqui e pular para o próximo
-            teste_model.generate_content("oi") 
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(final_payload), timeout=60)
+        
+        if response.status_code != 200:
+            return {"error": f"Erro HTTP {response.status_code}: {response.text}"}
             
-            # Se chegou aqui, funcionou!
-            model_final = teste_model
-            nome_final = modelo
-            break
-        except Exception:
-            continue # Se deu erro, tenta o próximo da lista
+        return response.json()
+    except Exception as e:
+        return {"error": str(e)}
 
-    if model_final:
-        return model_final, nome_final
-    else:
-        # Se tudo falhar, retorna o genérico
-        return genai.GenerativeModel('gemini-pro', safety_settings=safety_config), "gemini-pro (Fallback)"
-
-# ----------------- FUNÇÕES AUXILIARES -----------------
+# ----------------- PROCESSAMENTO DE ARQUIVOS -----------------
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
+        
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
-            return {"type": "text", "data": text}
+            # Retorna formato para o Payload do Gemini
+            return [{"text": f"--- CONTEÚDO DO ARQUIVO DOCX ---\n{text}"}]
+            
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
+            
+            # Tenta texto primeiro
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
+            
             if len(full_text.strip()) > 50:
-                 doc.close(); return {"type": "text", "data": full_text}
-            images = []
+                 doc.close()
+                 return [{"text": f"--- CONTEÚDO DO PDF (TEXTO) ---\n{full_text}"}]
+
+            # Se não tiver texto, converte para imagem (Base64) para a API ler
+            parts = []
+            parts.append({"text": "--- O ARQUIVO A SEGUIR SÃO IMAGENS DO PDF ---"})
             limit_pages = min(12, len(doc))
+            
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
-                except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
-                images.append(Image.open(img_byte_arr))
-            doc.close(); gc.collect()
-            return {"type": "images", "data": images}
-    except Exception as e: st.error(f"Erro arquivo: {e}"); return None
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # Qualidade média
+                # Converte para base64
+                img_bytes = pix.tobytes("jpeg", jpg_quality=85)
+                b64_string = base64.b64encode(img_bytes).decode('utf-8')
+                
+                parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": b64_string
+                    }
+                })
+            
+            doc.close()
+            gc.collect()
+            return parts
+            
+    except Exception as e:
+        st.error(f"Erro ao processar arquivo: {e}")
+        return None
     return None
 
-def extract_json(text):
-    text = text.replace("```json", "").replace("```", "").strip()
+def extract_json_from_response(api_response):
     try:
-        start = text.find('{'); end = text.rfind('}') + 1
-        if start != -1 and end != -1: return json.loads(text[start:end])
-        return json.loads(text)
-    except: return None
+        # Caminho para extrair texto da resposta REST do Gemini
+        text_response = api_response['candidates'][0]['content']['parts'][0]['text']
+        
+        clean = text_response.replace("```json", "").replace("```", "").strip()
+        start = clean.find('{'); end = clean.rfind('}') + 1
+        if start != -1 and end != -1: return json.loads(clean[start:end])
+        return json.loads(clean)
+    except Exception as e:
+        st.error(f"Erro ao ler JSON da resposta: {e} | Resposta Crua: {str(api_response)}")
+        return None
 
 # ----------------- INTERFACE -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
+    st.caption("Modo: Conexão Direta (REST)")
     
-    # Mostra a versão da lib para debug
-    st.caption(f"Versão IA: {genai.__version__}") 
-    
-    model_instance, model_name_used = get_gemini_model()
-    if model_instance: st.success(f"✅ Conectado: {model_name_used}")
-    else: st.error("❌ Erro Conexão")
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 MKT", "🎨 Gráfica"])
 
@@ -158,38 +180,56 @@ else:
     if st.button("🚀 INICIAR AUDITORIA"):
         if not f1 or not f2: st.warning("Faça upload dos dois arquivos.")
         else:
-            with st.spinner(f"Analisando com {model_name_used}..."):
-                d1 = process_uploaded_file(f1); d2 = process_uploaded_file(f2)
+            with st.spinner(f"Processando e enviando para o Google..."):
+                # Processa arquivos
+                parts1 = process_uploaded_file(f1)
+                parts2 = process_uploaded_file(f2)
                 gc.collect()
-                if not d1 or not d2: st.error("Erro leitura."); st.stop()
 
-                payload = ["CONTEXTO: Auditoria Regulatória ANVISA. Documentos públicos."]
-                n1 = label_box1.upper(); n2 = label_box2.upper()
-                if d1['type']=='text': payload.append(f"--- {n1} ---\n{d1['data']}")
-                else: payload.append(f"--- {n1} ---"); payload.extend(d1['data'])
-                if d2['type']=='text': payload.append(f"--- {n2} ---\n{d2['data']}")
-                else: payload.append(f"--- {n2} ---"); payload.extend(d2['data'])
+                if not parts1 or not parts2: st.stop()
 
-                prompt = f"""
-                Atue como Auditor Farmacêutico (ANVISA).
-                DOC 1: {n1} | DOC 2: {n2}
-                SEÇÕES: APRESENTAÇÕES, COMPOSIÇÃO, INDICAÇÕES, POSOLOGIA, DIVERGENCIAS
+                # Monta Prompt
+                payload_parts = []
+                payload_parts.append({"text": "CONTEXTO: Auditoria Regulatória ANVISA. Documentos públicos de saúde."})
                 
-                REGRA: Compare os textos.
-                - Use <mark class='diff'> para divergências.
-                - Use <mark class='ort'> para erros ortográficos.
-                - Se encontrar "Aprovado em dd/mm/aaaa", use <mark class='anvisa'>.
+                # Adiciona partes do Doc 1
+                payload_parts.append({"text": f"=== DOCUMENTO 1 ({label_box1}) ==="})
+                payload_parts.extend(parts1)
+                
+                # Adiciona partes do Doc 2
+                payload_parts.append({"text": f"=== DOCUMENTO 2 ({label_box2}) ==="})
+                payload_parts.extend(parts2)
 
-                JSON: {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "CONFORME|DIVERGENTE|FALTANTE" }} ] }}
+                prompt_text = f"""
+                Atue como Auditor Farmacêutico (ANVISA).
+                Compare o DOC 1 com o DOC 2.
+                SEÇÕES PARA ANALISAR: APRESENTAÇÕES, COMPOSIÇÃO, INDICAÇÕES, POSOLOGIA, ADVERTÊNCIAS.
+                
+                REGRA ZERO: EXTRAÇÃO LIMPA
+                1. Ignore títulos, extraia apenas o conteúdo.
+                
+                REGRA UM: COMPARAÇÃO
+                - Divergências de sentido: use <mark class='diff'>
+                - Erros ortográficos: use <mark class='ort'>
+                - Se encontrar "Aprovado em dd/mm/aaaa" nos Dizeres Legais, use <mark class='anvisa'>.
+
+                SAÍDA JSON OBRIGATÓRIA:
+                {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "CONFORME|DIVERGENTE|FALTANTE" }} ] }}
                 """
 
-                try:
-                    response = model_instance.generate_content(
-                        [prompt] + payload,
-                        generation_config={"response_mime_type": "application/json"}
-                    )
-                    data = extract_json(response.text)
-                    if not data: st.error("Erro JSON IA.")
+                # Chama a API Direta
+                resultado = call_gemini_api_direct(prompt_text, payload_parts)
+                
+                if "error" in resultado:
+                    if "429" in str(resultado['error']):
+                        st.error("Muitas requisições. Espere alguns segundos.")
+                    elif "finishReason" in str(resultado) and "SAFETY" in str(resultado):
+                         st.error("⚠️ Bloqueio de Conteúdo (Copyright/Segurança).")
+                    else:
+                        st.error(f"Erro na API: {resultado['error']}")
+                else:
+                    data = extract_json_from_response(resultado)
+                    if not data: st.error("Erro ao interpretar JSON da IA.")
                     else:
                         meta = data.get("METADADOS", {})
                         m1, m2, m3 = st.columns(3)
@@ -201,6 +241,5 @@ else:
                             icon = "✅" if "CONFORME" in sec.get('status','') else "❌"
                             with st.expander(f"{icon} {sec.get('titulo')} — {sec.get('status')}"):
                                 ca, cb = st.columns(2)
-                                ca.markdown(f"**{n1}**"); ca.markdown(f"<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                                cb.markdown(f"**{n2}**"); cb.markdown(f"<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
-                except Exception as e: st.error(f"Erro: {e}")
+                                ca.markdown(f"**{label_box1}**"); ca.markdown(f"<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                                cb.markdown(f"**{label_box2}**"); cb.markdown(f"<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
