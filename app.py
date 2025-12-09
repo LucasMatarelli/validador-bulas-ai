@@ -8,6 +8,7 @@ import re
 import os
 import gc
 import base64
+import time
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
@@ -34,70 +35,22 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- FUNÇÕES DE CONEXÃO INTELIGENTE (REST API) -----------------
+# ----------------- CONEXÃO "HARDCODED" NO FLASH -----------------
 
-def get_best_available_model(api_key):
-    """
-    Pergunta à API quais modelos estão disponíveis para esta chave
-    e retorna o melhor nome para usar, evitando erro 404.
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-    try:
-        response = requests.get(url)
-        if response.status_code != 200:
-            return None, f"Erro ao listar modelos: {response.text}"
-        
-        data = response.json()
-        modelos = data.get('models', [])
-        
-        # Filtra apenas modelos que geram conteúdo
-        modelos_uteis = [m['name'] for m in modelos if 'generateContent' in m.get('supportedGenerationMethods', [])]
-        
-        # Ordem de preferência
-        if not modelos_uteis: return None, "Nenhum modelo disponível para esta chave."
-
-        # Tenta achar o Flash
-        for m in modelos_uteis:
-            if 'flash' in m and '1.5' in m: return m, None
-        
-        # Tenta achar o Pro 1.5
-        for m in modelos_uteis:
-            if 'pro' in m and '1.5' in m: return m, None
-            
-        # Tenta achar o Pro 1.0 (Gemini Pro clássico)
-        for m in modelos_uteis:
-            if 'gemini-pro' in m: return m, None
-            
-        # Se não achar preferidos, pega o primeiro da lista
-        return modelos_uteis[0], None
-        
-    except Exception as e:
-        return None, str(e)
-
-def call_gemini_api_direct(prompt, parts_payload):
+def call_gemini_flash_forced(prompt, parts_payload):
     # 1. Pega a Chave
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
     except: pass
     if not api_key: api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key: return {"error": "Chave API não encontrada"}
+    if not api_key: return {"error": "Chave API não encontrada nos Secrets."}
 
-    # 2. DESCOBRE O MODELO CERTO (Auto-Discovery)
-    model_name, error = get_best_available_model(api_key)
-    
-    if not model_name:
-        # Fallback de emergência se a listagem falhar
-        model_name = "models/gemini-pro"
-    
-    # Remove o prefixo 'models/' se já vier com ele, pra garantir formato da URL
-    model_name_clean = model_name.replace("models/", "")
-    
-    # URL Dinâmica
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name_clean}:generateContent?key={api_key}"
+    # 2. URL TRAVADA NO 1.5 FLASH (O ÚNICO REALMENTE GRÁTIS COM COTA ALTA)
+    # Não usamos 'auto-discovery' para não pegar modelos PRO/Pagos sem querer
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     
     headers = {"Content-Type": "application/json"}
     
-    # Payload
     final_payload = {
         "contents": [{
             "parts": [{"text": prompt}] + parts_payload
@@ -109,17 +62,29 @@ def call_gemini_api_direct(prompt, parts_payload):
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
         ],
         "generationConfig": {
-            "response_mime_type": "application/json"
+            "response_mime_type": "application/json",
+            "temperature": 0.2 # Mais preciso para auditoria
         }
     }
 
-    try:
-        response = requests.post(url, headers=headers, data=json.dumps(final_payload), timeout=60)
-        if response.status_code != 200:
-            return {"error": f"Erro HTTP {response.status_code} no modelo {model_name_clean}: {response.text}"}
-        return response.json()
-    except Exception as e:
-        return {"error": str(e)}
+    # Tentativa com Retries (Para caso de 429 momentâneo)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, data=json.dumps(final_payload), timeout=90)
+            
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 429:
+                # Se der erro de cota, espera 5s e tenta de novo
+                time.sleep(5)
+                continue
+            else:
+                return {"error": f"Erro HTTP {response.status_code}: {response.text}"}
+        except Exception as e:
+            return {"error": str(e)}
+            
+    return {"error": "Servidor ocupado (429) após 3 tentativas."}
 
 # ----------------- PROCESSAMENTO DE ARQUIVOS -----------------
 def process_uploaded_file(uploaded_file):
@@ -131,28 +96,29 @@ def process_uploaded_file(uploaded_file):
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
-            return [{"text": f"--- CONTEÚDO DOCX ---\n{text}"}]
+            return [{"text": f"--- CONTEÚDO DOCX ({filename}) ---\n{text}"}]
             
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # Tenta texto primeiro
+            # 1. Tenta extrair TEXTO puro (Mais leve para a API)
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            if len(full_text.strip()) > 50:
+            # Se tiver bastante texto (>100 chars), manda texto. É mais rápido e dá menos erro 429.
+            if len(full_text.strip()) > 100:
                  doc.close()
-                 return [{"text": f"--- CONTEÚDO PDF (TEXTO) ---\n{full_text}"}]
+                 return [{"text": f"--- CONTEÚDO PDF TEXTO ({filename}) ---\n{full_text}"}]
 
-            # Fallback Imagem
+            # 2. Se for imagem escaneada, manda imagem (Base64)
             parts = []
-            parts.append({"text": "--- IMAGENS DO PDF ---"})
-            limit_pages = min(12, len(doc))
+            parts.append({"text": f"--- IMAGENS DO PDF ({filename}) ---"})
+            limit_pages = min(10, len(doc)) # Reduzi para 10 paginas para economizar cota
             
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                img_bytes = pix.tobytes("jpeg", jpg_quality=85)
+                img_bytes = pix.tobytes("jpeg", jpg_quality=80) # Qualidade 80 para ficar leve
                 b64_string = base64.b64encode(img_bytes).decode('utf-8')
                 parts.append({
                     "inline_data": {
@@ -173,6 +139,8 @@ def extract_json_from_response(api_response):
         if 'candidates' in api_response and api_response['candidates']:
             content = api_response['candidates'][0]['content']['parts'][0]['text']
             clean = content.replace("```json", "").replace("```", "").strip()
+            # Limpeza extra para JSON sujo
+            clean = re.sub(r'//.*', '', clean) 
             start = clean.find('{'); end = clean.rfind('}') + 1
             if start != -1 and end != -1: return json.loads(clean[start:end])
             return json.loads(clean)
@@ -185,8 +153,7 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
     
-    # Mostra qual modelo foi detectado (se possível) ou status
-    st.caption("Modo: Auto-Discovery (REST)")
+    st.caption("⚡ Modelo: Gemini 1.5 Flash (Estável)")
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 MKT", "🎨 Gráfica"])
 
@@ -211,7 +178,7 @@ else:
     if st.button("🚀 INICIAR AUDITORIA"):
         if not f1 or not f2: st.warning("Upload obrigatório dos dois arquivos.")
         else:
-            with st.spinner("Detectando melhor modelo e analisando..."):
+            with st.spinner("Enviando para o Gemini Flash 1.5..."):
                 p1 = process_uploaded_file(f1); p2 = process_uploaded_file(f2)
                 gc.collect()
 
@@ -222,20 +189,21 @@ else:
                 payload_parts.append({"text": f"=== DOC 2 ({label_box2}) ==="}); payload_parts.extend(p2)
 
                 prompt = f"""
-                Atue como Auditor Farmacêutico.
-                Compare DOC 1 e DOC 2.
+                Atue como Auditor Farmacêutico. Compare DOC 1 e DOC 2.
                 Seções: APRESENTAÇÕES, COMPOSIÇÃO, INDICAÇÕES, POSOLOGIA.
                 
                 Saída JSON:
                 {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "CONFORME|DIVERGENTE|FALTANTE" }} ] }}
                 """
 
-                res = call_gemini_api_direct(prompt, payload_parts)
+                res = call_gemini_flash_forced(prompt, payload_parts)
                 
                 if "error" in res:
                     st.error(f"Falha na API: {res['error']}")
                     if "404" in str(res['error']):
-                        st.info("Dica: Verifique se sua Chave API está ativa no Google AI Studio.")
+                        st.info("⚠️ Se deu 404 agora, sua chave pode não ter acesso ao Flash ou estar bloqueada.")
+                    elif "429" in str(res['error']):
+                        st.warning("⚠️ Muitos pedidos. Tente novamente em 1 minuto.")
                 else:
                     data = extract_json_from_response(res)
                     if not data: st.error("Erro no JSON da resposta.")
