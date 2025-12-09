@@ -9,7 +9,7 @@ import os
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Cohere (Sem Limites)",
+    page_title="Validador Cohere (V2)",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -90,7 +90,7 @@ def extract_json(text):
         return json.loads(text)
     except: return None
 
-# ----------------- LÓGICA COHERE (MODELO COMMAND R+) -----------------
+# ----------------- LÓGICA COHERE (MODELO VERSÃO FIXA) -----------------
 def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     
     lista_secoes_str = "\n".join([f"- {s}" for s in secoes])
@@ -129,9 +129,9 @@ def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     """
 
     try:
-        # Usa o modelo Command R+ (Suporta 128k tokens = Bula Gigante sem erro)
+        # ATUALIZAÇÃO: Usando a versão específica "command-r-plus-08-2024"
         response = client.chat(
-            model="command-r-plus",
+            model="command-r-plus-08-2024", 
             message=mensagem,
             temperature=0.1,
             preamble="Você é um assistente JSON estrito. Retorne apenas JSON válido."
@@ -155,7 +155,7 @@ with st.sidebar:
 
 if pagina == "Início":
     st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Enterprise (Command R+)</h1>", unsafe_allow_html=True)
-    st.info("Este validador usa a tecnologia da Cohere, projetada para ler documentos longos sem cortes e sem falsos positivos de Copyright.")
+    st.info("Usando o modelo Enterprise da Cohere (Versão 08-2024). Suporta bulas inteiras (128k tokens) e ignora filtros de copyright comuns.")
 
 else:
     st.markdown("## Comparador de Bulas")
@@ -204,4 +204,3 @@ else:
                                 cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
                     else:
                         st.error("Erro na leitura do JSON. Tente novamente.")
-                        # st.code(json_res) # Debug
