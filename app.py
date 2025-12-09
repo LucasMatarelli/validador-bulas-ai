@@ -34,12 +34,47 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- FUNÇÃO DE CONEXÃO DIRETA (REST API) -----------------
+# ----------------- FUNÇÕES DE CONEXÃO INTELIGENTE (REST API) -----------------
+
+def get_best_available_model(api_key):
+    """
+    Pergunta à API quais modelos estão disponíveis para esta chave
+    e retorna o melhor nome para usar, evitando erro 404.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            return None, f"Erro ao listar modelos: {response.text}"
+        
+        data = response.json()
+        modelos = data.get('models', [])
+        
+        # Filtra apenas modelos que geram conteúdo
+        modelos_uteis = [m['name'] for m in modelos if 'generateContent' in m.get('supportedGenerationMethods', [])]
+        
+        # Ordem de preferência
+        if not modelos_uteis: return None, "Nenhum modelo disponível para esta chave."
+
+        # Tenta achar o Flash
+        for m in modelos_uteis:
+            if 'flash' in m and '1.5' in m: return m, None
+        
+        # Tenta achar o Pro 1.5
+        for m in modelos_uteis:
+            if 'pro' in m and '1.5' in m: return m, None
+            
+        # Tenta achar o Pro 1.0 (Gemini Pro clássico)
+        for m in modelos_uteis:
+            if 'gemini-pro' in m: return m, None
+            
+        # Se não achar preferidos, pega o primeiro da lista
+        return modelos_uteis[0], None
+        
+    except Exception as e:
+        return None, str(e)
+
 def call_gemini_api_direct(prompt, parts_payload):
-    """
-    Faz a chamada HTTP direta para o Google, sem usar biblioteca.
-    Isso evita erros de versão e 404.
-    """
     # 1. Pega a Chave
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
@@ -47,28 +82,32 @@ def call_gemini_api_direct(prompt, parts_payload):
     if not api_key: api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key: return {"error": "Chave API não encontrada"}
 
-    # 2. URL Fixa (Modelo 1.5 Flash - Estável e Grátis)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # 2. DESCOBRE O MODELO CERTO (Auto-Discovery)
+    model_name, error = get_best_available_model(api_key)
     
-    # 3. Cabeçalhos
+    if not model_name:
+        # Fallback de emergência se a listagem falhar
+        model_name = "models/gemini-pro"
+    
+    # Remove o prefixo 'models/' se já vier com ele, pra garantir formato da URL
+    model_name_clean = model_name.replace("models/", "")
+    
+    # URL Dinâmica
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name_clean}:generateContent?key={api_key}"
+    
     headers = {"Content-Type": "application/json"}
-
-    # 4. Configuração de Segurança (Block None)
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-    ]
-
-    # 5. Monta o JSON final
+    
+    # Payload
     final_payload = {
         "contents": [{
-            "parts": [
-                {"text": prompt}
-            ] + parts_payload # Adiciona imagens ou textos processados
+            "parts": [{"text": prompt}] + parts_payload
         }],
-        "safetySettings": safety_settings,
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ],
         "generationConfig": {
             "response_mime_type": "application/json"
         }
@@ -76,10 +115,8 @@ def call_gemini_api_direct(prompt, parts_payload):
 
     try:
         response = requests.post(url, headers=headers, data=json.dumps(final_payload), timeout=60)
-        
         if response.status_code != 200:
-            return {"error": f"Erro HTTP {response.status_code}: {response.text}"}
-            
+            return {"error": f"Erro HTTP {response.status_code} no modelo {model_name_clean}: {response.text}"}
         return response.json()
     except Exception as e:
         return {"error": str(e)}
@@ -94,8 +131,7 @@ def process_uploaded_file(uploaded_file):
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
-            # Retorna formato para o Payload do Gemini
-            return [{"text": f"--- CONTEÚDO DO ARQUIVO DOCX ---\n{text}"}]
+            return [{"text": f"--- CONTEÚDO DOCX ---\n{text}"}]
             
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -106,55 +142,51 @@ def process_uploaded_file(uploaded_file):
             
             if len(full_text.strip()) > 50:
                  doc.close()
-                 return [{"text": f"--- CONTEÚDO DO PDF (TEXTO) ---\n{full_text}"}]
+                 return [{"text": f"--- CONTEÚDO PDF (TEXTO) ---\n{full_text}"}]
 
-            # Se não tiver texto, converte para imagem (Base64) para a API ler
+            # Fallback Imagem
             parts = []
-            parts.append({"text": "--- O ARQUIVO A SEGUIR SÃO IMAGENS DO PDF ---"})
+            parts.append({"text": "--- IMAGENS DO PDF ---"})
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # Qualidade média
-                # Converte para base64
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                 img_bytes = pix.tobytes("jpeg", jpg_quality=85)
                 b64_string = base64.b64encode(img_bytes).decode('utf-8')
-                
                 parts.append({
                     "inline_data": {
                         "mime_type": "image/jpeg",
                         "data": b64_string
                     }
                 })
-            
-            doc.close()
-            gc.collect()
+            doc.close(); gc.collect()
             return parts
             
     except Exception as e:
-        st.error(f"Erro ao processar arquivo: {e}")
+        st.error(f"Erro processamento: {e}")
         return None
     return None
 
 def extract_json_from_response(api_response):
     try:
-        # Caminho para extrair texto da resposta REST do Gemini
-        text_response = api_response['candidates'][0]['content']['parts'][0]['text']
-        
-        clean = text_response.replace("```json", "").replace("```", "").strip()
-        start = clean.find('{'); end = clean.rfind('}') + 1
-        if start != -1 and end != -1: return json.loads(clean[start:end])
-        return json.loads(clean)
-    except Exception as e:
-        st.error(f"Erro ao ler JSON da resposta: {e} | Resposta Crua: {str(api_response)}")
-        return None
+        if 'candidates' in api_response and api_response['candidates']:
+            content = api_response['candidates'][0]['content']['parts'][0]['text']
+            clean = content.replace("```json", "").replace("```", "").strip()
+            start = clean.find('{'); end = clean.rfind('}') + 1
+            if start != -1 and end != -1: return json.loads(clean[start:end])
+            return json.loads(clean)
+        else:
+            return None
+    except: return None
 
 # ----------------- INTERFACE -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
-    st.caption("Modo: Conexão Direta (REST)")
     
+    # Mostra qual modelo foi detectado (se possível) ou status
+    st.caption("Modo: Auto-Discovery (REST)")
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 MKT", "🎨 Gráfica"])
 
@@ -167,9 +199,8 @@ if pagina == "🏠 Início":
 
 else:
     st.markdown(f"## {pagina}")
-    label_box1 = "Arquivo 1"; label_box2 = "Arquivo 2"
-    if pagina == "💊 Ref x BELFAR": label_box1 = "Ref"; label_box2 = "BELFAR"
-    elif pagina == "📋 MKT": label_box1 = "ANVISA"; label_box2 = "MKT"
+    label_box1 = "Ref"; label_box2 = "BELFAR"
+    if pagina == "📋 MKT": label_box1 = "ANVISA"; label_box2 = "MKT"
     elif pagina == "🎨 Gráfica": label_box1 = "Arte"; label_box2 = "Gráfica"
     
     st.divider()
@@ -178,58 +209,36 @@ else:
     with c2: st.markdown(f"##### {label_box2}"); f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
     
     if st.button("🚀 INICIAR AUDITORIA"):
-        if not f1 or not f2: st.warning("Faça upload dos dois arquivos.")
+        if not f1 or not f2: st.warning("Upload obrigatório dos dois arquivos.")
         else:
-            with st.spinner(f"Processando e enviando para o Google..."):
-                # Processa arquivos
-                parts1 = process_uploaded_file(f1)
-                parts2 = process_uploaded_file(f2)
+            with st.spinner("Detectando melhor modelo e analisando..."):
+                p1 = process_uploaded_file(f1); p2 = process_uploaded_file(f2)
                 gc.collect()
 
-                if not parts1 or not parts2: st.stop()
+                if not p1 or not p2: st.stop()
 
-                # Monta Prompt
-                payload_parts = []
-                payload_parts.append({"text": "CONTEXTO: Auditoria Regulatória ANVISA. Documentos públicos de saúde."})
-                
-                # Adiciona partes do Doc 1
-                payload_parts.append({"text": f"=== DOCUMENTO 1 ({label_box1}) ==="})
-                payload_parts.extend(parts1)
-                
-                # Adiciona partes do Doc 2
-                payload_parts.append({"text": f"=== DOCUMENTO 2 ({label_box2}) ==="})
-                payload_parts.extend(parts2)
+                payload_parts = [{"text": "CONTEXTO: Auditoria ANVISA."}]
+                payload_parts.append({"text": f"=== DOC 1 ({label_box1}) ==="}); payload_parts.extend(p1)
+                payload_parts.append({"text": f"=== DOC 2 ({label_box2}) ==="}); payload_parts.extend(p2)
 
-                prompt_text = f"""
-                Atue como Auditor Farmacêutico (ANVISA).
-                Compare o DOC 1 com o DOC 2.
-                SEÇÕES PARA ANALISAR: APRESENTAÇÕES, COMPOSIÇÃO, INDICAÇÕES, POSOLOGIA, ADVERTÊNCIAS.
+                prompt = f"""
+                Atue como Auditor Farmacêutico.
+                Compare DOC 1 e DOC 2.
+                Seções: APRESENTAÇÕES, COMPOSIÇÃO, INDICAÇÕES, POSOLOGIA.
                 
-                REGRA ZERO: EXTRAÇÃO LIMPA
-                1. Ignore títulos, extraia apenas o conteúdo.
-                
-                REGRA UM: COMPARAÇÃO
-                - Divergências de sentido: use <mark class='diff'>
-                - Erros ortográficos: use <mark class='ort'>
-                - Se encontrar "Aprovado em dd/mm/aaaa" nos Dizeres Legais, use <mark class='anvisa'>.
-
-                SAÍDA JSON OBRIGATÓRIA:
+                Saída JSON:
                 {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "CONFORME|DIVERGENTE|FALTANTE" }} ] }}
                 """
 
-                # Chama a API Direta
-                resultado = call_gemini_api_direct(prompt_text, payload_parts)
+                res = call_gemini_api_direct(prompt, payload_parts)
                 
-                if "error" in resultado:
-                    if "429" in str(resultado['error']):
-                        st.error("Muitas requisições. Espere alguns segundos.")
-                    elif "finishReason" in str(resultado) and "SAFETY" in str(resultado):
-                         st.error("⚠️ Bloqueio de Conteúdo (Copyright/Segurança).")
-                    else:
-                        st.error(f"Erro na API: {resultado['error']}")
+                if "error" in res:
+                    st.error(f"Falha na API: {res['error']}")
+                    if "404" in str(res['error']):
+                        st.info("Dica: Verifique se sua Chave API está ativa no Google AI Studio.")
                 else:
-                    data = extract_json_from_response(resultado)
-                    if not data: st.error("Erro ao interpretar JSON da IA.")
+                    data = extract_json_from_response(res)
+                    if not data: st.error("Erro no JSON da resposta.")
                     else:
                         meta = data.get("METADADOS", {})
                         m1, m2, m3 = st.columns(3)
