@@ -1,5 +1,5 @@
 import streamlit as st
-import cohere
+from mistralai import Mistral
 import fitz  # PyMuPDF
 import docx
 import io
@@ -9,8 +9,8 @@ import os
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Cohere (Final)",
-    page_icon="✅",
+    page_title="Validador Mistral (Sem Cortes)",
+    page_icon="🌪️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -56,12 +56,17 @@ SECOES_PROFISSIONAL = [
 SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
-def get_cohere_client():
-    try: api_key = st.secrets["COHERE_API_KEY"]
-    except: api_key = os.environ.get("COHERE_API_KEY")
-    return cohere.Client(api_key) if api_key else None
+def get_mistral_client():
+    api_key = None
+    try: api_key = st.secrets["MISTRAL_API_KEY"]
+    except: pass
+    if not api_key: api_key = os.environ.get("MISTRAL_API_KEY")
+    
+    if not api_key: return None
+    return Mistral(api_key=api_key)
 
 def process_uploaded_file(uploaded_file):
+    """Extrai TEXTO puro."""
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
@@ -81,6 +86,7 @@ def process_uploaded_file(uploaded_file):
         return None
 
 def extract_json(text):
+    """Limpa a resposta para garantir JSON válido."""
     try:
         text = re.sub(r'```json\s*', '', text, flags=re.IGNORECASE)
         text = re.sub(r'```', '', text)
@@ -90,33 +96,33 @@ def extract_json(text):
             clean_json_str = text[start_idx:end_idx]
             return json.loads(clean_json_str)
         return json.loads(text)
-    except Exception as e:
-        return None
+    except: return None
 
-# ----------------- LÓGICA COHERE -----------------
-def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
+# ----------------- LÓGICA MISTRAL -----------------
+def analisar_bula_mistral(client, texto_ref, texto_bel, secoes):
     
     lista_secoes_str = "\n".join([f"- {s}" for s in secoes])
     
+    # Prompt otimizado para Mistral Large
     mensagem = f"""
-    Você é um Auditor Farmacêutico (ANVISA).
+    Você é um Auditor Farmacêutico Especialista (ANVISA).
     
-    TAREFA: Compare os dois textos de bula abaixo (Referência vs Belfar).
+    TAREFA: Comparar o texto completo das bulas abaixo.
     
-    INSTRUÇÕES DE EXTRAÇÃO:
-    1. Extraia o texto das seções solicitadas.
-    2. IMPORTANTE: Seja conciso se o texto for muito longo, mas mantenha o sentido para comparação.
+    INSTRUÇÕES CRÍTICAS DE EXTRAÇÃO:
+    1. Para cada seção, extraia TODO o texto contido nela. NÃO RESUMA nem corte o final.
+    2. Copie o texto até encontrar exatamente o título da próxima seção.
     
     INSTRUÇÕES DE COMPARAÇÃO (HTML):
     - DIVERGÊNCIAS: Use <mark class='diff'>texto</mark> NOS DOIS LADOS.
     - ERROS: Use <mark class='ort'>erro</mark>.
     - DATA: Busque "Aprovado em dd/mm/aaaa" nos Dizeres Legais e use <mark class='anvisa'>data</mark>.
     
-    FORMATO JSON OBRIGATÓRIO:
+    FORMATO JSON (Retorne APENAS o JSON):
     {{
         "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas"] }},
         "SECOES": [
-            {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" ou "DIVERGENTE" }}
+            {{ "titulo": "NOME SEÇÃO", "ref": "texto completo...", "bel": "texto completo...", "status": "CONFORME" ou "DIVERGENTE" }}
         ]
     }}
     
@@ -131,34 +137,38 @@ def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     """
 
     try:
-        # CORREÇÃO: Limite de tokens ajustado para 4000 (Máximo permitido pelo modelo)
-        response = client.chat(
-            model="command-r-08-2024", 
-            message=mensagem,
-            temperature=0.0,
-            max_tokens=4000, 
-            preamble="Retorne APENAS o JSON."
+        # Usando o modelo "mistral-large-latest" que tem contexto grande e alta inteligência
+        chat_response = client.chat.complete(
+            model="mistral-large-latest",
+            messages=[
+                {
+                    "role": "user",
+                    "content": mensagem,
+                },
+            ],
+            temperature=0.0, # Zero alucinação
+            response_format={"type": "json_object"} # Força saída JSON nativa
         )
-        return response.text
+        return chat_response.choices[0].message.content
     except Exception as e:
-        st.error(f"Erro na API Cohere: {e}")
+        st.error(f"Erro na API Mistral: {e}")
         return None
 
 # ----------------- INTERFACE -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.title("Validador Cohere")
+    st.title("Validador Mistral")
     
-    client = get_cohere_client()
-    if client: st.success("✅ Cohere Ativo")
-    else: st.error("❌ Configure o secrets.toml"); st.stop()
+    client = get_mistral_client()
+    if client: st.success("✅ Mistral Ativo")
+    else: st.error("❌ Configure MISTRAL_API_KEY no secrets"); st.stop()
     
     st.divider()
     pagina = st.radio("Menu:", ["Início", "Comparar Bulas"])
 
 if pagina == "Início":
-    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Corrigido (V4)</h1>", unsafe_allow_html=True)
-    st.info("Configurado com o limite máximo suportado pela API (4000 tokens de resposta).")
+    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Mistral Large</h1>", unsafe_allow_html=True)
+    st.info("Usando a IA europeia Mistral AI. Conhecida por respeitar o tamanho do texto e seguir instruções complexas.")
 
 else:
     st.markdown("## Comparador de Bulas")
@@ -172,13 +182,13 @@ else:
     f2 = c2.file_uploader("Belfar (PDF/DOCX)", type=["pdf", "docx"])
 
     if st.button("🚀 INICIAR AUDITORIA") and f1 and f2:
-        with st.spinner("🤖 Processando (Limite Máximo)..."):
+        with st.spinner("🤖 Mistral analisando texto completo..."):
             
             t1 = process_uploaded_file(f1)
             t2 = process_uploaded_file(f2)
             
             if t1 and t2:
-                json_res = analisar_bula_cohere(client, t1, t2, lista_secoes)
+                json_res = analisar_bula_mistral(client, t1, t2, lista_secoes)
                 
                 if json_res: 
                     data = extract_json(json_res)
@@ -206,5 +216,7 @@ else:
                                 cB.markdown("**Belfar**")
                                 cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
                     else:
-                        st.error("A IA não retornou um JSON válido. O texto pode ter sido cortado.")
+                        st.error("A IA não retornou um JSON válido.")
                         st.text_area("Resposta Bruta:", value=json_res, height=300)
+                else:
+                    st.error("Sem resposta da IA.")
