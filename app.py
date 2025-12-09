@@ -12,13 +12,13 @@ from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador de Bulas (Mistral)",
+    page_title="Validador de Bulas",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
+# ----------------- ESTILOS CSS PERSONALIZADOS (SEU ESTILO) -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
@@ -108,7 +108,7 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- FUNÇÕES DE BACKEND (MISTRAL) -----------------
 
 def get_mistral_client():
-    # 1. TENTA LER A CHAVE DOS SECRETS
+    # Tenta ler a chave dos secrets ou ambiente
     api_key = None
     try:
         api_key = st.secrets["MISTRAL_API_KEY"]
@@ -121,7 +121,6 @@ def get_mistral_client():
     if not api_key:
         return None
     
-    # Inicializa o cliente Mistral
     return Mistral(api_key=api_key)
 
 def image_to_base64(image):
@@ -143,8 +142,10 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
             
-            # Limite de páginas para performance e custo
-            limit_pages = min(12, len(doc))
+            # --- CORREÇÃO DO ERRO 400 ---
+            # O Mistral aceita no MÁXIMO 8 imagens por request.
+            # Como são 2 arquivos, limitamos a 4 páginas por arquivo.
+            limit_pages = min(4, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
@@ -191,7 +192,6 @@ with st.sidebar:
     
     if client:
         st.success(f"✅ Mistral Conectado")
-        st.caption("Modelo: pixtral-large-latest")
     else:
         st.error("❌ Erro de Conexão")
         st.caption("Configure MISTRAL_API_KEY nos Secrets.")
@@ -210,8 +210,8 @@ with st.sidebar:
 if pagina == "🏠 Início":
     st.markdown("""
     <div style="text-align: center; padding: 30px 20px;">
-        <h1 style="color: #55a68e; font-size: 3rem; margin-bottom: 10px;">Validador (Mistral AI)</h1>
-        <p style="font-size: 20px; color: #7f8c8d;">Central de auditoria e conformidade de bulas farmacêuticas com IA.</p>
+        <h1 style="color: #55a68e; font-size: 3rem; margin-bottom: 10px;">Validador Inteligente</h1>
+        <p style="font-size: 20px; color: #7f8c8d;">Central de auditoria e conformidade de bulas farmacêuticas com IA (Mistral).</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -304,11 +304,11 @@ else:
         f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
         
     st.write("") 
-    if st.button("🚀 INICIAR AUDITORIA (MISTRAL)"):
+    if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
         if not f1 or not f2:
             st.warning("⚠️ Por favor, faça o upload dos dois arquivos para continuar.")
         else:
-            with st.spinner(f"🤖 Analisando com Pixtral (Mistral AI)..."):
+            with st.spinner(f"🤖 Analisando com Mistral (Pixtral)..."):
                 try:
                     if not client:
                         st.error("Erro crítico: Chave API não detectada.")
@@ -322,7 +322,7 @@ else:
                         st.error("Falha ao ler os arquivos.")
                         st.stop()
 
-                    # Montagem do Payload para o Mistral (Pixtral)
+                    # Montagem do Payload para o Mistral
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
@@ -359,27 +359,25 @@ else:
                             {{ "titulo": "NOME SEÇÃO", "ref": "texto limpo...", "bel": "texto limpo...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
                         ]
                     }}
-                    
-                    Abaixo seguem os textos (caso existam arquivos DOCX) e as imagens (caso existam arquivos PDF):
                     """
 
                     # 2. Montagem da lista de conteúdo (Multimodal)
                     messages_content = [{"type": "text", "text": prompt_text}]
 
-                    # Adiciona Texto do Doc 1 (se for texto)
+                    # Adiciona Texto do Doc 1
                     if d1['type'] == 'text':
                         messages_content.append({"type": "text", "text": f"\n--- CONTEÚDO TEXTO {nome_doc1} ---\n{d1['data']}"})
-                    # Adiciona Imagens do Doc 1 (se for imagem)
+                    # Adiciona Imagens do Doc 1
                     else:
                         messages_content.append({"type": "text", "text": f"\n--- IMAGENS {nome_doc1} ---"})
                         for img in d1['data']:
                             b64 = image_to_base64(img)
                             messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
-                    # Adiciona Texto do Doc 2 (se for texto)
+                    # Adiciona Texto do Doc 2
                     if d2['type'] == 'text':
                         messages_content.append({"type": "text", "text": f"\n--- CONTEÚDO TEXTO {nome_doc2} ---\n{d2['data']}"})
-                    # Adiciona Imagens do Doc 2 (se for imagem)
+                    # Adiciona Imagens do Doc 2
                     else:
                         messages_content.append({"type": "text", "text": f"\n--- IMAGENS {nome_doc2} ---"})
                         for img in d2['data']:
@@ -388,22 +386,16 @@ else:
 
                     # CHAMADA API MISTRAL
                     chat_response = client.chat.complete(
-                        model="pixtral-large-latest", # Modelo Vision da Mistral
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": messages_content
-                            }
-                        ],
+                        model="pixtral-large-latest",
+                        messages=[{"role": "user", "content": messages_content}],
                         response_format={"type": "json_object"}
                     )
 
                     response_text = chat_response.choices[0].message.content
-                    
                     data = extract_json(response_text)
+                    
                     if not data:
                         st.error("O Mistral não retornou um JSON válido. Tente novamente.")
-                        st.write(response_text) # Debug caso falhe
                     else:
                         meta = data.get("METADADOS", {})
                         
