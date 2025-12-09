@@ -9,8 +9,8 @@ import os
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Rápido (Cohere)",
-    page_icon="⚡",
+    page_title="Validador Cohere (Final)",
+    page_icon="✅",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -81,27 +81,19 @@ def process_uploaded_file(uploaded_file):
         return None
 
 def extract_json(text):
-    """
-    Função Robustecida para limpar a sujeira da IA e pegar só o JSON.
-    """
     try:
-        # Remove blocos de código Markdown
         text = re.sub(r'```json\s*', '', text, flags=re.IGNORECASE)
         text = re.sub(r'```', '', text)
-        
-        # Encontra o JSON válido
         start_idx = text.find('{')
         end_idx = text.rfind('}') + 1
-        
         if start_idx != -1 and end_idx != -1:
             clean_json_str = text[start_idx:end_idx]
             return json.loads(clean_json_str)
-        
         return json.loads(text)
     except Exception as e:
         return None
 
-# ----------------- LÓGICA COHERE (OTIMIZADA PARA VELOCIDADE) -----------------
+# ----------------- LÓGICA COHERE -----------------
 def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     
     lista_secoes_str = "\n".join([f"- {s}" for s in secoes])
@@ -111,9 +103,9 @@ def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     
     TAREFA: Compare os dois textos de bula abaixo (Referência vs Belfar).
     
-    INSTRUÇÕES DE EXTRAÇÃO (CRÍTICO):
-    1. Extraia o texto COMPLETO de cada seção. Não resuma.
-    2. Copie até encontrar o próximo título.
+    INSTRUÇÕES DE EXTRAÇÃO:
+    1. Extraia o texto das seções solicitadas.
+    2. IMPORTANTE: Seja conciso se o texto for muito longo, mas mantenha o sentido para comparação.
     
     INSTRUÇÕES DE COMPARAÇÃO (HTML):
     - DIVERGÊNCIAS: Use <mark class='diff'>texto</mark> NOS DOIS LADOS.
@@ -139,14 +131,13 @@ def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     """
 
     try:
-        # MUDANÇA 1: Usando "command-r-08-2024" (Mais rápido que o Plus)
-        # MUDANÇA 2: max_tokens=20000 (Para não cortar o texto no meio)
+        # CORREÇÃO: Limite de tokens ajustado para 4000 (Máximo permitido pelo modelo)
         response = client.chat(
             model="command-r-08-2024", 
             message=mensagem,
             temperature=0.0,
-            max_tokens=20000, 
-            preamble="Retorne APENAS o JSON. Sem texto antes ou depois."
+            max_tokens=4000, 
+            preamble="Retorne APENAS o JSON."
         )
         return response.text
     except Exception as e:
@@ -159,15 +150,15 @@ with st.sidebar:
     st.title("Validador Cohere")
     
     client = get_cohere_client()
-    if client: st.success("✅ Cohere Ativo (Modo Turbo)")
+    if client: st.success("✅ Cohere Ativo")
     else: st.error("❌ Configure o secrets.toml"); st.stop()
     
     st.divider()
     pagina = st.radio("Menu:", ["Início", "Comparar Bulas"])
 
 if pagina == "Início":
-    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Rápido (Command R)</h1>", unsafe_allow_html=True)
-    st.info("Otimizado para velocidade e grandes volumes de texto.")
+    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Corrigido (V4)</h1>", unsafe_allow_html=True)
+    st.info("Configurado com o limite máximo suportado pela API (4000 tokens de resposta).")
 
 else:
     st.markdown("## Comparador de Bulas")
@@ -181,7 +172,7 @@ else:
     f2 = c2.file_uploader("Belfar (PDF/DOCX)", type=["pdf", "docx"])
 
     if st.button("🚀 INICIAR AUDITORIA") and f1 and f2:
-        with st.spinner("🤖 Processando rapidamente..."):
+        with st.spinner("🤖 Processando (Limite Máximo)..."):
             
             t1 = process_uploaded_file(f1)
             t2 = process_uploaded_file(f2)
@@ -215,5 +206,5 @@ else:
                                 cB.markdown("**Belfar**")
                                 cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
                     else:
-                        st.error("A IA não retornou um JSON válido. Veja o erro abaixo:")
+                        st.error("A IA não retornou um JSON válido. O texto pode ter sido cortado.")
                         st.text_area("Resposta Bruta:", value=json_res, height=300)
