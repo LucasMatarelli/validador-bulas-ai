@@ -10,7 +10,7 @@ import gc
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Groq (Rápido)",
+    page_title="Validador Groq (Safe Mode)",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -69,7 +69,7 @@ def get_groq_client():
     return Groq(api_key=api_key)
 
 def process_uploaded_file(uploaded_file):
-    """Extrai TEXTO puro e limita tamanho para não estourar a Groq"""
+    """Extrai TEXTO puro."""
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
@@ -100,36 +100,37 @@ def extract_json(text):
         return json.loads(text)
     except: return None
 
-# ----------------- FUNÇÃO DE GERAÇÃO (GROQ COM LIMITADOR) -----------------
+# ----------------- FUNÇÃO DE GERAÇÃO (AJUSTADA PARA LIMITE 12k TPM) -----------------
 def analisar_bula_groq(client, texto_ref, texto_bel, secoes):
     
-    # LIMITE DE SEGURANÇA: 20.000 caracteres (aprox 5k tokens) para sobrar espaço para a resposta
-    # Isso evita o erro "Request too large" (413)
-    LIMIT_CHARS = 20000 
+    # --- CÁLCULO DE SEGURANÇA PARA PLANO FREE ---
+    # Limite Groq Free: 12.000 tokens/min (TPM)
+    # 1 token ~= 4 caracteres.
+    # Vamos usar no máximo 6.000 tokens de ENTRADA (aprox 24.000 caracteres)
+    # E reservar 2.000 tokens para SAÍDA.
+    # Total da requisição: ~8.000 tokens (bem abaixo dos 12.000)
     
-    ref_safe = texto_ref[:LIMIT_CHARS]
-    bel_safe = texto_bel[:LIMIT_CHARS]
+    LIMIT_CHARS_PER_DOC = 12000 # 12k chars por documento = ~3k tokens cada
+    
+    ref_safe = texto_ref[:LIMIT_CHARS_PER_DOC]
+    bel_safe = texto_bel[:LIMIT_CHARS_PER_DOC]
     
     prompt_system = """
-    Você é um Auditor Farmacêutico. Compare os dois textos abaixo.
-    
+    Você é um Auditor Farmacêutico.
     REGRAS HTML:
-    1. DIVERGÊNCIAS: Use <mark class='diff'>texto</mark> NOS DOIS LADOS (Ref e Bel).
+    1. DIVERGÊNCIAS: Use <mark class='diff'>texto</mark> NOS DOIS LADOS.
     2. ERRO PORTUGUÊS: Use <mark class='ort'>texto</mark>.
-    3. DATA ANVISA: Procure "Aprovado em dd/mm/aaaa" nos Dizeres Legais e use <mark class='anvisa'>data</mark> onde encontrar.
+    3. DATA ANVISA: Procure "Aprovado em dd/mm/aaaa" nos Dizeres Legais e use <mark class='anvisa'>data</mark>.
 
     SAÍDA JSON:
-    {
-        "METADADOS": { "score": 0-100, "datas": [] },
-        "SECOES": [ { "titulo": "...", "ref": "...", "bel": "...", "status": "..." } ]
-    }
+    { "METADADOS": { "score": 0-100, "datas": [] }, "SECOES": [ { "titulo": "...", "ref": "...", "bel": "...", "status": "..." } ] }
     """
 
     prompt_user = f"""
-    --- TEXTO REFERÊNCIA ---
+    --- TEXTO REFERÊNCIA (Parte 1) ---
     {ref_safe}
 
-    --- TEXTO BELFAR ---
+    --- TEXTO BELFAR (Parte 1) ---
     {bel_safe}
 
     SEÇÕES PARA ANALISAR:
@@ -144,14 +145,20 @@ def analisar_bula_groq(client, texto_ref, texto_bel, secoes):
             ],
             model="llama-3.3-70b-versatile",
             temperature=0.1,
-            max_tokens=6000, # Espaço reservado para a resposta
+            max_tokens=3000, # Reduzido para garantir que cabe no limite TPM
             top_p=1,
             stream=False,
         )
         return chat_completion.choices[0].message.content
+    
     except Exception as e:
-        st.error(f"Erro na Groq: {e}")
-        return None
+        error_msg = str(e)
+        if "413" in error_msg or "rate_limit" in error_msg:
+             st.warning("⚠️ O arquivo é muito grande para o plano gratuito da Groq. O texto foi truncado para caber.")
+             return None
+        else:
+             st.error(f"Erro na Groq: {e}")
+             return None
 
 # ----------------- UI -----------------
 with st.sidebar:
@@ -188,27 +195,31 @@ else:
             
             if t1 and t2:
                 json_res = analisar_bula_groq(client, t1, t2, lista_secoes)
-                data = extract_json(json_res)
                 
-                if data:
-                    meta = data.get("METADADOS", {})
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Conformidade", f"{meta.get('score', 0)}%")
-                    m2.metric("Seções", len(data.get("SECOES", [])))
-                    m3.metric("Datas", ", ".join(meta.get("datas", [])) or "--")
-                    st.divider()
+                if json_res: # Se não deu erro 413
+                    data = extract_json(json_res)
                     
-                    for sec in data.get("SECOES", []):
-                        icon = "✅"
-                        if "DIVERGENTE" in sec['status'].upper(): icon = "❌"
-                        elif "FALTANTE" in sec['status'].upper(): icon = "🚨"
-                        elif any(x in sec['titulo'] for x in SECOES_SEM_DIVERGENCIA): icon = "👁️"
+                    if data:
+                        meta = data.get("METADADOS", {})
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Conformidade", f"{meta.get('score', 0)}%")
+                        m2.metric("Seções", len(data.get("SECOES", [])))
+                        m3.metric("Datas", ", ".join(meta.get("datas", [])) or "--")
+                        st.divider()
                         
-                        with st.expander(f"{icon} {sec['titulo']} — {sec['status']}"):
-                            cA, cB = st.columns(2)
-                            cA.markdown("**Referência**")
-                            cA.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
-                            cB.markdown("**Belfar**")
-                            cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
+                        for sec in data.get("SECOES", []):
+                            icon = "✅"
+                            if "DIVERGENTE" in sec['status'].upper(): icon = "❌"
+                            elif "FALTANTE" in sec['status'].upper(): icon = "🚨"
+                            elif any(x in sec['titulo'] for x in SECOES_SEM_DIVERGENCIA): icon = "👁️"
+                            
+                            with st.expander(f"{icon} {sec['titulo']} — {sec['status']}"):
+                                cA, cB = st.columns(2)
+                                cA.markdown("**Referência**")
+                                cA.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
+                                cB.markdown("**Belfar**")
+                                cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
+                    else:
+                        st.error("Erro na leitura do JSON. Tente novamente.")
                 else:
-                    st.error("Erro na resposta da IA. Tente novamente.")
+                    st.error("Falha na comunicação com a IA devido ao tamanho do texto.")
