@@ -10,7 +10,7 @@ import gc
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador de Bulas (Groq)",
+    page_title="Validador Groq (Rápido)",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -60,16 +60,16 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
 def get_groq_client():
-    """Recupera a chave do secrets.toml de forma segura"""
     api_key = None
     try: api_key = st.secrets["GROQ_API_KEY"]
-    except: api_key = os.environ.get("GROQ_API_KEY")
+    except: pass
     
+    if not api_key: api_key = os.environ.get("GROQ_API_KEY")
     if not api_key: return None
     return Groq(api_key=api_key)
 
 def process_uploaded_file(uploaded_file):
-    """Extrai TEXTO puro dos arquivos (Llama 3 prefere texto a imagens)"""
+    """Extrai TEXTO puro e limita tamanho para não estourar a Groq"""
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
@@ -82,7 +82,6 @@ def process_uploaded_file(uploaded_file):
             
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            # Extrai texto de todas as páginas
             for page in doc:
                 full_text += page.get_text() + "\n"
             doc.close()
@@ -94,53 +93,47 @@ def process_uploaded_file(uploaded_file):
 
 def extract_json(text):
     try:
-        # Limpeza agressiva para garantir JSON válido
         text = text.replace("```json", "").replace("```", "").strip()
         start = text.find('{')
         end = text.rfind('}') + 1
-        if start != -1 and end != -1: 
-            return json.loads(text[start:end])
+        if start != -1 and end != -1: return json.loads(text[start:end])
         return json.loads(text)
     except: return None
 
-# ----------------- FUNÇÃO DE GERAÇÃO (GROQ) -----------------
-def analisar_bula_groq(client, texto_ref, texto_bel, secoes, tipo_doc):
+# ----------------- FUNÇÃO DE GERAÇÃO (GROQ COM LIMITADOR) -----------------
+def analisar_bula_groq(client, texto_ref, texto_bel, secoes):
+    
+    # LIMITE DE SEGURANÇA: 20.000 caracteres (aprox 5k tokens) para sobrar espaço para a resposta
+    # Isso evita o erro "Request too large" (413)
+    LIMIT_CHARS = 20000 
+    
+    ref_safe = texto_ref[:LIMIT_CHARS]
+    bel_safe = texto_bel[:LIMIT_CHARS]
     
     prompt_system = """
-    Você é um Auditor Farmacêutico Sênior (Compliance & Regulatory Affairs).
-    Sua tarefa é comparar dois textos de Bula de Remédio e identificar divergências.
+    Você é um Auditor Farmacêutico. Compare os dois textos abaixo.
     
-    REGRAS DE FORMATAÇÃO (HTML):
-    1. Se houver divergência de sentido/números/texto entre REF e BEL: Envolva o trecho divergente com <mark class='diff'>texto</mark> NOS DOIS LADOS (Referência e Belfar).
-    2. Se houver erro ortográfico: Envolva com <mark class='ort'>erro</mark>.
-    3. DATA DE APROVAÇÃO (CRÍTICO): Procure "Aprovado em dd/mm/aaaa" nos DIZERES LEGAIS. Se encontrar, envolva a data com <mark class='anvisa'>dd/mm/aaaa</mark> onde ela aparecer.
+    REGRAS HTML:
+    1. DIVERGÊNCIAS: Use <mark class='diff'>texto</mark> NOS DOIS LADOS (Ref e Bel).
+    2. ERRO PORTUGUÊS: Use <mark class='ort'>texto</mark>.
+    3. DATA ANVISA: Procure "Aprovado em dd/mm/aaaa" nos Dizeres Legais e use <mark class='anvisa'>data</mark> onde encontrar.
 
-    SAÍDA EXCLUSIVAMENTE EM JSON:
+    SAÍDA JSON:
     {
-        "METADADOS": { "score": 0 a 100, "datas": ["lista de datas encontradas"] },
-        "SECOES": [
-            { 
-                "titulo": "NOME DA SEÇÃO ANALISADA", 
-                "ref": "Texto da Referência com tags HTML...", 
-                "bel": "Texto da Belfar com tags HTML...", 
-                "status": "CONFORME" ou "DIVERGENTE" 
-            }
-        ]
+        "METADADOS": { "score": 0-100, "datas": [] },
+        "SECOES": [ { "titulo": "...", "ref": "...", "bel": "...", "status": "..." } ]
     }
     """
 
-    # Limite de caracteres para segurança
     prompt_user = f"""
-    DOCUMENTO 1 (REFERÊNCIA):
-    {texto_ref[:30000]} 
+    --- TEXTO REFERÊNCIA ---
+    {ref_safe}
 
-    DOCUMENTO 2 (BELFAR/ANÁLISE):
-    {texto_bel[:30000]}
+    --- TEXTO BELFAR ---
+    {bel_safe}
 
-    LISTA DE SEÇÕES A BUSCAR E COMPARAR:
+    SEÇÕES PARA ANALISAR:
     {secoes}
-
-    Analise seção por seção. Retorne apenas o JSON.
     """
 
     try:
@@ -149,37 +142,32 @@ def analisar_bula_groq(client, texto_ref, texto_bel, secoes, tipo_doc):
                 {"role": "system", "content": prompt_system},
                 {"role": "user", "content": prompt_user}
             ],
-            model="llama-3.3-70b-versatile", # Modelo rápido e inteligente
-            temperature=0.1, # Baixa criatividade para ser rigoroso
-            max_tokens=6000,
+            model="llama-3.3-70b-versatile",
+            temperature=0.1,
+            max_tokens=6000, # Espaço reservado para a resposta
             top_p=1,
-            stop=None,
             stream=False,
         )
         return chat_completion.choices[0].message.content
     except Exception as e:
-        st.error(f"Erro na API Groq: {e}")
+        st.error(f"Erro na Groq: {e}")
         return None
 
 # ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.title("Validador (Groq)")
+    st.title("Validador Groq")
     
     client = get_groq_client()
-    if client: st.success("✅ API Groq Ativa"); st.caption("Modelo: Llama 3.3 70B")
-    else: st.error("❌ Configure GROQ_API_KEY no secrets.toml"); st.stop()
+    if client: st.success("✅ Groq Ativo")
+    else: st.error("❌ Configure o secrets.toml"); st.stop()
     
     st.divider()
     pagina = st.radio("Menu:", ["Início", "Comparar Bulas"])
 
 if pagina == "Início":
-    st.markdown("<h1 style='text-align: center; color: #f25c05;'>Validador Ultra Rápido</h1>", unsafe_allow_html=True)
-    st.info("Este validador usa a tecnologia Groq + Llama 3.3 para evitar bloqueios de copyright e entregar resultados em segundos.")
-    
-    c1, c2 = st.columns(2)
-    c1.info("**Sem Travas:** O modelo Llama 3 (Meta) analisa bulas sem restrições de recitation.")
-    c2.info("**Velocidade:** A Groq processa tokens centenas de vezes mais rápido que o padrão.")
+    st.markdown("<h1 style='text-align: center; color: #f25c05;'>Validador Llama 3.3</h1>", unsafe_allow_html=True)
+    st.info("Sistema otimizado para evitar bloqueios de Copyright e limites de tamanho da Groq.")
 
 else:
     st.markdown("## Comparador de Bulas")
@@ -189,21 +177,17 @@ else:
     lista_secoes = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
 
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Arquivo Referência/Anvisa", type=["pdf", "docx"])
-    f2 = c2.file_uploader("Arquivo Belfar/Candidato", type=["pdf", "docx"])
+    f1 = c1.file_uploader("Referência (PDF/DOCX)", type=["pdf", "docx"])
+    f2 = c2.file_uploader("Belfar (PDF/DOCX)", type=["pdf", "docx"])
 
     if st.button("🚀 COMPARAR AGORA") and f1 and f2:
-        with st.spinner("⚡ Extraindo texto e analisando com Llama 3..."):
+        with st.spinner("⚡ Processando texto..."):
             
-            # 1. Extração de Texto
             t1 = process_uploaded_file(f1)
             t2 = process_uploaded_file(f2)
             
             if t1 and t2:
-                # 2. Chamada à API
-                json_res = analisar_bula_groq(client, t1, t2, lista_secoes, tipo_bula)
-                
-                # 3. Processamento do Resultado
+                json_res = analisar_bula_groq(client, t1, t2, lista_secoes)
                 data = extract_json(json_res)
                 
                 if data:
@@ -224,9 +208,7 @@ else:
                             cA, cB = st.columns(2)
                             cA.markdown("**Referência**")
                             cA.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
-                            
                             cB.markdown("**Belfar**")
                             cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
                 else:
-                    st.error("A IA respondeu, mas o JSON veio inválido. Tente novamente.")
-                    # st.code(json_res) # Descomente se precisar debugar
+                    st.error("Erro na resposta da IA. Tente novamente.")
