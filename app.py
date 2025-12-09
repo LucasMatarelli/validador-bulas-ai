@@ -9,7 +9,7 @@ import os
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Llama 3 (Anti-Erro)",
+    page_title="Validador Llama 3 (Texto Completo)",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -66,27 +66,31 @@ def get_groq_client():
     return Groq(api_key=api_key) if api_key else None
 
 def limpar_texto(texto):
-    """Remove quebras de linha excessivas para economizar tokens."""
-    texto = re.sub(r'\n+', '\n', texto) # Remove linhas em branco repetidas
-    texto = re.sub(r'\s+', ' ', texto)  # Remove espaços repetidos
+    """Limpeza leve para economizar tokens sem perder conteúdo."""
+    # Remove quebras de linha triplas ou mais, mantém parágrafos
+    texto = re.sub(r'\n{3,}', '\n\n', texto)
     return texto.strip()
 
-def preparar_texto_seguro(texto, limite_chars=18000):
+def preparar_texto_maximo(texto):
     """
-    Corta o texto estrategicamente para caber no limite Grátis da Groq (12k TPM).
-    Prioriza o INÍCIO (Cabeçalho) e o FIM (Dizeres Legais/Data).
+    Empurra o limite da Groq ao máximo.
+    Tenta enviar cerca de 10.000 a 12.000 caracteres por documento.
+    Isso é o limite físico da conta Free.
     """
-    if len(texto) <= limite_chars:
+    LIMIT_CHARS = 11000 # 11k chars ~= 2.7k tokens per doc (Total request < 6k tokens)
+    
+    if len(texto) <= LIMIT_CHARS:
         return texto
     
-    # Se for muito grande, pega os primeiros 60% e os últimos 40% do limite
-    corte_inicio = int(limite_chars * 0.6)
-    corte_fim = int(limite_chars * 0.4)
+    # Se for maior, prioriza o texto corrido, cortando o meio APENAS se necessário
+    # Mantém 60% do início e 40% do fim para pegar cabeçalhos e rodapés
+    corte_inicio = int(LIMIT_CHARS * 0.60)
+    corte_fim = int(LIMIT_CHARS * 0.40)
     
     parte_inicio = texto[:corte_inicio]
     parte_fim = texto[-corte_fim:]
     
-    return f"{parte_inicio}\n\n[...TRECHO CENTRAL OMITIDO PARA CABER NO LIMITE GRÁTIS...]\n\n{parte_fim}"
+    return f"{parte_inicio}\n\n[...TRECHO CENTRAL OMITIDO POR LIMITE DE TAMANHO DA IA...]\n\n{parte_fim}"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -105,7 +109,6 @@ def process_uploaded_file(uploaded_file):
                 full_text += page.get_text() + "\n"
             doc.close()
             
-        # Limpa o texto para economizar espaço
         return limpar_texto(full_text)
     except Exception as e:
         st.error(f"Erro ao ler arquivo: {e}")
@@ -120,33 +123,45 @@ def extract_json(text):
         return json.loads(text)
     except: return None
 
-# ----------------- FUNÇÃO DE GERAÇÃO (GROQ SAFE) -----------------
+# ----------------- FUNÇÃO DE GERAÇÃO (LÓGICA DE EXTRAÇÃO TOTAL) -----------------
 def analisar_bula_groq(client, texto_ref, texto_bel, secoes):
     
-    # Prepara os textos cortando o excesso se necessário
-    # 18.000 caracteres ~= 4.500 tokens. 
-    # Ref(4.5k) + Bel(4.5k) + Prompt(1k) + Resposta(2k) = ~12k (Limite exato)
-    ref_safe = preparar_texto_seguro(texto_ref)
-    bel_safe = preparar_texto_seguro(texto_bel)
+    # Prepara os textos no limite máximo seguro
+    ref_safe = preparar_texto_maximo(texto_ref)
+    bel_safe = preparar_texto_maximo(texto_bel)
     
-    prompt_system = """
-    Você é um Auditor Farmacêutico.
-    REGRAS HTML:
-    1. DIVERGÊNCIAS: Use <mark class='diff'>texto</mark> NOS DOIS LADOS.
-    2. ERRO PORTUGUÊS: Use <mark class='ort'>texto</mark>.
-    3. DATA ANVISA: Procure "Aprovado em dd/mm/aaaa" nos Dizeres Legais e use <mark class='anvisa'>data</mark>.
+    # Lista de seções formatada para o prompt
+    lista_secoes_str = "\n".join([f"- {s}" for s in secoes])
+    
+    prompt_system = f"""
+    Você é um Auditor Farmacêutico Meticuloso.
+    
+    SUA MISSÃO:
+    Extrair e comparar o CONTEÚDO INTEGRAL de cada seção solicitada.
+    
+    REGRA DE OURO (EXTRAÇÃO DE TEXTO):
+    1. Para cada seção da lista, copie TODO o texto que estiver abaixo do título dela.
+    2. PARE DE COPIAR EXATAMENTE quando encontrar o título da PRÓXIMA seção (ou o fim do documento).
+    3. NÃO inclua o título da próxima seção dentro do texto da seção atual.
+    4. NÃO RESUMA. Se a seção for longa, inclua todo o texto até o limite.
+
+    REGRAS DE FORMATAÇÃO (HTML):
+    - Divergências de texto/número: <mark class='diff'>texto</mark> NOS DOIS LADOS.
+    - Erros ortográficos: <mark class='ort'>texto</mark>.
+    - Data Anvisa (Dizeres Legais): <mark class='anvisa'>data</mark>.
 
     SAÍDA JSON:
-    { "METADADOS": { "score": 0-100, "datas": [] }, "SECOES": [ { "titulo": "...", "ref": "...", "bel": "...", "status": "..." } ] }
+    {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "..." }} ] }}
     """
 
     prompt_user = f"""
-    SEÇÕES A ANALISAR: {secoes}
+    LISTA DE SEÇÕES (Use como delimitadores de parada):
+    {lista_secoes_str}
 
-    --- REF ---
+    --- TEXTO REFERÊNCIA ---
     {ref_safe}
 
-    --- BEL ---
+    --- TEXTO BELFAR ---
     {bel_safe}
     """
 
@@ -157,8 +172,8 @@ def analisar_bula_groq(client, texto_ref, texto_bel, secoes):
                 {"role": "user", "content": prompt_user}
             ],
             model="llama-3.3-70b-versatile",
-            temperature=0.1,
-            max_tokens=3000, 
+            temperature=0.0, # Zero criatividade para máxima fidelidade
+            max_tokens=4000, # Aumentado para permitir respostas longas
             top_p=1,
             stream=False,
         )
@@ -167,8 +182,8 @@ def analisar_bula_groq(client, texto_ref, texto_bel, secoes):
     except Exception as e:
         erro = str(e)
         if "413" in erro or "rate_limit" in erro:
-            st.error("⚠️ **Limite Grátis Atingido:** O arquivo é muito grande para o plano Free da Groq (12k tokens/min).")
-            st.info("💡 Dica: Tente enviar apenas as páginas principais do PDF ou aguarde 1 minuto.")
+            st.error("⚠️ **Arquivo muito grande.**")
+            st.warning("A Groq Grátis não suporta bulas inteiras de uma só vez com essa quantidade de texto. Tente enviar apenas as páginas relevantes no PDF.")
         else:
             st.error(f"Erro na Groq: {e}")
         return None
@@ -186,15 +201,8 @@ with st.sidebar:
     pagina = st.radio("Menu:", ["Início", "Comparar Bulas"])
 
 if pagina == "Início":
-    st.markdown("<h1 style='text-align: center; color: #f25c05;'>Validador Grátis (Sem Erros)</h1>", unsafe_allow_html=True)
-    st.info("Este validador usa **Llama 3.3 (Meta)** via Groq.")
-    
-    st.markdown("""
-    ### 🛡️ Proteções Ativas:
-    1.  **Sem Copyright:** O Llama 3 não bloqueia textos de bulas.
-    2.  **Anti-Estouro:** Se a bula for gigante, o sistema resume o "meio" automaticamente para não dar erro na conta grátis.
-    3.  **Velocidade:** Processamento quase instantâneo.
-    """)
+    st.markdown("<h1 style='text-align: center; color: #f25c05;'>Validador de Conteúdo Integral</h1>", unsafe_allow_html=True)
+    st.info("Configurado para extrair o máximo de texto possível até encontrar o próximo título.")
 
 else:
     st.markdown("## Comparador de Bulas")
@@ -208,7 +216,7 @@ else:
     f2 = c2.file_uploader("Belfar (PDF/DOCX)", type=["pdf", "docx"])
 
     if st.button("🚀 COMPARAR AGORA") and f1 and f2:
-        with st.spinner("⚡ Otimizando texto e analisando..."):
+        with st.spinner("⚡ Analisando conteúdo completo das seções..."):
             
             t1 = process_uploaded_file(f1)
             t2 = process_uploaded_file(f2)
