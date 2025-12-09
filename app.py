@@ -9,8 +9,8 @@ import os
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Cohere (V2)",
-    page_icon="🚀",
+    page_title="Validador Cohere (V3 - Robust)",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -62,13 +62,11 @@ def get_cohere_client():
     return cohere.Client(api_key) if api_key else None
 
 def process_uploaded_file(uploaded_file):
-    """Extrai TEXTO puro (Cohere processa texto muito bem)"""
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
         full_text = ""
-
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             full_text = "\n".join([p.text for p in doc.paragraphs])
@@ -83,14 +81,28 @@ def process_uploaded_file(uploaded_file):
         return None
 
 def extract_json(text):
+    """
+    Função Robustecida para limpar a sujeira da IA e pegar só o JSON.
+    """
     try:
-        text = text.replace("```json", "").replace("```", "").strip()
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match: return json.loads(match.group())
+        # Remove blocos de código Markdown (```json ... ```)
+        text = re.sub(r'```json\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'```', '', text)
+        
+        # Procura onde começa o primeiro { e onde termina o último }
+        start_idx = text.find('{')
+        end_idx = text.rfind('}') + 1
+        
+        if start_idx != -1 and end_idx != -1:
+            clean_json_str = text[start_idx:end_idx]
+            return json.loads(clean_json_str)
+        
+        # Se falhar, tenta carregar o texto bruto (vai que é JSON puro)
         return json.loads(text)
-    except: return None
+    except Exception as e:
+        return None
 
-# ----------------- LÓGICA COHERE (MODELO VERSÃO FIXA) -----------------
+# ----------------- LÓGICA COHERE -----------------
 def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     
     lista_secoes_str = "\n".join([f"- {s}" for s in secoes])
@@ -98,19 +110,18 @@ def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     mensagem = f"""
     Você é um Auditor Farmacêutico Especialista (ANVISA).
     
-    TAREFA:
-    Compare os dois textos de bula abaixo (Referência vs Belfar).
+    TAREFA: Compare os dois textos de bula abaixo (Referência vs Belfar).
     
     INSTRUÇÕES DE EXTRAÇÃO:
     1. Para cada seção listada, extraia TODO o texto contido nela. NÃO RESUMA.
     2. Copie o texto até encontrar o título da próxima seção.
     
     INSTRUÇÕES DE COMPARAÇÃO (HTML):
-    - DIVERGÊNCIAS: Use <mark class='diff'>texto diferente</mark> NOS DOIS LADOS (Ref e Bel).
+    - DIVERGÊNCIAS: Use <mark class='diff'>texto diferente</mark> NOS DOIS LADOS.
     - ERROS DE PORTUGUÊS: Use <mark class='ort'>erro</mark>.
     - DATA DE APROVAÇÃO: Procure "Aprovado em dd/mm/aaaa" nos Dizeres Legais e marque com <mark class='anvisa'>data</mark>.
     
-    FORMATO JSON OBRIGATÓRIO:
+    FORMATO JSON OBRIGATÓRIO (NÃO ESCREVA NADA ANTES NEM DEPOIS DO JSON):
     {{
         "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas"] }},
         "SECOES": [
@@ -129,12 +140,12 @@ def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     """
 
     try:
-        # ATUALIZAÇÃO: Usando a versão específica "command-r-plus-08-2024"
+        # Versão Corrigida do Modelo
         response = client.chat(
             model="command-r-plus-08-2024", 
             message=mensagem,
-            temperature=0.1,
-            preamble="Você é um assistente JSON estrito. Retorne apenas JSON válido."
+            temperature=0.0, # Zero criatividade para evitar "alucinação" de texto extra
+            preamble="Você é um motor de extração JSON. Você não fala, apenas retorna JSON."
         )
         return response.text
     except Exception as e:
@@ -154,8 +165,8 @@ with st.sidebar:
     pagina = st.radio("Menu:", ["Início", "Comparar Bulas"])
 
 if pagina == "Início":
-    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Enterprise (Command R+)</h1>", unsafe_allow_html=True)
-    st.info("Usando o modelo Enterprise da Cohere (Versão 08-2024). Suporta bulas inteiras (128k tokens) e ignora filtros de copyright comuns.")
+    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Enterprise (V3)</h1>", unsafe_allow_html=True)
+    st.info("Versão com extrator JSON reforçado e modelo atualizado (08-2024).")
 
 else:
     st.markdown("## Comparador de Bulas")
@@ -169,7 +180,7 @@ else:
     f2 = c2.file_uploader("Belfar (PDF/DOCX)", type=["pdf", "docx"])
 
     if st.button("🚀 INICIAR AUDITORIA") and f1 and f2:
-        with st.spinner("🤖 Lendo bula inteira (128k context)..."):
+        with st.spinner("🤖 Analisando documentos..."):
             
             t1 = process_uploaded_file(f1)
             t2 = process_uploaded_file(f2)
@@ -203,4 +214,7 @@ else:
                                 cB.markdown("**Belfar**")
                                 cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
                     else:
-                        st.error("Erro na leitura do JSON. Tente novamente.")
+                        st.error("Erro na leitura do JSON. Veja abaixo o que a IA retornou:")
+                        st.text_area("Resposta Bruta da IA (Debug):", value=json_res, height=300)
+                else:
+                    st.error("Sem resposta da IA.")
