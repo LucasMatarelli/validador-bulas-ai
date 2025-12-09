@@ -18,25 +18,68 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS -----------------
+# ----------------- ESTILOS CSS (RESTAURADOS E COMPLETOS) -----------------
 st.markdown("""
 <style>
+    /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
+
+    /* Ajuste de Fundo e Fontes */
     .main { background-color: #f4f6f8; }
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    .stCard { background-color: white; padding: 25px; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px; border: 1px solid #e1e4e8; transition: transform 0.2s; height: 100%; }
-    .stCard:hover { transform: translateY(-5px); box-shadow: 0 15px 30px rgba(0,0,0,0.1); border-color: #55a68e; }
+    /* ESTILO DO MENU DE NAVEGAÇÃO (SIDEBAR) */
+    .stRadio > div[role="radiogroup"] > label {
+        background-color: white;
+        border: 1px solid #e1e4e8;
+        padding: 12px 15px;
+        border-radius: 8px;
+        margin-bottom: 8px;
+        transition: all 0.2s;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    .stRadio > div[role="radiogroup"] > label:hover {
+        background-color: #f0fbf7;
+        border-color: #55a68e;
+        color: #55a68e;
+        cursor: pointer;
+    }
+
+    /* CARDS DA HOME (RESTAURADOS) */
+    .stCard {
+        background-color: white;
+        padding: 25px;
+        border-radius: 15px;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.05);
+        margin-bottom: 25px;
+        border: 1px solid #e1e4e8;
+        transition: transform 0.2s;
+        height: 100%;
+    }
+    .stCard:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 15px 30px rgba(0,0,0,0.1);
+        border-color: #55a68e;
+    }
+
+    /* Títulos dos Cards */
     .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
+    .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
     
-    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0 4px; border-radius: 4px; }
-    .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; }
-    .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; }
-    
+    /* Destaques (Marca-textos) */
+    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+    .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+    .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+
+    /* Box de Curva */
+    .curve-box { background-color: #f8f9fa; border-left: 4px solid #55a68e; padding: 10px 15px; margin-top: 15px; font-size: 0.9rem; color: #666; }
+
+    /* Botões */
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); }
     .stButton>button:hover { background-color: #448c75; box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); }
-    
+
+    /* Marcações de Texto na Comparação */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
@@ -73,7 +116,7 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    # Lista e escolhe automaticamente o melhor modelo disponível
+    # Auto-Discovery: Lista e escolhe automaticamente o melhor modelo
     try:
         modelos_disponiveis = []
         for m in genai.list_models():
@@ -135,19 +178,12 @@ def process_uploaded_file(uploaded_file):
 
 def extract_json(text):
     """
-    Função cirúrgica para extrair JSON mesmo se a IA falar muito.
+    Extrai JSON validando com Regex para evitar erros de texto extra.
     """
     try:
-        # 1. Remove formatação de markdown ```json ... ```
         text = text.replace("```json", "").replace("```", "").strip()
-        
-        # 2. Busca apenas o conteúdo entre a primeira { e a última }
-        # Isso ignora textos introdutórios tipo "Aqui está o json:"
         match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            text = match.group(0)
-            
-        # 3. Tenta carregar
+        if match: text = match.group(0)
         return json.loads(text)
     except:
         return None
@@ -156,34 +192,99 @@ def extract_json(text):
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
+    
     model_instance, model_name_used = get_gemini_model()
-    if model_instance: st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
-    else: st.error("❌ Erro de Conexão"); st.caption(f"{model_name_used}")
+    
+    if model_instance:
+        st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
+    else:
+        st.error("❌ Erro de Conexão")
+        if model_name_used: st.caption(f"{model_name_used}")
+    
     st.divider()
-    pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
+    
+    pagina = st.radio(
+        "Navegação:",
+        ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"]
+    )
+    
     st.divider()
 
-# ----------------- PÁGINA INICIAL -----------------
+# ----------------- PÁGINA INICIAL (LAYOUT RESTAURADO) -----------------
 if pagina == "🏠 Início":
-    st.markdown("""<div style="text-align: center; padding: 30px;"><h1 style="color: #55a68e;">Validador Inteligente</h1><p>Central de auditoria de bulas.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="text-align: center; padding: 30px 20px;">
+        <h1 style="color: #55a68e; font-size: 3rem; margin-bottom: 10px;">Validador Inteligente</h1>
+        <p style="font-size: 20px; color: #7f8c8d;">Central de auditoria e conformidade de bulas farmacêuticas com IA.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
     c1, c2, c3 = st.columns(3)
-    with c1: st.info("💊 Ref x BELFAR")
-    with c2: st.info("📋 Conferência MKT")
-    with c3: st.info("🎨 Gráfica x Arte")
+    
+    with c1:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">💊 Medicamento Referência x BELFAR</div>
+            <div class="card-text">
+                Compara a bula de referência com a bula BELFAR.
+                <br><br>
+                <ul>
+                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
+                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
+                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">📋 Conferência MKT</div>
+            <div class="card-text">
+                Compara arquivo ANVISA com PDF MKT.
+                <br><br>
+                <ul>
+                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
+                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
+                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c3:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">🎨 Gráfica x Arte Vigente</div>
+            <div class="card-text">
+                Compara PDF Gráfica com Arte Vigente (Lê curvas).
+                <br><br>
+                <ul>
+                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
+                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
+                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ----------------- FERRAMENTA -----------------
 else:
     st.markdown(f"## {pagina}")
+    
     lista_secoes = SECOES_PACIENTE; nome_tipo = "Paciente"
     label_box1 = "Arquivo 1"; label_box2 = "Arquivo 2"
     
     if pagina == "💊 Ref x BELFAR":
-        label_box1 = "📄 Referência"; label_box2 = "📄 BELFAR"
+        label_box1 = "📄 Documento de Referência"; label_box2 = "📄 Documento BELFAR"
         col, _ = st.columns([1, 2])
-        if col.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True) == "Profissional":
+        if col.radio("Tipo de Bula:", ["Paciente", "Profissional"], horizontal=True) == "Profissional":
             lista_secoes = SECOES_PROFISSIONAL; nome_tipo = "Profissional"
-    elif pagina == "📋 Conferência MKT": label_box1 = "📄 ANVISA"; label_box2 = "📄 MKT"
-    elif pagina == "🎨 Gráfica x Arte": label_box1 = "📄 Arte Vigente"; label_box2 = "📄 PDF Gráfica"
+    elif pagina == "📋 Conferência MKT":
+        label_box1 = "📄 Arquivo ANVISA"; label_box2 = "📄 Arquivo MKT"
+    elif pagina == "🎨 Gráfica x Arte":
+        label_box1 = "📄 Arte Vigente"; label_box2 = "📄 PDF da Gráfica"
     
     st.divider()
     c1, c2 = st.columns(2)
@@ -193,7 +294,7 @@ else:
     if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
         if not f1 or not f2: st.warning("⚠️ Faça upload dos dois arquivos.")
         else:
-            with st.spinner(f"Analisando com {model_name_used.split('/')[-1]}..."):
+            with st.spinner(f"🤖 Analisando com {model_name_used.split('/')[-1]}..."):
                 try:
                     d1 = process_uploaded_file(f1); d2 = process_uploaded_file(f2)
                     gc.collect()
@@ -227,7 +328,6 @@ else:
                         generation_config={"response_mime_type": "application/json"}
                     )
                     
-                    # Checagem de Copyright
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                         st.error("⚠️ Bloqueio de Copyright. Tente enviar apenas texto.")
                     else:
@@ -235,15 +335,15 @@ else:
                         
                         if not data:
                             st.error("A IA não retornou um JSON válido.")
-                            # DEBUG: Botão para ver o que a IA mandou errado
                             with st.expander("🛠️ Ver Resposta Bruta da IA (Debug)"):
                                 st.code(response.text)
                         else:
                             meta = data.get("METADADOS", {})
                             m1, m2, m3 = st.columns(3)
-                            m1.metric("Score", f"{meta.get('score', 0)}%")
-                            m2.metric("Seções", len(data.get("SECOES", [])))
-                            m3.metric("Datas", ", ".join(meta.get("datas", [])) or "--")
+                            m1.metric("Conformidade", f"{meta.get('score', 0)}%")
+                            m2.metric("Seções Analisadas", len(data.get("SECOES", [])))
+                            m3.metric("Datas Encontradas", ", ".join(meta.get("datas", [])) or "Nenhuma data")
+                            
                             st.divider()
                             for sec in data.get("SECOES", []):
                                 stt = sec.get('status', 'N/A')
@@ -254,7 +354,11 @@ else:
                                 
                                 with st.expander(f"{icon} {sec.get('titulo')} — {stt}"):
                                     ca, cb = st.columns(2)
-                                    ca.markdown(f"**{n1}**"); ca.markdown(f"<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                                    cb.markdown(f"**{n2}**"); cb.markdown(f"<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                                    with ca:
+                                        st.markdown(f"**{n1}**")
+                                        st.markdown(f"<div style='background:#f9f9f9;padding:10px;border-radius:5px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                                    with cb:
+                                        st.markdown(f"**{n2}**")
+                                        st.markdown(f"<div style='background:#f0fff4;padding:10px;border-radius:5px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
 
                 except Exception as e: st.error(f"Erro: {e}")
