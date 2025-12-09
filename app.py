@@ -93,7 +93,7 @@ def get_mistral_client():
 
 def image_to_base64(image):
     buffered = io.BytesIO()
-    image.save(buffered, format="JPEG", quality=95) # Qualidade aumentada
+    image.save(buffered, format="JPEG", quality=95) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def process_uploaded_file(uploaded_file):
@@ -101,18 +101,34 @@ def process_uploaded_file(uploaded_file):
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
+        
+        # PROCESSAMENTO DOCX
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text}
+            
+        # PROCESSAMENTO PDF HÍBRIDO (SMART EXTRACT)
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
+            
+            # 1. TENTATIVA: Extração de TEXTO PURO (PDF Digital)
+            # Isso evita o limite de 4 páginas e lê o documento inteiro
+            full_text = ""
+            for page in doc:
+                full_text += page.get_text() + "\n"
+            
+            # Se encontrou uma quantidade razoável de texto (>500 caracteres), usa o modo Texto
+            if len(full_text.strip()) > 500:
+                doc.close()
+                return {"type": "text", "data": full_text}
+            
+            # 2. TENTATIVA: Extração de IMAGENS (PDF Escaneado) - Fallback
+            # Aqui mantemos o limite para não estourar a API
             images = []
-            # Mantendo limite de 4 páginas para não estourar API, mas aumentando resolução
-            limit_pages = min(4, len(doc))
+            limit_pages = min(4, len(doc)) 
             for i in range(limit_pages):
                 page = doc[i]
-                # AUMENTO DE RESOLUÇÃO: Matrix(3.0, 3.0) melhora a leitura de textos longos/pequenos
                 pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
                 try:
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
@@ -123,6 +139,7 @@ def process_uploaded_file(uploaded_file):
             doc.close()
             gc.collect()
             return {"type": "images", "data": images}
+            
     except Exception as e:
         st.error(f"Erro no arquivo {uploaded_file.name}: {e}")
         return None
@@ -198,39 +215,39 @@ else:
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
 
-                    # --- PROMPT AGRESSIVO PARA TEXTO COMPLETO ---
+                    # --- PROMPT REVISADO E FLEXÍVEL ---
                     prompt_text = f"""
-                    Atue como Auditor Farmacêutico.
+                    Atue como Auditor Farmacêutico Especialista.
                     
                     DOCUMENTOS:
-                    1. {nome_doc1} (Referência)
-                    2. {nome_doc2} (Candidato)
+                    1. {nome_doc1} (Referência/Padrão)
+                    2. {nome_doc2} (Candidato/BELFAR)
 
-                    SEÇÕES A ANALISAR:
+                    MISSÃO:
+                    Localize e extraia o conteúdo das seções abaixo.
+                    SEJA FLEXÍVEL COM TÍTULOS: Se o título variar um pouco (ex: "Cuidados de Armazenamento" vs "Onde guardar"), extraia mesmo assim.
+                    
+                    SEÇÕES ALVO:
                     {secoes_str}
 
-                    === REGRA SUPREMA: EXTRAÇÃO NA ÍNTEGRA ===
-                    1. Você DEVE extrair TODO o conteúdo de texto de cada seção solicitada.
-                    2. NÃO RESUMA. NÃO ENCURTE. NÃO CORTE.
-                    3. Se a seção tiver 10 parágrafos, extraia os 10 parágrafos.
-                    4. Inclua listas, tópicos, marcadores e observações.
-                    5. Se o texto for longo, escreva ele COMPLETO na saída JSON.
+                    === REGRAS DE EXTRAÇÃO ===
+                    1. Extraia o texto COMPLETO de cada seção. Não abrevie.
+                    2. Ignore apenas o cabeçalho/título da seção, pegue o conteúdo.
+                    3. Se a seção não existir no documento, marque como "FALTANTE".
                     
                     === REGRAS DE MARCAÇÃO (HTML) ===
-                    Use estas tags exatas dentro das strings do JSON:
-                    
                     1. DIVERGÊNCIAS (Amarelo): "Texto igual <mark class='diff'>texto diferente</mark> texto igual."
                     2. ERROS DE PORTUGUÊS (Rosa): "Texto com <mark class='ort'>ero</mark>."
-                    3. DATA DA ANVISA (Azul): "<mark class='anvisa'>dd/mm/aaaa</mark>". (Procure em Dizeres Legais ou Rodapé. Se não achar, não coloque nada).
+                    3. DATA DA ANVISA (Azul): "<mark class='anvisa'>dd/mm/aaaa</mark>". (Geralmente no rodapé ou final).
 
                     SAÍDA JSON:
                     {{
                         "METADADOS": {{ "score": 0 a 100, "datas": ["dd/mm/aaaa"] }},
                         "SECOES": [
                             {{ 
-                                "titulo": "NOME SEÇÃO", 
-                                "ref": "TEXTO COMPLETO E LONGO DO DOC 1...", 
-                                "bel": "TEXTO COMPLETO E LONGO DO DOC 2 COM TAGS...", 
+                                "titulo": "NOME DA SEÇÃO DA LISTA ACIMA", 
+                                "ref": "CONTEUDO COMPLETO DOC 1...", 
+                                "bel": "CONTEUDO COMPLETO DOC 2...", 
                                 "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" 
                             }}
                         ]
@@ -239,23 +256,23 @@ else:
 
                     messages_content = [{"type": "text", "text": prompt_text}]
 
-                    # DOC 1
-                    if d1['type'] == 'text': messages_content.append({"type": "text", "text": f"\n--- TEXTO {nome_doc1} ---\n{d1['data']}"})
-                    else:
-                        messages_content.append({"type": "text", "text": f"\n--- IMAGENS {nome_doc1} (LEIA TUDO) ---"})
-                        for img in d1['data']: messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{image_to_base64(img)}"})
+                    # Montagem Inteligente do Conteúdo
+                    def add_content(doc_data, doc_name):
+                        if doc_data['type'] == 'text':
+                            messages_content.append({"type": "text", "text": f"\n--- TEXTO COMPLETO {doc_name} ---\n{doc_data['data']}"})
+                        else:
+                            messages_content.append({"type": "text", "text": f"\n--- IMAGENS {doc_name} (LEIA COM ATENÇÃO) ---"})
+                            for img in doc_data['data']:
+                                messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{image_to_base64(img)}"})
 
-                    # DOC 2
-                    if d2['type'] == 'text': messages_content.append({"type": "text", "text": f"\n--- TEXTO {nome_doc2} ---\n{d2['data']}"})
-                    else:
-                        messages_content.append({"type": "text", "text": f"\n--- IMAGENS {nome_doc2} (LEIA TUDO) ---"})
-                        for img in d2['data']: messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{image_to_base64(img)}"})
+                    add_content(d1, nome_doc1)
+                    add_content(d2, nome_doc2)
 
                     chat_response = client.chat.complete(
                         model="pixtral-large-latest",
                         messages=[{"role": "user", "content": messages_content}],
                         response_format={"type": "json_object"},
-                        max_tokens=8000 # AUMENTADO PARA PERMITIR RESPOSTAS LONGAS
+                        max_tokens=9000
                     )
 
                     response_text = chat_response.choices[0].message.content
