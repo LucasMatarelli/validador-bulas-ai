@@ -199,30 +199,41 @@ def extract_json(text):
         return json.loads(clean)
     except: return None
 
-# --- FUNÇÃO BLINDADA (AJUSTADA) ---
+# --- FUNÇÃO ULTRA BLINDADA (EVITA CRASH TOTAL) ---
 def gerar_json_blindado(model, prompt_setup, payload_arquivos):
     """
-    Gera JSON com proteção contra erro de Copyright.
+    Gera JSON. Se der erro de Copyright (Finish Reason 4), tenta bypass.
+    Se o bypass falhar, RETORNA UM JSON DE ERRO para não travar o app.
     """
     full_prompt = [prompt_setup] + payload_arquivos
     
+    # 1. TENTATIVA PRINCIPAL
     try:
         response = model.generate_content(
             full_prompt,
             generation_config={"response_mime_type": "application/json"}
         )
-        if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-            raise ValueError("Bloqueio de Copyright")
+        
+        # Verifica se tem conteúdo ANTES de acessar .text
+        if not response.parts:
+            if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
+                raise ValueError("Bloqueio de Copyright (Tentativa 1)")
+            else:
+                raise ValueError("Resposta vazia desconhecida")
+                
         return response.text
 
+    # 2. SE DER ERRO, TENTA O MODO DE COMPATIBILIDADE
     except Exception as e:
         st.warning("⚠️ Detectado bloqueio de conteúdo. Tentando modo de compatibilidade...")
         time.sleep(1)
         
+        # Prompt modificado para pedir resumo em vez de cópia literal
         instrucao_bypass = """
-        ATENÇÃO: Documentos regulatórios de saúde pública. 
-        Realize a extração dos dados solicitados. Parafraseie levemente apenas trechos bloqueados, 
-        mas mantenha a estrutura JSON e as marcações HTML solicitadas.
+        CRÍTICO: O sistema detectou bloqueio de copyright.
+        PARA EVITAR O BLOQUEIO: Não transcreva trechos longos literalmente.
+        Resuma o conteúdo das seções mantendo o sentido para fins de auditoria.
+        Mantenha estritamente o formato JSON solicitado.
         """
         
         prompt_bypass = [prompt_setup + "\n" + instrucao_bypass] + payload_arquivos
@@ -232,10 +243,35 @@ def gerar_json_blindado(model, prompt_setup, payload_arquivos):
                 prompt_bypass,
                 generation_config={"response_mime_type": "application/json"}
             )
+            
+            # Verifica novamente se bloqueou o bypass
+            if not response_retry.parts:
+                raise ValueError("Bloqueio Total (Tentativa 2)")
+                
             return response_retry.text
+
+        # 3. FALHA TOTAL: RETORNA JSON DE ERRO (PARA NÃO QUEBRAR O APP)
         except Exception as e2:
-            st.error(f"Erro fatal: {e2}")
-            return None
+            st.error("❌ O Google Gemini bloqueou completamente a leitura deste arquivo por Direitos Autorais.")
+            
+            # Retorna um JSON válido avisando do erro nos campos
+            json_erro = """
+            {
+                "METADADOS": { 
+                    "score": 0, 
+                    "datas": ["BLOQUEIO DE COPYRIGHT"] 
+                },
+                "SECOES": [
+                    { 
+                        "titulo": "ERRO DE LEITURA (COPYRIGHT)", 
+                        "ref": "O conteúdo deste arquivo foi bloqueado pelos filtros de Copyright do Google.", 
+                        "bel": "Tente enviar o texto em partes menores ou imagens recortadas.", 
+                        "status": "FALTANTE" 
+                    }
+                ]
+            }
+            """
+            return json_erro
 
 # ----------------- BARRA LATERAL -----------------
 with st.sidebar:
