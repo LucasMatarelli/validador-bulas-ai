@@ -1,5 +1,5 @@
 import streamlit as st
-from groq import Groq
+import cohere
 import fitz  # PyMuPDF
 import docx
 import io
@@ -9,8 +9,8 @@ import os
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Llama 3 (Texto Completo)",
-    page_icon="⚡",
+    page_title="Validador Cohere (Sem Limites)",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -21,20 +21,18 @@ st.markdown("""
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
     .main { background-color: #f4f6f8; }
-    h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
     .stCard {
         background-color: white; padding: 25px; border-radius: 15px;
         box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 25px;
-        border: 1px solid #e1e4e8; height: 100%;
+        border: 1px solid #e1e4e8;
     }
     
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
-    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
-    mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
+    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; font-weight: bold; }
+    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; font-weight: bold; }
+    mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; font-weight: bold; }
     
-    .stButton>button { width: 100%; background-color: #f25c05; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
-    .stButton>button:hover { background-color: #d94e00; }
+    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; height: 55px; font-size: 16px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -58,41 +56,13 @@ SECOES_PROFISSIONAL = [
 SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
-def get_groq_client():
-    api_key = None
-    try: api_key = st.secrets["GROQ_API_KEY"]
-    except: pass
-    if not api_key: api_key = os.environ.get("GROQ_API_KEY")
-    return Groq(api_key=api_key) if api_key else None
-
-def limpar_texto(texto):
-    """Limpeza leve para economizar tokens sem perder conteúdo."""
-    # Remove quebras de linha triplas ou mais, mantém parágrafos
-    texto = re.sub(r'\n{3,}', '\n\n', texto)
-    return texto.strip()
-
-def preparar_texto_maximo(texto):
-    """
-    Empurra o limite da Groq ao máximo.
-    Tenta enviar cerca de 10.000 a 12.000 caracteres por documento.
-    Isso é o limite físico da conta Free.
-    """
-    LIMIT_CHARS = 11000 # 11k chars ~= 2.7k tokens per doc (Total request < 6k tokens)
-    
-    if len(texto) <= LIMIT_CHARS:
-        return texto
-    
-    # Se for maior, prioriza o texto corrido, cortando o meio APENAS se necessário
-    # Mantém 60% do início e 40% do fim para pegar cabeçalhos e rodapés
-    corte_inicio = int(LIMIT_CHARS * 0.60)
-    corte_fim = int(LIMIT_CHARS * 0.40)
-    
-    parte_inicio = texto[:corte_inicio]
-    parte_fim = texto[-corte_fim:]
-    
-    return f"{parte_inicio}\n\n[...TRECHO CENTRAL OMITIDO POR LIMITE DE TAMANHO DA IA...]\n\n{parte_fim}"
+def get_cohere_client():
+    try: api_key = st.secrets["COHERE_API_KEY"]
+    except: api_key = os.environ.get("COHERE_API_KEY")
+    return cohere.Client(api_key) if api_key else None
 
 def process_uploaded_file(uploaded_file):
+    """Extrai TEXTO puro (Cohere processa texto muito bem)"""
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
@@ -102,14 +72,12 @@ def process_uploaded_file(uploaded_file):
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             full_text = "\n".join([p.text for p in doc.paragraphs])
-            
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             for page in doc:
                 full_text += page.get_text() + "\n"
             doc.close()
-            
-        return limpar_texto(full_text)
+        return full_text
     except Exception as e:
         st.error(f"Erro ao ler arquivo: {e}")
         return None
@@ -117,92 +85,77 @@ def process_uploaded_file(uploaded_file):
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
-        start = text.find('{')
-        end = text.rfind('}') + 1
-        if start != -1 and end != -1: return json.loads(text[start:end])
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match: return json.loads(match.group())
         return json.loads(text)
     except: return None
 
-# ----------------- FUNÇÃO DE GERAÇÃO (LÓGICA DE EXTRAÇÃO TOTAL) -----------------
-def analisar_bula_groq(client, texto_ref, texto_bel, secoes):
+# ----------------- LÓGICA COHERE (MODELO COMMAND R+) -----------------
+def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     
-    # Prepara os textos no limite máximo seguro
-    ref_safe = preparar_texto_maximo(texto_ref)
-    bel_safe = preparar_texto_maximo(texto_bel)
-    
-    # Lista de seções formatada para o prompt
     lista_secoes_str = "\n".join([f"- {s}" for s in secoes])
     
-    prompt_system = f"""
-    Você é um Auditor Farmacêutico Meticuloso.
+    mensagem = f"""
+    Você é um Auditor Farmacêutico Especialista (ANVISA).
     
-    SUA MISSÃO:
-    Extrair e comparar o CONTEÚDO INTEGRAL de cada seção solicitada.
+    TAREFA:
+    Compare os dois textos de bula abaixo (Referência vs Belfar).
     
-    REGRA DE OURO (EXTRAÇÃO DE TEXTO):
-    1. Para cada seção da lista, copie TODO o texto que estiver abaixo do título dela.
-    2. PARE DE COPIAR EXATAMENTE quando encontrar o título da PRÓXIMA seção (ou o fim do documento).
-    3. NÃO inclua o título da próxima seção dentro do texto da seção atual.
-    4. NÃO RESUMA. Se a seção for longa, inclua todo o texto até o limite.
-
-    REGRAS DE FORMATAÇÃO (HTML):
-    - Divergências de texto/número: <mark class='diff'>texto</mark> NOS DOIS LADOS.
-    - Erros ortográficos: <mark class='ort'>texto</mark>.
-    - Data Anvisa (Dizeres Legais): <mark class='anvisa'>data</mark>.
-
-    SAÍDA JSON:
-    {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "..." }} ] }}
-    """
-
-    prompt_user = f"""
-    LISTA DE SEÇÕES (Use como delimitadores de parada):
+    INSTRUÇÕES DE EXTRAÇÃO:
+    1. Para cada seção listada, extraia TODO o texto contido nela. NÃO RESUMA.
+    2. Copie o texto até encontrar o título da próxima seção.
+    
+    INSTRUÇÕES DE COMPARAÇÃO (HTML):
+    - DIVERGÊNCIAS: Use <mark class='diff'>texto diferente</mark> NOS DOIS LADOS (Ref e Bel).
+    - ERROS DE PORTUGUÊS: Use <mark class='ort'>erro</mark>.
+    - DATA DE APROVAÇÃO: Procure "Aprovado em dd/mm/aaaa" nos Dizeres Legais e marque com <mark class='anvisa'>data</mark>.
+    
+    FORMATO JSON OBRIGATÓRIO:
+    {{
+        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas"] }},
+        "SECOES": [
+            {{ "titulo": "NOME DA SEÇÃO", "ref": "texto da referência...", "bel": "texto da belfar...", "status": "CONFORME" ou "DIVERGENTE" }}
+        ]
+    }}
+    
+    LISTA DE SEÇÕES A BUSCAR:
     {lista_secoes_str}
-
-    --- TEXTO REFERÊNCIA ---
-    {ref_safe}
-
-    --- TEXTO BELFAR ---
-    {bel_safe}
+    
+    --- DOCUMENTO REFERÊNCIA ---
+    {texto_ref}
+    
+    --- DOCUMENTO BELFAR ---
+    {texto_bel}
     """
 
     try:
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": prompt_system},
-                {"role": "user", "content": prompt_user}
-            ],
-            model="llama-3.3-70b-versatile",
-            temperature=0.0, # Zero criatividade para máxima fidelidade
-            max_tokens=4000, # Aumentado para permitir respostas longas
-            top_p=1,
-            stream=False,
+        # Usa o modelo Command R+ (Suporta 128k tokens = Bula Gigante sem erro)
+        response = client.chat(
+            model="command-r-plus",
+            message=mensagem,
+            temperature=0.1,
+            preamble="Você é um assistente JSON estrito. Retorne apenas JSON válido."
         )
-        return chat_completion.choices[0].message.content
-    
+        return response.text
     except Exception as e:
-        erro = str(e)
-        if "413" in erro or "rate_limit" in erro:
-            st.error("⚠️ **Arquivo muito grande.**")
-            st.warning("A Groq Grátis não suporta bulas inteiras de uma só vez com essa quantidade de texto. Tente enviar apenas as páginas relevantes no PDF.")
-        else:
-            st.error(f"Erro na Groq: {e}")
+        st.error(f"Erro na API Cohere: {e}")
         return None
 
-# ----------------- UI -----------------
+# ----------------- INTERFACE -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.title("Validador Llama 3")
+    st.title("Validador Cohere")
     
-    client = get_groq_client()
-    if client: st.success("✅ Groq Ativo")
-    else: st.error("❌ Configure GROQ_API_KEY"); st.stop()
+    client = get_cohere_client()
+    if client: st.success("✅ Cohere Ativo")
+    else: st.error("❌ Configure o secrets.toml"); st.stop()
     
     st.divider()
     pagina = st.radio("Menu:", ["Início", "Comparar Bulas"])
 
 if pagina == "Início":
-    st.markdown("<h1 style='text-align: center; color: #f25c05;'>Validador de Conteúdo Integral</h1>", unsafe_allow_html=True)
-    st.info("Configurado para extrair o máximo de texto possível até encontrar o próximo título.")
+    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Enterprise (Command R+)</h1>", unsafe_allow_html=True)
+    st.info("Este validador usa a tecnologia da Cohere, projetada para ler documentos longos sem cortes e sem falsos positivos de Copyright.")
 
 else:
     st.markdown("## Comparador de Bulas")
@@ -215,14 +168,14 @@ else:
     f1 = c1.file_uploader("Referência (PDF/DOCX)", type=["pdf", "docx"])
     f2 = c2.file_uploader("Belfar (PDF/DOCX)", type=["pdf", "docx"])
 
-    if st.button("🚀 COMPARAR AGORA") and f1 and f2:
-        with st.spinner("⚡ Analisando conteúdo completo das seções..."):
+    if st.button("🚀 INICIAR AUDITORIA") and f1 and f2:
+        with st.spinner("🤖 Lendo bula inteira (128k context)..."):
             
             t1 = process_uploaded_file(f1)
             t2 = process_uploaded_file(f2)
             
             if t1 and t2:
-                json_res = analisar_bula_groq(client, t1, t2, lista_secoes)
+                json_res = analisar_bula_cohere(client, t1, t2, lista_secoes)
                 
                 if json_res: 
                     data = extract_json(json_res)
@@ -237,12 +190,13 @@ else:
                         
                         for sec in data.get("SECOES", []):
                             icon = "✅"
-                            status = str(sec.get('status', '')).upper()
-                            if "DIVERGENTE" in status: icon = "❌"
-                            elif "FALTANTE" in status: icon = "🚨"
+                            status_upper = str(sec.get('status', '')).upper()
+                            
+                            if "DIVERGENTE" in status_upper: icon = "❌"
+                            elif "FALTANTE" in status_upper: icon = "🚨"
                             elif any(x in sec['titulo'] for x in SECOES_SEM_DIVERGENCIA): icon = "👁️"
                             
-                            with st.expander(f"{icon} {sec['titulo']} — {status}"):
+                            with st.expander(f"{icon} {sec['titulo']} — {status_upper}"):
                                 cA, cB = st.columns(2)
                                 cA.markdown("**Referência**")
                                 cA.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
@@ -250,3 +204,4 @@ else:
                                 cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
                     else:
                         st.error("Erro na leitura do JSON. Tente novamente.")
+                        # st.code(json_res) # Debug
