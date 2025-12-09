@@ -60,7 +60,7 @@ SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
 def get_groq_client():
-    """Recupera a chave do secrets.toml"""
+    """Recupera a chave do secrets.toml de forma segura"""
     api_key = None
     try: api_key = st.secrets["GROQ_API_KEY"]
     except: api_key = os.environ.get("GROQ_API_KEY")
@@ -111,7 +111,7 @@ def analisar_bula_groq(client, texto_ref, texto_bel, secoes, tipo_doc):
     Sua tarefa é comparar dois textos de Bula de Remédio e identificar divergências.
     
     REGRAS DE FORMATAÇÃO (HTML):
-    1. Se houver divergência de sentido/números/texto entre REF e BEL: Envolva o trecho divergente com <mark class='diff'>texto</mark> NOS DOIS LADOS.
+    1. Se houver divergência de sentido/números/texto entre REF e BEL: Envolva o trecho divergente com <mark class='diff'>texto</mark> NOS DOIS LADOS (Referência e Belfar).
     2. Se houver erro ortográfico: Envolva com <mark class='ort'>erro</mark>.
     3. DATA DE APROVAÇÃO (CRÍTICO): Procure "Aprovado em dd/mm/aaaa" nos DIZERES LEGAIS. Se encontrar, envolva a data com <mark class='anvisa'>dd/mm/aaaa</mark> onde ela aparecer.
 
@@ -129,7 +129,7 @@ def analisar_bula_groq(client, texto_ref, texto_bel, secoes, tipo_doc):
     }
     """
 
-    # Limite de caracteres para não estourar o contexto (segurança)
+    # Limite de caracteres para segurança
     prompt_user = f"""
     DOCUMENTO 1 (REFERÊNCIA):
     {texto_ref[:30000]} 
@@ -149,7 +149,7 @@ def analisar_bula_groq(client, texto_ref, texto_bel, secoes, tipo_doc):
                 {"role": "system", "content": prompt_system},
                 {"role": "user", "content": prompt_user}
             ],
-            model="llama-3.3-70b-versatile", # Modelo muito inteligente e rápido
+            model="llama-3.3-70b-versatile", # Modelo rápido e inteligente
             temperature=0.1, # Baixa criatividade para ser rigoroso
             max_tokens=6000,
             top_p=1,
@@ -195,7 +195,7 @@ else:
     if st.button("🚀 COMPARAR AGORA") and f1 and f2:
         with st.spinner("⚡ Extraindo texto e analisando com Llama 3..."):
             
-            # 1. Extração de Texto (Não usa OCR de imagem para ser rápido e evitar bloqueio)
+            # 1. Extração de Texto
             t1 = process_uploaded_file(f1)
             t2 = process_uploaded_file(f2)
             
@@ -229,4 +229,4 @@ else:
                             cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
                 else:
                     st.error("A IA respondeu, mas o JSON veio inválido. Tente novamente.")
-                    st.code(json_res) # Mostra o erro bruto para debug
+                    # st.code(json_res) # Descomente se precisar debugar
