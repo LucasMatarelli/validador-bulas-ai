@@ -9,8 +9,8 @@ import os
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Mistral (Sem Cortes)",
-    page_icon="🌪️",
+    page_title="Validador Mistral (Turbo)",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -61,9 +61,7 @@ def get_mistral_client():
     try: api_key = st.secrets["MISTRAL_API_KEY"]
     except: pass
     if not api_key: api_key = os.environ.get("MISTRAL_API_KEY")
-    
-    if not api_key: return None
-    return Mistral(api_key=api_key)
+    return Mistral(api_key=api_key) if api_key else None
 
 def process_uploaded_file(uploaded_file):
     """Extrai TEXTO puro."""
@@ -98,56 +96,51 @@ def extract_json(text):
         return json.loads(text)
     except: return None
 
-# ----------------- LÓGICA MISTRAL -----------------
+# ----------------- LÓGICA MISTRAL (MODELO SMALL = RÁPIDO) -----------------
 def analisar_bula_mistral(client, texto_ref, texto_bel, secoes):
     
     lista_secoes_str = "\n".join([f"- {s}" for s in secoes])
     
-    # Prompt otimizado para Mistral Large
     mensagem = f"""
-    Você é um Auditor Farmacêutico Especialista (ANVISA).
+    Você é um Auditor Farmacêutico Especialista.
     
-    TAREFA: Comparar o texto completo das bulas abaixo.
+    TAREFA: Comparar o texto das bulas abaixo.
     
-    INSTRUÇÕES CRÍTICAS DE EXTRAÇÃO:
-    1. Para cada seção, extraia TODO o texto contido nela. NÃO RESUMA nem corte o final.
-    2. Copie o texto até encontrar exatamente o título da próxima seção.
+    INSTRUÇÕES DE EXTRAÇÃO:
+    1. Para cada seção listada, copie o texto dela (do título até o próximo título).
+    2. NÃO RESUMA. Copie o texto integralmente.
     
-    INSTRUÇÕES DE COMPARAÇÃO (HTML):
+    INSTRUÇÕES HTML:
     - DIVERGÊNCIAS: Use <mark class='diff'>texto</mark> NOS DOIS LADOS.
     - ERROS: Use <mark class='ort'>erro</mark>.
     - DATA: Busque "Aprovado em dd/mm/aaaa" nos Dizeres Legais e use <mark class='anvisa'>data</mark>.
     
-    FORMATO JSON (Retorne APENAS o JSON):
+    FORMATO JSON:
     {{
-        "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas"] }},
+        "METADADOS": {{ "score": 0-100, "datas": [] }},
         "SECOES": [
-            {{ "titulo": "NOME SEÇÃO", "ref": "texto completo...", "bel": "texto completo...", "status": "CONFORME" ou "DIVERGENTE" }}
+            {{ "titulo": "...", "ref": "...", "bel": "...", "status": "..." }}
         ]
     }}
     
     LISTA DE SEÇÕES:
     {lista_secoes_str}
     
-    --- DOC REFERÊNCIA ---
+    --- REF ---
     {texto_ref}
     
-    --- DOC BELFAR ---
+    --- BEL ---
     {texto_bel}
     """
 
     try:
-        # Usando o modelo "mistral-large-latest" que tem contexto grande e alta inteligência
+        # AQUI ESTÁ O SEGREDO: Usando "mistral-small-latest"
+        # Ele é muito mais rápido e não dá erro 503 como o Large.
         chat_response = client.chat.complete(
-            model="mistral-large-latest",
-            messages=[
-                {
-                    "role": "user",
-                    "content": mensagem,
-                },
-            ],
-            temperature=0.0, # Zero alucinação
-            response_format={"type": "json_object"} # Força saída JSON nativa
+            model="mistral-small-latest",
+            messages=[{"role": "user", "content": mensagem}],
+            temperature=0.0,
+            response_format={"type": "json_object"}
         )
         return chat_response.choices[0].message.content
     except Exception as e:
@@ -160,15 +153,15 @@ with st.sidebar:
     st.title("Validador Mistral")
     
     client = get_mistral_client()
-    if client: st.success("✅ Mistral Ativo")
+    if client: st.success("✅ Mistral (Turbo) Ativo")
     else: st.error("❌ Configure MISTRAL_API_KEY no secrets"); st.stop()
     
     st.divider()
     pagina = st.radio("Menu:", ["Início", "Comparar Bulas"])
 
 if pagina == "Início":
-    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Mistral Large</h1>", unsafe_allow_html=True)
-    st.info("Usando a IA europeia Mistral AI. Conhecida por respeitar o tamanho do texto e seguir instruções complexas.")
+    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Rápido (V5)</h1>", unsafe_allow_html=True)
+    st.info("Usando o modelo Mistral Small para máxima velocidade e estabilidade.")
 
 else:
     st.markdown("## Comparador de Bulas")
@@ -182,7 +175,7 @@ else:
     f2 = c2.file_uploader("Belfar (PDF/DOCX)", type=["pdf", "docx"])
 
     if st.button("🚀 INICIAR AUDITORIA") and f1 and f2:
-        with st.spinner("🤖 Mistral analisando texto completo..."):
+        with st.spinner("⚡ Analisando rapidamente..."):
             
             t1 = process_uploaded_file(f1)
             t2 = process_uploaded_file(f2)
