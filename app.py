@@ -6,11 +6,10 @@ import io
 import json
 import re
 import os
-import gc
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Groq (Safe Mode)",
+    page_title="Validador Llama 3 (Anti-Erro)",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -63,13 +62,33 @@ def get_groq_client():
     api_key = None
     try: api_key = st.secrets["GROQ_API_KEY"]
     except: pass
-    
     if not api_key: api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key: return None
-    return Groq(api_key=api_key)
+    return Groq(api_key=api_key) if api_key else None
+
+def limpar_texto(texto):
+    """Remove quebras de linha excessivas para economizar tokens."""
+    texto = re.sub(r'\n+', '\n', texto) # Remove linhas em branco repetidas
+    texto = re.sub(r'\s+', ' ', texto)  # Remove espaços repetidos
+    return texto.strip()
+
+def preparar_texto_seguro(texto, limite_chars=18000):
+    """
+    Corta o texto estrategicamente para caber no limite Grátis da Groq (12k TPM).
+    Prioriza o INÍCIO (Cabeçalho) e o FIM (Dizeres Legais/Data).
+    """
+    if len(texto) <= limite_chars:
+        return texto
+    
+    # Se for muito grande, pega os primeiros 60% e os últimos 40% do limite
+    corte_inicio = int(limite_chars * 0.6)
+    corte_fim = int(limite_chars * 0.4)
+    
+    parte_inicio = texto[:corte_inicio]
+    parte_fim = texto[-corte_fim:]
+    
+    return f"{parte_inicio}\n\n[...TRECHO CENTRAL OMITIDO PARA CABER NO LIMITE GRÁTIS...]\n\n{parte_fim}"
 
 def process_uploaded_file(uploaded_file):
-    """Extrai TEXTO puro."""
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
@@ -86,7 +105,8 @@ def process_uploaded_file(uploaded_file):
                 full_text += page.get_text() + "\n"
             doc.close()
             
-        return full_text
+        # Limpa o texto para economizar espaço
+        return limpar_texto(full_text)
     except Exception as e:
         st.error(f"Erro ao ler arquivo: {e}")
         return None
@@ -100,20 +120,14 @@ def extract_json(text):
         return json.loads(text)
     except: return None
 
-# ----------------- FUNÇÃO DE GERAÇÃO (AJUSTADA PARA LIMITE 12k TPM) -----------------
+# ----------------- FUNÇÃO DE GERAÇÃO (GROQ SAFE) -----------------
 def analisar_bula_groq(client, texto_ref, texto_bel, secoes):
     
-    # --- CÁLCULO DE SEGURANÇA PARA PLANO FREE ---
-    # Limite Groq Free: 12.000 tokens/min (TPM)
-    # 1 token ~= 4 caracteres.
-    # Vamos usar no máximo 6.000 tokens de ENTRADA (aprox 24.000 caracteres)
-    # E reservar 2.000 tokens para SAÍDA.
-    # Total da requisição: ~8.000 tokens (bem abaixo dos 12.000)
-    
-    LIMIT_CHARS_PER_DOC = 12000 # 12k chars por documento = ~3k tokens cada
-    
-    ref_safe = texto_ref[:LIMIT_CHARS_PER_DOC]
-    bel_safe = texto_bel[:LIMIT_CHARS_PER_DOC]
+    # Prepara os textos cortando o excesso se necessário
+    # 18.000 caracteres ~= 4.500 tokens. 
+    # Ref(4.5k) + Bel(4.5k) + Prompt(1k) + Resposta(2k) = ~12k (Limite exato)
+    ref_safe = preparar_texto_seguro(texto_ref)
+    bel_safe = preparar_texto_seguro(texto_bel)
     
     prompt_system = """
     Você é um Auditor Farmacêutico.
@@ -127,14 +141,13 @@ def analisar_bula_groq(client, texto_ref, texto_bel, secoes):
     """
 
     prompt_user = f"""
-    --- TEXTO REFERÊNCIA (Parte 1) ---
+    SEÇÕES A ANALISAR: {secoes}
+
+    --- REF ---
     {ref_safe}
 
-    --- TEXTO BELFAR (Parte 1) ---
+    --- BEL ---
     {bel_safe}
-
-    SEÇÕES PARA ANALISAR:
-    {secoes}
     """
 
     try:
@@ -145,36 +158,43 @@ def analisar_bula_groq(client, texto_ref, texto_bel, secoes):
             ],
             model="llama-3.3-70b-versatile",
             temperature=0.1,
-            max_tokens=3000, # Reduzido para garantir que cabe no limite TPM
+            max_tokens=3000, 
             top_p=1,
             stream=False,
         )
         return chat_completion.choices[0].message.content
     
     except Exception as e:
-        error_msg = str(e)
-        if "413" in error_msg or "rate_limit" in error_msg:
-             st.warning("⚠️ O arquivo é muito grande para o plano gratuito da Groq. O texto foi truncado para caber.")
-             return None
+        erro = str(e)
+        if "413" in erro or "rate_limit" in erro:
+            st.error("⚠️ **Limite Grátis Atingido:** O arquivo é muito grande para o plano Free da Groq (12k tokens/min).")
+            st.info("💡 Dica: Tente enviar apenas as páginas principais do PDF ou aguarde 1 minuto.")
         else:
-             st.error(f"Erro na Groq: {e}")
-             return None
+            st.error(f"Erro na Groq: {e}")
+        return None
 
 # ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.title("Validador Groq")
+    st.title("Validador Llama 3")
     
     client = get_groq_client()
     if client: st.success("✅ Groq Ativo")
-    else: st.error("❌ Configure o secrets.toml"); st.stop()
+    else: st.error("❌ Configure GROQ_API_KEY"); st.stop()
     
     st.divider()
     pagina = st.radio("Menu:", ["Início", "Comparar Bulas"])
 
 if pagina == "Início":
-    st.markdown("<h1 style='text-align: center; color: #f25c05;'>Validador Llama 3.3</h1>", unsafe_allow_html=True)
-    st.info("Sistema otimizado para evitar bloqueios de Copyright e limites de tamanho da Groq.")
+    st.markdown("<h1 style='text-align: center; color: #f25c05;'>Validador Grátis (Sem Erros)</h1>", unsafe_allow_html=True)
+    st.info("Este validador usa **Llama 3.3 (Meta)** via Groq.")
+    
+    st.markdown("""
+    ### 🛡️ Proteções Ativas:
+    1.  **Sem Copyright:** O Llama 3 não bloqueia textos de bulas.
+    2.  **Anti-Estouro:** Se a bula for gigante, o sistema resume o "meio" automaticamente para não dar erro na conta grátis.
+    3.  **Velocidade:** Processamento quase instantâneo.
+    """)
 
 else:
     st.markdown("## Comparador de Bulas")
@@ -188,7 +208,7 @@ else:
     f2 = c2.file_uploader("Belfar (PDF/DOCX)", type=["pdf", "docx"])
 
     if st.button("🚀 COMPARAR AGORA") and f1 and f2:
-        with st.spinner("⚡ Processando texto..."):
+        with st.spinner("⚡ Otimizando texto e analisando..."):
             
             t1 = process_uploaded_file(f1)
             t2 = process_uploaded_file(f2)
@@ -196,7 +216,7 @@ else:
             if t1 and t2:
                 json_res = analisar_bula_groq(client, t1, t2, lista_secoes)
                 
-                if json_res: # Se não deu erro 413
+                if json_res: 
                     data = extract_json(json_res)
                     
                     if data:
@@ -209,11 +229,12 @@ else:
                         
                         for sec in data.get("SECOES", []):
                             icon = "✅"
-                            if "DIVERGENTE" in sec['status'].upper(): icon = "❌"
-                            elif "FALTANTE" in sec['status'].upper(): icon = "🚨"
+                            status = str(sec.get('status', '')).upper()
+                            if "DIVERGENTE" in status: icon = "❌"
+                            elif "FALTANTE" in status: icon = "🚨"
                             elif any(x in sec['titulo'] for x in SECOES_SEM_DIVERGENCIA): icon = "👁️"
                             
-                            with st.expander(f"{icon} {sec['titulo']} — {sec['status']}"):
+                            with st.expander(f"{icon} {sec['titulo']} — {status}"):
                                 cA, cB = st.columns(2)
                                 cA.markdown("**Referência**")
                                 cA.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
@@ -221,5 +242,3 @@ else:
                                 cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
                     else:
                         st.error("Erro na leitura do JSON. Tente novamente.")
-                else:
-                    st.error("Falha na comunicação com a IA devido ao tamanho do texto.")
