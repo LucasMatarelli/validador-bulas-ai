@@ -35,19 +35,56 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- CONEXÃO "HARDCODED" NO FLASH -----------------
+# ----------------- LÓGICA DE DESCOBERTA DE MODELO -----------------
 
-def call_gemini_flash_forced(prompt, parts_payload):
-    # 1. Pega a Chave
-    api_key = None
-    try: api_key = st.secrets["GEMINI_API_KEY"]
-    except: pass
-    if not api_key: api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key: return {"error": "Chave API não encontrada nos Secrets."}
+def get_api_key():
+    try: key = st.secrets["GEMINI_API_KEY"]
+    except: key = os.environ.get("GEMINI_API_KEY")
+    return key
 
-    # 2. URL TRAVADA NO 1.5 FLASH (O ÚNICO REALMENTE GRÁTIS COM COTA ALTA)
-    # Não usamos 'auto-discovery' para não pegar modelos PRO/Pagos sem querer
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+def listar_modelos_disponiveis(api_key):
+    """Consulta a API para ver quais modelos esta chave pode acessar."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            # Filtra apenas modelos que geram conteúdo (chat/texto)
+            modelos = [m['name'] for m in data.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
+            return modelos
+        return []
+    except:
+        return []
+
+def escolher_melhor_modelo(lista_modelos):
+    """Escolhe o melhor modelo baseado na lista disponível."""
+    if not lista_modelos: return None, "Nenhum modelo encontrado."
+    
+    # Ordem de preferência (do melhor/mais barato para o backup)
+    preferencias = [
+        'models/gemini-1.5-flash',
+        'models/gemini-1.5-flash-latest',
+        'models/gemini-1.5-flash-001',
+        'models/gemini-1.5-pro',
+        'models/gemini-1.5-pro-latest',
+        'models/gemini-pro', # O clássico 1.0
+        'models/gemini-1.0-pro'
+    ]
+    
+    for pref in preferencias:
+        if pref in lista_modelos:
+            return pref, "Ideal"
+            
+    # Se não achar nenhum dos preferidos, pega o primeiro da lista que não seja 'vision' puro
+    return lista_modelos[0], "Genérico"
+
+# ----------------- CONEXÃO API -----------------
+
+def call_gemini_dynamic(model_name, prompt, parts_payload, api_key):
+    # Remove 'models/' se duplicado na URL, pois a API pede clean ou com prefixo dependendo do endpoint
+    model_clean = model_name.replace("models/", "")
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_clean}:generateContent?key={api_key}"
     
     headers = {"Content-Type": "application/json"}
     
@@ -62,29 +99,21 @@ def call_gemini_flash_forced(prompt, parts_payload):
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
         ],
         "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.2 # Mais preciso para auditoria
+            "response_mime_type": "application/json"
         }
     }
 
-    # Tentativa com Retries (Para caso de 429 momentâneo)
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(url, headers=headers, data=json.dumps(final_payload), timeout=90)
-            
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 429:
-                # Se der erro de cota, espera 5s e tenta de novo
-                time.sleep(5)
-                continue
-            else:
-                return {"error": f"Erro HTTP {response.status_code}: {response.text}"}
-        except Exception as e:
-            return {"error": str(e)}
-            
-    return {"error": "Servidor ocupado (429) após 3 tentativas."}
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(final_payload), timeout=90)
+        
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 429:
+            return {"error": "Cota excedida (429). Tente novamente em 1 minuto."}
+        else:
+            return {"error": f"Erro HTTP {response.status_code}: {response.text}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 # ----------------- PROCESSAMENTO DE ARQUIVOS -----------------
 def process_uploaded_file(uploaded_file):
@@ -101,24 +130,23 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # 1. Tenta extrair TEXTO puro (Mais leve para a API)
+            # Tenta texto primeiro
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            # Se tiver bastante texto (>100 chars), manda texto. É mais rápido e dá menos erro 429.
             if len(full_text.strip()) > 100:
                  doc.close()
                  return [{"text": f"--- CONTEÚDO PDF TEXTO ({filename}) ---\n{full_text}"}]
 
-            # 2. Se for imagem escaneada, manda imagem (Base64)
+            # Imagem (OCR)
             parts = []
             parts.append({"text": f"--- IMAGENS DO PDF ({filename}) ---"})
-            limit_pages = min(10, len(doc)) # Reduzi para 10 paginas para economizar cota
+            limit_pages = min(8, len(doc)) # Reduzido para 8 para evitar payload gigante
             
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                img_bytes = pix.tobytes("jpeg", jpg_quality=80) # Qualidade 80 para ficar leve
+                img_bytes = pix.tobytes("jpeg", jpg_quality=80)
                 b64_string = base64.b64encode(img_bytes).decode('utf-8')
                 parts.append({
                     "inline_data": {
@@ -139,8 +167,7 @@ def extract_json_from_response(api_response):
         if 'candidates' in api_response and api_response['candidates']:
             content = api_response['candidates'][0]['content']['parts'][0]['text']
             clean = content.replace("```json", "").replace("```", "").strip()
-            # Limpeza extra para JSON sujo
-            clean = re.sub(r'//.*', '', clean) 
+            clean = re.sub(r'//.*', '', clean)
             start = clean.find('{'); end = clean.rfind('}') + 1
             if start != -1 and end != -1: return json.loads(clean[start:end])
             return json.loads(clean)
@@ -153,7 +180,24 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
     
-    st.caption("⚡ Modelo: Gemini 1.5 Flash (Estável)")
+    api_key = get_api_key()
+    if not api_key:
+        st.error("❌ Chave API não encontrada!")
+        st.stop()
+    
+    # --- AUTO-DIAGNÓSTICO ---
+    # Isso vai listar o que funciona na sua conta
+    lista = listar_modelos_disponiveis(api_key)
+    modelo_usado, status_modelo = escolher_melhor_modelo(lista)
+    
+    if modelo_usado:
+        st.success(f"✅ Conectado: {modelo_usado.replace('models/', '')}")
+        with st.expander("Ver modelos disponíveis"):
+            st.write(lista)
+    else:
+        st.error("❌ Nenhum modelo disponível para esta Chave.")
+        st.stop()
+
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 MKT", "🎨 Gráfica"])
 
@@ -178,7 +222,7 @@ else:
     if st.button("🚀 INICIAR AUDITORIA"):
         if not f1 or not f2: st.warning("Upload obrigatório dos dois arquivos.")
         else:
-            with st.spinner("Enviando para o Gemini Flash 1.5..."):
+            with st.spinner(f"Processando com {modelo_usado.replace('models/', '')}..."):
                 p1 = process_uploaded_file(f1); p2 = process_uploaded_file(f2)
                 gc.collect()
 
@@ -196,14 +240,10 @@ else:
                 {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "CONFORME|DIVERGENTE|FALTANTE" }} ] }}
                 """
 
-                res = call_gemini_flash_forced(prompt, payload_parts)
+                res = call_gemini_dynamic(modelo_usado, prompt, payload_parts, api_key)
                 
                 if "error" in res:
-                    st.error(f"Falha na API: {res['error']}")
-                    if "404" in str(res['error']):
-                        st.info("⚠️ Se deu 404 agora, sua chave pode não ter acesso ao Flash ou estar bloqueada.")
-                    elif "429" in str(res['error']):
-                        st.warning("⚠️ Muitos pedidos. Tente novamente em 1 minuto.")
+                    st.error(f"Falha na API ({modelo_usado}): {res['error']}")
                 else:
                     data = extract_json_from_response(res)
                     if not data: st.error("Erro no JSON da resposta.")
