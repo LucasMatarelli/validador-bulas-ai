@@ -19,71 +19,28 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
+# ----------------- ESTILOS CSS -----------------
 st.markdown("""
 <style>
-    /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
-
-    /* Ajuste de Fundo e Fontes */
     .main { background-color: #f4f6f8; }
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    /* ESTILO DO MENU DE NAVEGAÇÃO */
-    .stRadio > div[role="radiogroup"] > label {
-        background-color: white;
-        border: 1px solid #e1e4e8;
-        padding: 12px 15px;
-        border-radius: 8px;
-        margin-bottom: 8px;
-        transition: all 0.2s;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-    }
-    .stRadio > div[role="radiogroup"] > label:hover {
-        background-color: #f0fbf7;
-        border-color: #55a68e;
-        color: #55a68e;
-        cursor: pointer;
-    }
-
-    /* Card Estilizado */
     .stCard {
-        background-color: white;
-        padding: 25px;
-        border-radius: 15px;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.05);
-        margin-bottom: 25px;
-        border: 1px solid #e1e4e8;
-        transition: transform 0.2s;
-        height: 100%;
+        background-color: white; padding: 25px; border-radius: 15px;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px;
+        border: 1px solid #e1e4e8; height: 100%;
     }
-    .stCard:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 15px 30px rgba(0,0,0,0.1);
-        border-color: #55a68e;
-    }
-
-    /* Títulos dos Cards */
     .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
     .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
     
-    /* Destaques */
-    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0 4px; border-radius: 4px; font-weight: 500; }
-    .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; font-weight: 500; }
-    .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
-
-    /* Box de Curva */
-    .curve-box { background-color: #f8f9fa; border-left: 4px solid #55a68e; padding: 10px 15px; margin-top: 15px; font-size: 0.9rem; color: #666; }
-
-    /* Botões */
-    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); }
-    .stButton>button:hover { background-color: #448c75; box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); }
-
-    /* Marcações de Texto */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
+    
+    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
+    .stButton>button:hover { background-color: #448c75; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -106,47 +63,20 @@ SECOES_PROFISSIONAL = [
 ]
 SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- CONFIGURAÇÃO DE SEGURANÇA (GLOBALAIS) -----------------
-SAFETY_SETTINGS_PERMISSIVE = {
+# Configurações de segurança no mínimo para evitar bloqueios falsos
+SAFETY_SETTINGS = {
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# ----------------- FUNÇÕES DE BACKEND (IA BLINDADA) -----------------
-
-def get_gemini_model():
-    api_key = None
+# ----------------- FUNÇÕES AUXILIARES -----------------
+def get_api_key():
     try:
-        api_key = st.secrets["GEMINI_API_KEY"]
-    except Exception:
-        pass 
-
-    if not api_key:
-        api_key = os.environ.get("GEMINI_API_KEY")
-
-    if not api_key:
-        return None, "Chave API não configurada nos Secrets!"
-
-    genai.configure(api_key=api_key)
-    
-    # Lista de modelos (Fallbacks)
-    modelos_para_testar = [
-        'models/gemini-2.5-flash', 
-        'models/gemini-1.5-pro',
-        'models/gemini-2.0-flash-exp', 
-        'models/gemini-1.5-flash'
-    ]
-    
-    for model_name in modelos_para_testar:
-        try:
-            model = genai.GenerativeModel(model_name, safety_settings=SAFETY_SETTINGS_PERMISSIVE)
-            return model, model_name
-        except Exception:
-            continue
-            
-    return genai.GenerativeModel('models/gemini-1.5-flash', safety_settings=SAFETY_SETTINGS_PERMISSIVE), "models/gemini-1.5-flash (Fallback)"
+        return st.secrets["GEMINI_API_KEY"]
+    except:
+        return os.environ.get("GEMINI_API_KEY")
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -161,329 +91,206 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             images = []
             limit_pages = min(12, len(doc))
-            
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                try:
-                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
-                except TypeError:
-                    try:
-                        img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
-                    except:
-                        img_byte_arr = io.BytesIO(pix.tobytes("png"))
-                        
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
-                pix = None
-            
-            doc.close()
-            gc.collect()
+            doc.close(); gc.collect()
             return {"type": "images", "data": images}
     except Exception as e:
-        st.error(f"Erro ao processar arquivo {uploaded_file.name}: {e}")
+        st.error(f"Erro arquivo: {e}")
         return None
-    return None
-
-def clean_json_response(text):
-    text = text.replace("```json", "").replace("```", "").strip()
-    text = re.sub(r'//.*', '', text)
-    if text.startswith("json"): text = text[4:]
-    return text
 
 def extract_json(text):
     try:
-        clean = clean_json_response(text)
-        start = clean.find('{')
-        end = clean.rfind('}') + 1
-        if start != -1 and end != -1: return json.loads(clean[start:end])
-        return json.loads(clean)
+        text = text.replace("```json", "").replace("```", "").strip()
+        text = re.sub(r'//.*', '', text) # Remove comentários
+        if text.startswith("json"): text = text[4:]
+        start = text.find('{'); end = text.rfind('}') + 1
+        if start != -1 and end != -1: return json.loads(text[start:end])
+        return json.loads(text)
     except: return None
 
-# --- FUNÇÃO ULTRA BLINDADA (EVITA CRASH TOTAL) ---
-def gerar_json_blindado(model, prompt_setup, payload_arquivos):
+# ----------------- FUNÇÃO DE GERAÇÃO COM ROTAÇÃO DE MODELOS -----------------
+def gerar_json_blindado(prompt_setup, payload_arquivos):
     """
-    Gera JSON. Se der erro de Copyright (Finish Reason 4), tenta bypass.
-    Se o bypass falhar, RETORNA UM JSON DE ERRO para não travar o app.
+    Tenta gerar o JSON. Se um modelo bloquear, pula para o próximo automaticamente.
     """
-    full_prompt = [prompt_setup] + payload_arquivos
-    
-    # 1. TENTATIVA PRINCIPAL
-    try:
-        response = model.generate_content(
-            full_prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        
-        # Verifica se tem conteúdo ANTES de acessar .text
-        if not response.parts:
-            if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-                raise ValueError("Bloqueio de Copyright (Tentativa 1)")
-            else:
-                raise ValueError("Resposta vazia desconhecida")
-                
-        return response.text
+    api_key = get_api_key()
+    if not api_key: st.error("Chave API não encontrada!"); st.stop()
+    genai.configure(api_key=api_key)
 
-    # 2. SE DER ERRO, TENTA O MODO DE COMPATIBILIDADE
-    except Exception as e:
-        st.warning("⚠️ Detectado bloqueio de conteúdo. Tentando modo de compatibilidade...")
-        time.sleep(1)
-        
-        # Prompt modificado para pedir resumo em vez de cópia literal
-        instrucao_bypass = """
-        CRÍTICO: O sistema detectou bloqueio de copyright.
-        PARA EVITAR O BLOQUEIO: Não transcreva trechos longos literalmente.
-        Resuma o conteúdo das seções mantendo o sentido para fins de auditoria.
-        Mantenha estritamente o formato JSON solicitado.
-        """
-        
-        prompt_bypass = [prompt_setup + "\n" + instrucao_bypass] + payload_arquivos
-        
+    # LISTA DE PRIORIDADE: Tenta o Flash -> Se falhar, tenta o Pro -> Se falhar, tenta o Exp
+    modelos = [
+        'models/gemini-1.5-flash',       # Mais rápido
+        'models/gemini-1.5-pro',         # Mais inteligente (menos chance de erro de copyright)
+        'models/gemini-2.0-flash-exp'    # Experimental
+    ]
+    
+    full_prompt = [prompt_setup] + payload_arquivos
+
+    last_error = None
+
+    # BARRA DE PROGRESSO INTERNA
+    status_text = st.empty()
+
+    for i, model_name in enumerate(modelos):
         try:
-            response_retry = model.generate_content(
-                prompt_bypass,
+            nome_limpo = model_name.split('/')[-1]
+            status_text.markdown(f"🔄 Tentativa {i+1}/3: Usando modelo **{nome_limpo}**...")
+            
+            model = genai.GenerativeModel(model_name, safety_settings=SAFETY_SETTINGS)
+            
+            response = model.generate_content(
+                full_prompt,
                 generation_config={"response_mime_type": "application/json"}
             )
             
-            # Verifica novamente se bloqueou o bypass
-            if not response_retry.parts:
-                raise ValueError("Bloqueio Total (Tentativa 2)")
+            # Verifica se bloqueou por Copyright (finish reason 4) ou veio vazio
+            blocked = False
+            if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
+                blocked = True
+            if not response.parts:
+                blocked = True
                 
-            return response_retry.text
-
-        # 3. FALHA TOTAL: RETORNA JSON DE ERRO (PARA NÃO QUEBRAR O APP)
-        except Exception as e2:
-            st.error("❌ O Google Gemini bloqueou completamente a leitura deste arquivo por Direitos Autorais.")
+            if blocked:
+                raise ValueError(f"Bloqueio de Copyright no modelo {nome_limpo}")
             
-            # Retorna um JSON válido avisando do erro nos campos
-            json_erro = """
-            {
-                "METADADOS": { 
-                    "score": 0, 
-                    "datas": ["BLOQUEIO DE COPYRIGHT"] 
-                },
-                "SECOES": [
-                    { 
-                        "titulo": "ERRO DE LEITURA (COPYRIGHT)", 
-                        "ref": "O conteúdo deste arquivo foi bloqueado pelos filtros de Copyright do Google.", 
-                        "bel": "Tente enviar o texto em partes menores ou imagens recortadas.", 
-                        "status": "FALTANTE" 
-                    }
-                ]
-            }
-            """
-            return json_erro
+            # SE CHEGOU AQUI, SUCESSO!
+            status_text.empty()
+            return response.text
 
-# ----------------- BARRA LATERAL -----------------
+        except Exception as e:
+            last_error = e
+            # Se falhar, continua o loop para o próximo modelo
+            print(f"Falha no modelo {model_name}: {e}")
+            time.sleep(1) 
+
+    # SE TODOS FALHAREM
+    status_text.empty()
+    st.error("❌ Todos os modelos falharam devido a restrições de Copyright.")
+    
+    # Retorna JSON de erro para não quebrar a UI
+    return """
+    {
+        "METADADOS": { "score": 0, "datas": ["FALHA GERAL"] },
+        "SECOES": [
+            { "titulo": "ERRO DE LEITURA", "ref": "Bloqueio persistente em todos os modelos.", "bel": "Tente enviar menos páginas.", "status": "FALTANTE" }
+        ]
+    }
+    """
+
+# ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
     
-    model_instance, model_name_used = get_gemini_model()
-    
-    if model_instance:
-        st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
+    if get_api_key():
+        st.success("✅ API Configurada")
     else:
-        st.error("❌ Erro de Conexão")
+        st.error("❌ Sem Chave API")
     
     st.divider()
-    
-    pagina = st.radio(
-        "Navegação:",
-        ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"]
-    )
-    
+    pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
 
-# ----------------- PÁGINA INICIAL -----------------
 if pagina == "🏠 Início":
-    st.markdown("""
-    <div style="text-align: center; padding: 30px 20px;">
-        <h1 style="color: #55a68e; font-size: 3rem; margin-bottom: 10px;">Validador Inteligente</h1>
-        <p style="font-size: 20px; color: #7f8c8d;">Central de auditoria e conformidade de bulas farmacêuticas com IA.</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
+    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Inteligente</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    
-    # Cards informativos
-    with c1:
-        st.markdown("""
-        <div class="stCard">
-            <div class="card-title">💊 Ref x BELFAR</div>
-            <div class="card-text">Comparação Bula Padrão vs Bula Belfar.</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c2:
-        st.markdown("""
-        <div class="stCard">
-            <div class="card-title">📋 Conferência MKT</div>
-            <div class="card-text">Validação de material de Marketing.</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c3:
-        st.markdown("""
-        <div class="stCard">
-            <div class="card-title">🎨 Gráfica x Arte</div>
-            <div class="card-text">Conferência de prova gráfica.</div>
-        </div>
-        """, unsafe_allow_html=True)
+    c1.info("**Ref x BELFAR**: Comparação de Bula Padrão vs Bula Belfar.")
+    c2.info("**Conferência MKT**: Validação de materiais de marketing.")
+    c3.info("**Gráfica x Arte**: Conferência final de pré-impressão.")
 
-# ----------------- FERRAMENTA -----------------
 else:
     st.markdown(f"## {pagina}")
     
     lista_secoes = SECOES_PACIENTE
     nome_tipo = "Paciente"
-    
-    label_box1 = "Arquivo 1"
-    label_box2 = "Arquivo 2"
+    label_box1, label_box2 = "Arquivo 1", "Arquivo 2"
     
     if pagina == "💊 Ref x BELFAR":
-        label_box1 = "📄 Documento de Referência"
-        label_box2 = "📄 Documento BELFAR"
+        label_box1, label_box2 = "📄 Referência", "📄 BELFAR"
         col_tipo, _ = st.columns([1, 2])
-        with col_tipo:
-            tipo_bula = st.radio("Tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
-            if tipo_bula == "Profissional":
-                lista_secoes = SECOES_PROFISSIONAL
-                nome_tipo = "Profissional"
+        if col_tipo.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True) == "Profissional":
+            lista_secoes = SECOES_PROFISSIONAL; nome_tipo = "Profissional"
 
-    elif pagina == "📋 Conferência MKT":
-        label_box1 = "📄 Arquivo ANVISA"
-        label_box2 = "📄 Arquivo MKT"
-
-    elif pagina == "🎨 Gráfica x Arte":
-        label_box1 = "📄 Arte Vigente"
-        label_box2 = "📄 PDF da Gráfica"
+    elif pagina == "📋 Conferência MKT": label_box1, label_box2 = "📄 ANVISA", "📄 MKT"
+    elif pagina == "🎨 Gráfica x Arte": label_box1, label_box2 = "📄 Arte Vigente", "📄 PDF Gráfica"
     
     st.divider()
-    
     c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f"##### {label_box1}")
-        f1 = st.file_uploader("", type=["pdf", "docx"], key="f1")
-    with c2:
-        st.markdown(f"##### {label_box2}")
-        f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
+    f1 = c1.file_uploader(label_box1, type=["pdf", "docx"], key="f1")
+    f2 = c2.file_uploader(label_box2, type=["pdf", "docx"], key="f2")
         
-    st.write("") 
-    if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
-        if not f1 or not f2:
-            st.warning("⚠️ Por favor, faça o upload dos dois arquivos para continuar.")
-        else:
-            with st.spinner(f"🤖 Analisando com {model_name_used.split('/')[-1]}..."):
-                try:
-                    model = model_instance 
-                    if not model:
-                        st.error("Erro crítico: Chave API não detectada.")
-                        st.stop()
-
-                    d1 = process_uploaded_file(f1)
-                    d2 = process_uploaded_file(f2)
-                    gc.collect()
-
-                    if not d1 or not d2:
-                        st.error("Falha ao ler os arquivos.")
-                        st.stop()
-
-                    payload = []
-                    payload.append("CONTEXTO: Auditoria Farmacêutica. Comparação de textos.")
+    if st.button("🚀 INICIAR AUDITORIA") and f1 and f2:
+        with st.spinner("🤖 Lendo arquivos e processando..."):
+            d1 = process_uploaded_file(f1)
+            d2 = process_uploaded_file(f2)
+            
+            if d1 and d2:
+                payload = ["CONTEXTO: Auditoria Regulatória de Bula (RDC 47/2009). Dados públicos de saúde."]
+                
+                # Monta payload
+                doc1_label = label_box1.replace("📄 ", "").upper()
+                doc2_label = label_box2.replace("📄 ", "").upper()
+                
+                if d1['type'] == 'text': payload.append(f"--- {doc1_label} ---\n{d1['data']}")
+                else: payload.append(f"--- {doc1_label} ---"); payload.extend(d1['data'])
+                
+                if d2['type'] == 'text': payload.append(f"--- {doc2_label} ---\n{d2['data']}")
+                else: payload.append(f"--- {doc2_label} ---"); payload.extend(d2['data'])
+                
+                secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
+                
+                # PROMPT CORRIGIDO (MARCAÇÃO DUPLA E CONTEXTO LEGAL)
+                prompt = f"""
+                Atue como Auditor Farmacêutico Especialista.
+                OBJETIVO: Comparar textos regulatórios para conformidade sanitária.
+                
+                SEÇÕES A ANALISAR ({nome_tipo}):
+                {secoes_str}
+                
+                === REGRA 1: MARCAÇÃO BILATERAL ===
+                Aplique as tags <mark> EM AMBOS os textos (ref e bel) sempre que encontrar a ocorrência.
+                - DIVERGÊNCIAS: Use <mark class='diff'>texto</mark> nos dois lados.
+                - ERROS ORTOGRÁFICOS: Use <mark class='ort'>texto</mark> nos dois lados.
+                
+                === REGRA 2: DATA DA ANVISA ===
+                Busque "Aprovado em dd/mm/aaaa" nos DIZERES LEGAIS.
+                IMPORTANTE: Se a data existir no texto, aplique <mark class='anvisa'>dd/mm/aaaa</mark> NO TEXTO ONDE ELA APARECE (seja Ref, seja Bel, ou ambos).
+                
+                SAÍDA JSON:
+                {{
+                    "METADADOS": {{ "score": 0-100, "datas": ["lista de datas"] }},
+                    "SECOES": [
+                        {{ "titulo": "NOME", "ref": "texto html...", "bel": "texto html...", "status": "STATUS" }}
+                    ]
+                }}
+                """
+                
+                # CHAMA A FUNÇÃO QUE TROCA DE MODELO SE DER ERRO
+                json_res = gerar_json_blindado(prompt, payload)
+                data = extract_json(json_res)
+                
+                if data:
+                    meta = data.get("METADADOS", {})
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Conformidade", f"{meta.get('score', 0)}%")
+                    m2.metric("Seções", len(data.get("SECOES", [])))
+                    m3.metric("Datas", ", ".join(meta.get("datas", [])) or "--")
+                    st.divider()
                     
-                    nome_doc1 = label_box1.replace("📄 ", "").upper()
-                    nome_doc2 = label_box2.replace("📄 ", "").upper()
-
-                    if d1['type'] == 'text': payload.append(f"--- {nome_doc1} (REF) ---\n{d1['data']}")
-                    else: payload.append(f"--- {nome_doc1} (REF) ---"); payload.extend(d1['data'])
-                    
-                    if d2['type'] == 'text': payload.append(f"--- {nome_doc2} (BEL) ---\n{d2['data']}")
-                    else: payload.append(f"--- {nome_doc2} (BEL) ---"); payload.extend(d2['data'])
-
-                    secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
-                    
-                    # --- PROMPT CORRIGIDO PARA MARCAÇÃO NOS DOIS LADOS ---
-                    prompt = f"""
-                    Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens/textos.
-                    
-                    LISTA DE SEÇÕES A ANALISAR ({nome_tipo}):
-                    {secoes_str}
-
-                    === REGRA ZERO: LIMPEZA ABSOLUTA DE TEXTO ===
-                    1. Ao extrair, copie APENAS O CORPO DO TEXTO. Não copie o título da seção.
-                    2. Remova repetições de cabeçalho.
-                    
-                    === REGRA 1: MARCAÇÃO BILATERAL (IMPORTANTE) ===
-                    Você deve analisar e marcar erros/diferenças EM AMBOS OS TEXTOS gerados no JSON (campo 'ref' e campo 'bel').
-                    
-                    - DIVERGÊNCIAS: Se houver diferença entre a Referência e o Belfar, use <mark class='diff'> na palavra/frase divergente NOS DOIS LADOS.
-                    - ORTOGRAFIA: Se houver erro de português, use <mark class='ort'> NOS DOIS LADOS onde o erro ocorrer.
-
-                    === REGRA 2: DATA DA ANVISA (COR AZUL) ===
-                    - Procure no rodapé de "DIZERES LEGAIS" a frase indicando aprovação (ex: "Aprovado em dd/mm/aaaa").
-                    - VOCÊ DEVE APLICAR A TAG <mark class='anvisa'>dd/mm/aaaa</mark> NOS DOIS TEXTOS (REFERÊNCIA E BELFAR).
-                    - Se a data estiver presente no texto de Referência, marque-a de azul.
-                    - Se a data estiver presente no texto Belfar, marque-a de azul.
-                    - NÃO DEIXE A REFERÊNCIA SEM MARCAÇÃO SE A DATA ESTIVER LÁ.
-
-                    SAÍDA JSON OBRIGATÓRIA:
-                    {{
-                        "METADADOS": {{ "score": 0 a 100, "datas": ["todas as datas encontradas"] }},
-                        "SECOES": [
-                            {{ 
-                                "titulo": "NOME SEÇÃO", 
-                                "ref": "texto da Referência com tags <mark> aplicadas...", 
-                                "bel": "texto da Belfar com tags <mark> aplicadas...", 
-                                "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" 
-                            }}
-                        ]
-                    }}
-                    """
-
-                    # Chama função blindada
-                    json_text_result = gerar_json_blindado(model, prompt, payload)
-                    
-                    if not json_text_result:
-                         st.error("Falha ao obter resposta da IA.")
-                         st.stop()
-
-                    data = extract_json(json_text_result)
-                    
-                    if not data:
-                        st.error("A IA não retornou um JSON válido.")
-                    else:
-                        meta = data.get("METADADOS", {})
+                    for sec in data.get("SECOES", []):
+                        icon = "✅"
+                        if "DIVERGENTE" in sec['status']: icon = "❌"
+                        elif "FALTANTE" in sec['status']: icon = "🚨"
+                        elif any(x in sec['titulo'] for x in SECOES_SEM_DIVERGENCIA): icon = "👁️"
                         
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("Conformidade", f"{meta.get('score', 0)}%")
-                        m2.metric("Seções", len(data.get("SECOES", [])))
-                        m3.metric("Datas", ", ".join(meta.get("datas", [])) or "--")
-                        
-                        st.divider()
-                        
-                        for sec in data.get("SECOES", []):
-                            status = sec.get('status', 'N/A')
-                            titulo = sec.get('titulo', '').upper()
-                            
-                            icon = "✅"
-                            if "DIVERGENTE" in status: icon = "❌"
-                            elif "FALTANTE" in status: icon = "🚨"
-                            
-                            if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
-                                icon = "👁️" 
-                                if "DIVERGENTE" in status:
-                                    status = "VISUALIZAÇÃO (Divergências Ignoradas)"
-                                else:
-                                    status = "VISUALIZAÇÃO"
-                            
-                            with st.expander(f"{icon} {sec['titulo']} — {status}"):
-                                cA, cB = st.columns(2)
-                                with cA:
-                                    st.markdown(f"**{nome_doc1}**")
-                                    # Renderiza HTML com as marcações
-                                    st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
-                                with cB:
-                                    st.markdown(f"**{nome_doc2}**")
-                                    # Renderiza HTML com as marcações
-                                    st.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
-
-                except Exception as e:
-                    st.error(f"Erro durante a análise: {e}")
+                        with st.expander(f"{icon} {sec['titulo']} — {sec['status']}"):
+                            cA, cB = st.columns(2)
+                            cA.markdown(f"**{doc1_label}**"); cA.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
+                            cB.markdown(f"**{doc2_label}**"); cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
+                else:
+                    st.error("Erro ao processar JSON da IA.")
