@@ -9,8 +9,8 @@ import os
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Cohere (V3 - Robust)",
-    page_icon="🛡️",
+    page_title="Validador Rápido (Cohere)",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -85,11 +85,11 @@ def extract_json(text):
     Função Robustecida para limpar a sujeira da IA e pegar só o JSON.
     """
     try:
-        # Remove blocos de código Markdown (```json ... ```)
+        # Remove blocos de código Markdown
         text = re.sub(r'```json\s*', '', text, flags=re.IGNORECASE)
         text = re.sub(r'```', '', text)
         
-        # Procura onde começa o primeiro { e onde termina o último }
+        # Encontra o JSON válido
         start_idx = text.find('{')
         end_idx = text.rfind('}') + 1
         
@@ -97,55 +97,56 @@ def extract_json(text):
             clean_json_str = text[start_idx:end_idx]
             return json.loads(clean_json_str)
         
-        # Se falhar, tenta carregar o texto bruto (vai que é JSON puro)
         return json.loads(text)
     except Exception as e:
         return None
 
-# ----------------- LÓGICA COHERE -----------------
+# ----------------- LÓGICA COHERE (OTIMIZADA PARA VELOCIDADE) -----------------
 def analisar_bula_cohere(client, texto_ref, texto_bel, secoes):
     
     lista_secoes_str = "\n".join([f"- {s}" for s in secoes])
     
     mensagem = f"""
-    Você é um Auditor Farmacêutico Especialista (ANVISA).
+    Você é um Auditor Farmacêutico (ANVISA).
     
     TAREFA: Compare os dois textos de bula abaixo (Referência vs Belfar).
     
-    INSTRUÇÕES DE EXTRAÇÃO:
-    1. Para cada seção listada, extraia TODO o texto contido nela. NÃO RESUMA.
-    2. Copie o texto até encontrar o título da próxima seção.
+    INSTRUÇÕES DE EXTRAÇÃO (CRÍTICO):
+    1. Extraia o texto COMPLETO de cada seção. Não resuma.
+    2. Copie até encontrar o próximo título.
     
     INSTRUÇÕES DE COMPARAÇÃO (HTML):
-    - DIVERGÊNCIAS: Use <mark class='diff'>texto diferente</mark> NOS DOIS LADOS.
-    - ERROS DE PORTUGUÊS: Use <mark class='ort'>erro</mark>.
-    - DATA DE APROVAÇÃO: Procure "Aprovado em dd/mm/aaaa" nos Dizeres Legais e marque com <mark class='anvisa'>data</mark>.
+    - DIVERGÊNCIAS: Use <mark class='diff'>texto</mark> NOS DOIS LADOS.
+    - ERROS: Use <mark class='ort'>erro</mark>.
+    - DATA: Busque "Aprovado em dd/mm/aaaa" nos Dizeres Legais e use <mark class='anvisa'>data</mark>.
     
-    FORMATO JSON OBRIGATÓRIO (NÃO ESCREVA NADA ANTES NEM DEPOIS DO JSON):
+    FORMATO JSON OBRIGATÓRIO:
     {{
         "METADADOS": {{ "score": 0 a 100, "datas": ["lista de datas"] }},
         "SECOES": [
-            {{ "titulo": "NOME DA SEÇÃO", "ref": "texto da referência...", "bel": "texto da belfar...", "status": "CONFORME" ou "DIVERGENTE" }}
+            {{ "titulo": "NOME SEÇÃO", "ref": "texto...", "bel": "texto...", "status": "CONFORME" ou "DIVERGENTE" }}
         ]
     }}
     
-    LISTA DE SEÇÕES A BUSCAR:
+    LISTA DE SEÇÕES:
     {lista_secoes_str}
     
-    --- DOCUMENTO REFERÊNCIA ---
+    --- DOC REFERÊNCIA ---
     {texto_ref}
     
-    --- DOCUMENTO BELFAR ---
+    --- DOC BELFAR ---
     {texto_bel}
     """
 
     try:
-        # Versão Corrigida do Modelo
+        # MUDANÇA 1: Usando "command-r-08-2024" (Mais rápido que o Plus)
+        # MUDANÇA 2: max_tokens=20000 (Para não cortar o texto no meio)
         response = client.chat(
-            model="command-r-plus-08-2024", 
+            model="command-r-08-2024", 
             message=mensagem,
-            temperature=0.0, # Zero criatividade para evitar "alucinação" de texto extra
-            preamble="Você é um motor de extração JSON. Você não fala, apenas retorna JSON."
+            temperature=0.0,
+            max_tokens=20000, 
+            preamble="Retorne APENAS o JSON. Sem texto antes ou depois."
         )
         return response.text
     except Exception as e:
@@ -158,15 +159,15 @@ with st.sidebar:
     st.title("Validador Cohere")
     
     client = get_cohere_client()
-    if client: st.success("✅ Cohere Ativo")
+    if client: st.success("✅ Cohere Ativo (Modo Turbo)")
     else: st.error("❌ Configure o secrets.toml"); st.stop()
     
     st.divider()
     pagina = st.radio("Menu:", ["Início", "Comparar Bulas"])
 
 if pagina == "Início":
-    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Enterprise (V3)</h1>", unsafe_allow_html=True)
-    st.info("Versão com extrator JSON reforçado e modelo atualizado (08-2024).")
+    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Rápido (Command R)</h1>", unsafe_allow_html=True)
+    st.info("Otimizado para velocidade e grandes volumes de texto.")
 
 else:
     st.markdown("## Comparador de Bulas")
@@ -180,7 +181,7 @@ else:
     f2 = c2.file_uploader("Belfar (PDF/DOCX)", type=["pdf", "docx"])
 
     if st.button("🚀 INICIAR AUDITORIA") and f1 and f2:
-        with st.spinner("🤖 Analisando documentos..."):
+        with st.spinner("🤖 Processando rapidamente..."):
             
             t1 = process_uploaded_file(f1)
             t2 = process_uploaded_file(f2)
@@ -214,7 +215,5 @@ else:
                                 cB.markdown("**Belfar**")
                                 cB.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
                     else:
-                        st.error("Erro na leitura do JSON. Veja abaixo o que a IA retornou:")
-                        st.text_area("Resposta Bruta da IA (Debug):", value=json_res, height=300)
-                else:
-                    st.error("Sem resposta da IA.")
+                        st.error("A IA não retornou um JSON válido. Veja o erro abaixo:")
+                        st.text_area("Resposta Bruta:", value=json_res, height=300)
