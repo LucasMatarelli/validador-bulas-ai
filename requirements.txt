@@ -1,5 +1,5 @@
 streamlit
-groq
+cohere
 PyMuPDF
 python-docx
 Pillow
