@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS PERSONALIZADOS (MANTIDOS) -----------------
+# ----------------- ESTILOS CSS PERSONALIZADOS -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
@@ -124,54 +124,77 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    # 2. LISTA DE MODELOS COM PRIORIDADE PARA O 2.5 FLASH
-    # Inclui fallbacks (1.5 Pro) caso o Flash bloqueie por Copyright
+    # 2. LISTA DE MODELOS COM PRIORIDADE
     modelos_para_testar = [
-        'models/gemini-2.5-flash', 
-        'models/gemini-1.5-pro',
-        'models/gemini-2.0-flash-exp', 
-        'models/gemini-1.5-flash'
+        'models/gemini-2.0-flash-exp', # Mais rápido e permissivo
+        'models/gemini-1.5-flash',
+        'models/gemini-1.5-pro'
     ]
+    
+    # CORREÇÃO: Safety Settings globais para a instanciação
+    # Define BLOCK_NONE para tudo para evitar falsos positivos de Copyright/Medical Advice
+    safety_config = {
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
     
     for model_name in modelos_para_testar:
         try:
-            model = genai.GenerativeModel(model_name)
+            # Instancia o modelo já com as configurações de segurança
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                safety_settings=safety_config
+            )
             return model, model_name
         except Exception:
             continue
-    # Se nenhum funcionar
-    return genai.GenerativeModel('models/gemini-1.5-flash'), "models/gemini-1.5-flash (Fallback)"
+    
+    # Se nenhum funcionar, retorna o padrão com fallback
+    return genai.GenerativeModel('models/gemini-1.5-flash', safety_settings=safety_config), "models/gemini-1.5-flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
+        
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text}
+            
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            images = []
             
-            # Limite de páginas para performance
+            # --- TENTATIVA HÍBRIDA (TEXTO PRIMEIRO) ---
+            # Para evitar erros de Copyright em imagens, tentamos extrair texto puro primeiro.
+            # Se o PDF tiver texto selecionável, usamos ele (muito mais rápido e seguro).
+            full_text = ""
+            for page in doc:
+                full_text += page.get_text() + "\n"
+            
+            # Se conseguiu extrair uma quantidade razoável de texto, usa o modo TEXTO
+            if len(full_text.strip()) > 50:
+                 doc.close()
+                 return {"type": "text", "data": full_text}
+
+            # --- FALLBACK PARA IMAGEM (OCR) ---
+            # Se for PDF escaneado (sem texto), usa as imagens
+            images = []
             limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 
-                # 3. BLINDAGEM CONTRA ERRO DE QUALITY (PyMuPDF versions)
                 try:
-                    # Tenta sintaxe nova
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except TypeError:
                     try:
-                        # Tenta sintaxe antiga
                         img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
                     except:
-                        # Fallback infalível (PNG)
                         img_byte_arr = io.BytesIO(pix.tobytes("png"))
                         
                 images.append(Image.open(img_byte_arr))
@@ -180,6 +203,7 @@ def process_uploaded_file(uploaded_file):
             doc.close()
             gc.collect()
             return {"type": "images", "data": images}
+            
     except Exception as e:
         st.error(f"Erro ao processar arquivo {uploaded_file.name}: {e}")
         return None
@@ -205,7 +229,6 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
     
-    # Inicializa modelo
     model_instance, model_name_used = get_gemini_model()
     
     if model_instance:
@@ -216,7 +239,6 @@ with st.sidebar:
     
     st.divider()
     
-    # Menu de Navegação
     pagina = st.radio(
         "Navegação:",
         ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"]
@@ -342,12 +364,13 @@ else:
                         st.stop()
 
                     payload = []
-                    # Contexto adicionado para evitar bloqueio total de Copyright
-                    payload.append("CONTEXTO: Auditoria Interna Confidencial. Uso proprietário da Belfar.")
+                    # CORREÇÃO: Contexto explícito para evitar Copyright
+                    payload.append("CONTEXTO: Documentos Regulatórios Públicos da ANVISA (Brasil). Análise de conformidade técnica para saúde pública. NÃO é material literário.")
                     
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
 
+                    # Lógica inteligente: Se for texto, manda texto. Se for imagem, manda imagem.
                     if d1['type'] == 'text': payload.append(f"--- {nome_doc1} ---\n{d1['data']}")
                     else: payload.append(f"--- {nome_doc1} ---"); payload.extend(d1['data'])
                     
@@ -356,9 +379,8 @@ else:
 
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
-                    # 4. PROMPT BLINDADO CONTRA TÍTULOS E SUJEIRA
                     prompt = f"""
-                    Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens (até 12 páginas) para encontrar o texto.
+                    Atue como Auditor Farmacêutico RÍGIDO (ANVISA).
                     
                     DOCUMENTOS:
                     1. {nome_doc1} (Referência/Padrão)
@@ -389,6 +411,8 @@ else:
                     }}
                     """
 
+                    # CORREÇÃO FINAL: As safety settings devem ser passadas aqui também por garantia
+                    # e definimos BLOCK_NONE para todas as categorias.
                     response = model.generate_content(
                         [prompt] + payload,
                         generation_config={"response_mime_type": "application/json"},
@@ -403,13 +427,7 @@ else:
                     # 5. TRATAMENTO DE BLOQUEIO DE COPYRIGHT (FINISH REASON 4)
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                         st.error("⚠️ **Alerta de Conteúdo Protegido (Copyright)**")
-                        st.warning("""
-                        O Google Gemini interrompeu a leitura por detectar conteúdo protegido (Bula).
-                        
-                        **Ações Sugeridas:**
-                        1. Tente recortar e enviar apenas a parte da bula que você quer analisar.
-                        2. O sistema tentará usar um modelo alternativo automaticamente na próxima vez.
-                        """)
+                        st.warning("O sistema detectou um bloqueio. Tente recortar apenas o texto ou usar um arquivo DOCX.")
                     else:
                         data = extract_json(response.text)
                         if not data:
