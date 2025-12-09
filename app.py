@@ -1,5 +1,6 @@
 import streamlit as st
-import requests
+import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import fitz  # PyMuPDF
 import docx
 import io
@@ -7,8 +8,6 @@ import json
 import re
 import os
 import gc
-import base64
-import time
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
@@ -19,244 +18,457 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS -----------------
+# ----------------- ESTILOS CSS PERSONALIZADOS (MANTIDOS) -----------------
 st.markdown("""
 <style>
+    /* OCULTA A BARRA SUPERIOR (TOOLBAR) */
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
+
+    /* Ajuste de Fundo e Fontes */
     .main { background-color: #f4f6f8; }
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-    .stCard { background-color: white; padding: 25px; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px; border: 1px solid #e1e4e8; }
+    
+    /* ESTILO DO MENU DE NAVEGAÇÃO */
+    .stRadio > div[role="radiogroup"] > label {
+        background-color: white;
+        border: 1px solid #e1e4e8;
+        padding: 12px 15px;
+        border-radius: 8px;
+        margin-bottom: 8px;
+        transition: all 0.2s;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    .stRadio > div[role="radiogroup"] > label:hover {
+        background-color: #f0fbf7;
+        border-color: #55a68e;
+        color: #55a68e;
+        cursor: pointer;
+    }
+
+    /* Card Estilizado */
+    .stCard {
+        background-color: white;
+        padding: 25px;
+        border-radius: 15px;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.05);
+        margin-bottom: 25px;
+        border: 1px solid #e1e4e8;
+        transition: transform 0.2s;
+        height: 100%;
+    }
+    .stCard:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 15px 30px rgba(0,0,0,0.1);
+        border-color: #55a68e;
+    }
+
+    /* Títulos dos Cards */
     .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
-    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; }
-    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; }
-    mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; font-weight: bold; }
+    .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
+    
+    /* Destaques */
+    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+    .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+    .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+
+    /* Box de Curva */
+    .curve-box { background-color: #f8f9fa; border-left: 4px solid #55a68e; padding: 10px 15px; margin-top: 15px; font-size: 0.9rem; color: #666; }
+
+    /* Botões */
+    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); }
+    .stButton>button:hover { background-color: #448c75; box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); }
+
+    /* Marcações de Texto */
+    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
+    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
+    mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- LÓGICA DE DESCOBERTA DE MODELO -----------------
+# ----------------- CONSTANTES -----------------
+SECOES_PACIENTE = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
+    "DIZERES LEGAIS"
+]
+SECOES_PROFISSIONAL = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
+    "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
+    "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
+    "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
+]
+SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-def get_api_key():
-    try: key = st.secrets["GEMINI_API_KEY"]
-    except: key = os.environ.get("GEMINI_API_KEY")
-    return key
+# ----------------- FUNÇÕES DE BACKEND (IA - CORRIGIDA) -----------------
 
-def listar_modelos_disponiveis(api_key):
-    """Consulta a API para ver quais modelos esta chave pode acessar."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+def get_gemini_model():
+    # 1. TENTA LER A CHAVE DOS SECRETS DE FORMA SEGURA
+    api_key = None
     try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            # Filtra apenas modelos que geram conteúdo (chat/texto)
-            modelos = [m['name'] for m in data.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
-            return modelos
-        return []
-    except:
-        return []
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        pass 
 
-def escolher_melhor_modelo(lista_modelos):
-    """Escolhe o melhor modelo baseado na lista disponível."""
-    if not lista_modelos: return None, "Nenhum modelo encontrado."
-    
-    # Ordem de preferência (do melhor/mais barato para o backup)
-    preferencias = [
-        'models/gemini-1.5-flash',
-        'models/gemini-1.5-flash-latest',
-        'models/gemini-1.5-flash-001',
-        'models/gemini-1.5-pro',
-        'models/gemini-1.5-pro-latest',
-        'models/gemini-pro', # O clássico 1.0
-        'models/gemini-1.0-pro'
-    ]
-    
-    for pref in preferencias:
-        if pref in lista_modelos:
-            return pref, "Ideal"
-            
-    # Se não achar nenhum dos preferidos, pega o primeiro da lista que não seja 'vision' puro
-    return lista_modelos[0], "Genérico"
+    if not api_key:
+        api_key = os.environ.get("GEMINI_API_KEY")
 
-# ----------------- CONEXÃO API -----------------
+    if not api_key:
+        return None, "Chave API não configurada nos Secrets!"
 
-def call_gemini_dynamic(model_name, prompt, parts_payload, api_key):
-    # Remove 'models/' se duplicado na URL, pois a API pede clean ou com prefixo dependendo do endpoint
-    model_clean = model_name.replace("models/", "")
+    genai.configure(api_key=api_key)
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_clean}:generateContent?key={api_key}"
-    
-    headers = {"Content-Type": "application/json"}
-    
-    final_payload = {
-        "contents": [{
-            "parts": [{"text": prompt}] + parts_payload
-        }],
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ],
-        "generationConfig": {
-            "response_mime_type": "application/json"
-        }
-    }
-
+    # 2. LISTAGEM AUTOMÁTICA DE MODELOS DISPONÍVEIS
+    # Isso evita o erro 404 ao tentar usar um nome de modelo que sua conta não tem acesso
     try:
-        response = requests.post(url, headers=headers, data=json.dumps(final_payload), timeout=90)
+        modelos_disponiveis = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                modelos_disponiveis.append(m.name)
         
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 429:
-            return {"error": "Cota excedida (429). Tente novamente em 1 minuto."}
-        else:
-            return {"error": f"Erro HTTP {response.status_code}: {response.text}"}
-    except Exception as e:
-        return {"error": str(e)}
+        if not modelos_disponiveis:
+            return None, "Sua chave API não tem acesso a modelos de geração de texto."
 
-# ----------------- PROCESSAMENTO DE ARQUIVOS -----------------
+        # Ordem de preferência (Do mais novo/rápido para o antigo)
+        preferencias = [
+            'models/gemini-1.5-flash',
+            'models/gemini-1.5-flash-latest',
+            'models/gemini-1.5-flash-001',
+            'models/gemini-1.5-pro',
+            'models/gemini-1.5-pro-latest',
+            'models/gemini-pro',
+            'models/gemini-1.0-pro'
+        ]
+
+        modelo_escolhido = None
+        
+        # Tenta casar a preferência com o que o Google disse que você tem
+        for pref in preferencias:
+            if pref in modelos_disponiveis:
+                modelo_escolhido = pref
+                break
+        
+        # Se não achou nenhum preferido, pega o primeiro da lista que o Google devolveu
+        if not modelo_escolhido:
+            modelo_escolhido = modelos_disponiveis[0]
+
+        # Configurações de Segurança (BLOCK_NONE para evitar falso positivo de Copyright em bula)
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+
+        return genai.GenerativeModel(modelo_escolhido, safety_settings=safety_settings), modelo_escolhido
+
+    except Exception as e:
+        return None, f"Erro ao conectar com Google AI: {e}"
+
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
-        
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
-            return [{"text": f"--- CONTEÚDO DOCX ({filename}) ---\n{text}"}]
-            
+            return {"type": "text", "data": text}
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
+            images = []
             
-            # Tenta texto primeiro
-            full_text = ""
-            for page in doc: full_text += page.get_text() + "\n"
-            
-            if len(full_text.strip()) > 100:
-                 doc.close()
-                 return [{"text": f"--- CONTEÚDO PDF TEXTO ({filename}) ---\n{full_text}"}]
-
-            # Imagem (OCR)
-            parts = []
-            parts.append({"text": f"--- IMAGENS DO PDF ({filename}) ---"})
-            limit_pages = min(8, len(doc)) # Reduzido para 8 para evitar payload gigante
+            # Limite de páginas para performance
+            limit_pages = min(12, len(doc))
             
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                img_bytes = pix.tobytes("jpeg", jpg_quality=80)
-                b64_string = base64.b64encode(img_bytes).decode('utf-8')
-                parts.append({
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": b64_string
-                    }
-                })
-            doc.close(); gc.collect()
-            return parts
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                
+                try:
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                except TypeError:
+                    try:
+                        img_byte_arr = io.BytesIO(pix.tobytes("jpeg", quality=90))
+                    except:
+                        img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                        
+                images.append(Image.open(img_byte_arr))
+                pix = None
             
+            doc.close()
+            gc.collect()
+            return {"type": "images", "data": images}
     except Exception as e:
-        st.error(f"Erro processamento: {e}")
+        st.error(f"Erro ao processar arquivo {uploaded_file.name}: {e}")
         return None
     return None
 
-def extract_json_from_response(api_response):
+def clean_json_response(text):
+    text = text.replace("```json", "").replace("```", "").strip()
+    text = re.sub(r'//.*', '', text)
+    if text.startswith("json"): text = text[4:]
+    return text
+
+def extract_json(text):
     try:
-        if 'candidates' in api_response and api_response['candidates']:
-            content = api_response['candidates'][0]['content']['parts'][0]['text']
-            clean = content.replace("```json", "").replace("```", "").strip()
-            clean = re.sub(r'//.*', '', clean)
-            start = clean.find('{'); end = clean.rfind('}') + 1
-            if start != -1 and end != -1: return json.loads(clean[start:end])
-            return json.loads(clean)
-        else:
-            return None
+        clean = clean_json_response(text)
+        start = clean.find('{')
+        end = clean.rfind('}') + 1
+        if start != -1 and end != -1: return json.loads(clean[start:end])
+        return json.loads(clean)
     except: return None
 
-# ----------------- INTERFACE -----------------
+# ----------------- BARRA LATERAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
     
-    api_key = get_api_key()
-    if not api_key:
-        st.error("❌ Chave API não encontrada!")
-        st.stop()
+    # Inicializa modelo
+    model_instance, model_name_used = get_gemini_model()
     
-    # --- AUTO-DIAGNÓSTICO ---
-    # Isso vai listar o que funciona na sua conta
-    lista = listar_modelos_disponiveis(api_key)
-    modelo_usado, status_modelo = escolher_melhor_modelo(lista)
-    
-    if modelo_usado:
-        st.success(f"✅ Conectado: {modelo_usado.replace('models/', '')}")
-        with st.expander("Ver modelos disponíveis"):
-            st.write(lista)
+    if model_instance:
+        st.success(f"✅ Conectado: {model_name_used.replace('models/', '')}")
     else:
-        st.error("❌ Nenhum modelo disponível para esta Chave.")
-        st.stop()
-
+        st.error("❌ Erro de Conexão")
+        if model_name_used: # Mostra o erro se houver
+             st.caption(f"{model_name_used}")
+        else:
+             st.caption("Verifique se a chave está correta em Secrets.")
+    
     st.divider()
-    pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 MKT", "🎨 Gráfica"])
+    
+    # Menu de Navegação
+    pagina = st.radio(
+        "Navegação:",
+        ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"]
+    )
+    
+    st.divider()
 
+# ----------------- PÁGINA INICIAL -----------------
 if pagina == "🏠 Início":
-    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador Inteligente</h1>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="text-align: center; padding: 30px 20px;">
+        <h1 style="color: #55a68e; font-size: 3rem; margin-bottom: 10px;">Validador Inteligente</h1>
+        <p style="font-size: 20px; color: #7f8c8d;">Central de auditoria e conformidade de bulas farmacêuticas com IA.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
     c1, c2, c3 = st.columns(3)
-    with c1: st.info("💊 Ref x BELFAR")
-    with c2: st.info("📋 MKT")
-    with c3: st.info("🎨 Gráfica")
+    
+    with c1:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">💊 Medicamento Referência x BELFAR</div>
+            <div class="card-text">
+                Compara a bula de referência com a bula BELFAR.
+                <br><br>
+                <ul>
+                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
+                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
+                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
+    with c2:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">📋 Conferência MKT</div>
+            <div class="card-text">
+                Compara arquivo ANVISA com PDF MKT.
+                <br><br>
+                <ul>
+                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
+                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
+                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c3:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">🎨 Gráfica x Arte Vigente</div>
+            <div class="card-text">
+                Compara PDF Gráfica com Arte Vigente (Lê curvas).
+                <br><br>
+                <ul>
+                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
+                    <li>Ortografia: <span class="highlight-pink">rosa</span></li>
+                    <li>Data Anvisa: <span class="highlight-blue">azul</span></li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ----------------- FERRAMENTA -----------------
 else:
     st.markdown(f"## {pagina}")
-    label_box1 = "Ref"; label_box2 = "BELFAR"
-    if pagina == "📋 MKT": label_box1 = "ANVISA"; label_box2 = "MKT"
-    elif pagina == "🎨 Gráfica": label_box1 = "Arte"; label_box2 = "Gráfica"
+    
+    lista_secoes = SECOES_PACIENTE
+    nome_tipo = "Paciente"
+    
+    label_box1 = "Arquivo 1"
+    label_box2 = "Arquivo 2"
+    
+    if pagina == "💊 Ref x BELFAR":
+        label_box1 = "📄 Documento de Referência"
+        label_box2 = "📄 Documento BELFAR"
+        col_tipo, _ = st.columns([1, 2])
+        with col_tipo:
+            tipo_bula = st.radio("Tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
+            if tipo_bula == "Profissional":
+                lista_secoes = SECOES_PROFISSIONAL
+                nome_tipo = "Profissional"
+
+    elif pagina == "📋 Conferência MKT":
+        label_box1 = "📄 Arquivo ANVISA"
+        label_box2 = "📄 Arquivo MKT"
+
+    elif pagina == "🎨 Gráfica x Arte":
+        label_box1 = "📄 Arte Vigente"
+        label_box2 = "📄 PDF da Gráfica"
     
     st.divider()
-    c1, c2 = st.columns(2)
-    with c1: st.markdown(f"##### {label_box1}"); f1 = st.file_uploader("", type=["pdf", "docx"], key="f1")
-    with c2: st.markdown(f"##### {label_box2}"); f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
     
-    if st.button("🚀 INICIAR AUDITORIA"):
-        if not f1 or not f2: st.warning("Upload obrigatório dos dois arquivos.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"##### {label_box1}")
+        f1 = st.file_uploader("", type=["pdf", "docx"], key="f1")
+    with c2:
+        st.markdown(f"##### {label_box2}")
+        f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
+        
+    st.write("") 
+    if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
+        if not f1 or not f2:
+            st.warning("⚠️ Por favor, faça o upload dos dois arquivos para continuar.")
         else:
-            with st.spinner(f"Processando com {modelo_usado.replace('models/', '')}..."):
-                p1 = process_uploaded_file(f1); p2 = process_uploaded_file(f2)
-                gc.collect()
+            with st.spinner(f"🤖 Analisando com {model_name_used.split('/')[-1]}..."):
+                try:
+                    model = model_instance 
+                    if not model:
+                        st.error("Erro crítico: Chave API não detectada.")
+                        st.stop()
 
-                if not p1 or not p2: st.stop()
+                    d1 = process_uploaded_file(f1)
+                    d2 = process_uploaded_file(f2)
+                    gc.collect()
 
-                payload_parts = [{"text": "CONTEXTO: Auditoria ANVISA."}]
-                payload_parts.append({"text": f"=== DOC 1 ({label_box1}) ==="}); payload_parts.extend(p1)
-                payload_parts.append({"text": f"=== DOC 2 ({label_box2}) ==="}); payload_parts.extend(p2)
+                    if not d1 or not d2:
+                        st.error("Falha ao ler os arquivos.")
+                        st.stop()
 
-                prompt = f"""
-                Atue como Auditor Farmacêutico. Compare DOC 1 e DOC 2.
-                Seções: APRESENTAÇÕES, COMPOSIÇÃO, INDICAÇÕES, POSOLOGIA.
-                
-                Saída JSON:
-                {{ "METADADOS": {{ "score": 0-100, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "CONFORME|DIVERGENTE|FALTANTE" }} ] }}
-                """
+                    payload = []
+                    # Contexto adicionado para evitar bloqueio total de Copyright
+                    payload.append("CONTEXTO: Auditoria Interna Confidencial. Uso proprietário da Belfar.")
+                    
+                    nome_doc1 = label_box1.replace("📄 ", "").upper()
+                    nome_doc2 = label_box2.replace("📄 ", "").upper()
 
-                res = call_gemini_dynamic(modelo_usado, prompt, payload_parts, api_key)
-                
-                if "error" in res:
-                    st.error(f"Falha na API ({modelo_usado}): {res['error']}")
-                else:
-                    data = extract_json_from_response(res)
-                    if not data: st.error("Erro no JSON da resposta.")
+                    if d1['type'] == 'text': payload.append(f"--- {nome_doc1} ---\n{d1['data']}")
+                    else: payload.append(f"--- {nome_doc1} ---"); payload.extend(d1['data'])
+                    
+                    if d2['type'] == 'text': payload.append(f"--- {nome_doc2} ---\n{d2['data']}")
+                    else: payload.append(f"--- {nome_doc2} ---"); payload.extend(d2['data'])
+
+                    secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
+                    
+                    # 4. PROMPT BLINDADO CONTRA TÍTULOS E SUJEIRA
+                    prompt = f"""
+                    Atue como Auditor Farmacêutico RÍGIDO. Analise TODAS as imagens (até 12 páginas) para encontrar o texto.
+                    
+                    DOCUMENTOS:
+                    1. {nome_doc1} (Referência/Padrão)
+                    2. {nome_doc2} (Candidato/BELFAR)
+
+                    LISTA DE SEÇÕES A ANALISAR ({nome_tipo}):
+                    {secoes_str}
+
+                    === REGRA ZERO: LIMPEZA ABSOLUTA DE TEXTO ===
+                    1. EXTRAÇÃO PURA: Ao extrair o conteúdo de uma seção, copie APENAS O PARÁGRAFO DE TEXTO.
+                    2. PROIBIDO TÍTULOS: NÃO inclua o título da seção (ex: NÃO escreva "4. O QUE DEVO SABER..." no início do texto extraído).
+                    3. SEM REPETIÇÕES: Se houver quebra de página e o título da seção aparecer de novo, DELETE-O. Mantenha o texto fluido.
+                    4. LIMITES: Pare de copiar assim que o título da PRÓXIMA seção aparecer.
+
+                    === REGRA 1: COMPARAÇÃO ===
+                    - Seções normais: Use <mark class='diff'> para divergências de sentido e <mark class='ort'> para erros de português.
+                    - Seções informativas (Apresentações, Composição, Dizeres Legais): Apenas transcreva o texto limpo (sem títulos).
+
+                    === REGRA 2: DATA DA ANVISA ===
+                    - Busque no rodapé de "DIZERES LEGAIS". Se achar "Aprovado em dd/mm/aaaa", use <mark class='anvisa'>dd/mm/aaaa</mark>. Se não, deixe vazio.
+                    
+                    SAÍDA JSON:
+                    {{
+                        "METADADOS": {{ "score": 0 a 100, "datas": ["datas reais"] }},
+                        "SECOES": [
+                            {{ "titulo": "NOME SEÇÃO", "ref": "texto limpo sem título...", "bel": "texto limpo sem título...", "status": "CONFORME" | "DIVERGENTE" | "FALTANTE" }}
+                        ]
+                    }}
+                    """
+
+                    response = model.generate_content(
+                        [prompt] + payload,
+                        generation_config={"response_mime_type": "application/json"},
+                        # Safety Settings já foram definidas na criação do modelo
+                    )
+                    
+                    # 5. TRATAMENTO DE BLOQUEIO DE COPYRIGHT (FINISH REASON 4)
+                    if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
+                        st.error("⚠️ **Alerta de Conteúdo Protegido (Copyright)**")
+                        st.warning("""
+                        O Google Gemini interrompeu a leitura por detectar conteúdo protegido (Bula).
+                        
+                        **Ações Sugeridas:**
+                        1. Tente recortar e enviar apenas a parte da bula que você quer analisar.
+                        2. O sistema tentará usar um modelo alternativo automaticamente na próxima vez.
+                        """)
                     else:
-                        meta = data.get("METADADOS", {})
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("Score", f"{meta.get('score', 0)}%")
-                        m2.metric("Seções", len(data.get("SECOES", [])))
-                        m3.metric("Datas", ", ".join(meta.get("datas", [])) or "--")
-                        st.divider()
-                        for sec in data.get("SECOES", []):
-                            icon = "✅" if "CONFORME" in sec.get('status','') else "❌"
-                            with st.expander(f"{icon} {sec.get('titulo')} — {sec.get('status')}"):
-                                ca, cb = st.columns(2)
-                                ca.markdown(f"**{label_box1}**"); ca.markdown(f"<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                                cb.markdown(f"**{label_box2}**"); cb.markdown(f"<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                        data = extract_json(response.text)
+                        if not data:
+                            st.error("A IA não retornou um JSON válido. Tente novamente.")
+                        else:
+                            meta = data.get("METADADOS", {})
+                            
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric("Conformidade", f"{meta.get('score', 0)}%")
+                            m2.metric("Seções Analisadas", len(data.get("SECOES", [])))
+                            m3.metric("Datas Encontradas", ", ".join(meta.get("datas", [])) or "Nenhuma data")
+                            
+                            st.divider()
+                            
+                            for sec in data.get("SECOES", []):
+                                status = sec.get('status', 'N/A')
+                                titulo = sec.get('titulo', '').upper()
+                                
+                                icon = "✅"
+                                if "DIVERGENTE" in status: icon = "❌"
+                                elif "FALTANTE" in status: icon = "🚨"
+                                
+                                if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
+                                    icon = "👁️" 
+                                    if "DIVERGENTE" in status:
+                                        status = "VISUALIZAÇÃO (Divergências Ignoradas)"
+                                    else:
+                                        status = "VISUALIZAÇÃO"
+                                
+                                with st.expander(f"{icon} {sec['titulo']} — {status}"):
+                                    cA, cB = st.columns(2)
+                                    with cA:
+                                        st.markdown(f"**{nome_doc1}**")
+                                        st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
+                                    with cB:
+                                        st.markdown(f"**{nome_doc2}**")
+                                        st.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"Erro durante a análise: {e}")
