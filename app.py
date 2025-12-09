@@ -124,15 +124,15 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    # 2. LISTA DE MODELOS COM PRIORIDADE
+    # 2. LISTA DE MODELOS COM PRIORIDADE AJUSTADA
+    # gemini-1.5-flash é o mais estável e com maior cota gratuita.
     modelos_para_testar = [
-        'models/gemini-2.0-flash-exp', # Mais rápido e permissivo
-        'models/gemini-1.5-flash',
-        'models/gemini-1.5-pro'
+        'models/gemini-1.5-flash', # Prioridade: Estável e Rápido
+        'models/gemini-1.5-pro',   # Backup: Mais inteligente, mas mais lento
+        'models/gemini-1.0-pro'    # Legado
     ]
     
-    # CORREÇÃO: Safety Settings globais para a instanciação
-    # Define BLOCK_NONE para tudo para evitar falsos positivos de Copyright/Medical Advice
+    # Safety Settings GLOBAIS (Importante para evitar Copyright)
     safety_config = {
         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -151,7 +151,7 @@ def get_gemini_model():
         except Exception:
             continue
     
-    # Se nenhum funcionar, retorna o padrão com fallback
+    # Se nenhum funcionar, retorna o padrão
     return genai.GenerativeModel('models/gemini-1.5-flash', safety_settings=safety_config), "models/gemini-1.5-flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
@@ -169,19 +169,16 @@ def process_uploaded_file(uploaded_file):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
             # --- TENTATIVA HÍBRIDA (TEXTO PRIMEIRO) ---
-            # Para evitar erros de Copyright em imagens, tentamos extrair texto puro primeiro.
-            # Se o PDF tiver texto selecionável, usamos ele (muito mais rápido e seguro).
             full_text = ""
             for page in doc:
                 full_text += page.get_text() + "\n"
             
-            # Se conseguiu extrair uma quantidade razoável de texto, usa o modo TEXTO
+            # Se conseguiu extrair texto, usa ele (evita OCR e Copyright de imagem)
             if len(full_text.strip()) > 50:
                  doc.close()
                  return {"type": "text", "data": full_text}
 
             # --- FALLBACK PARA IMAGEM (OCR) ---
-            # Se for PDF escaneado (sem texto), usa as imagens
             images = []
             limit_pages = min(12, len(doc))
             
@@ -364,13 +361,12 @@ else:
                         st.stop()
 
                     payload = []
-                    # CORREÇÃO: Contexto explícito para evitar Copyright
+                    # CONTEXTO EXPLÍCITO (ANTI-COPYRIGHT)
                     payload.append("CONTEXTO: Documentos Regulatórios Públicos da ANVISA (Brasil). Análise de conformidade técnica para saúde pública. NÃO é material literário.")
                     
                     nome_doc1 = label_box1.replace("📄 ", "").upper()
                     nome_doc2 = label_box2.replace("📄 ", "").upper()
 
-                    # Lógica inteligente: Se for texto, manda texto. Se for imagem, manda imagem.
                     if d1['type'] == 'text': payload.append(f"--- {nome_doc1} ---\n{d1['data']}")
                     else: payload.append(f"--- {nome_doc1} ---"); payload.extend(d1['data'])
                     
@@ -411,8 +407,7 @@ else:
                     }}
                     """
 
-                    # CORREÇÃO FINAL: As safety settings devem ser passadas aqui também por garantia
-                    # e definimos BLOCK_NONE para todas as categorias.
+                    # SAFETY SETTINGS REFORÇADAS AQUI TAMBÉM
                     response = model.generate_content(
                         [prompt] + payload,
                         generation_config={"response_mime_type": "application/json"},
@@ -424,7 +419,6 @@ else:
                         }
                     )
                     
-                    # 5. TRATAMENTO DE BLOQUEIO DE COPYRIGHT (FINISH REASON 4)
                     if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                         st.error("⚠️ **Alerta de Conteúdo Protegido (Copyright)**")
                         st.warning("O sistema detectou um bloqueio. Tente recortar apenas o texto ou usar um arquivo DOCX.")
