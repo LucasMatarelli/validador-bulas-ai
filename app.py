@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (SOLICITADO PELO USUÁRIO) -----------------
+# ----------------- ESTILOS CSS (INTERFACE VERDE CLÁSSICA) -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR */
@@ -75,16 +75,15 @@ st.markdown("""
     .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; font-weight: 500; }
     .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
 
-    /* Marcações de Texto (Destaques no Texto) */
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; } /* AMARELO - DIVERGENCIA */
-    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; } /* VERMELHO - PORTUGUES */
-    mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; } /* AZUL - DATA */
+    /* Marcações de Texto */
+    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; } 
+    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; } 
+    mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
 
     /* Botões */
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); }
     .stButton>button:hover { background-color: #448c75; box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); }
     
-    /* Classe extra para manter o texto legível como na versão antiga */
     .texto-bula {
         font-size: 1.1rem;
         line-height: 1.6;
@@ -125,14 +124,21 @@ def get_mistral_client():
 
 def image_to_base64(image):
     buffered = io.BytesIO()
-    # MANTIDA LÓGICA DE ALTA QUALIDADE
     image.save(buffered, format="JPEG", quality=100, subsampling=0) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
+# --- SANITIZAÇÃO AGRESSIVA (CORREÇÃO DO PROBLEMA DE ESPAÇOS) ---
 def sanitize_text(text):
     if not text: return ""
+    # 1. Normaliza unicode (transforma caracteres compostos em simples)
     text = unicodedata.normalize('NFKC', text)
-    text = text.replace('\xa0', ' ').replace('\u0000', '').replace('\u200b', '').replace('\t', ' ')
+    # 2. Remove caracteres de controle invisíveis específicos que quebram comparações
+    text = text.replace('\xa0', ' ')  # Non-breaking space
+    text = text.replace('\u200b', '') # Zero width space
+    text = text.replace('\u200e', '') # Left-to-right mark
+    text = text.replace('\u200f', '') # Right-to-left mark
+    text = text.replace('\t', ' ')
+    # 3. Transforma múltiplos espaços em um único
     return re.sub(r'\s+', ' ', text).strip()
 
 @st.cache_data(show_spinner=False)
@@ -155,8 +161,7 @@ def process_file_content(file_bytes, filename):
             limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
-                # MANTIDO O ZOOM 4.0 PARA PRECISÃO MÁXIMA
-                pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
+                pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0)) # ZOOM 4.0 Mantido
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=100))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -174,7 +179,7 @@ def extract_json(text):
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
     except: return None
 
-# --- WORKER BLINDADO (LÓGICA MANTIDA, INTERFACE ANTIGA) ---
+# --- WORKER BLINDADO (PROMPT ATUALIZADO PARA IGNORAR FALSOS POSITIVOS) ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
@@ -184,7 +189,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     DIRETRIZ DE SEGURANÇA MÁXIMA:
     1. VOCÊ É UM ROBÔ OCR. COPIE EXATAMENTE O QUE VÊ.
     2. Se o texto diz "Frequencia" (sem acento), escreva "Frequencia". NÃO CORRIJA.
-    3. NÃO COMPLETE FRASES.
+    3. IGNORAR DIFERENÇAS INVISÍVEIS: Se duas palavras parecem idênticas visualmente (ex: "maleato" e "maleato"), considere-as IGUAIS. Não marque erro por encoding ou espaços duplos.
     """
     
     prompt_text = ""
@@ -200,9 +205,9 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         - IGNORE "Como usar" ou "Posologia".
         
         SAÍDA:
-        1. Copie o texto encontrado nos dois arquivos.
+        1. Copie o texto encontrado.
         2. Destaque TODAS as datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
-        3. Use <mark class='diff'> APENAS se houver divergência real de dados (CNPJ, Endereço).
+        3. Use <mark class='diff'> APENAS se houver divergência real de DADOS (Números, CNPJ, Endereço).
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
@@ -214,12 +219,12 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         TAREFA: Extrair "{secao}".
         
         FILTRO (REMOVER LIXO):
-        - Remova textos técnicos de gráfica (cores, facas, códigos, dimensões).
+        - Remova textos técnicos de gráfica.
         
         SAÍDA:
         - Transcreva o conteúdo limpo.
-        - Use <mark class='diff'> se houver diferença de CONTEÚDO (ex: 10mg vs 20mg).
-        - Ignore formatação.
+        - Use <mark class='diff'> se houver diferença de CONTEÚDO REAL (ex: 10mg vs 20mg).
+        - Se a palavra for idêntica, NÃO use mark.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
@@ -227,16 +232,14 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     else:
         prompt_text = f"""
         {base_instruction}
-        Atue como Comparador Estrito.
+        Atue como Comparador Estrito mas Inteligente.
         TAREFA: Comparar "{secao}" palavra por palavra.
         
-        1. Localize o início e fim exatos da seção.
-        2. Extraia o texto para 'ref' e 'bel' SEM CORRIGIR.
+        1. Extraia o texto para 'ref' e 'bel'.
         
-        REGRAS DO AMARELO (<mark class='diff'>):
-        - Use APENAS se a palavra estiver AUSENTE ou ESCRITA DIFERENTE (ex: "sodio" vs "sódio").
-        - NÃO marque pontuação isolada.
-        - NÃO marque sinônimos perfeitos.
+        REGRAS DO DESTAQUE (<mark class='diff'>):
+        - Use APENAS se a palavra for REALMENTE DIFERENTE (Letras trocadas, números diferentes, acentos diferentes).
+        - PROIBIDO MARCAR FALSOS POSITIVOS: Se a palavra é visualmente igual (ex: "maleato" vs "maleato"), NÃO MARQUE. Assuma que é erro de encoding e ignore.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
@@ -304,7 +307,7 @@ if pagina == "🏠 Início":
     </div>
     """, unsafe_allow_html=True)
     
-    # CARDS COM O CSS SOLICITADO
+    # CARDS ESTILO VERDE
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -420,7 +423,7 @@ else:
             visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in x.get('status', ''))
             score = int(((conformes + visuais) / total) * 100) if total > 0 else 0
             
-            # --- Lógica de Datas (Mantida a melhoria) ---
+            # --- Datas Anvisa ---
             datas_encontradas = []
             for r in resultados_secoes:
                 if "DIZERES LEGAIS" in r['titulo']:
