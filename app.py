@@ -122,17 +122,14 @@ def get_mistral_client():
 
 def image_to_base64(image):
     buffered = io.BytesIO()
-    # OTIMIZAÇÃO CRÍTICA DE VELOCIDADE:
-    # Mantivemos qualidade ALTA (85), mas removemos o excesso (100).
-    # O comando optimize=True limpa metadados inúteis.
-    # Resultado: Imagem 10x mais leve, mesma nitidez para leitura.
+    # OTIMIZAÇÃO: Mantém qualidade visual mas limpa metadados (lighter file)
     image.save(buffered, format="JPEG", quality=85, optimize=True) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def sanitize_text(text):
     if not text: return ""
     text = unicodedata.normalize('NFKC', text)
-    # Limpeza "Cirúrgica" (Mantida para corrigir o erro do Maleato)
+    # Limpeza de caracteres invisíveis (fix maleato)
     text = text.replace('\xa0', ' ')
     text = text.replace('\u200b', '')
     text = text.replace('\u00ad', '')
@@ -152,7 +149,7 @@ def process_file_content(file_bytes, filename):
             full_text = ""
             for page in doc: full_text += page.get_text() + " "
             
-            # Prioriza texto nativo (Instantâneo)
+            # Prioriza texto nativo se existir
             if len(full_text.strip()) > 500:
                 doc.close()
                 return {"type": "text", "data": sanitize_text(full_text)}
@@ -161,9 +158,9 @@ def process_file_content(file_bytes, filename):
             limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
-                # ZOOM 4.0 (Mantido a pedido - Leitura Perfeita)
+                # ZOOM 4.0 (Mantido para precisão máxima)
                 pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg")) # Compressão será feita no base64
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             doc.close()
@@ -180,18 +177,17 @@ def extract_json(text):
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
     except: return None
 
-# --- WORKER BLINDADO ---
+# --- WORKER ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
-    # Prompt Mantido (Cegueira para espaços/formatação)
     base_instruction = """
     DIRETRIZ DE PRECISÃO:
-    1. Você deve comparar o CONTEÚDO SEMÂNTICO (significado e palavras).
+    1. Você deve comparar o CONTEÚDO SEMÂNTICO.
     2. IGNORE TOTALMENTE diferenças de espaçamento, quebras de linha ou caracteres invisíveis.
-    3. EXEMPLO: "maleato de enalapril" É IGUAL A "maleato   de enalapril". NÃO MARQUE COMO ERRO.
+    3. EXEMPLO: "maleato de enalapril" É IGUAL A "maleato   de enalapril".
     4. Copie o texto exato, sem corrigir ortografia.
     """
     
@@ -217,11 +213,10 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         {base_instruction}
         Atue como Extrator.
         TAREFA: Extrair "{secao}".
-        
         FILTRO: Remova lixo técnico (cores, dimensões).
         
         SAÍDA:
-        - Use <mark class='diff'> se houver diferença de CONTEÚDO REAL (ex: 10mg vs 20mg).
+        - Use <mark class='diff'> se houver diferença de CONTEÚDO REAL.
         - NÃO USE MARK PARA ESPAÇOS.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
@@ -238,7 +233,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         
         REGRAS DO DESTAQUE (<mark class='diff'>):
         - MARQUE: Palavras trocadas, números diferentes, letras faltando, acentos errados.
-        - NÃO MARQUE: Espaços duplos, quebras de linha, ou palavras que parecem idênticas visualmente (assuma erro de PDF).
+        - NÃO MARQUE: Espaços duplos, quebras de linha.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
@@ -382,9 +377,9 @@ else:
         else:
             if not client: st.stop()
             
-            # --- Feedback Visual de Carregamento ---
+            # Feedback Visual
             msg_carregando = st.empty()
-            msg_carregando.info("⏳ Renderizando arquivos em Alta Definição (4x Zoom)... Aguarde.")
+            msg_carregando.info("⏳ Renderizando em Alta Definição (4x Zoom)... Aguarde.")
             
             with st.spinner("Processando..."):
                 b1 = f1.getvalue()
@@ -393,7 +388,7 @@ else:
                 d2 = process_file_content(b2, f2.name.lower())
                 gc.collect()
 
-            msg_carregando.empty() # Limpa mensagem
+            msg_carregando.empty()
 
             if not d1 or not d2:
                 st.error("Erro leitura.")
@@ -424,14 +419,15 @@ else:
             resultados_secoes.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
             
             total = len(resultados_secoes)
-            conformes = sum(1 for x in resultados_secoes if "CONFORME" in x.get('status', ''))
-            visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in x.get('status', ''))
+            conformes = sum(1 for x in resultados_secoes if "CONFORME" in str(x.get('status', '')))
+            visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in str(x.get('status', '')))
             score = int(((conformes + visuais) / total) * 100) if total > 0 else 0
             
             datas_encontradas = []
             for r in resultados_secoes:
                 if "DIZERES LEGAIS" in r['titulo']:
-                    texto_combinado = r.get('ref', '') + " " + r.get('bel', '')
+                    # CORREÇÃO APLICADA AQUI: STR() PARA PREVENIR ERRO DE SOMA COM NONE
+                    texto_combinado = str(r.get('ref', '')) + " " + str(r.get('bel', ''))
                     matches = re.findall(r'\d{2}/\d{2}/\d{4}', texto_combinado)
                     for m in matches:
                         if m not in datas_encontradas: datas_encontradas.append(m)
@@ -458,7 +454,8 @@ else:
                     cA, cB = st.columns(2)
                     with cA:
                         st.markdown(f"**{nome_doc1}**")
-                        st.markdown(f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px;'>{sec.get('ref', 'Texto não extraído')}</div>", unsafe_allow_html=True)
+                        # Proteção extra com str() aqui também
+                        st.markdown(f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px;'>{str(sec.get('ref', 'Texto não extraído'))}</div>", unsafe_allow_html=True)
                     with cB:
                         st.markdown(f"**{nome_doc2}**")
-                        st.markdown(f"<div class='texto-bula' style='background:#fff; border:1px solid #eee; padding:15px; border-radius:5px;'>{sec.get('bel', 'Texto não extraído')}</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div class='texto-bula' style='background:#fff; border:1px solid #eee; padding:15px; border-radius:5px;'>{str(sec.get('bel', 'Texto não extraído'))}</div>", unsafe_allow_html=True)
