@@ -24,13 +24,12 @@ st.set_page_config(
 # ----------------- ESTILOS CSS -----------------
 st.markdown("""
 <style>
-    /* Oculta barra superior */
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
     .main { background-color: #f8f9fa; }
 
-    /* Tipografia e Navegação */
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', sans-serif; }
+    
     .stRadio > div[role="radiogroup"] > label {
         background-color: white; border: 1px solid #e9ecef; padding: 15px;
         border-radius: 10px; margin-bottom: 10px; transition: all 0.3s ease;
@@ -40,14 +39,13 @@ st.markdown("""
         background-color: #e8f5e9; border-color: #55a68e; color: #55a68e; transform: translateX(5px); cursor: pointer;
     }
 
-    /* Cards e Marcações */
     .stCard { background-color: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 20px; border: 1px solid #f1f1f1; }
     
+    /* Cores das Marcações */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; } 
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; } 
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
 
-    /* Botão */
     .stButton>button { 
         width: 100%; background: linear-gradient(90deg, #55a68e 0%, #448c75 100%); 
         color: white; font-weight: bold; border-radius: 12px; height: 60px; font-size: 18px; border: none;
@@ -76,7 +74,7 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"] # Removi Dizeres Legais daqui para tratar separadamente
+SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
 
@@ -92,11 +90,22 @@ def image_to_base64(image):
     image.save(buffered, format="JPEG", quality=85) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-# Sanitização Leve (Mantém quebras de linha para leitura correta)
+# --- SANITIZAÇÃO INTELIGENTE (O SEGREDO DO VISUAL) ---
 def sanitize_text(text):
     if not text: return ""
+    # 1. Normaliza Unicode (transforma letras "estranhas" em padrão)
     text = unicodedata.normalize('NFKC', text)
-    return text.replace('\u0000', '') # Remove apenas nulos, mantém estrutura
+    
+    # 2. SUBSTITUI espaços invisíveis/esquisitos por espaço normal (tecla de espaço)
+    # \xa0 = Non-breaking space (comum em PDF e web)
+    # \u200b = Zero width space (totalmente invisível)
+    # \t = Tabulação (troca por espaço simples)
+    text = text.replace('\xa0', ' ').replace('\u200b', '').replace('\t', ' ')
+    
+    # 3. MANTÉM espaços duplos se eles existirem visualmente
+    # (Não usamos regex para remover duplicados aqui, pois você quer ver espaço extra)
+    
+    return text.strip()
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
@@ -110,14 +119,12 @@ def process_file_content(file_bytes, filename):
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            # Se tiver texto extraível
             if len(full_text.strip()) > 100:
                 doc.close()
                 return {"type": "text", "data": sanitize_text(full_text)}
             
-            # Se for imagem (OCR via IA depois)
             images = []
-            limit_pages = min(5, len(doc)) # Aumentei para 5 páginas
+            limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
@@ -138,54 +145,57 @@ def extract_json(text):
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
     except: return None
 
-# --- WORKER (LÓGICA CORRIGIDA) ---
+# --- WORKER: PROMPT AJUSTADO PARA VISÃO HUMANA ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
-    # Define o tipo de prompt
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
-    instrucoes_especificas = ""
+    prompt_text = ""
     
     if eh_dizeres:
-        instrucoes_especificas = """
-        REGRA CRÍTICA PARA 'DIZERES LEGAIS':
-        1. Extraia o texto COMPLETO do início da seção até a data da ANVISA.
-        2. Destaque a data (formato DD/MM/AAAA) com <mark class='anvisa'>DATA</mark> NO DOCUMENTO 1 E NO DOCUMENTO 2.
-        3. Se os textos forem iguais exceto a data, NÃO marque como divergência amarela.
+        prompt_text = f"""
+        Atue como Auditor de Bulas.
+        TAREFA: Extrair "DIZERES LEGAIS".
+        
+        REGRAS:
+        1. Copie o texto completo até a data da Anvisa.
+        2. Destaque a data (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark> NOS DOIS TEXTOS (Ref e Bel).
+        3. NÃO use a tag amarela (<mark class='diff'>) apenas por causa da data ou formatação.
+        
+        SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME" }}
         """
-    elif not eh_visualizacao:
-        instrucoes_especificas = """
-        REGRAS DE COMPARAÇÃO:
-        1. Compare palavra por palavra.
-        2. IGNORE: Espaços extras, quebras de linha e pontuação grudada na palavra (ex: "fim." é igual a "fim").
-        3. IMPORTANTE: Se uma palavra estiver escrita errada no Doc 2 (ex: falta de acento, letra trocada), MOSTRE O ERRO. 
-           NÃO CORRIJA AUTOMATICAMENTE. O usuário precisa ver o erro.
-        4. Use <mark class='diff'>palavra</mark> para destacar divergências nos DOIS lados.
+    elif eh_visualizacao:
+        prompt_text = f"""
+        Atue como Formatador.
+        TAREFA: Transcrever "{secao}".
+        REGRAS: Transcreva o texto exatamente como é. Sem marcações.
+        SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
-
-    prompt_text = f"""
-    Atue como Auditor Farmacêutico.
-    TAREFA: Extrair e Comparar a seção "{secao}".
-    
-    REGRAS GERAIS:
-    1. Traga o TEXTO COMPLETO (Full Text), sem resumos.
-    2. {instrucoes_especificas}
-    3. Se for apenas Visualização (Apresentações/Composição), apenas transcreva sem marcas amarelas.
-
-    SAÍDA JSON OBRIGATÓRIA:
-    {{
-        "titulo": "{secao}",
-        "ref": "Texto completo do {nome_doc1}...",
-        "bel": "Texto completo do {nome_doc2}...",
-        "status": "CONFORME" ou "DIVERGENTE" ou "VISUALIZACAO"
-    }}
-    """
+    else:
+        # Prompt de Auditoria VISUAL
+        prompt_text = f"""
+        Atue como Auditor Comparativo Meticuloso.
+        TAREFA: Comparar "{secao}" entre Doc 1 e Doc 2.
+        
+        REGRAS DE VISÃO HUMANA (CRÍTICO):
+        1. Ignore caracteres invisíveis ou formatação interna.
+        2. FOCO EM ESPAÇO VISÍVEL:
+           - Se Doc 1 tem "A B" e Doc 2 tem "A  B" (dois espaços), ISSO É DIFERENTE -> Marque de amarelo!
+           - Se Doc 1 tem "A B" e Doc 2 tem "A B" (visualmente igual), NÃO MARQUE.
+        
+        3. FOCO EM PALAVRAS:
+           - "Candida" vs "Candida" -> IGUAIS. NÃO MARQUE.
+           - "150mg" vs "150 mg" -> DIFERENTE (Espaço conta). Marque de amarelo.
+        
+        USE <mark class='diff'>TEXTO</mark> APENAS ONDE O OLHO HUMANO VÊ DIFERENÇA.
+        
+        SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
+        """
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    # Prepara conteúdo (com limite de segurança para token)
-    limit = 50000 
+    limit = 55000 
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
             messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
@@ -195,7 +205,6 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
-    # Tenta obter JSON
     for attempt in range(2):
         try:
             chat_response = client.chat.complete(
@@ -209,44 +218,28 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
             if dados and 'ref' in dados:
                 dados['titulo'] = secao
                 
-                # --- PÓS-PROCESSAMENTO PARA EVITAR "DIVERGÊNCIA FANTASMA" ---
+                # --- CHECK FINAL ---
                 if not eh_visualizacao and not eh_dizeres:
-                    texto_bel = str(dados.get('bel', '')).lower()
-                    tem_marcacao = "class='diff'" in texto_bel or 'class="diff"' in texto_bel or "class='ort'" in texto_bel
+                    texto_completo = (str(dados.get('bel', '')) + str(dados.get('ref', ''))).lower()
+                    tem_diff = 'class="diff"' in texto_completo or "class='diff'" in texto_completo
+                    tem_ort = 'class="ort"' in texto_completo or "class='ort'" in texto_completo
                     
-                    # Se a IA disse que é Divergente, mas não pintou nada, forçamos CONFORME
-                    if dados.get('status') == 'DIVERGENTE' and not tem_marcacao:
+                    # Se a IA não pintou nada, forçamos o status para CONFORME
+                    # Isso garante que não teremos "DIVERGENTE" fantasma.
+                    if not tem_diff and not tem_ort:
                         dados['status'] = 'CONFORME'
                 
-                # Se for visualização ou dizeres, força status visual
-                if eh_visualizacao or eh_dizeres:
-                    dados['status'] = 'VISUALIZACAO'
-                    
                 return dados
                 
         except Exception:
             time.sleep(1)
             continue
     
-    # --- FALLBACK (PLANO B) ---
-    # Se falhar o JSON, retorna o texto cru do arquivo.
-    # Isso resolve o problema de "Erro JSON" ou seções cortadas.
-    # Usamos uma busca simples no texto original para tentar achar a seção.
-    
-    def find_section_fallback(full_text, section_name):
-        # Tenta achar a seção no texto bruto (muito simplificado)
-        idx = full_text.find(section_name)
-        if idx != -1:
-            return full_text[idx:idx+2000] + "..." # Retorna os próximos 2000 caracteres
-        return "Seção não localizada automaticamente no texto bruto."
-
-    fallback_ref = find_section_fallback(d1['data'], secao) if d1['type'] == 'text' else "Texto imagem (processamento falhou)"
-    fallback_bel = find_section_fallback(d2['data'], secao) if d2['type'] == 'text' else "Texto imagem (processamento falhou)"
-
+    # Fallback (Devolve texto puro se falhar JSON)
     return {
         "titulo": secao,
-        "ref": fallback_ref,
-        "bel": fallback_bel,
+        "ref": d1['data'][:2500] + "..." if d1['type']=='text' else "Erro processamento imagem",
+        "bel": d2['data'][:2500] + "..." if d2['type']=='text' else "Erro processamento imagem",
         "status": "ERRO LEITURA (Texto Bruto)"
     }
 
@@ -265,21 +258,20 @@ if pagina == "🏠 Início":
     st.markdown("""
     <div style="text-align: center; padding: 40px 20px;">
         <h1 style="color: #55a68e; font-size: 3em;">Validador de Bulas</h1>
-        <p style="font-size: 1.2em; color: #7f8c8d;">Auditoria com Inteligência Visual.</p>
+        <p style="font-size: 1.2em; color: #7f8c8d;">Auditoria com Precisão Humana.</p>
     </div>
     """, unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    c1.info("Simetria: Erros marcados em ambos.")
-    c2.info("Precisão: Sem correções automáticas.")
+    c1.info("Visão Humana: Ignora códigos invisíveis.")
+    c2.info("Espaçamento: Detecta espaços extras visíveis.")
     c3.info("Anvisa: Datas azuis em Dizeres Legais.")
 
 else:
     st.markdown(f"## {pagina}")
     
     lista_secoes = SECOES_PACIENTE
-    nome_tipo = "Paciente"
-    label_box1 = "Arquivo 1"
-    label_box2 = "Arquivo 2"
+    nome_doc1 = "REFERÊNCIA"
+    nome_doc2 = "BELFAR"
     
     if pagina == "💊 Ref x BELFAR":
         label_box1 = "📄 Referência"
@@ -291,9 +283,13 @@ else:
     elif pagina == "📋 Conferência MKT":
         label_box1 = "📄 ANVISA"
         label_box2 = "📄 MKT"
+        nome_doc1 = "ANVISA"
+        nome_doc2 = "MKT"
     elif pagina == "🎨 Gráfica x Arte":
         label_box1 = "📄 Arte Vigente"
         label_box2 = "📄 Gráfica"
+        nome_doc1 = "ARTE VIGENTE"
+        nome_doc2 = "GRÁFICA"
     
     st.divider()
     c1, c2 = st.columns(2)
@@ -320,8 +316,6 @@ else:
                 st.error("Erro leitura.")
                 st.stop()
 
-            nome_doc1 = label_box1.replace("📄 ", "").upper()
-            nome_doc2 = label_box2.replace("📄 ", "").upper()
             resultados_secoes = []
             
             progress_bar = st.progress(0)
@@ -347,16 +341,13 @@ else:
 
             resultados_secoes.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
             
-            # KPI
             total = len(resultados_secoes)
             conformes = sum(1 for x in resultados_secoes if "CONFORME" in x.get('status', ''))
             score = int((conformes / total) * 100) if total > 0 else 0
             
-            # Extração de Data
             datas_texto = "N/D"
             for r in resultados_secoes:
                 if "DIZERES LEGAIS" in r['titulo']:
-                    # Procura data em qualquer um dos textos para exibir no KPI
                     match = re.search(r'\d{2}/\d{2}/\d{4}', r.get('bel', '') + r.get('ref', ''))
                     if match: datas_texto = match.group(0)
 
