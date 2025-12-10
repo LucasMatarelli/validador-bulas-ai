@@ -48,15 +48,16 @@ def image_to_base64(image):
 
 def sanitize_text(text):
     if not text: return ""
-    # Normaliza Unicode e remove espaços invisíveis
+    # Normaliza Unicode (transforma acentos estranhos em padrão)
     text = unicodedata.normalize('NFKC', text)
-    text = text.replace('\xa0', ' ').replace('\u0000', '').replace('\u200b', '')
-    # Transforma múltiplos espaços em um só
-    return re.sub(r'\s+', ' ', text).strip()
+    # Remove caracteres invisíveis que confundem a IA
+    text = text.replace('\xa0', ' ').replace('\u0000', '').replace('\u200b', '').replace('\t', ' ')
+    # Transforma múltiplos espaços/quebras em um único espaço para comparação justa
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 def remove_numbering(text):
     if not text: return ""
-    # Remove "5.", "5 ", "9." do início
     return re.sub(r'^\s*\d+[\.\)]\s*', '', text)
 
 @st.cache_data(show_spinner=False)
@@ -90,29 +91,19 @@ def process_file_content(file_bytes, filename):
     except: return None
     return None
 
-# --- CORREÇÃO DE JSON (Salva vidas quando a IA corta o texto) ---
 def extract_json(text):
-    # Limpa markdown
     text = re.sub(r'```json\s*', '', text)
     text = re.sub(r'```', '', text).strip()
-    
     try:
-        # Tenta extrair o JSON puro
         start = text.find('{')
         end = text.rfind('}')
         if start != -1 and end != -1:
             clean_text = text[start:end+1]
             return json.loads(clean_text)
         return json.loads(text)
-    except json.JSONDecodeError:
-        # Se falhar, tenta "consertar" o JSON cortado fechando as aspas e chaves
-        # Isso é um fallback básico
-        try:
-            return json.loads(text + '"}') 
-        except:
-            return None
+    except: return None
 
-# --- WORKER AJUSTADO (Prompt Anti-Erro) ---
+# --- WORKER CORRIGIDO ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, proxima_secao, modo_arte=False):
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
@@ -120,20 +111,17 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, proxima_se
     
     limite_instrucao = ""
     if proxima_secao:
-        limite_instrucao = f"O texto desta seção TERMINA antes do título '{proxima_secao}'. NÃO leia além disso."
+        limite_instrucao = f"O texto termina ANTES do título '{proxima_secao}'."
     else:
-        limite_instrucao = "Leia até o fim do documento."
+        limite_instrucao = "Leia até o fim."
 
     prompt_text = ""
     
     if eh_dizeres:
         prompt_text = f"""
         Atue como Auditor. Extraia "DIZERES LEGAIS".
-        ONDE: Rodapé (CNPJ, Farm. Resp). Se começar com "Como usar", está errado.
-        REGRAS: 
-        1. Copie o texto. 
-        2. Destaque datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
-        3. NÃO use amarelo.
+        ONDE: Rodapé (CNPJ, Farm. Resp).
+        REGRAS: Copie o texto. Destaque datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>. NÃO use amarelo.
         JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
     elif eh_visualizacao:
@@ -143,35 +131,35 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, proxima_se
         JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
     else:
-        # PROMPT DE COMPARAÇÃO CORRIGIDO (FIM DOS FALSOS POSITIVOS)
+        # --- PROMPT ANTI-FALSO POSITIVO ---
         prompt_text = f"""
-        Atue como Auditor Rigoroso. Compare "{secao}" entre Doc 1 e Doc 2.
+        Atue como Auditor Humano Rigoroso. Compare "{secao}".
         
-        LIMITES: O texto começa após o título "{secao}". {limite_instrucao}
+        DELIMITAÇÃO: O texto começa após "{secao}". {limite_instrucao}
         
-        REGRAS CRÍTICAS DE COMPARAÇÃO (LEIA COM ATENÇÃO):
-        1. IGNORE pontuação grudada ("Candida" == "Candida:" == "Candida)").
-        2. IGNORE espaços ("150mg" == "150 mg").
-        3. SE A PALAVRA FOR VISUALMENTE IGUAL, NÃO MARQUE.
+        REGRAS CRÍTICAS (PARA NÃO MARCAR ERRO ONDE NÃO TEM):
+        1. "Candida" e "Candida:" e "Candida)" SÃO A MESMA COISA. (Ignore pontuação colada).
+        2. "150mg" e "150 mg" SÃO A MESMA COISA. (Ignore espaços).
+        3. Se o texto for visualmente o mesmo, NÃO USE TAG AMARELA.
         
-        COMO USAR O AMARELO (<mark class='diff'>):
-        - Use APENAS se houver uma palavra errada, trocada ou faltando.
-        - Exemplo: "paranoide" vs "paranóide" -> MARQUE (acento conta).
-        - Exemplo: "tomar" vs "comer" -> MARQUE.
+        QUANDO USAR AMARELO (<mark class='diff'>):
+        - Apenas se uma palavra foi adicionada, removida ou trocada (ex: "paranoide" virou "paranóide").
+        - Se o Doc 2 tem texto extra, marque esse texto no Doc 2.
+        - Se o Doc 1 tem texto que sumiu, marque no Doc 1.
         
-        JSON OBRIGATÓRIO: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
+        JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    # Limita tamanho para evitar estouro de memória e Erro JSON
-    limit = 40000 
+    # Reduzi o limite para 35k caracteres para evitar cortar o JSON no final
+    limit = 35000 
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
             messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
         else:
             messages_content.append({"type": "text", "text": f"\n--- IMAGEM {nome} ---"})
-            for img in d['data'][:2]: # Envia max 2 imagens
+            for img in d['data'][:2]:
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
@@ -189,12 +177,11 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, proxima_se
                 dados['ref'] = remove_numbering(dados.get('ref', ''))
                 dados['bel'] = remove_numbering(dados.get('bel', ''))
 
-                # Auto-Correção de Status
                 if not eh_visualizacao and not eh_dizeres:
+                    # Limpeza automática de status falso
                     txt = (str(dados.get('bel', '')) + str(dados.get('ref', ''))).lower()
                     tem_marca = 'class="diff"' in txt or "class='diff'" in txt or "class='ort'" in txt
-                    if not tem_marca:
-                        dados['status'] = 'CONFORME'
+                    if not tem_marca: dados['status'] = 'CONFORME'
                 
                 if eh_dizeres: dados['status'] = 'VISUALIZACAO'
                 return dados
@@ -203,10 +190,23 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, proxima_se
             time.sleep(1)
             continue
     
-    # Fallback se der erro no JSON (Devolve texto puro para você ler)
+    # --- FALLBACK DE SEGURANÇA ---
+    # Se falhar o JSON, NÃO MOSTRA "Erro JSON". Mostra o texto extraído cru para você ler.
+    # Usamos uma busca simples para tentar achar o início da seção no texto original.
+    
+    texto_cru_1 = d1['data'] if d1['type'] == 'text' else "Texto em Imagem (Não Processado)"
+    texto_cru_2 = d2['data'] if d2['type'] == 'text' else "Texto em Imagem (Não Processado)"
+    
+    # Tenta cortar o texto cru mais ou menos onde deveria estar a seção
+    idx1 = texto_cru_1.find(secao)
+    idx2 = texto_cru_2.find(secao)
+    
+    trecho1 = texto_cru_1[idx1:idx1+3000] if idx1 != -1 else texto_cru_1[:3000]
+    trecho2 = texto_cru_2[idx2:idx2+3000] if idx2 != -1 else texto_cru_2[:3000]
+
     return {
         "titulo": secao,
-        "ref": d1['data'][:2000] + "..." if d1['type']=='text' else "Texto imagem...",
-        "bel": d2['data'][:2000] + "..." if d2['type']=='text' else "Texto imagem...",
+        "ref": trecho1 + "...",
+        "bel": trecho2 + "...",
         "status": "ERRO LEITURA (Texto Bruto)"
     }
