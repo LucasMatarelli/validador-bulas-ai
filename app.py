@@ -43,7 +43,7 @@ st.markdown("""
     /* Cards e Texto com ZOOM */
     .stCard { background-color: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 20px; border: 1px solid #f1f1f1; }
     
-    /* AQUI ESTÁ O ZOOM: Aumentei font-size para 18px (1.1rem) */
+    /* ZOOM: Texto aumentado para leitura fácil */
     .texto-bula {
         font-size: 1.15rem !important; 
         line-height: 1.6;
@@ -84,7 +84,9 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"]
+# Seções que não terão amarelo (Visualização apenas)
+# Adicionei DIZERES LEGAIS aqui para controle de UI, mas a lógica de data é tratada no worker
+SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"] 
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
 
@@ -100,12 +102,12 @@ def image_to_base64(image):
     image.save(buffered, format="JPEG", quality=85) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-# Sanitização (Limpeza de "lixo" invisível)
+# Sanitização (Limpeza de "lixo" invisível e normalização de espaços)
 def sanitize_text(text):
     if not text: return ""
     text = unicodedata.normalize('NFKC', text)
     text = text.replace('\xa0', ' ').replace('\u0000', '').replace('\u200b', '').replace('\t', ' ')
-    # Remove excesso de espaços
+    # Remove excesso de espaços (transforma múltiplos em um só)
     return re.sub(r'\s+', ' ', text).strip()
 
 @st.cache_data(show_spinner=False)
@@ -128,7 +130,7 @@ def process_file_content(file_bytes, filename):
             limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) # Melhorei a qualidade da imagem (Matrix 2.0)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) # Alta qualidade
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -155,14 +157,19 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     prompt_text = ""
     
     if eh_dizeres:
+        # LÓGICA ESPECIAL DIZERES LEGAIS:
+        # - Status: VISUALIZACAO (Sem divergência)
+        # - Regra: Data Azul
         prompt_text = f"""
         Atue como Auditor de Bulas.
         TAREFA: Extrair "DIZERES LEGAIS".
+        
         REGRAS:
-        1. Copie o texto até a data da Anvisa.
-        2. Destaque a data (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark> NOS DOIS TEXTOS.
-        3. NÃO use a tag amarela (<mark class='diff'>).
-        SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME" }}
+        1. Copie o texto fielmente.
+        2. Destaque a data (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark> NOS DOIS TEXTOS (Ref e Bel).
+        3. NÃO use a tag amarela (<mark class='diff'>) em hipótese alguma. Esta seção é apenas para visualização.
+        
+        SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
     elif eh_visualizacao:
         prompt_text = f"""
@@ -172,21 +179,18 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
     else:
-        # Prompt ANTI-ALUCINAÇÃO
+        # Prompt ANTI-ALUCINAÇÃO (Comparação Real)
         prompt_text = f"""
-        Atue como Scanner OCR (Leitura Óptica).
+        Atue como Scanner OCR.
         TAREFA: Comparar "{secao}" entre Doc 1 e Doc 2.
         
-        REGRAS DE OURO (LEIA COM ATENÇÃO):
-        1. NÃO CORRIJA O PORTUGUÊS: Se na imagem está "paranoide" (sem acento), escreva "paranoide". Se está "paranóide" (com acento), escreva "paranóide". NÃO INVENTE ACENTOS.
-        2. IGNORAR PONTUAÇÃO COLADA:
-           - "Candida" == "Candida:"
-           - "Candida" == "Candida)"
-           - "Candida" == "Candida,"
-           -> Se a palavra for a mesma, NÃO MARQUE AMARELO.
-        3. IGNORAR ESPAÇOS:
-           - "150mg" == "150 mg"
-           - "do farmacêutico" == "do  farmacêutico"
+        REGRAS DE OURO (ANTI-ALUCINAÇÃO):
+        1. NÃO CORRIJA O PORTUGUÊS: Copie exatamente o que está na imagem.
+           - Se está "paranóide" copie "paranóide". Se está "paranoide" copie "paranoide".
+        2. IGNORAR PONTUAÇÃO COLADA: "Candida" é igual a "Candida:" ou "Candida)".
+        3. IGNORAR ESPAÇOS: "150mg" é igual a "150 mg".
+        
+        MARQUE DIVERGÊNCIAS REAIS (<mark class='diff'>) APENAS SE A PALAVRA MUDAR DE VERDADE.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
@@ -216,7 +220,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
             if dados and 'ref' in dados:
                 dados['titulo'] = secao
                 
-                # Check final de conformidade
+                # Check final de conformidade para seções comparativas
                 if not eh_visualizacao and not eh_dizeres:
                     texto_completo = (str(dados.get('bel', '')) + str(dados.get('ref', ''))).lower()
                     tem_diff = 'class="diff"' in texto_completo or "class='diff'" in texto_completo
@@ -225,13 +229,17 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
                     if not tem_diff and not tem_ort:
                         dados['status'] = 'CONFORME'
                 
+                # Garante status VISUALIZACAO para Dizeres Legais
+                if eh_dizeres:
+                    dados['status'] = 'VISUALIZACAO'
+                
                 return dados
                 
         except Exception:
             time.sleep(1)
             continue
     
-    # Fallback Texto Puro (Se falhar JSON)
+    # Fallback Texto Puro
     return {
         "titulo": secao,
         "ref": d1['data'][:3000] + "..." if d1['type']=='text' else "Texto imagem não processado.",
@@ -258,9 +266,9 @@ if pagina == "🏠 Início":
     </div>
     """, unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    c1.info("Zoom Ampliado: Letras maiores.")
-    c2.info("Anti-Alucinação: Não inventa acentos.")
-    c3.info("Pontuação: Ignora 'Candida:' vs 'Candida'.")
+    c1.info("Zoom Ampliado: Texto fácil de ler.")
+    c2.info("Anti-Alucinação: Respeita acentuação original.")
+    c3.info("Visualização: Sem alertas em Dizeres Legais.")
 
 else:
     st.markdown(f"## {pagina}")
@@ -337,8 +345,13 @@ else:
             resultados_secoes.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
             
             total = len(resultados_secoes)
+            # Dizeres legais não conta como divergente, pois é visualização
             conformes = sum(1 for x in resultados_secoes if "CONFORME" in x.get('status', ''))
-            score = int((conformes / total) * 100) if total > 0 else 0
+            # Visualização conta como conforme para KPI se não for erro
+            visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in x.get('status', ''))
+            
+            # Ajuste score: (Conformes + Visualizacao) / Total
+            score = int(((conformes + visuais) / total) * 100) if total > 0 else 0
             
             datas_texto = "N/D"
             for r in resultados_secoes:
@@ -366,9 +379,9 @@ else:
                     cA, cB = st.columns(2)
                     with cA:
                         st.markdown(f"**{nome_doc1}**")
-                        # APLICA A CLASSE CSS DE ZOOM AQUI
+                        # APLICA A CLASSE CSS DE ZOOM
                         st.markdown(f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px;'>{sec.get('ref', 'Texto não extraído')}</div>", unsafe_allow_html=True)
                     with cB:
                         st.markdown(f"**{nome_doc2}**")
-                        # APLICA A CLASSE CSS DE ZOOM AQUI TAMBÉM
+                        # APLICA A CLASSE CSS DE ZOOM
                         st.markdown(f"<div class='texto-bula' style='background:#fff; border:1px solid #eee; padding:15px; border-radius:5px;'>{sec.get('bel', 'Texto não extraído')}</div>", unsafe_allow_html=True)
