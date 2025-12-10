@@ -3,7 +3,7 @@ import concurrent.futures
 import sys
 import os
 
-# Adiciona o diretório pai ao path para importar utils
+# Caminho para importar utils
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils import (
@@ -13,7 +13,6 @@ from utils import (
 
 st.set_page_config(page_title="Ref x Belfar", page_icon="💊", layout="wide")
 
-# CSS para destacar divergências
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -34,10 +33,12 @@ lista_secoes = SECOES_PROFISSIONAL if tipo_bula == "Profissional" else SECOES_PA
 c1, c2 = st.columns(2)
 with c1:
     st.markdown("##### 📄 Arquivo Referência")
-    f1 = st.file_uploader("", type=["pdf", "docx"], key="f1")
+    # CORREÇÃO AQUI: Label obrigatório, mas escondido
+    f1 = st.file_uploader("Arquivo Referência", type=["pdf", "docx"], key="f1", label_visibility="collapsed")
 with c2:
     st.markdown("##### 📄 Arquivo BELFAR")
-    f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
+    # CORREÇÃO AQUI: Label obrigatório, mas escondido
+    f2 = st.file_uploader("Arquivo Belfar", type=["pdf", "docx"], key="f2", label_visibility="collapsed")
 
 if st.button("INICIAR AUDITORIA"):
     client = get_mistral_client()
@@ -50,7 +51,7 @@ if st.button("INICIAR AUDITORIA"):
         d2 = process_file_content(f2.getvalue(), f2.name.lower())
     
     if not d1 or not d2:
-        st.error("Erro na leitura dos arquivos.")
+        st.error("Erro na leitura.")
         st.stop()
 
     resultados = []
@@ -60,7 +61,6 @@ if st.button("INICIAR AUDITORIA"):
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_to_secao = {}
         for i, secao in enumerate(lista_secoes):
-            # Passa a próxima seção para a IA saber onde parar
             proxima = lista_secoes[i+1] if i + 1 < len(lista_secoes) else None
             future = executor.submit(auditar_secao_worker, client, secao, d1, d2, "REFERÊNCIA", "BELFAR", proxima, modo_arte=False)
             future_to_secao[future] = secao
@@ -77,11 +77,8 @@ if st.button("INICIAR AUDITORIA"):
 
     status.empty()
     progress.empty()
-    
-    # Ordena os resultados na ordem da bula
     resultados.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
 
-    # Métricas
     total = len(resultados)
     conformes = sum(1 for x in resultados if "CONFORME" in x.get('status', ''))
     visuais = sum(1 for x in resultados if "VISUALIZACAO" in x.get('status', ''))
