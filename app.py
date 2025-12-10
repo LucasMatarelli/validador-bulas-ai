@@ -41,6 +41,9 @@ st.markdown("""
 
     .stCard { background-color: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 20px; border: 1px solid #f1f1f1; }
     
+    /* ZOOM: Fonte Aumentada */
+    .texto-bula { font-size: 1.15rem !important; line-height: 1.6; color: #333; }
+
     /* Cores das Marcações */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; } 
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; } 
@@ -55,7 +58,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- CONSTANTES (LISTAS CORRETAS) -----------------
+# ----------------- CONSTANTES -----------------
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -96,13 +99,9 @@ def sanitize_text(text):
     text = text.replace('\xa0', ' ').replace('\u0000', '').replace('\u200b', '').replace('\t', ' ')
     return re.sub(r'\s+', ' ', text).strip()
 
-# --- NOVO: REMOVEDOR DE NUMERAÇÃO INICIAL ---
 def remove_numbering(text):
     if not text: return ""
-    # Remove padrões como "5. ", "5 ", "9. ", "10." do início do texto extraído
-    # Também remove o próprio título se ele vier repetido no conteúdo
-    clean = re.sub(r'^\s*\d+[\.\)]\s*', '', text) 
-    return clean
+    return re.sub(r'^\s*\d+[\.\)]\s*', '', text) 
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
@@ -142,18 +141,17 @@ def extract_json(text):
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
     except: return None
 
-# --- WORKER COM LÓGICA DE SEPARAÇÃO DE SEÇÕES ---
+# --- WORKER COM LÓGICA DE TEXTO A MAIS ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, proxima_secao):
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
-    # Instrução de limite para a IA não pegar o texto errado
     limite_instrucao = ""
     if proxima_secao:
         limite_instrucao = f"O texto desta seção TERMINA imediatamente antes do título '{proxima_secao}'. NÃO inclua o texto da próxima seção."
     else:
-        limite_instrucao = "Este é o último tópico. O texto vai até o fim relevante do documento."
+        limite_instrucao = "Este é o último tópico."
 
     prompt_text = ""
     
@@ -161,46 +159,37 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, proxima_se
         prompt_text = f"""
         Atue como Auditor de Bulas.
         TAREFA: Extrair "DIZERES LEGAIS".
-        
-        ONDE PROCURAR: Rodapé, contendo "Farm. Resp.", "CNPJ", "SAC", "Fabricado por".
-        ATENÇÃO: Se o texto começar com "Como devo usar", VOCÊ PEGOU A SEÇÃO ERRADA.
-        
+        ONDE PROCURAR: Rodapé (CNPJ, Farm. Resp, SAC).
         REGRAS:
         1. Copie o texto fielmente.
-        2. Destaque a data (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark> NOS DOIS TEXTOS.
-        3. NÃO use a tag amarela (<mark class='diff'>).
-        4. Remova numeração inicial (ex: "10. DIZERES") se houver.
-        
+        2. Destaque a data (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
+        3. NÃO use tag amarela.
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
     elif eh_visualizacao:
         prompt_text = f"""
         Atue como Formatador.
         TAREFA: Transcrever "{secao}".
-        
-        LIMITES: Começa após o título "{secao}" e {limite_instrucao}
-        
-        REGRAS: 
-        1. Apenas transcreva o texto do conteúdo.
-        2. NÃO inclua o título "{secao}" no conteúdo extraído.
-        3. NÃO inclua cabeçalhos técnicos de gráfica (cores, dimensões).
-        
+        REGRAS: Apenas transcreva o texto. Sem marcações.
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
     else:
+        # PROMPT ESPECÍFICO PARA DETECÇÃO DE TEXTO EXTRA
         prompt_text = f"""
-        Atue como Scanner OCR Inteligente.
+        Atue como Auditor de Texto Rigoroso.
         TAREFA: Comparar "{secao}" entre Doc 1 e Doc 2.
         
-        DELIMITAÇÃO DO TEXTO (MUITO IMPORTANTE):
-        1. O texto começa DEPOIS do título "{secao}".
-        2. {limite_instrucao}
-        3. NÃO inclua o número da seção (ex: "5.") no texto extraído.
+        DELIMITAÇÃO: O texto começa após o título "{secao}". {limite_instrucao}
         
-        REGRAS DE COMPARAÇÃO (ANTI-ALUCINAÇÃO):
-        1. "Candida" == "Candida:" (Ignore pontuação colada).
-        2. "150mg" == "150 mg" (Ignore espaços).
-        3. Se o texto for visualmente o mesmo, NÃO MARQUE AMARELO.
+        REGRAS DE COMPARAÇÃO:
+        1. IGNORE: Espaços extras, pontuação colada ("palavra:" = "palavra").
+        
+        2. REGRA DE OURO (TEXTO A MAIS):
+           - Se o Doc 2 tem palavras ou frases que NÃO existem no Doc 1 -> MARQUE TUDO EM AMARELO NO DOC 2.
+           - Se o Doc 1 tem palavras ou frases que SUMIRAM no Doc 2 -> MARQUE TUDO EM AMARELO NO DOC 1.
+           - Exemplo: Doc 1: "Tome com água." | Doc 2: "Tome com água ou suco." -> Marque "ou suco" em amarelo no Doc 2.
+        
+        3. Use <mark class='diff'>TRECHO</mark> para destacar as diferenças/adições.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
@@ -229,13 +218,9 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, proxima_se
             
             if dados and 'ref' in dados:
                 dados['titulo'] = secao
-                
-                # --- LIMPEZA PÓS-PROCESSAMENTO ---
-                # Remove numeração que a IA possa ter deixado passar (ex: "5. Onde...")
                 dados['ref'] = remove_numbering(dados.get('ref', ''))
                 dados['bel'] = remove_numbering(dados.get('bel', ''))
 
-                # Check conformidade
                 if not eh_visualizacao and not eh_dizeres:
                     texto_completo = (str(dados.get('bel', '')) + str(dados.get('ref', ''))).lower()
                     tem_diff = 'class="diff"' in texto_completo or "class='diff'" in texto_completo
@@ -243,9 +228,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, proxima_se
                     if not tem_diff and not tem_ort:
                         dados['status'] = 'CONFORME'
                 
-                if eh_dizeres:
-                     dados['status'] = 'VISUALIZACAO'
-
+                if eh_dizeres: dados['status'] = 'VISUALIZACAO'
                 return dados
                 
         except Exception:
@@ -254,9 +237,9 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, proxima_se
     
     return {
         "titulo": secao,
-        "ref": d1['data'][:3000] + "..." if d1['type']=='text' else "Texto imagem não processado.",
-        "bel": d2['data'][:3000] + "..." if d2['type']=='text' else "Texto imagem não processado.",
-        "status": "ERRO LEITURA (Texto Bruto)"
+        "ref": d1['data'][:3000] + "...",
+        "bel": d2['data'][:3000] + "...",
+        "status": "ERRO LEITURA"
     }
 
 # ----------------- UI PRINCIPAL -----------------
@@ -274,13 +257,13 @@ if pagina == "🏠 Início":
     st.markdown("""
     <div style="text-align: center; padding: 40px 20px;">
         <h1 style="color: #55a68e; font-size: 3em;">Validador de Bulas</h1>
-        <p style="font-size: 1.2em; color: #7f8c8d;">Extração de Seções Corrigida.</p>
+        <p style="font-size: 1.2em; color: #7f8c8d;">Auditoria com Detecção de Texto Extra.</p>
     </div>
     """, unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    c1.info("Seções Exatas: Não mistura tópicos.")
-    c2.info("Limpeza: Remove numeração (5., 7.).")
-    c3.info("Gráfica: Ignora lixo técnico.")
+    c1.info("Texto Extra: Marca adições em amarelo.")
+    c2.info("Limites: Respeita inicio/fim da seção.")
+    c3.info("Zoom: Texto facilitado.")
 
 else:
     st.markdown(f"## {pagina}")
@@ -337,18 +320,10 @@ else:
             status_text = st.empty()
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                # Dicionário de Futuros
                 future_to_secao = {}
-                
-                # Itera sobre as seções para passar a "Próxima Seção" como limite
                 for i, secao in enumerate(lista_secoes):
-                    # Define qual é a próxima seção para usar como âncora de parada
                     proxima = lista_secoes[i+1] if i + 1 < len(lista_secoes) else None
-                    
-                    future = executor.submit(
-                        auditar_secao_worker, 
-                        client, secao, d1, d2, nome_doc1, nome_doc2, proxima
-                    )
+                    future = executor.submit(auditar_secao_worker, client, secao, d1, d2, nome_doc1, nome_doc2, proxima)
                     future_to_secao[future] = secao
                 
                 completed = 0
