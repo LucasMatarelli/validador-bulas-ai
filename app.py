@@ -15,55 +15,81 @@ from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador de Bulas Pro",
-    page_icon="🔬",
+    page_title="Validador de Bulas",
+    page_icon="💊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (ZOOM E LEITURA OTIMIZADA) -----------------
+# ----------------- ESTILOS CSS (SOLICITADO PELO USUÁRIO) -----------------
 st.markdown("""
 <style>
+    /* OCULTA A BARRA SUPERIOR */
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
-    .main { background-color: #f4f6f9; }
 
-    h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; letter-spacing: -0.5px; }
+    /* Ajuste de Fundo e Fontes */
+    .main { background-color: #f4f6f8; }
+    h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    /* Navegação */
+    /* ESTILO DO MENU DE NAVEGAÇÃO */
     .stRadio > div[role="radiogroup"] > label {
-        background-color: white; border: 1px solid #e2e8f0; padding: 16px;
-        border-radius: 8px; margin-bottom: 8px; transition: all 0.2s ease;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05); font-weight: 600; color: #475569;
+        background-color: white;
+        border: 1px solid #e1e4e8;
+        padding: 12px 15px;
+        border-radius: 8px;
+        margin-bottom: 8px;
+        transition: all 0.2s;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
     }
     .stRadio > div[role="radiogroup"] > label:hover {
-        background-color: #eff6ff; border-color: #3b82f6; color: #1d4ed8;
+        background-color: #f0fbf7;
+        border-color: #55a68e;
+        color: #55a68e;
+        cursor: pointer;
     }
 
-    /* Cards */
-    .stCard { background-color: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); margin-bottom: 20px; border: 1px solid #e2e8f0; }
+    /* Card Estilizado */
+    .stCard {
+        background-color: white;
+        padding: 25px;
+        border-radius: 15px;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.05);
+        margin-bottom: 25px;
+        border: 1px solid #e1e4e8;
+        transition: transform 0.2s;
+        height: 100%;
+    }
+    .stCard:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 15px 30px rgba(0,0,0,0.1);
+        border-color: #55a68e;
+    }
+
+    /* Títulos dos Cards */
+    .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
+    .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
     
-    /* LEITURA: Fonte maior e monoespaçada para evitar confusão visual */
+    /* Legendas */
+    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+    .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+    .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+
+    /* Marcações de Texto (Destaques no Texto) */
+    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; } /* AMARELO - DIVERGENCIA */
+    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; } /* VERMELHO - PORTUGUES */
+    mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; } /* AZUL - DATA */
+
+    /* Botões */
+    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); }
+    .stButton>button:hover { background-color: #448c75; box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); }
+    
+    /* Classe extra para manter o texto legível como na versão antiga */
     .texto-bula {
-        font-family: 'Consolas', 'Monaco', monospace !important;
-        font-size: 1.1rem !important; 
-        line-height: 1.8;
-        color: #334155;
-        white-space: pre-wrap; /* Mantém quebras de linha originais */
+        font-size: 1.1rem;
+        line-height: 1.6;
+        color: #333;
     }
-
-    /* Cores das Marcações - Alto Contraste */
-    mark.diff { background-color: #fef08a; color: #854d0e; padding: 2px 6px; border-radius: 4px; border: 1px solid #facc15; font-weight: bold; } 
-    mark.ort { background-color: #fecaca; color: #991b1b; padding: 2px 6px; border-radius: 4px; border-bottom: 2px solid #ef4444; } 
-    mark.anvisa { background-color: #bae6fd; color: #0369a1; padding: 2px 6px; border-radius: 4px; border: 1px solid #7dd3fc; font-weight: bold; }
-
-    /* Botão */
-    .stButton>button { 
-        width: 100%; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); 
-        color: white; font-weight: 700; border-radius: 10px; height: 60px; font-size: 18px; border: none;
-        box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.3); transition: transform 0.1s;
-    }
-    .stButton>button:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.4); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -99,54 +125,41 @@ def get_mistral_client():
 
 def image_to_base64(image):
     buffered = io.BytesIO()
-    # Aumentei para 100% de qualidade para evitar artefatos de compressão nas letras pequenas
+    # MANTIDA LÓGICA DE ALTA QUALIDADE
     image.save(buffered, format="JPEG", quality=100, subsampling=0) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def sanitize_text(text):
     if not text: return ""
     text = unicodedata.normalize('NFKC', text)
-    # Remove caracteres invisíveis que atrapalham a IA
     text = text.replace('\xa0', ' ').replace('\u0000', '').replace('\u200b', '').replace('\t', ' ')
     return re.sub(r'\s+', ' ', text).strip()
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
     try:
-        # --- DOCX ---
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": sanitize_text(text)}
-            
-        # --- PDF (MOTOR DE ALTA RESOLUÇÃO) ---
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            
-            # Estratégia Híbrida:
-            # Se tiver pouco texto extraível, assumimos que é imagem/scan e forçamos o modo visual.
             full_text = ""
             for page in doc: full_text += page.get_text() + " "
             
-            # Se for PDF de texto (não scan), usamos o texto puro pois é 100% preciso na extração
             if len(full_text.strip()) > 500:
                 doc.close()
                 return {"type": "text", "data": sanitize_text(full_text)}
             
-            # Se for Scan ou pouquíssimo texto, ativamos o SUPER ZOOM
             images = []
-            limit_pages = min(5, len(doc)) # Limite de páginas para não estourar memória
+            limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
-                
-                # AQUI ESTÁ O SEGREDO DO ZOOM: Matrix(4.0, 4.0) = 300 DPI (Resolução de Impressão)
-                # Antes estava 2.0 (Leitura de tela). 4.0 permite ler letras de 6pt.
+                # MANTIDO O ZOOM 4.0 PARA PRECISÃO MÁXIMA
                 pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
-                
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=100))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
-            
             doc.close()
             gc.collect()
             return {"type": "images", "data": images}
@@ -161,19 +174,17 @@ def extract_json(text):
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
     except: return None
 
-# --- WORKER BLINDADO CONTRA ALUCINAÇÕES ---
+# --- WORKER BLINDADO (LÓGICA MANTIDA, INTERFACE ANTIGA) ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
-    # Prompt Base Anti-Alucinação
     base_instruction = """
-    DIRETRIZ DE SEGURANÇA MÁXIMA (ANTI-ALUCINAÇÃO):
-    1. VOCÊ É UM ROBÔ OCR, NÃO UM EDITOR.
-    2. COPIE EXATAMENTE O QUE VÊ. Se o texto diz "Frequencia" (sem acento), escreva "Frequencia". NÃO CORRIJA.
-    3. Se o texto estiver ilegível, escreva [ILEGÍVEL], não invente.
-    4. NÃO COMPLETE FRASES. Se a frase acaba no meio, pare onde ela acaba.
+    DIRETRIZ DE SEGURANÇA MÁXIMA:
+    1. VOCÊ É UM ROBÔ OCR. COPIE EXATAMENTE O QUE VÊ.
+    2. Se o texto diz "Frequencia" (sem acento), escreva "Frequencia". NÃO CORRIJA.
+    3. NÃO COMPLETE FRASES.
     """
     
     prompt_text = ""
@@ -185,13 +196,13 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         TAREFA: Localizar "DIZERES LEGAIS".
         
         ALVO:
-        - Busque por: "Farm. Resp.", "M.S.", "CNPJ", "SAC".
+        - Busque por: "Farm. Resp.", "M.S.", "CNPJ", "SAC", "Fabricado por".
         - IGNORE "Como usar" ou "Posologia".
         
         SAÍDA:
-        1. Copie o texto encontrado.
-        2. Destaque datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
-        3. Use <mark class='diff'> APENAS se houver divergência real de dados (CNPJ diferente, Endereço diferente).
+        1. Copie o texto encontrado nos dois arquivos.
+        2. Destaque TODAS as datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
+        3. Use <mark class='diff'> APENAS se houver divergência real de dados (CNPJ, Endereço).
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
@@ -199,11 +210,11 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     elif eh_visualizacao:
         prompt_text = f"""
         {base_instruction}
-        Atue como Extrator de Conteúdo.
+        Atue como Extrator.
         TAREFA: Extrair "{secao}".
         
-        FILTRO (REMOVER):
-        - Textos técnicos verticais de gráfica (cores, facas, códigos, dimensões).
+        FILTRO (REMOVER LIXO):
+        - Remova textos técnicos de gráfica (cores, facas, códigos, dimensões).
         
         SAÍDA:
         - Transcreva o conteúdo limpo.
@@ -214,36 +225,31 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         """
         
     else:
-        # Prompt de Validação Estrita
         prompt_text = f"""
         {base_instruction}
-        Atue como Comparador de Texto Estrito.
+        Atue como Comparador Estrito.
         TAREFA: Comparar "{secao}" palavra por palavra.
         
-        1. Localize o início e fim exatos da seção "{secao}".
-        2. Extraia o texto para 'ref' e 'bel' SEM CORRIGIR NADA.
+        1. Localize o início e fim exatos da seção.
+        2. Extraia o texto para 'ref' e 'bel' SEM CORRIGIR.
         
         REGRAS DO AMARELO (<mark class='diff'>):
-        - Use APENAS se a palavra estiver AUSENTE ou ESCRITA DIFERENTE (ex: erro de digitação, acentuação trocada).
-        - Exemplo: "Cimelida" vs "Cimeleda" -> MARQUE.
-        - Exemplo: "sodio" vs "sódio" -> MARQUE (Diferença de acento).
-        
-        O QUE NÃO MARCAR:
-        - Pontuação isolada (vírgulas).
-        - Sinônimos perfeitos (se o sentido for idêntico e óbvio).
+        - Use APENAS se a palavra estiver AUSENTE ou ESCRITA DIFERENTE (ex: "sodio" vs "sódio").
+        - NÃO marque pontuação isolada.
+        - NÃO marque sinônimos perfeitos.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    limit = 80000 # Aumentei o limite de caracteres para suportar textos maiores extraídos
+    limit = 80000 
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
-            messages_content.append({"type": "text", "text": f"\n--- DOCUMENTO: {nome} (TEXTO PURO) ---\n{d['data'][:limit]}"}) 
+            messages_content.append({"type": "text", "text": f"\n--- DOCUMENTO: {nome} ---\n{d['data'][:limit]}"}) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- IMAGENS ALTA RESOLUÇÃO: {nome} ---"})
-            for img in d['data'][:2]: # Envia as 2 primeiras páginas em HD
+            messages_content.append({"type": "text", "text": f"\n--- IMAGENS: {nome} ---"})
+            for img in d['data'][:2]: 
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
@@ -253,19 +259,17 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.1 # Temperatura BAIXA para reduzir criatividade/alucinação
+                temperature=0.1
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
             
             if dados and 'ref' in dados:
                 dados['titulo'] = secao
-                
                 if not eh_visualizacao and not eh_dizeres:
                     texto_completo = (str(dados.get('bel', '')) + str(dados.get('ref', ''))).lower()
                     tem_diff = 'class="diff"' in texto_completo or "class='diff'" in texto_completo
-                    if not tem_diff:
-                        dados['status'] = 'CONFORME'
+                    if not tem_diff: dados['status'] = 'CONFORME'
                 
                 if eh_dizeres: dados['status'] = 'VISUALIZACAO'
                 return dados
@@ -276,33 +280,65 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     return {
         "titulo": secao,
-        "ref": "Não foi possível extrair.",
-        "bel": "Não foi possível extrair.",
-        "status": "ERRO TÉCNICO"
+        "ref": "Texto não processado.",
+        "bel": "Texto não processado.",
+        "status": "ERRO LEITURA"
     }
 
 # ----------------- UI PRINCIPAL -----------------
 with st.sidebar:
-    st.title("🔎 Validador Pro")
+    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
+    st.title("Validador de bulas")
     client = get_mistral_client()
-    if client: st.success("✅ Motor de IA Ativo")
-    else: st.error("❌ API Key Ausente")
+    if client: st.success("✅ Sistema Online")
+    else: st.error("❌ Offline")
     st.divider()
-    pagina = st.radio("Modo de Operação:", ["🏠 Dashboard", "💊 Ref x BELFAR", "📋 MKT/Anvisa", "🎨 Arte/Gráfica"])
+    pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v3.0 - High Definition Engine")
 
-if pagina == "🏠 Dashboard":
+if pagina == "🏠 Início":
     st.markdown("""
     <div style="text-align: center; padding: 40px 20px;">
-        <h1 style="color: #2563eb;">Validador de Bulas 3.0</h1>
-        <p style="font-size: 1.2em; color: #64748b;">Motor atualizado com Leitura HD e Anti-Alucinação.</p>
+        <h1 style="color: #55a68e; font-size: 3em;">Validador de Bulas</h1>
+        <p style="font-size: 1.2em; color: #7f8c8d;">Auditoria com Filtro Técnico Inteligente.</p>
     </div>
     """, unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    c1.info("🔍 **Zoom 4x (300 DPI)**\n\nLê letras minúsculas com precisão de scanner.")
-    c2.info("🤖 **Anti-Alucinação**\n\nProibido corrigir erros do original.")
-    c3.info("📅 **Rastreio de Datas**\n\nCaptura datas em ambos os arquivos.")
+    
+    # CARDS COM O CSS SOLICITADO
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">🔍 Filtro Técnico</div>
+            <p class="card-text">
+            O sistema ignora automaticamente especificações técnicas de gráfica (cores, facas, gramatura),
+            focando apenas no conteúdo textual relevante.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">👁️ Zoom & Precisão</div>
+            <p class="card-text">
+            Processamento em Alta Definição (4.0x) para ler letras miúdas.
+            Detecção estrita de palavras faltantes e erros de acentuação.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">⚖️ Dizeres Legais</div>
+            <p class="card-text">
+            Extração automática de CNPJ, Farmacêutico Responsável e <span class='highlight-blue'>DATAS</span>
+            de aprovação da Anvisa em ambos os documentos.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
 else:
     st.markdown(f"## {pagina}")
@@ -312,32 +348,47 @@ else:
     nome_doc2 = "BELFAR"
     
     if pagina == "💊 Ref x BELFAR":
-        tipo_bula = st.radio("Modelo:", ["Paciente", "Profissional"], horizontal=True)
-        if tipo_bula == "Profissional": lista_secoes = SECOES_PROFISSIONAL
-    elif pagina == "📋 MKT/Anvisa":
-        nome_doc1 = "ANVISA"; nome_doc2 = "MKT"
-    elif pagina == "🎨 Arte/Gráfica":
-        nome_doc1 = "ARTE"; nome_doc2 = "GRÁFICA"
+        label_box1 = "📄 Referência"
+        label_box2 = "📄 BELFAR"
+        col_tipo, _ = st.columns([1, 2])
+        with col_tipo:
+            tipo_bula = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True)
+            if tipo_bula == "Profissional": lista_secoes = SECOES_PROFISSIONAL
+    elif pagina == "📋 Conferência MKT":
+        label_box1 = "📄 ANVISA"
+        label_box2 = "📄 MKT"
+        nome_doc1 = "ANVISA"
+        nome_doc2 = "MKT"
+    elif pagina == "🎨 Gráfica x Arte":
+        label_box1 = "📄 Arte Vigente"
+        label_box2 = "📄 Gráfica"
+        nome_doc1 = "ARTE VIGENTE"
+        nome_doc2 = "GRÁFICA"
     
     st.divider()
     c1, c2 = st.columns(2)
-    with c1: f1 = st.file_uploader(f"📂 {nome_doc1}", type=["pdf", "docx"], key="f1")
-    with c2: f2 = st.file_uploader(f"📂 {nome_doc2}", type=["pdf", "docx"], key="f2")
+    with c1:
+        st.markdown(f"##### {label_box1}")
+        f1 = st.file_uploader("", type=["pdf", "docx"], key="f1")
+    with c2:
+        st.markdown(f"##### {label_box2}")
+        f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
         
     st.write("") 
-    if st.button("INICIAR VALIDAÇÃO EM HD"):
+    if st.button("INICIAR AUDITORIA"):
         if not f1 or not f2:
-            st.warning("⚠️ Selecione os dois arquivos.")
+            st.warning("⚠️ Selecione os arquivos.")
         else:
             if not client: st.stop()
-            with st.spinner("🔄 Renderizando imagens em Alta Resolução (pode demorar um pouco)..."):
-                b1 = f1.getvalue(); b2 = f2.getvalue()
+            with st.spinner("🚀 Processando arquivos (Modo HD)..."):
+                b1 = f1.getvalue()
+                b2 = f2.getvalue()
                 d1 = process_file_content(b1, f1.name.lower())
                 d2 = process_file_content(b2, f2.name.lower())
                 gc.collect()
 
             if not d1 or not d2:
-                st.error("Erro ao processar arquivos. Verifique se não estão corrompidos.")
+                st.error("Erro leitura.")
                 st.stop()
 
             resultados_secoes = []
@@ -357,18 +408,19 @@ else:
                     except: pass
                     completed += 1
                     progress_bar.progress(completed / len(lista_secoes))
-                    status_text.text(f"Analisando Seção: {completed}/{len(lista_secoes)}")
+                    status_text.text(f"Analisando: {completed}/{len(lista_secoes)}")
             
-            status_text.empty(); progress_bar.empty()
+            status_text.empty()
+            progress_bar.empty()
+
             resultados_secoes.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
             
-            # Cálculo de Score
             total = len(resultados_secoes)
             conformes = sum(1 for x in resultados_secoes if "CONFORME" in x.get('status', ''))
             visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in x.get('status', ''))
             score = int(((conformes + visuais) / total) * 100) if total > 0 else 0
             
-            # Extração de datas
+            # --- Lógica de Datas (Mantida a melhoria) ---
             datas_encontradas = []
             for r in resultados_secoes:
                 if "DIZERES LEGAIS" in r['titulo']:
@@ -376,16 +428,15 @@ else:
                     matches = re.findall(r'\d{2}/\d{2}/\d{4}', texto_combinado)
                     for m in matches:
                         if m not in datas_encontradas: datas_encontradas.append(m)
+            
             datas_texto = " | ".join(datas_encontradas) if datas_encontradas else "N/D"
 
-            # Métricas
             m1, m2, m3 = st.columns(3)
-            m1.metric("Precisão", f"{score}%")
+            m1.metric("Conformidade", f"{score}%")
             m2.metric("Seções", total)
-            m3.metric("Datas Encontradas", datas_texto)
+            m3.metric("Datas Anvisa", datas_texto)
             st.divider()
             
-            # Exibição
             for sec in resultados_secoes:
                 status = sec.get('status', 'N/A')
                 titulo = sec.get('titulo', '').upper()
@@ -400,7 +451,7 @@ else:
                     cA, cB = st.columns(2)
                     with cA:
                         st.markdown(f"**{nome_doc1}**")
-                        st.markdown(f"<div class='texto-bula' style='background:#f1f5f9; padding:15px; border-radius:8px; border:1px solid #cbd5e1;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px;'>{sec.get('ref', 'Texto não extraído')}</div>", unsafe_allow_html=True)
                     with cB:
                         st.markdown(f"**{nome_doc2}**")
-                        st.markdown(f"<div class='texto-bula' style='background:#ffffff; border:1px solid #cbd5e1; padding:15px; border-radius:8px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div class='texto-bula' style='background:#fff; border:1px solid #eee; padding:15px; border-radius:5px;'>{sec.get('bel', 'Texto não extraído')}</div>", unsafe_allow_html=True)
