@@ -178,33 +178,33 @@ def extract_json(text):
         return json.loads(clean)
     except: return None
 
-# --- WORKER CORRIGIDO PARA EVITAR ALUCINAÇÃO E LIMITAR DATAS ---
+# --- WORKER AJUSTADO: IGNORA ESPAÇOS E FORMATAÇÃO ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
-    # Lógica Dinâmica: Só pede data azul se for Dizeres Legais
+    # Lógica Dinâmica para data
     instrucao_data = ""
     if "DIZERES LEGAIS" in secao.upper():
         instrucao_data = "- Use <mark class='anvisa'>DATA</mark> para destacar ESTRITAMENTE datas de aprovação da ANVISA."
     
     prompt_text = f"""
-    Você é um Extrator de Texto OCR de Alta Fidelidade.
+    Você é um Auditor de Texto Inteligente e Preciso.
     TAREFA: Comparar a seção "{secao}" entre {nome_doc1} e {nome_doc2}.
     
-    REGRAS DE EXTRAÇÃO (CRÍTICO):
-    1. PROIBIDO INVENTAR PALAVRAS. Copie o texto caractere por caractere.
-    2. NÃO CORRIJA O TEXTO ORIGINAL. Se houver erro de digitação na imagem, mantenha o erro no texto.
-    3. NÃO RESUMA. Quero o texto integral.
+    CRITÉRIOS DE COMPARAÇÃO (IMPORTANTE):
+    1. IGNORE TOTALMENTE espaços extras, espaços duplos, quebras de linha ou tabulações.
+    2. Considere "palavra" igual a "  palavra  " (espaço não importa).
+    3. NÃO CORRIJA O TEXTO ORIGINAL. Mantenha fiel à imagem.
     
     REGRAS DE MARCAÇÃO NO CAMPO 'bel':
-    - Use <mark class="diff">TEXTO</mark> para destacar palavras que existem no {nome_doc2} mas são diferentes do {nome_doc1}.
-    - Use <mark class="ort">ERRO</mark> apenas para erros grosseiros de português.
+    - Use <mark class="diff">PALAVRA</mark> APENAS se a palavra for diferente (grafia, palavra extra ou ausente). NÃO MARQUE SE FOR APENAS ESPAÇAMENTO.
+    - Use <mark class="ort">ERRO</mark> apenas para erros ortográficos evidentes.
     {instrucao_data}
     
     FORMATO JSON DE SAÍDA:
     {{
         "titulo": "{secao}",
-        "ref": "Texto exato e fiel do {nome_doc1}...",
-        "bel": "Texto fiel do {nome_doc2} contendo as tags HTML...",
+        "ref": "Texto exato do {nome_doc1}...",
+        "bel": "Texto do {nome_doc2} com as tags aplicadas apenas onde houve mudança real de palavra...",
         "status": "CONFORME ou DIVERGENTE"
     }}
     """
@@ -214,7 +214,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
             texto_limpo = d['data'][:60000] 
-            messages_content.append({"type": "text", "text": f"\n--- CONTEÚDO REAL {nome} ---\n{texto_limpo}"}) 
+            messages_content.append({"type": "text", "text": f"\n--- CONTEÚDO {nome} ---\n{texto_limpo}"}) 
         else:
             messages_content.append({"type": "text", "text": f"\n--- IMAGENS {nome} (OCR) ---"})
             for img in d['data'][:2]:
@@ -276,11 +276,11 @@ if pagina == "🏠 Início":
         <div class="stCard">
             <div class="card-title">💊 Medicamento Referência x BELFAR</div>
             <div class="card-text">
-                Comparação lado a lado com marcação inteligente.
+                Comparação lado a lado inteligente.
                 <br><ul>
-                    <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
-                    <li>Ortografia: <span class="highlight-pink">vermelho</span></li>
-                    <li>Datas Anvisa: <span class="highlight-blue">azul</span> (Apenas Dizeres Legais)</li>
+                    <li>Ignora espaços extras</li>
+                    <li>Foca em palavras reais</li>
+                    <li>Detecta datas (Dizeres Legais)</li>
                 </ul>
             </div>
         </div>""", unsafe_allow_html=True)
