@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (MANTIDOS) -----------------
+# ----------------- ESTILOS CSS -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -49,14 +49,71 @@ st.markdown("""
     .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
     .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
 
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; } 
-    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; } 
-    mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
+    /* Marcações de texto */
+    mark.diff { 
+        background-color: #fff3cd; 
+        color: #856404; 
+        padding: 2px 4px; 
+        border-radius: 3px; 
+        font-weight: 500;
+        border-bottom: 2px solid #ffc107;
+    } 
+    mark.ort { 
+        background-color: #f8d7da; 
+        color: #721c24; 
+        padding: 2px 4px; 
+        border-radius: 3px; 
+        font-weight: 600;
+        border-bottom: 2px solid #dc3545;
+        text-decoration: underline wavy #dc3545;
+    } 
+    mark.anvisa { 
+        background-color: #d1ecf1; 
+        color: #0c5460; 
+        padding: 3px 6px; 
+        border-radius: 3px; 
+        font-weight: bold;
+        border: 1.5px solid #17a2b8;
+        box-shadow: 0 1px 3px rgba(23, 162, 184, 0.2);
+    }
 
-    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); }
-    .stButton>button:hover { background-color: #448c75; box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); }
+    .stButton>button { 
+        width: 100%; 
+        background-color: #55a68e; 
+        color: white; 
+        font-weight: bold; 
+        border-radius: 10px; 
+        height: 55px; 
+        border: none; 
+        font-size: 16px; 
+        box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); 
+    }
+    .stButton>button:hover { 
+        background-color: #448c75; 
+        box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); 
+    }
     
-    .texto-bula { font-size: 1.1rem; line-height: 1.6; color: #333; }
+    .texto-bula { 
+        font-size: 1.05rem; 
+        line-height: 1.7; 
+        color: #333; 
+    }
+    
+    /* Animação de loading */
+    .loading-spinner {
+        border: 3px solid #f3f3f3;
+        border-top: 3px solid #55a68e;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 20px auto;
+    }
+    
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -83,6 +140,7 @@ SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
 
+@st.cache_resource
 def get_mistral_client():
     api_key = None
     try: api_key = st.secrets["MISTRAL_API_KEY"]
@@ -91,25 +149,26 @@ def get_mistral_client():
     return Mistral(api_key=api_key) if api_key else None
 
 def image_to_base64(image):
+    """Converte imagem para base64 otimizado"""
     buffered = io.BytesIO()
-    image.save(buffered, format="JPEG", quality=85, optimize=True) 
+    # Reduz qualidade para 80 (boa qualidade, menor tamanho)
+    image.save(buffered, format="JPEG", quality=80, optimize=True)
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def sanitize_text(text):
+    """Remove caracteres invisíveis e normaliza texto"""
     if not text: return ""
     text = unicodedata.normalize('NFKC', text)
-    # --- CORREÇÃO DO MALEATO ---
-    # Remove caracteres fantasmas comuns em PDFs de gráfica
-    text = text.replace('\xa0', ' ')   # Espaço não-quebrável
-    text = text.replace('\u200b', '')  # Espaço zero
-    text = text.replace('\u00ad', '')  # Hífen condicional (Soft Hyphen)
-    text = text.replace('\ufeff', '')  # BOM (Byte Order Mark)
+    text = text.replace('\xa0', ' ')
+    text = text.replace('\u200b', '')
+    text = text.replace('\u00ad', '')
+    text = text.replace('\ufeff', '')
     text = text.replace('\t', ' ')
-    # Garante espaço único entre palavras
     return re.sub(r'\s+', ' ', text).strip()
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
+    """Processa arquivo com cache otimizado"""
     try:
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -119,141 +178,236 @@ def process_file_content(file_bytes, filename):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
-            for page in doc: full_text += page.get_text() + " "
+            for page in doc: 
+                full_text += page.get_text() + " "
             
-            # Prioriza texto nativo se existir (Rápido e Preciso)
+            # Se tem texto nativo suficiente, usa direto
             if len(full_text.strip()) > 500:
                 doc.close()
                 return {"type": "text", "data": sanitize_text(full_text)}
             
-            # OCR Visual (Imagem)
+            # OCR apenas se necessário
             images = []
             limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
-                # ZOOM 3.0: Equilíbrio perfeito. 4.0 trava, 2.0 pode perder detalhes.
-                # 3.0 é leve o suficiente e lê tudo.
-                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
-                except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
-                images.append(Image.open(img_byte_arr))
+                # Zoom 2.5 - equilíbrio entre qualidade e velocidade
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
+                try: 
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
+                except: 
+                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                
+                img = Image.open(img_byte_arr)
+                # Reduz tamanho se muito grande
+                if img.width > 2000:
+                    img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+                images.append(img)
+            
             doc.close()
             gc.collect()
             return {"type": "images", "data": images}
-    except: return None
+    except Exception as e:
+        st.error(f"Erro ao processar arquivo: {str(e)}")
+        return None
     return None
 
 def extract_json(text):
+    """Extrai JSON de forma robusta"""
     text = re.sub(r'```json|```', '', text).strip()
     if text.startswith("json"): text = text[4:]
     try:
         start, end = text.find('{'), text.rfind('}') + 1
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
-    except: return None
+    except: 
+        return None
 
-# --- WORKER ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
+    """Worker otimizado com prompts melhorados"""
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
+    # Prompt base otimizado
     base_instruction = """
-    DIRETRIZ DE PRECISÃO ABSOLUTA:
-    1. Compare APENAS o significado e as letras visíveis.
-    2. IGNORE TOTALMENTE caracteres fantasmas, espaços duplos ou formatação oculta.
-    3. REGRA DO FALSO POSITIVO: Se "maleato de enalapril" parece igual nos dois textos, NÃO MARQUE COMO DIFERENÇA. Considere igual.
-    4. Copie o texto exato, sem corrigir.
-    """
+INSTRUÇÕES CRÍTICAS DE COMPARAÇÃO:
+
+1. **NORMALIZAÇÃO**: Ignore diferenças de formatação (espaços, quebras, tabs). Compare apenas conteúdo visível.
+
+2. **MARCAÇÃO AMARELA** (<mark class='diff'>):
+   - USE para: palavras diferentes, frases alteradas, informações divergentes
+   - Marque APENAS a parte diferente (palavra/frase específica)
+   - Exemplo: "10 mg" vs "20 mg" → marque apenas o número diferente
+   - NÃO marque se o texto for idêntico em significado
+
+3. **MARCAÇÃO VERMELHA** (<mark class='ort'>):
+   - USE APENAS para erros ortográficos evidentes
+   - Exemplos: "mediçamento", "efeicácia", "paciennte"
+   - NÃO marque variações regionais ou científicas corretas
+
+4. **MARCAÇÃO AZUL** (<mark class='anvisa'>):
+   - USE APENAS para datas no formato DD/MM/AAAA
+   - Marque em AMBOS os textos (ref e bel)
+   - Exemplo: <mark class='anvisa'>15/03/2024</mark>
+
+5. **PRECISÃO**: Se "maleato de enalapril" aparece igual nos dois, NÃO MARQUE.
+"""
     
     prompt_text = ""
     
     if eh_dizeres:
         prompt_text = f"""
-        {base_instruction}
-        Atue como Auditor Regulatório.
-        TAREFA: Localizar "DIZERES LEGAIS".
-        Procure por: "Farm. Resp.", "M.S.", "CNPJ", "SAC".
-        
-        SAÍDA:
-        1. Copie o texto encontrado.
-        2. Destaque datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
-        3. Use <mark class='diff'> APENAS para dados realmente diferentes (números errados).
-        
-        SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
-        """
+{base_instruction}
+
+TAREFA: Extrair "DIZERES LEGAIS" de ambos documentos.
+
+PROCURE POR:
+- Farm. Resp. / Farmacêutico Responsável
+- M.S. / Registro MS
+- CNPJ
+- SAC / Telefone
+- Datas de aprovação (formato DD/MM/AAAA)
+
+MARCAÇÃO OBRIGATÓRIA:
+1. Todas as datas DD/MM/AAAA → <mark class='anvisa'>DATA</mark> (em REF e BEL)
+2. Números/dados diferentes → <mark class='diff'>TEXTO</mark>
+3. Erros de português → <mark class='ort'>ERRO</mark>
+
+SAÍDA JSON:
+{{
+  "titulo": "{secao}",
+  "ref": "texto extraído com marcações",
+  "bel": "texto extraído com marcações",
+  "status": "VISUALIZACAO"
+}}
+"""
         
     elif eh_visualizacao:
         prompt_text = f"""
-        {base_instruction}
-        Atue como Extrator.
-        TAREFA: Extrair "{secao}".
-        FILTRO: Remova lixo técnico.
-        
-        SAÍDA:
-        - Use <mark class='diff'> se houver diferença de CONTEÚDO REAL (ex: 10mg vs 20mg).
-        - NUNCA use mark se as palavras forem visualmente idênticas.
-        
-        SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
-        """
+{base_instruction}
+
+TAREFA: Extrair seção "{secao}" e comparar.
+
+REGRAS:
+1. Extraia o texto completo da seção
+2. Marque diferenças REAIS de conteúdo em amarelo
+3. Marque erros ortográficos em vermelho
+4. Se textos forem idênticos, NÃO use marcações
+
+SAÍDA JSON:
+{{
+  "titulo": "{secao}",
+  "ref": "texto com marcações se houver diferenças",
+  "bel": "texto com marcações se houver diferenças",
+  "status": "VISUALIZACAO"
+}}
+"""
         
     else:
         prompt_text = f"""
-        {base_instruction}
-        Atue como Comparador de Texto Estrito.
-        TAREFA: Comparar "{secao}" palavra por palavra.
-        
-        1. Localize a seção.
-        2. Extraia para 'ref' e 'bel'.
-        
-        REGRAS DO DESTAQUE (<mark class='diff'>):
-        - MARQUE: Palavras trocadas, números diferentes, letras faltando.
-        - PROIBIDO MARCAR: Palavras iguais com códigos diferentes (ex: "maleato" vs "maleato"). Se ler igual, é igual.
-        
-        SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
-        """
+{base_instruction}
+
+TAREFA: Comparar seção "{secao}" palavra por palavra.
+
+PROCESSO:
+1. Localize a seção em ambos documentos
+2. Compare todo o conteúdo
+3. Marque diferenças com precisão cirúrgica
+
+MARCAÇÕES:
+- <mark class='diff'>diferença</mark> → palavras/frases diferentes
+- <mark class='ort'>erro</mark> → erros de português
+- <mark class='anvisa'>DD/MM/AAAA</mark> → datas (em ambos textos)
+
+STATUS:
+- "CONFORME" → textos idênticos (sem marcações)
+- "DIVERGENTE" → há diferenças marcadas
+
+SAÍDA JSON:
+{{
+  "titulo": "{secao}",
+  "ref": "texto completo com marcações precisas",
+  "bel": "texto completo com marcações precisas",
+  "status": "CONFORME ou DIVERGENTE"
+}}
+"""
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    limit = 80000 
+    # Limite de texto otimizado
+    limit = 60000
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
-            messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
+            messages_content.append({
+                "type": "text", 
+                "text": f"\n--- {nome} ---\n{d['data'][:limit]}"
+            }) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagem) ---\n"})
+            messages_content.append({
+                "type": "text", 
+                "text": f"\n--- {nome} (Imagem) ---"
+            })
+            # Apenas primeiras 2 imagens para velocidade
             for img in d['data'][:2]: 
                 b64 = image_to_base64(img)
-                messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
+                messages_content.append({
+                    "type": "image_url", 
+                    "image_url": f"data:image/jpeg;base64,{b64}"
+                })
 
+    # Retry com timeout
     for attempt in range(2):
         try:
             chat_response = client.chat.complete(
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.0
+                temperature=0.0,
+                timeout=45  # Timeout de 45s
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
             
             if dados and 'ref' in dados:
                 dados['titulo'] = secao
-                if not eh_visualizacao and not eh_dizeres:
-                    texto_completo = (str(dados.get('bel', '')) + str(dados.get('ref', ''))).lower()
-                    tem_diff = 'class="diff"' in texto_completo or "class='diff'" in texto_completo
-                    if not tem_diff: dados['status'] = 'CONFORME'
                 
-                if eh_dizeres: dados['status'] = 'VISUALIZACAO'
+                # Verifica status automaticamente
+                if not eh_visualizacao and not eh_dizeres:
+                    texto_ref = str(dados.get('ref', '')).lower()
+                    texto_bel = str(dados.get('bel', '')).lower()
+                    
+                    tem_diff = ('class="diff"' in texto_ref or "class='diff'" in texto_ref or
+                               'class="diff"' in texto_bel or "class='diff'" in texto_bel)
+                    tem_ort = ('class="ort"' in texto_ref or "class='ort'" in texto_ref or
+                              'class="ort"' in texto_bel or "class='ort'" in texto_bel)
+                    
+                    if not tem_diff and not tem_ort:
+                        dados['status'] = 'CONFORME'
+                    else:
+                        dados['status'] = 'DIVERGENTE'
+                
+                if eh_dizeres: 
+                    dados['status'] = 'VISUALIZACAO'
+                
                 return dados
                 
-        except Exception:
-            time.sleep(1)
-            continue
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            else:
+                return {
+                    "titulo": secao,
+                    "ref": f"Erro no processamento: {str(e)}",
+                    "bel": f"Erro no processamento: {str(e)}",
+                    "status": "ERRO"
+                }
     
     return {
         "titulo": secao,
-        "ref": "Texto não processado.",
-        "bel": "Texto não processado.",
-        "status": "ERRO LEITURA"
+        "ref": "Texto não processado após tentativas.",
+        "bel": "Texto não processado após tentativas.",
+        "status": "ERRO"
     }
 
 # ----------------- UI PRINCIPAL -----------------
@@ -261,17 +415,20 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de bulas")
     client = get_mistral_client()
-    if client: st.success("✅ Sistema Online")
-    else: st.error("❌ Offline")
+    if client: 
+        st.success("✅ Sistema Online")
+    else: 
+        st.error("❌ Configuração pendente")
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
+    st.caption("v2.0 - Otimizado")
 
 if pagina == "🏠 Início":
     st.markdown("""
     <div style="text-align: center; padding: 40px 20px;">
         <h1 style="color: #55a68e; font-size: 3em;">Validador de Bulas</h1>
-        <p style="font-size: 1.2em; color: #7f8c8d;">Auditoria com Filtro Técnico Inteligente.</p>
+        <p style="font-size: 1.2em; color: #7f8c8d;">Auditoria Inteligente e Precisa</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -280,10 +437,11 @@ if pagina == "🏠 Início":
     with col1:
         st.markdown("""
         <div class="stCard">
-            <div class="card-title">🔍 Filtro Técnico</div>
+            <div class="card-title">🎯 Marcação Precisa</div>
             <p class="card-text">
-            O sistema ignora automaticamente especificações técnicas de gráfica (cores, facas, gramatura),
-            focando apenas no conteúdo textual relevante.
+            <mark class="diff">Amarelo</mark>: diferenças de conteúdo<br>
+            <mark class="ort">Vermelho</mark>: erros ortográficos<br>
+            <mark class="anvisa">Azul</mark>: datas Anvisa
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -291,10 +449,11 @@ if pagina == "🏠 Início":
     with col2:
         st.markdown("""
         <div class="stCard">
-            <div class="card-title">👁️ Zoom & Precisão</div>
+            <div class="card-title">⚡ Performance</div>
             <p class="card-text">
-            Processamento em Alta Definição para ler letras miúdas.
-            Detecção estrita de palavras faltantes e erros de acentuação.
+            Processamento paralelo de seções.<br>
+            Cache inteligente.<br>
+            Otimização de imagens e OCR.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -302,10 +461,11 @@ if pagina == "🏠 Início":
     with col3:
         st.markdown("""
         <div class="stCard">
-            <div class="card-title">⚖️ Dizeres Legais</div>
+            <div class="card-title">🔍 Análise Completa</div>
             <p class="card-text">
-            Extração automática de CNPJ, Farmacêutico Responsável e <span class='highlight-blue'>DATAS</span>
-            de aprovação da Anvisa em ambos os documentos.
+            Comparação palavra por palavra.<br>
+            Detecção automática de erros.<br>
+            Extração de dados regulatórios.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -323,7 +483,8 @@ else:
         col_tipo, _ = st.columns([1, 2])
         with col_tipo:
             tipo_bula = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True)
-            if tipo_bula == "Profissional": lista_secoes = SECOES_PROFISSIONAL
+            if tipo_bula == "Profissional": 
+                lista_secoes = SECOES_PROFISSIONAL
     elif pagina == "📋 Conferência MKT":
         label_box1 = "📄 ANVISA"
         label_box2 = "📄 MKT"
@@ -345,89 +506,142 @@ else:
         f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
         
     st.write("") 
-    if st.button("INICIAR AUDITORIA"):
+    if st.button("🚀 INICIAR AUDITORIA"):
         if not f1 or not f2:
-            st.warning("⚠️ Selecione os arquivos.")
+            st.warning("⚠️ Selecione ambos os arquivos.")
+        elif not client:
+            st.error("❌ Cliente Mistral não configurado. Verifique a API Key.")
+            st.stop()
         else:
-            if not client: st.stop()
-            
-            # Feedback Visual
-            msg_carregando = st.empty()
-            msg_carregando.info("⏳ Renderizando em Alta Definição... Aguarde.")
-            
-            with st.spinner("Processando..."):
+            # Feedback visual melhorado
+            with st.status("🔄 Processando documentos...", expanded=True) as status:
+                st.write("📖 Lendo arquivos...")
+                
                 b1 = f1.getvalue()
                 b2 = f2.getvalue()
                 d1 = process_file_content(b1, f1.name.lower())
                 d2 = process_file_content(b2, f2.name.lower())
                 gc.collect()
 
-            msg_carregando.empty()
-
-            if not d1 or not d2:
-                st.error("Erro leitura.")
-                st.stop()
-
-            resultados_secoes = []
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+                if not d1 or not d2:
+                    st.error("❌ Erro ao processar arquivos.")
+                    st.stop()
+                
+                st.write("✅ Arquivos carregados")
+                st.write(f"🔍 Analisando {len(lista_secoes)} seções...")
+                
+                resultados_secoes = []
+                progress_bar = st.progress(0)
+                
+                # Processamento paralelo otimizado
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                    future_to_secao = {
+                        executor.submit(auditar_secao_worker, client, secao, d1, d2, nome_doc1, nome_doc2): secao 
+                        for secao in lista_secoes
+                    }
+                    
+                    completed = 0
+                    for future in concurrent.futures.as_completed(future_to_secao):
+                        try:
+                            data = future.result(timeout=60)  # Timeout de 60s por seção
+                            if data: 
+                                resultados_secoes.append(data)
+                        except concurrent.futures.TimeoutError:
+                            secao = future_to_secao[future]
+                            resultados_secoes.append({
+                                "titulo": secao,
+                                "ref": "Timeout na análise",
+                                "bel": "Timeout na análise",
+                                "status": "ERRO"
+                            })
+                        except Exception as e:
+                            secao = future_to_secao[future]
+                            resultados_secoes.append({
+                                "titulo": secao,
+                                "ref": f"Erro: {str(e)}",
+                                "bel": f"Erro: {str(e)}",
+                                "status": "ERRO"
+                            })
+                        
+                        completed += 1
+                        progress_bar.progress(completed / len(lista_secoes))
+                        st.write(f"✓ Seção {completed}/{len(lista_secoes)} concluída")
+                
+                status.update(label="✅ Análise concluída!", state="complete", expanded=False)
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_secao = {
-                    executor.submit(auditar_secao_worker, client, secao, d1, d2, nome_doc1, nome_doc2): secao 
-                    for secao in lista_secoes
-                }
-                completed = 0
-                for future in concurrent.futures.as_completed(future_to_secao):
-                    try:
-                        data = future.result()
-                        if data: resultados_secoes.append(data)
-                    except: pass
-                    completed += 1
-                    progress_bar.progress(completed / len(lista_secoes))
-                    status_text.text(f"Analisando: {completed}/{len(lista_secoes)}")
+            # Ordena resultados
+            resultados_secoes.sort(
+                key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999
+            )
             
-            status_text.empty()
-            progress_bar.empty()
-
-            resultados_secoes.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
-            
+            # Métricas
             total = len(resultados_secoes)
             conformes = sum(1 for x in resultados_secoes if "CONFORME" in str(x.get('status', '')))
+            divergentes = sum(1 for x in resultados_secoes if "DIVERGENTE" in str(x.get('status', '')))
             visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in str(x.get('status', '')))
+            erros = sum(1 for x in resultados_secoes if "ERRO" in str(x.get('status', '')))
+            
             score = int(((conformes + visuais) / total) * 100) if total > 0 else 0
             
+            # Extrai datas
             datas_encontradas = []
             for r in resultados_secoes:
                 if "DIZERES LEGAIS" in r['titulo']:
                     texto_combinado = str(r.get('ref', '')) + " " + str(r.get('bel', ''))
                     matches = re.findall(r'\d{2}/\d{2}/\d{4}', texto_combinado)
                     for m in matches:
-                        if m not in datas_encontradas: datas_encontradas.append(m)
+                        if m not in datas_encontradas: 
+                            datas_encontradas.append(m)
             
-            datas_texto = " | ".join(datas_encontradas) if datas_encontradas else "N/D"
+            datas_texto = " | ".join(sorted(set(datas_encontradas))) if datas_encontradas else "N/D"
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Conformidade", f"{score}%")
-            m2.metric("Seções", total)
-            m3.metric("Datas Anvisa", datas_texto)
+            # Dashboard de métricas
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Conformidade", f"{score}%", f"{conformes} seções")
+            m2.metric("Divergências", divergentes, delta_color="inverse")
+            m3.metric("Total Seções", total)
+            m4.metric("Datas Anvisa", len(datas_encontradas))
+            
+            if datas_encontradas:
+                st.info(f"📅 Datas encontradas: {datas_texto}")
+            
             st.divider()
             
+            # Legenda
+            st.markdown("""
+            **Legenda de Marcações:**  
+            <mark class='diff'>Amarelo</mark> = Diferença de conteúdo | 
+            <mark class='ort'>Vermelho</mark> = Erro ortográfico | 
+            <mark class='anvisa'>Azul</mark> = Data Anvisa
+            """, unsafe_allow_html=True)
+            
+            st.divider()
+            
+            # Resultados por seção
             for sec in resultados_secoes:
                 status = sec.get('status', 'N/A')
                 titulo = sec.get('titulo', '').upper()
                 
                 icon = "✅"
-                if "DIVERGENTE" in status: icon = "❌"
-                elif "FALTANTE" in status: icon = "🚨"
-                elif "ERRO" in status: icon = "⚠️"
+                if "DIVERGENTE" in status: icon = "⚠️"
+                elif "ERRO" in status: icon = "❌"
                 elif "VISUALIZACAO" in status: icon = "👁️"
                 
-                with st.expander(f"{icon} {titulo} — {status}"):
+                with st.expander(f"{icon} {titulo} — {status}", expanded=("DIVERGENTE" in status)):
                     cA, cB = st.columns(2)
                     with cA:
                         st.markdown(f"**{nome_doc1}**")
-                        st.markdown(f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px;'>{str(sec.get('ref', 'Texto não extraído'))}</div>", unsafe_allow_html=True)
+                        st.markdown(
+                            f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px; border-left: 4px solid #55a68e;'>{str(sec.get('ref', 'Texto não extraído'))}</div>", 
+                            unsafe_allow_html=True
+                        )
                     with cB:
                         st.markdown(f"**{nome_doc2}**")
-                        st.markdown(f"<div class='texto-bula' style='background:#fff; border:1px solid #eee; padding:15px; border-radius:5px;'>{str(sec.get('bel', 'Texto não extraído'))}</div>", unsafe_allow_html=True)
+                        st.markdown(
+                            f"<div class='texto-bula' style='background:#fff; border:1px solid #ddd; padding:15px; border-radius:5px; border-left: 4px solid #17a2b8;'>{str(sec.get('bel', 'Texto não extraído'))}</div>", 
+                            unsafe_allow_html=True
+                        )
+            
+            # Resumo final
+            st.divider()
+            st.success(f"✅ Auditoria concluída! {conformes + visuais}/{total} seções conformes ou em revisão visual.")
