@@ -85,7 +85,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- CONSTANTES (ORDEM EXATA SOLICITADA) -----------------
+# ----------------- CONSTANTES -----------------
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -127,7 +127,7 @@ def image_to_base64(image):
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
-    """Processa o arquivo e retorna o texto ou imagens. Com Cache para velocidade."""
+    """Processa o arquivo e retorna o texto ou imagens. Com Cache."""
     try:
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -178,36 +178,45 @@ def extract_json(text):
         return json.loads(clean)
     except: return None
 
-# --- WORKER ROBUSTO: SE FALHAR JSON, RETORNA TEXTO ---
+# --- WORKER AJUSTADO PARA RETORNAR TEXTO MARCADO E NÃO RESUMO ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
-    """Analisa UMA única seção. Se o JSON falhar, retorna o erro legível."""
     
     prompt_text = f"""
-    Atue como Auditor Farmacêutico Meticuloso.
-    TAREFA: Comparar SOMENTE a seção "{secao}" entre o arquivo 1 ({nome_doc1}) e arquivo 2 ({nome_doc2}).
+    Atue como um Auditor de Bulas Farmacêuticas Extremamente Preciso.
+    TAREFA: Extrair e comparar SOMENTE a seção "{secao}" entre o {nome_doc1} e o {nome_doc2}.
     
-    SAÍDA OBRIGATÓRIA EM JSON:
+    INSTRUÇÕES DE RESPOSTA (JSON OBRIGATÓRIO):
+    
+    1. Não faça resumos. Eu preciso visualizar o texto lado a lado.
+    2. No campo "ref", coloque o texto extraído do {nome_doc1} sem alterações.
+    3. No campo "bel", coloque o texto extraído do {nome_doc2}, mas aplicando as seguintes TAGS HTML ONDE NECESSÁRIO:
+       - Use <mark class="diff">TEXTO DIFERENTE</mark> para destacar QUALQUER palavra ou frase que esteja diferente do {nome_doc1} (divergência de conteúdo).
+       - Use <mark class="ort">ERRO</mark> para destacar erros ortográficos ou gramaticais no {nome_doc2}.
+       - Use <mark class="anvisa">DATA</mark> para destacar APENAS datas de aprovação da ANVISA (formato DD/MM/AAAA).
+    
+    4. STATUS:
+       - "CONFORME": Se o sentido for idêntico.
+       - "DIVERGENTE": Se houver mudança de sentido ou informação técnica diferente.
+       - "FALTANTE": Se a seção não existir.
+
+    FORMATO JSON:
     {{
         "titulo": "{secao}",
-        "ref": "Resumo do que encontrou no doc 1...",
-        "bel": "Resumo do que encontrou no doc 2...",
-        "status": "CONFORME" (ou "DIVERGENTE" ou "FALTANTE")
+        "ref": "Texto completo do doc 1 aqui...",
+        "bel": "Texto completo do doc 2 com as tags <mark class='diff'>...</mark> aqui...",
+        "status": "STATUS"
     }}
-    
-    IMPORTANTE: Se houver diferenças de sentido, explique no campo 'bel' e marque status DIVERGENTE.
-    RETORNE APENAS O JSON.
     """
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    # Limita tamanho do texto para evitar erros de token e lentidão
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
             texto_limpo = d['data'][:60000] 
-            messages_content.append({"type": "text", "text": f"\n--- TEXTO {nome} ---\n{texto_limpo}"}) 
+            messages_content.append({"type": "text", "text": f"\n--- CONTEÚDO {nome} ---\n{texto_limpo}"}) 
         else:
             messages_content.append({"type": "text", "text": f"\n--- IMAGENS {nome} (OCR) ---"})
-            for img in d['data'][:2]: # Envia apenas 2 imagens para não travar
+            for img in d['data'][:2]:
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
@@ -221,7 +230,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         dados = extract_json(raw_content)
         
         if dados:
-            dados['titulo'] = secao # Garante titulo correto
+            dados['titulo'] = secao
             return dados
         else:
             return {
@@ -266,11 +275,11 @@ if pagina == "🏠 Início":
         <div class="stCard">
             <div class="card-title">💊 Medicamento Referência x BELFAR</div>
             <div class="card-text">
-                Auditoria completa e ordenada.
+                Comparação lado a lado com marcação inteligente.
                 <br><ul>
                     <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
                     <li>Ortografia: <span class="highlight-pink">vermelho</span></li>
-                    <li>Velocidade: <span class="highlight-blue">Alta</span></li>
+                    <li>Datas Anvisa: <span class="highlight-blue">azul</span></li>
                 </ul>
             </div>
         </div>""", unsafe_allow_html=True)
@@ -333,7 +342,6 @@ else:
             # --- PROCESSAMENTO PARALELO ---
             resultados_secoes = []
             
-            # Status Box apenas para mostrar progresso (sem abrir expander aqui para não bagunçar a ordem)
             with st.status("⚡ Processando seções simultaneamente...", expanded=True) as status:
                 st.write("Iniciando workers de IA...")
                 
@@ -355,12 +363,12 @@ else:
                 
                 status.update(label="Análise Completa!", state="complete", expanded=False)
 
-            # --- ORDENAÇÃO E EXIBIÇÃO (AQUI ESTÁ A ORDEM CORRETA) ---
+            # --- ORDENAÇÃO E EXIBIÇÃO ---
             
-            # 1. Ordena os resultados baseado no índice da lista_secoes original
+            # Ordena os resultados
             resultados_secoes.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
 
-            # 2. Métricas
+            # Métricas
             total = len(resultados_secoes)
             conformes = sum(1 for x in resultados_secoes if "CONFORME" in x.get('status', ''))
             score = int((conformes / total) * 100) if total > 0 else 0
@@ -379,7 +387,7 @@ else:
             
             st.divider()
             
-            # 3. Exibição Ordenada
+            # Exibição
             for sec in resultados_secoes:
                 status = sec.get('status', 'N/A')
                 titulo = sec.get('titulo', '').upper()
@@ -397,7 +405,9 @@ else:
                     cA, cB = st.columns(2)
                     with cA:
                         st.markdown(f"**{nome_doc1}**")
-                        st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
+                        # Usa o texto cru no arquivo 1
+                        st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px; font-size:0.9rem;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
                     with cB:
                         st.markdown(f"**{nome_doc2}**")
-                        st.markdown(f"<div style='background:#f0fff4; padding:10px; border-radius:5px;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
+                        # O HTML renderiza as marcações coloridas aqui
+                        st.markdown(f"<div style='background:#fff; border:1px solid #eee; padding:10px; border-radius:5px; font-size:0.9rem;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
