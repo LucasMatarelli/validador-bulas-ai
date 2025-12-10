@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (MANTIDOS) -----------------
+# ----------------- ESTILOS CSS (INTERFACE VERDE CLÁSSICA) -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR */
@@ -71,6 +71,8 @@ st.markdown("""
     .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
     
     /* Legendas */
+    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+    .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; font-weight: 500; }
     .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
 
     /* Marcações de Texto */
@@ -122,18 +124,22 @@ def get_mistral_client():
 
 def image_to_base64(image):
     buffered = io.BytesIO()
-    # OTIMIZAÇÃO: Mantém qualidade visual mas limpa metadados (lighter file)
-    image.save(buffered, format="JPEG", quality=85, optimize=True) 
+    image.save(buffered, format="JPEG", quality=85, optimize=True) # Otimização de imagem mantida
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
+# --- SANITIZAÇÃO AGRESSIVA (CORREÇÃO DO PROBLEMA DE ESPAÇOS) ---
 def sanitize_text(text):
     if not text: return ""
+    # 1. Normaliza unicode (transforma caracteres compostos em simples)
     text = unicodedata.normalize('NFKC', text)
-    # Limpeza de caracteres invisíveis (fix maleato)
-    text = text.replace('\xa0', ' ')
-    text = text.replace('\u200b', '')
-    text = text.replace('\u00ad', '')
+    # 2. Remove caracteres de controle invisíveis específicos que quebram comparações
+    text = text.replace('\xa0', ' ')  # Non-breaking space (O vilão do seu PDF)
+    text = text.replace('\u200b', '') # Zero width space
+    text = text.replace('\u200e', '') # Left-to-right mark
+    text = text.replace('\u200f', '') # Right-to-left mark
+    text = text.replace('\u00ad', '') # Soft hyphen
     text = text.replace('\t', ' ')
+    # 3. Transforma múltiplos espaços em um único
     return re.sub(r'\s+', ' ', text).strip()
 
 @st.cache_data(show_spinner=False)
@@ -143,13 +149,11 @@ def process_file_content(file_bytes, filename):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": sanitize_text(text)}
-        
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             for page in doc: full_text += page.get_text() + " "
             
-            # Prioriza texto nativo se existir
             if len(full_text.strip()) > 500:
                 doc.close()
                 return {"type": "text", "data": sanitize_text(full_text)}
@@ -158,8 +162,7 @@ def process_file_content(file_bytes, filename):
             limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
-                # ZOOM 4.0 (Mantido para precisão máxima)
-                pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
+                pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0)) # ZOOM 4.0 Mantido
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -177,18 +180,17 @@ def extract_json(text):
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
     except: return None
 
-# --- WORKER ---
+# --- WORKER BLINDADO (PROMPT ATUALIZADO PARA IGNORAR FALSOS POSITIVOS) ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
     base_instruction = """
-    DIRETRIZ DE PRECISÃO:
-    1. Você deve comparar o CONTEÚDO SEMÂNTICO.
-    2. IGNORE TOTALMENTE diferenças de espaçamento, quebras de linha ou caracteres invisíveis.
-    3. EXEMPLO: "maleato de enalapril" É IGUAL A "maleato   de enalapril".
-    4. Copie o texto exato, sem corrigir ortografia.
+    DIRETRIZ DE SEGURANÇA MÁXIMA:
+    1. VOCÊ É UM ROBÔ OCR. COPIE EXATAMENTE O QUE VÊ.
+    2. Se o texto diz "Frequencia" (sem acento), escreva "Frequencia". NÃO CORRIJA.
+    3. IGNORAR DIFERENÇAS INVISÍVEIS: Se duas palavras parecem idênticas visualmente (ex: "maleato" e "maleato"), considere-as IGUAIS. Não marque erro por encoding ou espaços duplos.
     """
     
     prompt_text = ""
@@ -198,12 +200,15 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         {base_instruction}
         Atue como Auditor Regulatório.
         TAREFA: Localizar "DIZERES LEGAIS".
-        Procure por: "Farm. Resp.", "M.S.", "CNPJ", "SAC".
+        
+        ALVO:
+        - Busque por: "Farm. Resp.", "M.S.", "CNPJ", "SAC", "Fabricado por".
+        - IGNORE "Como usar" ou "Posologia".
         
         SAÍDA:
         1. Copie o texto encontrado.
-        2. Destaque datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
-        3. Use <mark class='diff'> APENAS para dados diferentes (CNPJ errado, Farmacêutico diferente).
+        2. Destaque TODAS as datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
+        3. Use <mark class='diff'> APENAS se houver divergência real de DADOS (Números, CNPJ, Endereço).
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
@@ -213,11 +218,14 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         {base_instruction}
         Atue como Extrator.
         TAREFA: Extrair "{secao}".
-        FILTRO: Remova lixo técnico (cores, dimensões).
+        
+        FILTRO (REMOVER LIXO):
+        - Remova textos técnicos de gráfica.
         
         SAÍDA:
-        - Use <mark class='diff'> se houver diferença de CONTEÚDO REAL.
-        - NÃO USE MARK PARA ESPAÇOS.
+        - Transcreva o conteúdo limpo.
+        - Use <mark class='diff'> se houver diferença de CONTEÚDO REAL (ex: 10mg vs 20mg).
+        - Se a palavra for idêntica, NÃO use mark.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
@@ -225,15 +233,14 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     else:
         prompt_text = f"""
         {base_instruction}
-        Atue como Comparador de Texto Estrito.
+        Atue como Comparador Estrito mas Inteligente.
         TAREFA: Comparar "{secao}" palavra por palavra.
         
-        1. Localize a seção nos textos brutos.
-        2. Extraia para 'ref' e 'bel'.
+        1. Extraia o texto para 'ref' e 'bel'.
         
         REGRAS DO DESTAQUE (<mark class='diff'>):
-        - MARQUE: Palavras trocadas, números diferentes, letras faltando, acentos errados.
-        - NÃO MARQUE: Espaços duplos, quebras de linha.
+        - Use APENAS se a palavra for REALMENTE DIFERENTE (Letras trocadas, números diferentes, acentos diferentes).
+        - PROIBIDO MARCAR FALSOS POSITIVOS: Se a palavra é visualmente igual (ex: "maleato" vs "maleato"), NÃO MARQUE. Assuma que é erro de encoding e ignore.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
@@ -243,9 +250,9 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     limit = 80000 
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
-            messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
+            messages_content.append({"type": "text", "text": f"\n--- DOCUMENTO: {nome} ---\n{d['data'][:limit]}"}) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagem) ---\n"})
+            messages_content.append({"type": "text", "text": f"\n--- IMAGENS: {nome} ---"})
             for img in d['data'][:2]: 
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
@@ -256,7 +263,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.0
+                temperature=0.1
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
@@ -301,6 +308,7 @@ if pagina == "🏠 Início":
     </div>
     """, unsafe_allow_html=True)
     
+    # CARDS ESTILO VERDE
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -380,14 +388,14 @@ else:
             # Feedback Visual
             msg_carregando = st.empty()
             msg_carregando.info("⏳ Renderizando em Alta Definição (4x Zoom)... Aguarde.")
-            
-            with st.spinner("Processando..."):
+
+            with st.spinner("Processando arquivos (Modo HD)..."):
                 b1 = f1.getvalue()
                 b2 = f2.getvalue()
                 d1 = process_file_content(b1, f1.name.lower())
                 d2 = process_file_content(b2, f2.name.lower())
                 gc.collect()
-
+            
             msg_carregando.empty()
 
             if not d1 or not d2:
@@ -423,10 +431,11 @@ else:
             visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in str(x.get('status', '')))
             score = int(((conformes + visuais) / total) * 100) if total > 0 else 0
             
+            # --- Datas Anvisa ---
             datas_encontradas = []
             for r in resultados_secoes:
                 if "DIZERES LEGAIS" in r['titulo']:
-                    # CORREÇÃO APLICADA AQUI: STR() PARA PREVENIR ERRO DE SOMA COM NONE
+                    # Proteção str() mantida
                     texto_combinado = str(r.get('ref', '')) + " " + str(r.get('bel', ''))
                     matches = re.findall(r'\d{2}/\d{2}/\d{4}', texto_combinado)
                     for m in matches:
@@ -454,7 +463,7 @@ else:
                     cA, cB = st.columns(2)
                     with cA:
                         st.markdown(f"**{nome_doc1}**")
-                        # Proteção extra com str() aqui também
+                        # Proteção str() mantida
                         st.markdown(f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px;'>{str(sec.get('ref', 'Texto não extraído'))}</div>", unsafe_allow_html=True)
                     with cB:
                         st.markdown(f"**{nome_doc2}**")
