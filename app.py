@@ -232,25 +232,33 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     base_instruction = """
 INSTRUÇÕES CRÍTICAS DE COMPARAÇÃO:
 
-1. **NORMALIZAÇÃO**: Ignore diferenças de formatação (espaços, quebras, tabs). Compare apenas conteúdo visível.
+1. **NORMALIZAÇÃO ABSOLUTA**: 
+   - Ignore TOTALMENTE formatação, espaços, quebras de linha, tabs, caracteres invisíveis
+   - Compare APENAS o significado e conteúdo visível
+   - "maleato de enalapril" = "maleato de enalapril" mesmo com códigos diferentes
 
-2. **MARCAÇÃO AMARELA** (<mark class='diff'>):
-   - USE para: palavras diferentes, frases alteradas, informações divergentes
-   - Marque APENAS a parte diferente (palavra/frase específica)
-   - Exemplo: "10 mg" vs "20 mg" → marque apenas o número diferente
-   - NÃO marque se o texto for idêntico em significado
+2. **REGRA DE OURO - FALSO POSITIVO**:
+   - Se as palavras parecem VISUALMENTE IDÊNTICAS ao ler, são IDÊNTICAS
+   - NÃO MARQUE diferenças se o texto for o mesmo
+   - Exemplo: "insuficiência renal" nos dois textos → NÃO MARCAR
 
-3. **MARCAÇÃO VERMELHA** (<mark class='ort'>):
-   - USE APENAS para erros ortográficos evidentes
+3. **MARCAÇÃO AMARELA** (<mark class='diff'>) - USE APENAS QUANDO:
+   - Palavra COMPLETAMENTE DIFERENTE: "10mg" vs "20mg"
+   - Frase FALTANDO: texto existe em um mas não no outro
+   - Informação DIVERGENTE: dados conflitantes
+   - ❌ NUNCA marque texto idêntico
+   - ❌ NUNCA marque por diferenças de formatação
+
+4. **MARCAÇÃO VERMELHA** (<mark class='ort'>):
+   - USE APENAS para erros ortográficos ÓBVIOS
    - Exemplos: "mediçamento", "efeicácia", "paciennte"
-   - NÃO marque variações regionais ou científicas corretas
+   - NÃO marque termos científicos corretos
 
-4. **MARCAÇÃO AZUL** (<mark class='anvisa'>):
-   - USE APENAS para datas no formato DD/MM/AAAA
+5. **MARCAÇÃO AZUL** (<mark class='anvisa'>):
+   - USE APENAS para datas DD/MM/AAAA
    - Marque em AMBOS os textos (ref e bel)
-   - Exemplo: <mark class='anvisa'>15/03/2024</mark>
 
-5. **PRECISÃO**: Se "maleato de enalapril" aparece igual nos dois, NÃO MARQUE.
+6. **TESTE FINAL**: Antes de marcar, pergunte-se: "Esse texto é REALMENTE diferente ou apenas parece diferente?"
 """
     
     prompt_text = ""
@@ -259,46 +267,61 @@ INSTRUÇÕES CRÍTICAS DE COMPARAÇÃO:
         prompt_text = f"""
 {base_instruction}
 
-TAREFA: Extrair "DIZERES LEGAIS" de ambos documentos.
+TAREFA ESPECIAL: Extrair "DIZERES LEGAIS" - MODO VISUALIZAÇÃO PURA
+
+⚠️ ATENÇÃO CRÍTICA: Esta seção é APENAS para visualização. NÃO compare conteúdo.
+
+INSTRUÇÕES:
+1. Localize a seção "DIZERES LEGAIS" em cada documento
+2. Extraia o texto completo SEM COMPARAR
+3. Marque APENAS as datas com <mark class='anvisa'>DD/MM/AAAA</mark>
+4. ❌ NÃO USE <mark class='diff'> em NENHUMA HIPÓTESE
+5. ❌ NÃO USE <mark class='ort'> em NENHUMA HIPÓTESE
 
 PROCURE POR:
 - Farm. Resp. / Farmacêutico Responsável
 - M.S. / Registro MS
 - CNPJ
 - SAC / Telefone
-- Datas de aprovação (formato DD/MM/AAAA)
-
-MARCAÇÃO OBRIGATÓRIA:
-1. Todas as datas DD/MM/AAAA → <mark class='anvisa'>DATA</mark> (em REF e BEL)
-2. Números/dados diferentes → <mark class='diff'>TEXTO</mark>
-3. Erros de português → <mark class='ort'>ERRO</mark>
+- Datas (marque com azul)
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto extraído com marcações",
-  "bel": "texto extraído com marcações",
+  "ref": "texto extraído SEM marcação amarela, APENAS datas em azul",
+  "bel": "texto extraído SEM marcação amarela, APENAS datas em azul",
   "status": "VISUALIZACAO"
 }}
+
+LEMBRE-SE: Dizeres Legais = VISUALIZAÇÃO PURA, sem comparação!
 """
         
     elif eh_visualizacao:
         prompt_text = f"""
 {base_instruction}
 
-TAREFA: Extrair seção "{secao}" e comparar.
+TAREFA ESPECIAL: Extrair "{secao}" - MODO VISUALIZAÇÃO PURA
 
-REGRAS:
-1. Extraia o texto completo da seção
-2. Marque diferenças REAIS de conteúdo em amarelo
-3. Marque erros ortográficos em vermelho
-4. Se textos forem idênticos, NÃO use marcações
+⚠️ ATENÇÃO CRÍTICA: Esta seção é APENAS para visualização. NÃO compare conteúdo.
+
+INSTRUÇÕES:
+1. Localize e extraia a seção "{secao}" de ambos os documentos
+2. Copie o texto COMPLETO e LIMPO
+3. ❌ NÃO USE <mark class='diff'> - Esta é uma seção de VISUALIZAÇÃO
+4. ❌ NÃO USE <mark class='ort'> - Esta é uma seção de VISUALIZAÇÃO
+5. ❌ NÃO USE <mark class='anvisa'> - Não há datas nesta seção
+6. Remova apenas lixo técnico de impressão (códigos de barra, instruções de gráfica)
+
+IMPORTANTE: 
+- "Apresentações" e "Composição" são seções de REFERÊNCIA VISUAL
+- O objetivo é VER o conteúdo, NÃO comparar
+- Retorne texto puro sem nenhuma marcação
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto com marcações se houver diferenças",
-  "bel": "texto com marcações se houver diferenças",
+  "ref": "texto extraído SEM MARCAÇÕES",
+  "bel": "texto extraído SEM MARCAÇÕES",
   "status": "VISUALIZACAO"
 }}
 """
@@ -307,28 +330,51 @@ SAÍDA JSON:
         prompt_text = f"""
 {base_instruction}
 
-TAREFA: Comparar seção "{secao}" palavra por palavra.
+TAREFA: Comparar seção "{secao}" com PRECISÃO CIRÚRGICA.
 
-PROCESSO:
-1. Localize a seção em ambos documentos
-2. Compare todo o conteúdo
-3. Marque diferenças com precisão cirúrgica
+PROCESSO DE 3 ETAPAS:
 
-MARCAÇÕES:
-- <mark class='diff'>diferença</mark> → palavras/frases diferentes
-- <mark class='ort'>erro</mark> → erros de português
-- <mark class='anvisa'>DD/MM/AAAA</mark> → datas (em ambos textos)
+**ETAPA 1 - NORMALIZAÇÃO**:
+- Remova mentalmente espaços extras, quebras de linha, tabs
+- Converta ambos textos para formato comparável
+- Exemplo: "maleato  de\nenalapril" = "maleato de enalapril"
 
-STATUS:
-- "CONFORME" → textos idênticos (sem marcações)
-- "DIVERGENTE" → há diferenças marcadas
+**ETAPA 2 - COMPARAÇÃO PALAVRA POR PALAVRA**:
+- Compare cada palavra após normalização
+- Identifique APENAS diferenças REAIS de conteúdo
+- Ignore diferenças de formatação
+
+**ETAPA 3 - MARCAÇÃO PRECISA**:
+
+✅ MARQUE COM AMARELO (<mark class='diff'>) APENAS:
+- Palavras completamente diferentes: "hipertensão" vs "diabetes"
+- Números diferentes: "10mg" vs "20mg"
+- Frases que existem apenas em um dos textos
+- Informações conflitantes
+
+❌ NÃO MARQUE:
+- Texto idêntico com formatação diferente
+- Mesmas palavras em ordem diferente se significado igual
+- Sinônimos científicos aceitáveis
+- "maleato de enalapril" nos dois = NÃO MARCAR
+
+🔴 MARQUE COM VERMELHO (<mark class='ort'>) APENAS:
+- Erros ortográficos EVIDENTES: "mediçamento", "efeicácia"
+
+🔵 MARQUE COM AZUL (<mark class='anvisa'>):
+- Datas DD/MM/AAAA em AMBOS os textos
+
+**VALIDAÇÃO FINAL**:
+Antes de enviar, releia as marcações:
+- Cada <mark class='diff'> marca uma diferença REAL?
+- Textos idênticos ficaram sem marcação?
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto completo com marcações precisas",
-  "bel": "texto completo com marcações precisas",
-  "status": "CONFORME ou DIVERGENTE"
+  "ref": "texto completo com marcações APENAS onde há diferença REAL",
+  "bel": "texto completo com marcações APENAS onde há diferença REAL",
+  "status": "será determinado automaticamente"
 }}
 """
     
