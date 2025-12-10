@@ -104,6 +104,7 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
+# Nestas seções, a IA será proibida de marcar divergências (amarelo)
 SECOES_SEM_DIVERGENCIA = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES DE BACKEND -----------------
@@ -127,7 +128,6 @@ def image_to_base64(image):
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
-    """Processa o arquivo e retorna o texto ou imagens. Com Cache."""
     try:
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -178,45 +178,68 @@ def extract_json(text):
         return json.loads(clean)
     except: return None
 
-# --- WORKER AJUSTADO: IGNORA ESPAÇOS E FORMATAÇÃO ---
+# --- WORKER INTELIGENTE: SEPARA LÓGICA DE COMPARAÇÃO X EXTRAÇÃO ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
-    # Lógica Dinâmica para data
-    instrucao_data = ""
-    if "DIZERES LEGAIS" in secao.upper():
-        instrucao_data = "- Use <mark class='anvisa'>DATA</mark> para destacar ESTRITAMENTE datas de aprovação da ANVISA."
+    # Verifica se a seção deve ignorar divergências
+    ignorar_divergencia = any(s in secao.upper() for s in SECOES_SEM_DIVERGENCIA)
     
-    prompt_text = f"""
-    Você é um Auditor de Texto Inteligente e Preciso.
-    TAREFA: Comparar a seção "{secao}" entre {nome_doc1} e {nome_doc2}.
+    if ignorar_divergencia:
+        # --- PROMPT MODO APENAS LEITURA (SEM AMARELO) ---
+        
+        instrucao_extra = ""
+        # Se for Dizeres Legais, ainda queremos a DATA em azul
+        if "DIZERES LEGAIS" in secao.upper():
+            instrucao_extra = "APENAS para 'Dizeres Legais', use <mark class='anvisa'>DATA</mark> para destacar datas (DD/MM/AAAA)."
+        
+        prompt_text = f"""
+        Atue como Extrator de Texto OCR.
+        TAREFA: Extrair o texto da seção "{secao}" do {nome_doc1} e do {nome_doc2}.
+        
+        REGRAS RÍGIDAS:
+        1. NÃO COMPARE. NÃO BUSQUE DIVERGÊNCIAS.
+        2. É PROIBIDO usar a tag <mark class="diff"> nesta seção.
+        3. Apenas transcreva o texto fielmente.
+        4. {instrucao_extra}
+        
+        SAÍDA JSON:
+        {{
+            "titulo": "{secao}",
+            "ref": "Texto do {nome_doc1}...",
+            "bel": "Texto do {nome_doc2} (sem marcações amarelas)...",
+            "status": "VISUALIZACAO"
+        }}
+        """
     
-    CRITÉRIOS DE COMPARAÇÃO (IMPORTANTE):
-    1. IGNORE TOTALMENTE espaços extras, espaços duplos, quebras de linha ou tabulações.
-    2. Considere "palavra" igual a "  palavra  " (espaço não importa).
-    3. NÃO CORRIJA O TEXTO ORIGINAL. Mantenha fiel à imagem.
-    
-    REGRAS DE MARCAÇÃO NO CAMPO 'bel':
-    - Use <mark class="diff">PALAVRA</mark> APENAS se a palavra for diferente (grafia, palavra extra ou ausente). NÃO MARQUE SE FOR APENAS ESPAÇAMENTO.
-    - Use <mark class="ort">ERRO</mark> apenas para erros ortográficos evidentes.
-    {instrucao_data}
-    
-    FORMATO JSON DE SAÍDA:
-    {{
-        "titulo": "{secao}",
-        "ref": "Texto exato do {nome_doc1}...",
-        "bel": "Texto do {nome_doc2} com as tags aplicadas apenas onde houve mudança real de palavra...",
-        "status": "CONFORME ou DIVERGENTE"
-    }}
-    """
+    else:
+        # --- PROMPT MODO COMPARAÇÃO RIGOROSA (COM AMARELO) ---
+        prompt_text = f"""
+        Atue como Auditor de Texto.
+        TAREFA: Comparar a seção "{secao}" entre {nome_doc1} e {nome_doc2}.
+        
+        REGRAS:
+        1. IGNORE espaços duplos e quebras de linha.
+        2. Use <mark class="diff">PALAVRA</mark> para destacar palavras diferentes ou extras.
+        3. Use <mark class="ort">ERRO</mark> para erros de português.
+        4. NÃO use a tag class='anvisa' nestas seções.
+        
+        SAÍDA JSON:
+        {{
+            "titulo": "{secao}",
+            "ref": "Texto {nome_doc1}...",
+            "bel": "Texto {nome_doc2} com tags...",
+            "status": "CONFORME ou DIVERGENTE"
+        }}
+        """
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
             texto_limpo = d['data'][:60000] 
-            messages_content.append({"type": "text", "text": f"\n--- CONTEÚDO {nome} ---\n{texto_limpo}"}) 
+            messages_content.append({"type": "text", "text": f"\n--- TEXTO {nome} ---\n{texto_limpo}"}) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- IMAGENS {nome} (OCR) ---"})
+            messages_content.append({"type": "text", "text": f"\n--- IMAGEM {nome} ---"})
             for img in d['data'][:2]:
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
@@ -227,19 +250,13 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
             messages=[{"role": "user", "content": messages_content}],
             response_format={"type": "json_object"}
         )
-        raw_content = chat_response.choices[0].message.content
-        dados = extract_json(raw_content)
+        dados = extract_json(chat_response.choices[0].message.content)
         
         if dados:
             dados['titulo'] = secao
             return dados
         else:
-            return {
-                "titulo": secao, 
-                "ref": "Erro Formato JSON", 
-                "bel": raw_content, 
-                "status": "ERRO"
-            }
+            return {"titulo": secao, "ref": "Erro JSON", "bel": "", "status": "ERRO"}
             
     except Exception as e:
         return {"titulo": secao, "ref": "Erro API", "bel": str(e), "status": "ERRO"}
@@ -274,13 +291,12 @@ if pagina == "🏠 Início":
     with c1:
         st.markdown("""
         <div class="stCard">
-            <div class="card-title">💊 Medicamento Referência x BELFAR</div>
+            <div class="card-title">💊 Regras de Validação</div>
             <div class="card-text">
-                Comparação lado a lado inteligente.
-                <br><ul>
-                    <li>Ignora espaços extras</li>
-                    <li>Foca em palavras reais</li>
-                    <li>Detecta datas (Dizeres Legais)</li>
+                <ul>
+                    <li><b>Geral:</b> Aponta <span class="highlight-yellow">divergências</span> ignorando espaços.</li>
+                    <li><b>Dizeres/Comp/Apres:</b> Apenas visualização (sem alertas).</li>
+                    <li><b>Datas:</b> Marcadas em <span class="highlight-blue">azul</span> nos Dizeres Legais.</li>
                 </ul>
             </div>
         </div>""", unsafe_allow_html=True)
@@ -393,14 +409,18 @@ else:
                 status = sec.get('status', 'N/A')
                 titulo = sec.get('titulo', '').upper()
                 
+                # Ícone padrão
                 icon = "✅"
+                
+                # Lógica de Ícones
                 if "DIVERGENTE" in status: icon = "❌"
                 elif "FALTANTE" in status: icon = "🚨"
                 elif "ERRO" in status: icon = "⚠️"
                 
+                # Se for seção ignorada, ícone de olho e status fixo
                 if any(x in titulo for x in SECOES_SEM_DIVERGENCIA):
                     icon = "👁️" 
-                    status = "VISUALIZAÇÃO"
+                    status = "VISUALIZAÇÃO (Sem Divergências)"
                 
                 with st.expander(f"{icon} {titulo} — {status}"):
                     cA, cB = st.columns(2)
