@@ -178,33 +178,34 @@ def extract_json(text):
         return json.loads(clean)
     except: return None
 
-# --- WORKER AJUSTADO PARA RETORNAR TEXTO MARCADO E NÃO RESUMO ---
+# --- WORKER CORRIGIDO PARA EVITAR ALUCINAÇÃO E LIMITAR DATAS ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
+    # Lógica Dinâmica: Só pede data azul se for Dizeres Legais
+    instrucao_data = ""
+    if "DIZERES LEGAIS" in secao.upper():
+        instrucao_data = "- Use <mark class='anvisa'>DATA</mark> para destacar ESTRITAMENTE datas de aprovação da ANVISA."
+    
     prompt_text = f"""
-    Atue como um Auditor de Bulas Farmacêuticas Extremamente Preciso.
-    TAREFA: Extrair e comparar SOMENTE a seção "{secao}" entre o {nome_doc1} e o {nome_doc2}.
+    Você é um Extrator de Texto OCR de Alta Fidelidade.
+    TAREFA: Comparar a seção "{secao}" entre {nome_doc1} e {nome_doc2}.
     
-    INSTRUÇÕES DE RESPOSTA (JSON OBRIGATÓRIO):
+    REGRAS DE EXTRAÇÃO (CRÍTICO):
+    1. PROIBIDO INVENTAR PALAVRAS. Copie o texto caractere por caractere.
+    2. NÃO CORRIJA O TEXTO ORIGINAL. Se houver erro de digitação na imagem, mantenha o erro no texto.
+    3. NÃO RESUMA. Quero o texto integral.
     
-    1. Não faça resumos. Eu preciso visualizar o texto lado a lado.
-    2. No campo "ref", coloque o texto extraído do {nome_doc1} sem alterações.
-    3. No campo "bel", coloque o texto extraído do {nome_doc2}, mas aplicando as seguintes TAGS HTML ONDE NECESSÁRIO:
-       - Use <mark class="diff">TEXTO DIFERENTE</mark> para destacar QUALQUER palavra ou frase que esteja diferente do {nome_doc1} (divergência de conteúdo).
-       - Use <mark class="ort">ERRO</mark> para destacar erros ortográficos ou gramaticais no {nome_doc2}.
-       - Use <mark class="anvisa">DATA</mark> para destacar APENAS datas de aprovação da ANVISA (formato DD/MM/AAAA).
+    REGRAS DE MARCAÇÃO NO CAMPO 'bel':
+    - Use <mark class="diff">TEXTO</mark> para destacar palavras que existem no {nome_doc2} mas são diferentes do {nome_doc1}.
+    - Use <mark class="ort">ERRO</mark> apenas para erros grosseiros de português.
+    {instrucao_data}
     
-    4. STATUS:
-       - "CONFORME": Se o sentido for idêntico.
-       - "DIVERGENTE": Se houver mudança de sentido ou informação técnica diferente.
-       - "FALTANTE": Se a seção não existir.
-
-    FORMATO JSON:
+    FORMATO JSON DE SAÍDA:
     {{
         "titulo": "{secao}",
-        "ref": "Texto completo do doc 1 aqui...",
-        "bel": "Texto completo do doc 2 com as tags <mark class='diff'>...</mark> aqui...",
-        "status": "STATUS"
+        "ref": "Texto exato e fiel do {nome_doc1}...",
+        "bel": "Texto fiel do {nome_doc2} contendo as tags HTML...",
+        "status": "CONFORME ou DIVERGENTE"
     }}
     """
     
@@ -213,7 +214,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
             texto_limpo = d['data'][:60000] 
-            messages_content.append({"type": "text", "text": f"\n--- CONTEÚDO {nome} ---\n{texto_limpo}"}) 
+            messages_content.append({"type": "text", "text": f"\n--- CONTEÚDO REAL {nome} ---\n{texto_limpo}"}) 
         else:
             messages_content.append({"type": "text", "text": f"\n--- IMAGENS {nome} (OCR) ---"})
             for img in d['data'][:2]:
@@ -279,7 +280,7 @@ if pagina == "🏠 Início":
                 <br><ul>
                     <li>Diferenças: <span class="highlight-yellow">amarelo</span></li>
                     <li>Ortografia: <span class="highlight-pink">vermelho</span></li>
-                    <li>Datas Anvisa: <span class="highlight-blue">azul</span></li>
+                    <li>Datas Anvisa: <span class="highlight-blue">azul</span> (Apenas Dizeres Legais)</li>
                 </ul>
             </div>
         </div>""", unsafe_allow_html=True)
@@ -365,7 +366,7 @@ else:
 
             # --- ORDENAÇÃO E EXIBIÇÃO ---
             
-            # Ordena os resultados
+            # Ordena
             resultados_secoes.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
 
             # Métricas
@@ -373,7 +374,7 @@ else:
             conformes = sum(1 for x in resultados_secoes if "CONFORME" in x.get('status', ''))
             score = int((conformes / total) * 100) if total > 0 else 0
 
-            # Data (Extração simples)
+            # Data
             datas_texto = "Não detectado"
             for r in resultados_secoes:
                 if "DIZERES LEGAIS" in r['titulo']:
@@ -405,9 +406,7 @@ else:
                     cA, cB = st.columns(2)
                     with cA:
                         st.markdown(f"**{nome_doc1}**")
-                        # Usa o texto cru no arquivo 1
                         st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px; font-size:0.9rem;'>{sec.get('ref', '')}</div>", unsafe_allow_html=True)
                     with cB:
                         st.markdown(f"**{nome_doc2}**")
-                        # O HTML renderiza as marcações coloridas aqui
                         st.markdown(f"<div style='background:#fff; border:1px solid #eee; padding:10px; border-radius:5px; font-size:0.9rem;'>{sec.get('bel', '')}</div>", unsafe_allow_html=True)
