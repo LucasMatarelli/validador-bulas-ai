@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS -----------------
+# ----------------- ESTILOS CSS (COM ZOOM) -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -30,6 +30,7 @@ st.markdown("""
 
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', sans-serif; }
     
+    /* Navegação */
     .stRadio > div[role="radiogroup"] > label {
         background-color: white; border: 1px solid #e9ecef; padding: 15px;
         border-radius: 10px; margin-bottom: 10px; transition: all 0.3s ease;
@@ -39,13 +40,22 @@ st.markdown("""
         background-color: #e8f5e9; border-color: #55a68e; color: #55a68e; transform: translateX(5px); cursor: pointer;
     }
 
+    /* Cards e Texto com ZOOM */
     .stCard { background-color: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 20px; border: 1px solid #f1f1f1; }
     
+    /* AQUI ESTÁ O ZOOM: Aumentei font-size para 18px (1.1rem) */
+    .texto-bula {
+        font-size: 1.15rem !important; 
+        line-height: 1.6;
+        color: #333;
+    }
+
     /* Cores das Marcações */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; } 
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; } 
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
 
+    /* Botão */
     .stButton>button { 
         width: 100%; background: linear-gradient(90deg, #55a68e 0%, #448c75 100%); 
         color: white; font-weight: bold; border-radius: 12px; height: 60px; font-size: 18px; border: none;
@@ -90,20 +100,13 @@ def image_to_base64(image):
     image.save(buffered, format="JPEG", quality=85) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-# --- SANITIZAÇÃO AGRESSIVA DE ESPAÇOS ---
+# Sanitização (Limpeza de "lixo" invisível)
 def sanitize_text(text):
     if not text: return ""
-    # 1. Normaliza Unicode
     text = unicodedata.normalize('NFKC', text)
-    
-    # 2. Remove caracteres invisíveis/estranhos específicos
     text = text.replace('\xa0', ' ').replace('\u0000', '').replace('\u200b', '').replace('\t', ' ')
-    
-    # 3. REGRA DE OURO: Transforma QUALQUER sequência de espaços em UM ÚNICO espaço.
-    # Isso mata o problema de "espaço invisível" ou "espaço duplo" que a IA estava vendo.
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    return text
+    # Remove excesso de espaços
+    return re.sub(r'\s+', ' ', text).strip()
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
@@ -115,7 +118,7 @@ def process_file_content(file_bytes, filename):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
-            for page in doc: full_text += page.get_text() + " " # Adiciona espaço para evitar colagem
+            for page in doc: full_text += page.get_text() + " "
             
             if len(full_text.strip()) > 100:
                 doc.close()
@@ -125,8 +128,8 @@ def process_file_content(file_bytes, filename):
             limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=85))
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) # Melhorei a qualidade da imagem (Matrix 2.0)
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             doc.close()
@@ -143,7 +146,7 @@ def extract_json(text):
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
     except: return None
 
-# --- WORKER COM PROMPT "VISÃO HUMANA" ---
+# --- WORKER BLINDADO ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
@@ -155,44 +158,42 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         prompt_text = f"""
         Atue como Auditor de Bulas.
         TAREFA: Extrair "DIZERES LEGAIS".
-        
         REGRAS:
-        1. Copie o texto completo até a data da Anvisa.
-        2. Destaque a data (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark> NOS DOIS TEXTOS (Ref e Bel).
-        3. NÃO use a tag amarela (<mark class='diff'>) em hipótese alguma nesta seção.
-        
+        1. Copie o texto até a data da Anvisa.
+        2. Destaque a data (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark> NOS DOIS TEXTOS.
+        3. NÃO use a tag amarela (<mark class='diff'>).
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME" }}
         """
     elif eh_visualizacao:
         prompt_text = f"""
         Atue como Formatador.
         TAREFA: Transcrever "{secao}".
-        REGRAS: Transcreva o texto exatamente como é. Sem marcações.
+        REGRAS: Apenas transcreva o texto. Sem marcações.
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
     else:
-        # Prompt de Auditoria TOLERANTE
+        # Prompt ANTI-ALUCINAÇÃO
         prompt_text = f"""
-        Atue como Auditor Humano (Não seja robótico).
+        Atue como Scanner OCR (Leitura Óptica).
         TAREFA: Comparar "{secao}" entre Doc 1 e Doc 2.
         
-        REGRAS DE IGNORAR (CRÍTICO):
-        1. "Candida" é IGUAL a "Candida:" (dois pontos), "Candida)" (parênteses) ou "Candida " (espaço).
-           -> Se a palavra é a mesma e só muda a pontuação colada, NÃO MARQUE AMARELO.
-        2. "150 mg" é IGUAL a "150mg".
-           -> Se só muda o espaço entre número e unidade, NÃO MARQUE AMARELO.
-        3. Espaços invisíveis ou duplos não contam.
-        
-        REGRAS DE MARCAR:
-        - Use <mark class='diff'>PALAVRA</mark> APENAS se a grafia da palavra mudou (ex: "paranoide" vs "paranóide").
-        - Use <mark class='ort'>ERRO</mark> para erros de português.
+        REGRAS DE OURO (LEIA COM ATENÇÃO):
+        1. NÃO CORRIJA O PORTUGUÊS: Se na imagem está "paranoide" (sem acento), escreva "paranoide". Se está "paranóide" (com acento), escreva "paranóide". NÃO INVENTE ACENTOS.
+        2. IGNORAR PONTUAÇÃO COLADA:
+           - "Candida" == "Candida:"
+           - "Candida" == "Candida)"
+           - "Candida" == "Candida,"
+           -> Se a palavra for a mesma, NÃO MARQUE AMARELO.
+        3. IGNORAR ESPAÇOS:
+           - "150mg" == "150 mg"
+           - "do farmacêutico" == "do  farmacêutico"
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    limit = 55000 
+    limit = 60000 
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
             messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
@@ -215,14 +216,12 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
             if dados and 'ref' in dados:
                 dados['titulo'] = secao
                 
-                # --- CHECK DE STATUS FORÇADO ---
+                # Check final de conformidade
                 if not eh_visualizacao and not eh_dizeres:
                     texto_completo = (str(dados.get('bel', '')) + str(dados.get('ref', ''))).lower()
                     tem_diff = 'class="diff"' in texto_completo or "class='diff'" in texto_completo
                     tem_ort = 'class="ort"' in texto_completo or "class='ort'" in texto_completo
                     
-                    # Se não tem tag amarela/vermelha, OBRIGATORIAMENTE é CONFORME.
-                    # Isso impede que "Candida" apareça como divergência fantasma.
                     if not tem_diff and not tem_ort:
                         dados['status'] = 'CONFORME'
                 
@@ -232,11 +231,11 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
             time.sleep(1)
             continue
     
-    # Fallback
+    # Fallback Texto Puro (Se falhar JSON)
     return {
         "titulo": secao,
-        "ref": d1['data'][:2500] + "..." if d1['type']=='text' else "Erro processamento imagem",
-        "bel": d2['data'][:2500] + "..." if d2['type']=='text' else "Erro processamento imagem",
+        "ref": d1['data'][:3000] + "..." if d1['type']=='text' else "Texto imagem não processado.",
+        "bel": d2['data'][:3000] + "..." if d2['type']=='text' else "Texto imagem não processado.",
         "status": "ERRO LEITURA (Texto Bruto)"
     }
 
@@ -255,13 +254,13 @@ if pagina == "🏠 Início":
     st.markdown("""
     <div style="text-align: center; padding: 40px 20px;">
         <h1 style="color: #55a68e; font-size: 3em;">Validador de Bulas</h1>
-        <p style="font-size: 1.2em; color: #7f8c8d;">Auditoria com Precisão Humana.</p>
+        <p style="font-size: 1.2em; color: #7f8c8d;">Auditoria com Zoom e Precisão Visual.</p>
     </div>
     """, unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    c1.info("Ignora: Candida:, 150mg vs 150 mg.")
-    c2.info("Detecta: Letras erradas e acentos.")
-    c3.info("Destaque: Data Anvisa em Azul.")
+    c1.info("Zoom Ampliado: Letras maiores.")
+    c2.info("Anti-Alucinação: Não inventa acentos.")
+    c3.info("Pontuação: Ignora 'Candida:' vs 'Candida'.")
 
 else:
     st.markdown(f"## {pagina}")
@@ -314,7 +313,6 @@ else:
                 st.stop()
 
             resultados_secoes = []
-            
             progress_bar = st.progress(0)
             status_text = st.empty()
             
@@ -368,7 +366,9 @@ else:
                     cA, cB = st.columns(2)
                     with cA:
                         st.markdown(f"**{nome_doc1}**")
-                        st.markdown(f"<div style='background:#f9f9f9; padding:10px; border-radius:5px; font-size:0.9rem;'>{sec.get('ref', 'Texto não extraído')}</div>", unsafe_allow_html=True)
+                        # APLICA A CLASSE CSS DE ZOOM AQUI
+                        st.markdown(f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px;'>{sec.get('ref', 'Texto não extraído')}</div>", unsafe_allow_html=True)
                     with cB:
                         st.markdown(f"**{nome_doc2}**")
-                        st.markdown(f"<div style='background:#fff; border:1px solid #eee; padding:10px; border-radius:5px; font-size:0.9rem;'>{sec.get('bel', 'Texto não extraído')}</div>", unsafe_allow_html=True)
+                        # APLICA A CLASSE CSS DE ZOOM AQUI TAMBÉM
+                        st.markdown(f"<div class='texto-bula' style='background:#fff; border:1px solid #eee; padding:15px; border-radius:5px;'>{sec.get('bel', 'Texto não extraído')}</div>", unsafe_allow_html=True)
