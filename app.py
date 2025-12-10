@@ -90,22 +90,20 @@ def image_to_base64(image):
     image.save(buffered, format="JPEG", quality=85) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-# --- SANITIZAÇÃO INTELIGENTE (O SEGREDO DO VISUAL) ---
+# --- SANITIZAÇÃO AGRESSIVA DE ESPAÇOS ---
 def sanitize_text(text):
     if not text: return ""
-    # 1. Normaliza Unicode (transforma letras "estranhas" em padrão)
+    # 1. Normaliza Unicode
     text = unicodedata.normalize('NFKC', text)
     
-    # 2. SUBSTITUI espaços invisíveis/esquisitos por espaço normal (tecla de espaço)
-    # \xa0 = Non-breaking space (comum em PDF e web)
-    # \u200b = Zero width space (totalmente invisível)
-    # \t = Tabulação (troca por espaço simples)
-    text = text.replace('\xa0', ' ').replace('\u200b', '').replace('\t', ' ')
+    # 2. Remove caracteres invisíveis/estranhos específicos
+    text = text.replace('\xa0', ' ').replace('\u0000', '').replace('\u200b', '').replace('\t', ' ')
     
-    # 3. MANTÉM espaços duplos se eles existirem visualmente
-    # (Não usamos regex para remover duplicados aqui, pois você quer ver espaço extra)
+    # 3. REGRA DE OURO: Transforma QUALQUER sequência de espaços em UM ÚNICO espaço.
+    # Isso mata o problema de "espaço invisível" ou "espaço duplo" que a IA estava vendo.
+    text = re.sub(r'\s+', ' ', text).strip()
     
-    return text.strip()
+    return text
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
@@ -117,7 +115,7 @@ def process_file_content(file_bytes, filename):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
-            for page in doc: full_text += page.get_text() + "\n"
+            for page in doc: full_text += page.get_text() + " " # Adiciona espaço para evitar colagem
             
             if len(full_text.strip()) > 100:
                 doc.close()
@@ -145,7 +143,7 @@ def extract_json(text):
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
     except: return None
 
-# --- WORKER: PROMPT AJUSTADO PARA VISÃO HUMANA ---
+# --- WORKER COM PROMPT "VISÃO HUMANA" ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
@@ -161,7 +159,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         REGRAS:
         1. Copie o texto completo até a data da Anvisa.
         2. Destaque a data (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark> NOS DOIS TEXTOS (Ref e Bel).
-        3. NÃO use a tag amarela (<mark class='diff'>) apenas por causa da data ou formatação.
+        3. NÃO use a tag amarela (<mark class='diff'>) em hipótese alguma nesta seção.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME" }}
         """
@@ -173,22 +171,21 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
     else:
-        # Prompt de Auditoria VISUAL
+        # Prompt de Auditoria TOLERANTE
         prompt_text = f"""
-        Atue como Auditor Comparativo Meticuloso.
+        Atue como Auditor Humano (Não seja robótico).
         TAREFA: Comparar "{secao}" entre Doc 1 e Doc 2.
         
-        REGRAS DE VISÃO HUMANA (CRÍTICO):
-        1. Ignore caracteres invisíveis ou formatação interna.
-        2. FOCO EM ESPAÇO VISÍVEL:
-           - Se Doc 1 tem "A B" e Doc 2 tem "A  B" (dois espaços), ISSO É DIFERENTE -> Marque de amarelo!
-           - Se Doc 1 tem "A B" e Doc 2 tem "A B" (visualmente igual), NÃO MARQUE.
+        REGRAS DE IGNORAR (CRÍTICO):
+        1. "Candida" é IGUAL a "Candida:" (dois pontos), "Candida)" (parênteses) ou "Candida " (espaço).
+           -> Se a palavra é a mesma e só muda a pontuação colada, NÃO MARQUE AMARELO.
+        2. "150 mg" é IGUAL a "150mg".
+           -> Se só muda o espaço entre número e unidade, NÃO MARQUE AMARELO.
+        3. Espaços invisíveis ou duplos não contam.
         
-        3. FOCO EM PALAVRAS:
-           - "Candida" vs "Candida" -> IGUAIS. NÃO MARQUE.
-           - "150mg" vs "150 mg" -> DIFERENTE (Espaço conta). Marque de amarelo.
-        
-        USE <mark class='diff'>TEXTO</mark> APENAS ONDE O OLHO HUMANO VÊ DIFERENÇA.
+        REGRAS DE MARCAR:
+        - Use <mark class='diff'>PALAVRA</mark> APENAS se a grafia da palavra mudou (ex: "paranoide" vs "paranóide").
+        - Use <mark class='ort'>ERRO</mark> para erros de português.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
@@ -218,14 +215,14 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
             if dados and 'ref' in dados:
                 dados['titulo'] = secao
                 
-                # --- CHECK FINAL ---
+                # --- CHECK DE STATUS FORÇADO ---
                 if not eh_visualizacao and not eh_dizeres:
                     texto_completo = (str(dados.get('bel', '')) + str(dados.get('ref', ''))).lower()
                     tem_diff = 'class="diff"' in texto_completo or "class='diff'" in texto_completo
                     tem_ort = 'class="ort"' in texto_completo or "class='ort'" in texto_completo
                     
-                    # Se a IA não pintou nada, forçamos o status para CONFORME
-                    # Isso garante que não teremos "DIVERGENTE" fantasma.
+                    # Se não tem tag amarela/vermelha, OBRIGATORIAMENTE é CONFORME.
+                    # Isso impede que "Candida" apareça como divergência fantasma.
                     if not tem_diff and not tem_ort:
                         dados['status'] = 'CONFORME'
                 
@@ -235,7 +232,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
             time.sleep(1)
             continue
     
-    # Fallback (Devolve texto puro se falhar JSON)
+    # Fallback
     return {
         "titulo": secao,
         "ref": d1['data'][:2500] + "..." if d1['type']=='text' else "Erro processamento imagem",
@@ -262,9 +259,9 @@ if pagina == "🏠 Início":
     </div>
     """, unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    c1.info("Visão Humana: Ignora códigos invisíveis.")
-    c2.info("Espaçamento: Detecta espaços extras visíveis.")
-    c3.info("Anvisa: Datas azuis em Dizeres Legais.")
+    c1.info("Ignora: Candida:, 150mg vs 150 mg.")
+    c2.info("Detecta: Letras erradas e acentos.")
+    c3.info("Destaque: Data Anvisa em Azul.")
 
 else:
     st.markdown(f"## {pagina}")
