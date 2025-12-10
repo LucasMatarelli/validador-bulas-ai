@@ -178,7 +178,7 @@ def extract_json(text):
         return json.loads(clean)
     except: return None
 
-# --- WORKER INTELIGENTE: SEPARA LÓGICA DE COMPARAÇÃO X EXTRAÇÃO ---
+# --- WORKER BLINDADO: RETRY + DOUBLE CHECK DE TEXTO ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     # Verifica se a seção deve ignorar divergências
@@ -186,9 +186,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     if ignorar_divergencia:
         # --- PROMPT MODO APENAS LEITURA (SEM AMARELO) ---
-        
         instrucao_extra = ""
-        # Se for Dizeres Legais, ainda queremos a DATA em azul
         if "DIZERES LEGAIS" in secao.upper():
             instrucao_extra = "APENAS para 'Dizeres Legais', use <mark class='anvisa'>DATA</mark> para destacar datas (DD/MM/AAAA)."
         
@@ -210,24 +208,28 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
             "status": "VISUALIZACAO"
         }}
         """
-    
     else:
-        # --- PROMPT MODO COMPARAÇÃO RIGOROSA (COM AMARELO) ---
+        # --- PROMPT MODO COMPARAÇÃO RIGOROSA (COM AMARELO E BLINDAGEM) ---
         prompt_text = f"""
-        Atue como Auditor de Texto.
+        Atue como Auditor de Texto com "Visão de Raio-X".
         TAREFA: Comparar a seção "{secao}" entre {nome_doc1} e {nome_doc2}.
         
-        REGRAS:
-        1. IGNORE espaços duplos e quebras de linha.
-        2. Use <mark class="diff">PALAVRA</mark> para destacar palavras diferentes ou extras.
-        3. Use <mark class="ort">ERRO</mark> para erros de português.
-        4. NÃO use a tag class='anvisa' nestas seções.
+        REGRAS DE OURO (LEIA COM ATENÇÃO):
+        1. IGNORE ABSOLUTAMENTE: espaços extras, quebras de linha, tabulações ou fontes.
+        2. REGRA DO DUPLO CHECK: Antes de marcar uma palavra com <mark class="diff">, verifique se ela é VISUALMENTE IDÊNTICA.
+           - Exemplo: "médico" vs "médico " -> SÃO IGUAIS. NÃO MARQUE.
+           - Exemplo: "do farmacêutico" vs "do farmacêutico" -> SÃO IGUAIS. NÃO MARQUE.
+           - Só marque se a LETRA ou a ACENTUAÇÃO mudar.
+        
+        3. Use <mark class="diff">PALAVRA</mark> apenas se houver diferença real de escrita.
+        4. Use <mark class="ort">ERRO</mark> para erros de português.
+        5. NÃO use a tag class='anvisa' nestas seções.
         
         SAÍDA JSON:
         {{
             "titulo": "{secao}",
             "ref": "Texto {nome_doc1}...",
-            "bel": "Texto {nome_doc2} com tags...",
+            "bel": "Texto {nome_doc2} com tags APENAS em diferenças reais...",
             "status": "CONFORME ou DIVERGENTE"
         }}
         """
@@ -244,27 +246,37 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
-    try:
-        chat_response = client.chat.complete(
-            model="pixtral-large-latest", 
-            messages=[{"role": "user", "content": messages_content}],
-            response_format={"type": "json_object"}
-        )
-        dados = extract_json(chat_response.choices[0].message.content)
-        
-        if dados:
-            dados['titulo'] = secao
-            return dados
-        else:
-            return {"titulo": secao, "ref": "Erro JSON", "bel": "", "status": "ERRO"}
+    # --- RETRY LOGIC (TENTA 3 VEZES SE FALHAR O JSON) ---
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            chat_response = client.chat.complete(
+                model="pixtral-large-latest", 
+                messages=[{"role": "user", "content": messages_content}],
+                response_format={"type": "json_object"}
+            )
+            raw_content = chat_response.choices[0].message.content
+            dados = extract_json(raw_content)
             
-    except Exception as e:
-        return {"titulo": secao, "ref": "Erro API", "bel": str(e), "status": "ERRO"}
+            if dados and 'ref' in dados and 'bel' in dados:
+                dados['titulo'] = secao
+                return dados
+            else:
+                # Se JSON veio vazio ou incompleto, força erro para tentar de novo
+                raise ValueError("JSON Incompleto")
+                
+        except Exception as e:
+            if attempt == max_retries - 1:
+                # Se falhar na última tentativa, retorna o erro
+                return {"titulo": secao, "ref": "Erro ao processar seção.", "bel": f"Falha após 3 tentativas. Erro: {str(e)}", "status": "ERRO"}
+            else:
+                time.sleep(1) # Espera 1 seg antes de tentar de novo
+                continue
 
 # ----------------- UI PRINCIPAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.title("Validador de bulas")
+    st.title("Validador V30 Turbo")
     
     client = get_mistral_client()
     
@@ -283,7 +295,7 @@ if pagina == "🏠 Início":
     st.markdown("""
     <div style="text-align: center; padding: 30px 20px;">
         <h1 style="color: #55a68e;">Validador Inteligente - Modo Turbo</h1>
-        <p style="font-size: 20px; color: #7f8c8d;">Processamento Paralelo Ativado.</p>
+        <p style="font-size: 20px; color: #7f8c8d;">Processamento Paralelo & Blindagem contra Erros.</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -294,8 +306,8 @@ if pagina == "🏠 Início":
             <div class="card-title">💊 Regras de Validação</div>
             <div class="card-text">
                 <ul>
-                    <li><b>Geral:</b> Aponta <span class="highlight-yellow">divergências</span> ignorando espaços.</li>
-                    <li><b>Dizeres/Comp/Apres:</b> Apenas visualização (sem alertas).</li>
+                    <li><b>Blindagem JSON:</b> Sistema de re-tentativa automática.</li>
+                    <li><b>Anti-Alucinação:</b> Verificação dupla de palavras idênticas.</li>
                     <li><b>Datas:</b> Marcadas em <span class="highlight-blue">azul</span> nos Dizeres Legais.</li>
                 </ul>
             </div>
@@ -335,7 +347,7 @@ else:
         f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
         
     st.write("") 
-    if st.button("🚀 INICIAR AUDITORIA"):
+    if st.button("🚀 INICIAR AUDITORIA TURBO"):
         if not f1 or not f2:
             st.warning("⚠️ Faça upload dos dois arquivos.")
         else:
@@ -360,7 +372,7 @@ else:
             resultados_secoes = []
             
             with st.status("⚡ Processando seções simultaneamente...", expanded=True) as status:
-                st.write("Iniciando workers de IA...")
+                st.write("Iniciando workers de IA (Modo Blindado)...")
                 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                     future_to_secao = {
