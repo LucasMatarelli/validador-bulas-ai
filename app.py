@@ -21,74 +21,42 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (INTERFACE VERDE CLÁSSICA) -----------------
+# ----------------- ESTILOS CSS (MANTIDOS) -----------------
 st.markdown("""
 <style>
-    /* OCULTA A BARRA SUPERIOR */
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
-
-    /* Ajuste de Fundo e Fontes */
     .main { background-color: #f4f6f8; }
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    /* ESTILO DO MENU DE NAVEGAÇÃO */
     .stRadio > div[role="radiogroup"] > label {
-        background-color: white;
-        border: 1px solid #e1e4e8;
-        padding: 12px 15px;
-        border-radius: 8px;
-        margin-bottom: 8px;
-        transition: all 0.2s;
+        background-color: white; border: 1px solid #e1e4e8; padding: 12px 15px;
+        border-radius: 8px; margin-bottom: 8px; transition: all 0.2s;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02);
     }
     .stRadio > div[role="radiogroup"] > label:hover {
-        background-color: #f0fbf7;
-        border-color: #55a68e;
-        color: #55a68e;
-        cursor: pointer;
+        background-color: #f0fbf7; border-color: #55a68e; color: #55a68e; cursor: pointer;
     }
 
-    /* Card Estilizado */
     .stCard {
-        background-color: white;
-        padding: 25px;
-        border-radius: 15px;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.05);
-        margin-bottom: 25px;
-        border: 1px solid #e1e4e8;
-        transition: transform 0.2s;
-        height: 100%;
+        background-color: white; padding: 25px; border-radius: 15px;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px;
+        border: 1px solid #e1e4e8; transition: transform 0.2s; height: 100%;
     }
-    .stCard:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 15px 30px rgba(0,0,0,0.1);
-        border-color: #55a68e;
-    }
+    .stCard:hover { transform: translateY(-5px); box-shadow: 0 15px 30px rgba(0,0,0,0.1); border-color: #55a68e; }
 
-    /* Títulos dos Cards */
     .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
     .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
-    
-    /* Legendas */
-    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0 4px; border-radius: 4px; font-weight: 500; }
-    .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; font-weight: 500; }
     .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
 
-    /* Marcações de Texto */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; } 
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; } 
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
 
-    /* Botões */
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); }
     .stButton>button:hover { background-color: #448c75; box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); }
     
-    .texto-bula {
-        font-size: 1.1rem;
-        line-height: 1.6;
-        color: #333;
-    }
+    .texto-bula { font-size: 1.1rem; line-height: 1.6; color: #333; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -124,22 +92,20 @@ def get_mistral_client():
 
 def image_to_base64(image):
     buffered = io.BytesIO()
-    image.save(buffered, format="JPEG", quality=85, optimize=True) # Otimização de imagem mantida
+    image.save(buffered, format="JPEG", quality=85, optimize=True) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-# --- SANITIZAÇÃO AGRESSIVA (CORREÇÃO DO PROBLEMA DE ESPAÇOS) ---
 def sanitize_text(text):
     if not text: return ""
-    # 1. Normaliza unicode (transforma caracteres compostos em simples)
     text = unicodedata.normalize('NFKC', text)
-    # 2. Remove caracteres de controle invisíveis específicos que quebram comparações
-    text = text.replace('\xa0', ' ')  # Non-breaking space (O vilão do seu PDF)
-    text = text.replace('\u200b', '') # Zero width space
-    text = text.replace('\u200e', '') # Left-to-right mark
-    text = text.replace('\u200f', '') # Right-to-left mark
-    text = text.replace('\u00ad', '') # Soft hyphen
+    # --- CORREÇÃO DO MALEATO ---
+    # Remove caracteres fantasmas comuns em PDFs de gráfica
+    text = text.replace('\xa0', ' ')   # Espaço não-quebrável
+    text = text.replace('\u200b', '')  # Espaço zero
+    text = text.replace('\u00ad', '')  # Hífen condicional (Soft Hyphen)
+    text = text.replace('\ufeff', '')  # BOM (Byte Order Mark)
     text = text.replace('\t', ' ')
-    # 3. Transforma múltiplos espaços em um único
+    # Garante espaço único entre palavras
     return re.sub(r'\s+', ' ', text).strip()
 
 @st.cache_data(show_spinner=False)
@@ -149,20 +115,25 @@ def process_file_content(file_bytes, filename):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": sanitize_text(text)}
+        
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             for page in doc: full_text += page.get_text() + " "
             
+            # Prioriza texto nativo se existir (Rápido e Preciso)
             if len(full_text.strip()) > 500:
                 doc.close()
                 return {"type": "text", "data": sanitize_text(full_text)}
             
+            # OCR Visual (Imagem)
             images = []
             limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0)) # ZOOM 4.0 Mantido
+                # ZOOM 3.0: Equilíbrio perfeito. 4.0 trava, 2.0 pode perder detalhes.
+                # 3.0 é leve o suficiente e lê tudo.
+                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -180,17 +151,18 @@ def extract_json(text):
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
     except: return None
 
-# --- WORKER BLINDADO (PROMPT ATUALIZADO PARA IGNORAR FALSOS POSITIVOS) ---
+# --- WORKER ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
     base_instruction = """
-    DIRETRIZ DE SEGURANÇA MÁXIMA:
-    1. VOCÊ É UM ROBÔ OCR. COPIE EXATAMENTE O QUE VÊ.
-    2. Se o texto diz "Frequencia" (sem acento), escreva "Frequencia". NÃO CORRIJA.
-    3. IGNORAR DIFERENÇAS INVISÍVEIS: Se duas palavras parecem idênticas visualmente (ex: "maleato" e "maleato"), considere-as IGUAIS. Não marque erro por encoding ou espaços duplos.
+    DIRETRIZ DE PRECISÃO ABSOLUTA:
+    1. Compare APENAS o significado e as letras visíveis.
+    2. IGNORE TOTALMENTE caracteres fantasmas, espaços duplos ou formatação oculta.
+    3. REGRA DO FALSO POSITIVO: Se "maleato de enalapril" parece igual nos dois textos, NÃO MARQUE COMO DIFERENÇA. Considere igual.
+    4. Copie o texto exato, sem corrigir.
     """
     
     prompt_text = ""
@@ -200,15 +172,12 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         {base_instruction}
         Atue como Auditor Regulatório.
         TAREFA: Localizar "DIZERES LEGAIS".
-        
-        ALVO:
-        - Busque por: "Farm. Resp.", "M.S.", "CNPJ", "SAC", "Fabricado por".
-        - IGNORE "Como usar" ou "Posologia".
+        Procure por: "Farm. Resp.", "M.S.", "CNPJ", "SAC".
         
         SAÍDA:
         1. Copie o texto encontrado.
-        2. Destaque TODAS as datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
-        3. Use <mark class='diff'> APENAS se houver divergência real de DADOS (Números, CNPJ, Endereço).
+        2. Destaque datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
+        3. Use <mark class='diff'> APENAS para dados realmente diferentes (números errados).
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
@@ -218,14 +187,11 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         {base_instruction}
         Atue como Extrator.
         TAREFA: Extrair "{secao}".
-        
-        FILTRO (REMOVER LIXO):
-        - Remova textos técnicos de gráfica.
+        FILTRO: Remova lixo técnico.
         
         SAÍDA:
-        - Transcreva o conteúdo limpo.
         - Use <mark class='diff'> se houver diferença de CONTEÚDO REAL (ex: 10mg vs 20mg).
-        - Se a palavra for idêntica, NÃO use mark.
+        - NUNCA use mark se as palavras forem visualmente idênticas.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
@@ -233,14 +199,15 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     else:
         prompt_text = f"""
         {base_instruction}
-        Atue como Comparador Estrito mas Inteligente.
+        Atue como Comparador de Texto Estrito.
         TAREFA: Comparar "{secao}" palavra por palavra.
         
-        1. Extraia o texto para 'ref' e 'bel'.
+        1. Localize a seção.
+        2. Extraia para 'ref' e 'bel'.
         
         REGRAS DO DESTAQUE (<mark class='diff'>):
-        - Use APENAS se a palavra for REALMENTE DIFERENTE (Letras trocadas, números diferentes, acentos diferentes).
-        - PROIBIDO MARCAR FALSOS POSITIVOS: Se a palavra é visualmente igual (ex: "maleato" vs "maleato"), NÃO MARQUE. Assuma que é erro de encoding e ignore.
+        - MARQUE: Palavras trocadas, números diferentes, letras faltando.
+        - PROIBIDO MARCAR: Palavras iguais com códigos diferentes (ex: "maleato" vs "maleato"). Se ler igual, é igual.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
@@ -250,9 +217,9 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     limit = 80000 
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
-            messages_content.append({"type": "text", "text": f"\n--- DOCUMENTO: {nome} ---\n{d['data'][:limit]}"}) 
+            messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- IMAGENS: {nome} ---"})
+            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagem) ---\n"})
             for img in d['data'][:2]: 
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
@@ -263,7 +230,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.1
+                temperature=0.0
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
@@ -308,7 +275,6 @@ if pagina == "🏠 Início":
     </div>
     """, unsafe_allow_html=True)
     
-    # CARDS ESTILO VERDE
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -327,7 +293,7 @@ if pagina == "🏠 Início":
         <div class="stCard">
             <div class="card-title">👁️ Zoom & Precisão</div>
             <p class="card-text">
-            Processamento em Alta Definição (4.0x) para ler letras miúdas.
+            Processamento em Alta Definição para ler letras miúdas.
             Detecção estrita de palavras faltantes e erros de acentuação.
             </p>
         </div>
@@ -387,15 +353,15 @@ else:
             
             # Feedback Visual
             msg_carregando = st.empty()
-            msg_carregando.info("⏳ Renderizando em Alta Definição (4x Zoom)... Aguarde.")
-
-            with st.spinner("Processando arquivos (Modo HD)..."):
+            msg_carregando.info("⏳ Renderizando em Alta Definição... Aguarde.")
+            
+            with st.spinner("Processando..."):
                 b1 = f1.getvalue()
                 b2 = f2.getvalue()
                 d1 = process_file_content(b1, f1.name.lower())
                 d2 = process_file_content(b2, f2.name.lower())
                 gc.collect()
-            
+
             msg_carregando.empty()
 
             if not d1 or not d2:
@@ -431,11 +397,9 @@ else:
             visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in str(x.get('status', '')))
             score = int(((conformes + visuais) / total) * 100) if total > 0 else 0
             
-            # --- Datas Anvisa ---
             datas_encontradas = []
             for r in resultados_secoes:
                 if "DIZERES LEGAIS" in r['titulo']:
-                    # Proteção str() mantida
                     texto_combinado = str(r.get('ref', '')) + " " + str(r.get('bel', ''))
                     matches = re.findall(r'\d{2}/\d{2}/\d{4}', texto_combinado)
                     for m in matches:
@@ -463,7 +427,6 @@ else:
                     cA, cB = st.columns(2)
                     with cA:
                         st.markdown(f"**{nome_doc1}**")
-                        # Proteção str() mantida
                         st.markdown(f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px;'>{str(sec.get('ref', 'Texto não extraído'))}</div>", unsafe_allow_html=True)
                     with cB:
                         st.markdown(f"**{nome_doc2}**")
