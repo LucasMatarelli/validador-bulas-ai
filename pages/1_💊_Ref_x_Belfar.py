@@ -3,7 +3,7 @@ import concurrent.futures
 import sys
 import os
 
-# Caminho para importar utils
+# Adiciona o diretório pai ao path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils import (
@@ -13,6 +13,7 @@ from utils import (
 
 st.set_page_config(page_title="Ref x Belfar", page_icon="💊", layout="wide")
 
+# CSS 
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -33,12 +34,12 @@ lista_secoes = SECOES_PROFISSIONAL if tipo_bula == "Profissional" else SECOES_PA
 c1, c2 = st.columns(2)
 with c1:
     st.markdown("##### 📄 Arquivo Referência")
-    # CORREÇÃO AQUI: Label obrigatório, mas escondido
-    f1 = st.file_uploader("Arquivo Referência", type=["pdf", "docx"], key="f1", label_visibility="collapsed")
+    # CORREÇÃO CRÍTICA: Label não pode ser vazio!
+    f1 = st.file_uploader("Upload Ref", type=["pdf", "docx"], key="f1", label_visibility="collapsed")
 with c2:
     st.markdown("##### 📄 Arquivo BELFAR")
-    # CORREÇÃO AQUI: Label obrigatório, mas escondido
-    f2 = st.file_uploader("Arquivo Belfar", type=["pdf", "docx"], key="f2", label_visibility="collapsed")
+    # CORREÇÃO CRÍTICA: Label não pode ser vazio!
+    f2 = st.file_uploader("Upload Bel", type=["pdf", "docx"], key="f2", label_visibility="collapsed")
 
 if st.button("INICIAR AUDITORIA"):
     client = get_mistral_client()
@@ -77,6 +78,7 @@ if st.button("INICIAR AUDITORIA"):
 
     status.empty()
     progress.empty()
+    
     resultados.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
 
     total = len(resultados)
