@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (INTERFACE VERDE CLÁSSICA) -----------------
+# ----------------- ESTILOS CSS (MANTIDOS IDENTICOS AO PEDIDO) -----------------
 st.markdown("""
 <style>
     /* OCULTA A BARRA SUPERIOR */
@@ -71,8 +71,6 @@ st.markdown("""
     .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
     
     /* Legendas */
-    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0 4px; border-radius: 4px; font-weight: 500; }
-    .highlight-pink { background-color: #f8d7da; color: #721c24; padding: 0 4px; border-radius: 4px; font-weight: 500; }
     .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
 
     /* Marcações de Texto */
@@ -124,21 +122,24 @@ def get_mistral_client():
 
 def image_to_base64(image):
     buffered = io.BytesIO()
+    # VOLTANDO A QUALIDADE MÁXIMA (Sem compressão agressiva, sem preto e branco)
     image.save(buffered, format="JPEG", quality=100, subsampling=0) 
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-# --- SANITIZAÇÃO AGRESSIVA (CORREÇÃO DO PROBLEMA DE ESPAÇOS) ---
+# --- SANITIZAÇÃO CORRECTIVA (CORRIGE O BUG DO MALEATO) ---
 def sanitize_text(text):
     if not text: return ""
-    # 1. Normaliza unicode (transforma caracteres compostos em simples)
+    # 1. Normalização Unicode (Junta caracteres separados)
     text = unicodedata.normalize('NFKC', text)
-    # 2. Remove caracteres de controle invisíveis específicos que quebram comparações
-    text = text.replace('\xa0', ' ')  # Non-breaking space
-    text = text.replace('\u200b', '') # Zero width space
-    text = text.replace('\u200e', '') # Left-to-right mark
-    text = text.replace('\u200f', '') # Right-to-left mark
+    
+    # 2. Remoção Cirúrgica de "Sujeira Invisível" do PDF
+    # Estes são os culpados por "maleato" parecer diferente de "maleato"
+    text = text.replace('\xa0', ' ')  # Espaço não-quebrável (comum em justificação)
+    text = text.replace('\u200b', '') # Espaço de largura zero
+    text = text.replace('\u00ad', '') # Hífen condicional (Soft Hyphen)
     text = text.replace('\t', ' ')
-    # 3. Transforma múltiplos espaços em um único
+    
+    # 3. Uniformiza espaços (transforma 2 espaços em 1)
     return re.sub(r'\s+', ' ', text).strip()
 
 @st.cache_data(show_spinner=False)
@@ -148,20 +149,24 @@ def process_file_content(file_bytes, filename):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": sanitize_text(text)}
+        
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             for page in doc: full_text += page.get_text() + " "
             
+            # SE TIVER TEXTO EXTRAÍVEL, USA O TEXTO (É Rápido E Preciso)
             if len(full_text.strip()) > 500:
                 doc.close()
                 return {"type": "text", "data": sanitize_text(full_text)}
             
+            # SE FOR IMAGEM, USA O MOTOR DE ALTA DEFINIÇÃO (Lento mas Preciso)
             images = []
             limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0)) # ZOOM 4.0 Mantido
+                # ZOOM 4.0 (Super Resolução) MANTIDO para ler letras minúsculas
+                pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0)) 
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=100))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -179,17 +184,19 @@ def extract_json(text):
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
     except: return None
 
-# --- WORKER BLINDADO (PROMPT ATUALIZADO PARA IGNORAR FALSOS POSITIVOS) ---
+# --- WORKER BLINDADO ---
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
+    # Prompt ajustado para IGNORAR formatação e espaços
     base_instruction = """
-    DIRETRIZ DE SEGURANÇA MÁXIMA:
-    1. VOCÊ É UM ROBÔ OCR. COPIE EXATAMENTE O QUE VÊ.
-    2. Se o texto diz "Frequencia" (sem acento), escreva "Frequencia". NÃO CORRIJA.
-    3. IGNORAR DIFERENÇAS INVISÍVEIS: Se duas palavras parecem idênticas visualmente (ex: "maleato" e "maleato"), considere-as IGUAIS. Não marque erro por encoding ou espaços duplos.
+    DIRETRIZ DE PRECISÃO:
+    1. Você deve comparar o CONTEÚDO SEMÂNTICO (o significado e as palavras escritas).
+    2. IGNORE TOTALMENTE diferenças de espaçamento, quebras de linha ou caracteres invisíveis.
+    3. EXEMPLO: "maleato de enalapril" É IGUAL A "maleato   de enalapril". NÃO MARQUE ISSO COMO ERRO.
+    4. Copie o texto exato, sem corrigir ortografia.
     """
     
     prompt_text = ""
@@ -199,15 +206,12 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         {base_instruction}
         Atue como Auditor Regulatório.
         TAREFA: Localizar "DIZERES LEGAIS".
-        
-        ALVO:
-        - Busque por: "Farm. Resp.", "M.S.", "CNPJ", "SAC", "Fabricado por".
-        - IGNORE "Como usar" ou "Posologia".
+        Procure por: "Farm. Resp.", "M.S.", "CNPJ", "SAC".
         
         SAÍDA:
         1. Copie o texto encontrado.
-        2. Destaque TODAS as datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
-        3. Use <mark class='diff'> APENAS se houver divergência real de DADOS (Números, CNPJ, Endereço).
+        2. Destaque datas (DD/MM/AAAA) com <mark class='anvisa'>DATA</mark>.
+        3. Use <mark class='diff'> APENAS para dados diferentes (CNPJ errado, Farmacêutico diferente).
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
@@ -218,13 +222,11 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
         Atue como Extrator.
         TAREFA: Extrair "{secao}".
         
-        FILTRO (REMOVER LIXO):
-        - Remova textos técnicos de gráfica.
+        FILTRO: Remova lixo técnico (cores, dimensões).
         
         SAÍDA:
-        - Transcreva o conteúdo limpo.
         - Use <mark class='diff'> se houver diferença de CONTEÚDO REAL (ex: 10mg vs 20mg).
-        - Se a palavra for idêntica, NÃO use mark.
+        - NÃO USE MARK PARA ESPAÇOS.
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "VISUALIZACAO" }}
         """
@@ -232,14 +234,15 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     else:
         prompt_text = f"""
         {base_instruction}
-        Atue como Comparador Estrito mas Inteligente.
+        Atue como Comparador de Texto Estrito.
         TAREFA: Comparar "{secao}" palavra por palavra.
         
-        1. Extraia o texto para 'ref' e 'bel'.
+        1. Localize a seção nos textos brutos.
+        2. Extraia para 'ref' e 'bel'.
         
         REGRAS DO DESTAQUE (<mark class='diff'>):
-        - Use APENAS se a palavra for REALMENTE DIFERENTE (Letras trocadas, números diferentes, acentos diferentes).
-        - PROIBIDO MARCAR FALSOS POSITIVOS: Se a palavra é visualmente igual (ex: "maleato" vs "maleato"), NÃO MARQUE. Assuma que é erro de encoding e ignore.
+        - MARQUE: Palavras trocadas, números diferentes, letras faltando, acentos errados.
+        - NÃO MARQUE: Espaços duplos, quebras de linha, ou palavras que parecem idênticas visualmente (assuma erro de PDF).
         
         SAÍDA JSON: {{ "titulo": "{secao}", "ref": "...", "bel": "...", "status": "CONFORME ou DIVERGENTE" }}
         """
@@ -249,9 +252,9 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     limit = 80000 
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
-            messages_content.append({"type": "text", "text": f"\n--- DOCUMENTO: {nome} ---\n{d['data'][:limit]}"}) 
+            messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- IMAGENS: {nome} ---"})
+            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagem HD) ---\n"})
             for img in d['data'][:2]: 
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
@@ -262,7 +265,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.1
+                temperature=0.0 # Temperatura Zero para precisão máxima e zero criatividade
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
@@ -307,7 +310,6 @@ if pagina == "🏠 Início":
     </div>
     """, unsafe_allow_html=True)
     
-    # CARDS ESTILO VERDE
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -423,7 +425,6 @@ else:
             visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in x.get('status', ''))
             score = int(((conformes + visuais) / total) * 100) if total > 0 else 0
             
-            # --- Datas Anvisa ---
             datas_encontradas = []
             for r in resultados_secoes:
                 if "DIZERES LEGAIS" in r['titulo']:
