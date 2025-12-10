@@ -334,40 +334,59 @@ TAREFA: Comparar seção "{secao}" com PRECISÃO CIRÚRGICA.
 
 PROCESSO DE 3 ETAPAS:
 
-**ETAPA 1 - NORMALIZAÇÃO**:
-- Remova mentalmente espaços extras, quebras de linha, tabs
-- Converta ambos textos para formato comparável
-- Exemplo: "maleato  de\nenalapril" = "maleato de enalapril"
+**ETAPA 1 - NORMALIZAÇÃO EXTREMA**:
+- Remova mentalmente: espaços extras, quebras de linha, tabs, pontuação extra
+- Converta para minúsculas mentalmente
+- Normalize caracteres especiais (á = a, ç = c para comparação)
+- Exemplo: "maleato  de\nenalapril" = "MALEATO DE ENALAPRIL" = "maleato de enalapril"
 
-**ETAPA 2 - COMPARAÇÃO PALAVRA POR PALAVRA**:
-- Compare cada palavra após normalização
-- Identifique APENAS diferenças REAIS de conteúdo
-- Ignore diferenças de formatação
+**ETAPA 2 - COMPARAÇÃO SEMÂNTICA**:
+- Compare o SIGNIFICADO, não os bytes
+- Se ambos dizem a mesma coisa = SÃO IGUAIS
+- Exemplo: "Não tome maleato de enalapril" = "Não tome maleato de enalapril"
 
-**ETAPA 3 - MARCAÇÃO PRECISA**:
+**ETAPA 3 - DECISÃO CRÍTICA**:
+Pergunte-se ANTES de marcar: 
+- "Esse texto transmite informação DIFERENTE?"
+- Se NÃO → NÃO MARQUE
+- Se SIM → marque apenas a palavra/frase específica diferente
 
-✅ MARQUE COM AMARELO (<mark class='diff'>) APENAS:
-- Palavras completamente diferentes: "hipertensão" vs "diabetes"
-- Números diferentes: "10mg" vs "20mg"
-- Frases que existem apenas em um dos textos
-- Informações conflitantes
+✅ MARQUE COM AMARELO (<mark class='diff'>) SOMENTE SE:
+- Palavra COMPLETAMENTE DIFERENTE: "hipertensão" vs "diabetes"  
+- Número DIFERENTE: "10mg" vs "20mg"
+- Frase que existe APENAS EM UM dos textos
+- Informação que CONTRADIZ a outra
 
-❌ NÃO MARQUE:
-- Texto idêntico com formatação diferente
-- Mesmas palavras em ordem diferente se significado igual
-- Sinônimos científicos aceitáveis
-- "maleato de enalapril" nos dois = NÃO MARCAR
+❌ NUNCA MARQUE SE:
+- Textos são idênticos (mesmo com formatação diferente)
+- "maleato de enalapril" aparece igual nos dois
+- Mesmas palavras, mesma ordem, mesmo significado
+- Diferenças apenas em espaçamento ou quebra de linha
 
-🔴 MARQUE COM VERMELHO (<mark class='ort'>) APENAS:
-- Erros ortográficos EVIDENTES: "mediçamento", "efeicácia"
+🔴 MARQUE COM VERMELHO (<mark class='ort'>) SOMENTE:
+- Erros ortográficos ÓBVIOS e INCONTESTÁVEIS
+- Exemplos: "mediçamento", "efeicácia", "paciennte"
 
 🔵 MARQUE COM AZUL (<mark class='anvisa'>):
 - Datas DD/MM/AAAA em AMBOS os textos
 
-**VALIDAÇÃO FINAL**:
-Antes de enviar, releia as marcações:
-- Cada <mark class='diff'> marca uma diferença REAL?
-- Textos idênticos ficaram sem marcação?
+**VALIDAÇÃO FINAL OBRIGATÓRIA**:
+Antes de gerar o JSON, execute esta checklist:
+1. ✓ Li ambos os textos completamente?
+2. ✓ Comparei o SIGNIFICADO, não os bytes?
+3. ✓ Cada marcação amarela marca uma diferença REAL?
+4. ✓ Textos idênticos ficaram SEM marcação amarela/vermelha?
+5. ✓ Se "maleato de enalapril" está igual nos dois, NÃO marquei?
+
+EXEMPLO DE COMPARAÇÃO CORRETA:
+Texto 1: "Não tome maleato de enalapril se você já teve uma reação alérgica"
+Texto 2: "Não tome maleato de enalapril se você já teve uma reação alérgica"
+RESULTADO: ✅ TEXTOS IDÊNTICOS - NÃO MARCAR NADA
+
+EXEMPLO DE DIFERENÇA REAL:
+Texto 1: "Não tome maleato de enalapril 10mg"
+Texto 2: "Não tome maleato de enalapril 20mg"
+RESULTADO: ⚠️ Marcar apenas "<mark class='diff'>10mg</mark>" vs "<mark class='diff'>20mg</mark>"
 
 SAÍDA JSON:
 {{
@@ -422,15 +441,35 @@ SAÍDA JSON:
                     texto_ref = str(dados.get('ref', '')).lower()
                     texto_bel = str(dados.get('bel', '')).lower()
                     
-                    tem_diff = ('class="diff"' in texto_ref or "class='diff'" in texto_ref or
-                               'class="diff"' in texto_bel or "class='diff'" in texto_bel)
-                    tem_ort = ('class="ort"' in texto_ref or "class='ort'" in texto_ref or
-                              'class="ort"' in texto_bel or "class='ort'" in texto_bel)
+                    # Remove todas as marcações para comparação limpa
+                    texto_ref_limpo = re.sub(r'<mark[^>]*>|</mark>', '', texto_ref)
+                    texto_bel_limpo = re.sub(r'<mark[^>]*>|</mark>', '', texto_bel)
                     
-                    if not tem_diff and not tem_ort:
+                    # Normaliza para comparação
+                    texto_ref_norm = re.sub(r'\s+', ' ', texto_ref_limpo).strip()
+                    texto_bel_norm = re.sub(r'\s+', ' ', texto_bel_limpo).strip()
+                    
+                    # Se textos normalizados são idênticos, remove TODAS as marcações diff e ort
+                    if texto_ref_norm == texto_bel_norm:
+                        # Remove marcações amarelas e vermelhas
+                        dados['ref'] = re.sub(r"<mark class=['\"]diff['\"]>|</mark>", '', dados.get('ref', ''))
+                        dados['ref'] = re.sub(r"<mark class=['\"]ort['\"]>|</mark>", '', dados.get('ref', ''))
+                        dados['bel'] = re.sub(r"<mark class=['\"]diff['\"]>|</mark>", '', dados.get('bel', ''))
+                        dados['bel'] = re.sub(r"<mark class=['\"]ort['\"]>|</mark>", '', dados.get('bel', ''))
+                        
+                        # Mantém apenas marcações de data (anvisa)
                         dados['status'] = 'CONFORME'
                     else:
-                        dados['status'] = 'DIVERGENTE'
+                        # Verifica se realmente há marcações de diferença
+                        tem_diff = ('class="diff"' in texto_ref or "class='diff'" in texto_ref or
+                                   'class="diff"' in texto_bel or "class='diff'" in texto_bel)
+                        tem_ort = ('class="ort"' in texto_ref or "class='ort'" in texto_ref or
+                                  'class="ort"' in texto_bel or "class='ort'" in texto_bel)
+                        
+                        if not tem_diff and not tem_ort:
+                            dados['status'] = 'CONFORME'
+                        else:
+                            dados['status'] = 'DIVERGENTE'
                 
                 if eh_dizeres: 
                     dados['status'] = 'VISUALIZACAO'
