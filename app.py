@@ -264,7 +264,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
 # ----------------- UI PRINCIPAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.title("Validador V30 Turbo")
+    st.title("Validador de bulas")
     
     client = get_mistral_client()
     
@@ -335,7 +335,7 @@ else:
         f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
         
     st.write("") 
-    if st.button("🚀 INICIAR AUDITORIA TURBO"):
+    if st.button("🚀 INICIAR AUDITORIA"):
         if not f1 or not f2:
             st.warning("⚠️ Faça upload dos dois arquivos.")
         else:
