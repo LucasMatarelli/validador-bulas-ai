@@ -223,7 +223,7 @@ def extract_json(text):
         return None
 
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
-    """Worker otimizado com prompts melhorados"""
+    """Worker otimizado com prompts melhorados e retry inteligente"""
     
     eh_dizeres = "DIZERES LEGAIS" in secao.upper()
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
@@ -355,15 +355,15 @@ SAÍDA JSON:
                     "image_url": f"data:image/jpeg;base64,{b64}"
                 })
 
-    # Retry com timeout
-    for attempt in range(2):
+    # Retry inteligente com backoff exponencial
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
             chat_response = client.chat.complete(
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.0,
-                timeout=45  # Timeout de 45s
+                temperature=0.0
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
@@ -392,14 +392,16 @@ SAÍDA JSON:
                 return dados
                 
         except Exception as e:
-            if attempt == 0:
-                time.sleep(1)
+            if attempt < max_retries - 1:
+                # Backoff exponencial: 1s, 2s, 4s
+                wait_time = 2 ** attempt
+                time.sleep(wait_time)
                 continue
             else:
                 return {
                     "titulo": secao,
-                    "ref": f"Erro no processamento: {str(e)}",
-                    "bel": f"Erro no processamento: {str(e)}",
+                    "ref": f"⚠️ Erro após {max_retries} tentativas: {str(e)[:100]}",
+                    "bel": f"⚠️ Erro após {max_retries} tentativas: {str(e)[:100]}",
                     "status": "ERRO"
                 }
     
@@ -533,7 +535,7 @@ else:
                 resultados_secoes = []
                 progress_bar = st.progress(0)
                 
-                # Processamento paralelo otimizado
+                # Processamento paralelo otimizado com timeout individual
                 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                     future_to_secao = {
                         executor.submit(auditar_secao_worker, client, secao, d1, d2, nome_doc1, nome_doc2): secao 
@@ -541,25 +543,25 @@ else:
                     }
                     
                     completed = 0
-                    for future in concurrent.futures.as_completed(future_to_secao):
+                    for future in concurrent.futures.as_completed(future_to_secao, timeout=120):
                         try:
-                            data = future.result(timeout=60)  # Timeout de 60s por seção
+                            data = future.result(timeout=90)  # 90s por seção
                             if data: 
                                 resultados_secoes.append(data)
                         except concurrent.futures.TimeoutError:
                             secao = future_to_secao[future]
                             resultados_secoes.append({
                                 "titulo": secao,
-                                "ref": "Timeout na análise",
-                                "bel": "Timeout na análise",
-                                "status": "ERRO"
+                                "ref": "⏱️ Tempo limite excedido (seção muito extensa)",
+                                "bel": "⏱️ Tempo limite excedido (seção muito extensa)",
+                                "status": "TIMEOUT"
                             })
                         except Exception as e:
                             secao = future_to_secao[future]
                             resultados_secoes.append({
                                 "titulo": secao,
-                                "ref": f"Erro: {str(e)}",
-                                "bel": f"Erro: {str(e)}",
+                                "ref": f"⚠️ Erro: {str(e)[:100]}",
+                                "bel": f"⚠️ Erro: {str(e)[:100]}",
                                 "status": "ERRO"
                             })
                         
@@ -579,9 +581,9 @@ else:
             conformes = sum(1 for x in resultados_secoes if "CONFORME" in str(x.get('status', '')))
             divergentes = sum(1 for x in resultados_secoes if "DIVERGENTE" in str(x.get('status', '')))
             visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in str(x.get('status', '')))
-            erros = sum(1 for x in resultados_secoes if "ERRO" in str(x.get('status', '')))
+            erros = sum(1 for x in resultados_secoes if "ERRO" in str(x.get('status', '')) or "TIMEOUT" in str(x.get('status', '')))
             
-            score = int(((conformes + visuais) / total) * 100) if total > 0 else 0
+            score = int(((conformes + visuais) / max(total, 1)) * 100)  # Evita divisão por zero
             
             # Extrai datas
             datas_encontradas = []
@@ -597,13 +599,20 @@ else:
 
             # Dashboard de métricas
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Conformidade", f"{score}%", f"{conformes} seções")
-            m2.metric("Divergências", divergentes, delta_color="inverse")
+            
+            # Cor dinâmica baseada no score
+            score_color = "🟢" if score >= 90 else "🟡" if score >= 70 else "🔴"
+            m1.metric("Conformidade", f"{score_color} {score}%", f"{conformes} seções")
+            m2.metric("Divergências", divergentes, delta_color="inverse" if divergentes > 0 else "off")
             m3.metric("Total Seções", total)
             m4.metric("Datas Anvisa", len(datas_encontradas))
             
+            # Alerta de erros
+            if erros > 0:
+                st.warning(f"⚠️ {erros} seção(ões) com erro de processamento. Verifique abaixo.")
+            
             if datas_encontradas:
-                st.info(f"📅 Datas encontradas: {datas_texto}")
+                st.info(f"📅 **Datas encontradas:** {datas_texto}")
             
             st.divider()
             
@@ -617,31 +626,61 @@ else:
             
             st.divider()
             
-            # Resultados por seção
+            # Resultados por seção com ícones dinâmicos
             for sec in resultados_secoes:
                 status = sec.get('status', 'N/A')
                 titulo = sec.get('titulo', '').upper()
                 
-                icon = "✅"
-                if "DIVERGENTE" in status: icon = "⚠️"
-                elif "ERRO" in status: icon = "❌"
-                elif "VISUALIZACAO" in status: icon = "👁️"
+                # Ícones e cores por status
+                if "CONFORME" in status:
+                    icon = "✅"
+                    cor_borda = "#28a745"
+                elif "DIVERGENTE" in status:
+                    icon = "⚠️"
+                    cor_borda = "#ffc107"
+                elif "VISUALIZACAO" in status:
+                    icon = "👁️"
+                    cor_borda = "#17a2b8"
+                elif "TIMEOUT" in status:
+                    icon = "⏱️"
+                    cor_borda = "#fd7e14"
+                elif "ERRO" in status:
+                    icon = "❌"
+                    cor_borda = "#dc3545"
+                else:
+                    icon = "❓"
+                    cor_borda = "#6c757d"
                 
-                with st.expander(f"{icon} {titulo} — {status}", expanded=("DIVERGENTE" in status)):
+                # Expande automaticamente apenas divergências e erros
+                expandir = "DIVERGENTE" in status or "ERRO" in status or "TIMEOUT" in status
+                
+                with st.expander(f"{icon} {titulo} — {status}", expanded=expandir):
                     cA, cB = st.columns(2)
                     with cA:
                         st.markdown(f"**{nome_doc1}**")
                         st.markdown(
-                            f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px; border-left: 4px solid #55a68e;'>{str(sec.get('ref', 'Texto não extraído'))}</div>", 
+                            f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px; border-left: 4px solid {cor_borda};'>{str(sec.get('ref', 'Texto não extraído'))}</div>", 
                             unsafe_allow_html=True
                         )
                     with cB:
                         st.markdown(f"**{nome_doc2}**")
                         st.markdown(
-                            f"<div class='texto-bula' style='background:#fff; border:1px solid #ddd; padding:15px; border-radius:5px; border-left: 4px solid #17a2b8;'>{str(sec.get('bel', 'Texto não extraído'))}</div>", 
+                            f"<div class='texto-bula' style='background:#fff; border:1px solid #ddd; padding:15px; border-radius:5px; border-left: 4px solid {cor_borda};'>{str(sec.get('bel', 'Texto não extraído'))}</div>", 
                             unsafe_allow_html=True
                         )
             
-            # Resumo final
+            # Resumo final com recomendações
             st.divider()
-            st.success(f"✅ Auditoria concluída! {conformes + visuais}/{total} seções conformes ou em revisão visual.")
+            
+            if score >= 95:
+                st.success(f"🎉 **Excelente!** {conformes + visuais}/{total} seções conformes. Documentos altamente compatíveis.")
+            elif score >= 80:
+                st.success(f"✅ **Bom resultado!** {conformes + visuais}/{total} seções conformes. Revise as divergências encontradas.")
+            elif score >= 60:
+                st.warning(f"⚠️ **Atenção necessária.** {divergentes} divergência(s) encontrada(s). Revisão manual recomendada.")
+            else:
+                st.error(f"❌ **Revisão crítica necessária.** Múltiplas divergências detectadas. Verifique cada seção cuidadosamente.")
+            
+            # Botão de exportação (placeholder para futura funcionalidade)
+            if st.button("📥 Exportar Relatório (Em breve)"):
+                st.info("Funcionalidade de exportação será adicionada em breve!")
