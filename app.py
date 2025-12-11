@@ -139,7 +139,6 @@ def process_file_content(file_bytes, filename):
                         full_text += b[4] + "\n\n" # Quebra dupla para separar parágrafos
             
             # 2. Se tiver pouco texto (imagem/curvas), usa OCR (Zoom 3x)
-            # Aumentei o limite para 500 chars para garantir que não pegue lixo
             if len(full_text.strip()) < 500:
                 images = []
                 limit_pages = min(8, len(doc)) 
@@ -166,34 +165,49 @@ def process_file_content(file_bytes, filename):
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
-    # Lista de barreiras (títulos de TODAS as outras seções)
+    # Lista padrão de barreiras
     barreiras = [s for s in todas_secoes if s != secao]
     barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
-    stop_markers_str = "\n".join([f"- {s}" for s in barreiras])
+    
+    # ---------------- LÓGICA DE BARREIRA DINÂMICA ----------------
+    # Se for a Seção 4, a ÚNICA barreira que importa é a Seção 5.
+    # Isso impede que ele pare antes da hora se houver confusão no texto.
+    if "4. O QUE DEVO SABER" in secao.upper():
+        stop_markers_str = "- 5. ONDE, COMO E POR QUANTO TEMPO"
+    else:
+        stop_markers_str = "\n".join([f"- {s}" for s in barreiras])
 
-    # Regras Específicas para corrigir os erros relatados
+    # ---------------- REGRAS ESPECÍFICAS ----------------
     regra_extra = ""
     
     if "1. PARA QUE" in secao.upper():
         regra_extra = """
         ⚠️ REGRA DE OURO DA SEÇÃO 1:
         - Esta seção termina ANTES dos avisos de "Atenção".
-        - Se você vir "Atenção: Contém açúcar", "Atenção: Contém lactose", "Atenção: Este medicamento...", ISSO PERTENCE À SEÇÃO 3 (CONTRAINDICAÇÕES).
-        - NÃO inclua esses avisos de "Atenção" na Seção 1. Pare de copiar imediatamente antes deles.
+        - Se vir "Atenção: Contém açúcar/lactose/etc", ISSO É DA SEÇÃO 3.
+        - Pare IMEDIATAMENTE antes desses avisos.
         """
-    elif "4. O QUE DEVO SABER" in secao.upper() or "9. O QUE FAZER" in secao.upper():
+    elif "4. O QUE DEVO SABER" in secao.upper():
         regra_extra = """
-        ⚠️ REGRA DE OURO DE SEÇÃO LONGA:
-        - Esta seção tem MÚLTIPLOS parágrafos e pode pular colunas.
-        - Não pare no primeiro ponto final. Continue lendo até encontrar um TÍTULO NUMÉRICO (ex: '5. ONDE...' ou 'DIZERES LEGAIS').
-        - Na Seção 9, capture tanto o texto descritivo quanto o aviso em negrito "Em caso de uso...". Capture TUDO.
+        ⚠️ REGRA DE CONTINUIDADE OBRIGATÓRIA (SEÇÃO 4):
+        - Esta seção é LONGA e QUEBRA PÁGINAS.
+        - O texto começa na página/coluna 1 e CONTINUA na página/coluna 2.
+        - Ignore cabeçalhos de página (ex: "Bula Paciente") no meio do texto.
+        - NÃO PARE no fim visual da coluna.
+        - **SEU ÚNICO SINAL DE PARADA É O TÍTULO:** "5. ONDE, COMO E POR QUANTO TEMPO..."
+        - Colete TUDO entre o título 4 e o título 5.
+        """
+    elif "9. O QUE FAZER" in secao.upper():
+        regra_extra = """
+        ⚠️ REGRA DA SEÇÃO 9:
+        - Esta seção também pode ser longa.
+        - Capture o texto descritivo E TAMBÉM o texto em negrito "Em caso de uso de grande quantidade...".
+        - Só pare quando ver "DIZERES LEGAIS".
         """
     elif "7. O QUE DEVO FAZER" in secao.upper():
         regra_extra = """
-        ⚠️ REGRA DE LITERALIDADE EXTREMA:
-        - O texto original provavelmente diz: "Se você deixou de tomar" ou "Caso você se esqueça".
-        - VOCÊ DEVE COPIAR EXATAMENTE O QUE ESTÁ ESCRITO.
-        - PROIBIDO alterar "deixou de tomar" para "esqueceu" e vice-versa.
+        ⚠️ REGRA DE LITERALIDADE:
+        - Copie EXATAMENTE: se diz "deixou de tomar", escreva "deixou de tomar".
         """
 
     prompt_text = f"""
@@ -202,15 +216,15 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
     TAREFA: Recortar o texto da seção "{secao}" exatamente como ele aparece.
     
     REGRAS INEGOCIÁVEIS:
-    1. **NÃO REESCREVA**: Se o texto diz "deixou de tomar", ESCREVA "deixou de tomar". É proibido usar sinônimos.
-    2. **NÃO RESUMA**: Se o texto tem 3 parágrafos, traga os 3 parágrafos.
-    3. **RESPEITE OS LIMITES**:
+    1. **NÃO REESCREVA**: Proibido usar sinônimos.
+    2. **CONTINUIDADE**: Se o texto acaba numa coluna, pule para o topo da próxima e continue copiando.
+    3. **LIMITES**:
        - Comece no título "{secao}".
-       - Pare se encontrar o título de QUALQUER OUTRA seção da lista abaixo.
+       - Pare APENAS se encontrar o título da próxima seção listado abaixo.
     
     {regra_extra}
     
-    ⛔ LISTA DE TÍTULOS DE PARADA (Se encontrar, PARE):
+    ⛔ TÍTULO DE PARADA (PARE SOMENTE AQUI):
     {stop_markers_str}
     
     SAÍDA JSON:
@@ -224,7 +238,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    limit = 60000
+    limit = 80000 # Aumentei o limite para garantir que pegue pag 2 inteira
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
             if len(d['data']) < 50:
@@ -233,8 +247,8 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
                  messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
         else:
             messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagens) ---"})
-            # Envia mais páginas (até 6) para pegar seções longas quebradas
-            for img in d['data'][:6]: 
+            # Aumentei para 8 imagens para garantir que a seção 4 (que pode estar na pag 2 ou 3) seja vista
+            for img in d['data'][:8]: 
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
@@ -287,13 +301,13 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v5.1 - Final")
+    st.caption("v6.0 - Correção Seção 4 (Multi-pág)")
 
 if pagina == "🏠 Início":
     st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1: st.info("✅ **Correção Seção 1:** Ignora avisos de 'Atenção' (pertencem à Seção 3).")
-    with c2: st.info("✅ **Correção Seção 4/9:** Força leitura de parágrafos múltiplos e colunas.")
+    with c2: st.info("✅ **Correção Seção 4:** Lê continuamente até encontrar a Seção 5, ignorando quebras de página.")
 
 else:
     st.markdown(f"## {pagina}")
@@ -340,7 +354,7 @@ else:
                 modo2 = "OCR (Imagem)" if d2['type'] == 'images' else "Texto Nativo"
                 st.write(f"ℹ️ {nome_doc1}: {modo1} | {nome_doc2}: {modo2}")
 
-                st.write("🔍 Auditando seções com regras estritas...")
+                st.write("🔍 Auditando seções com regras de continuidade...")
                 resultados = []
                 bar = st.progress(0)
                 
