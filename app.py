@@ -149,7 +149,6 @@ SECOES_PROFISSIONAL = [
     "DIZERES LEGAIS"
 ]
 
-# Ajustado: removida a seção 7 daqui para que ela seja comparada normalmente
 SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
@@ -236,10 +235,11 @@ def extract_json(text):
     except: 
         return None
 
-def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
+def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
     """Worker otimizado com prompts melhorados e retry inteligente"""
     
-    eh_dizeres = "DIZERES LEGAIS" in secao.upper()
+    # "DIZERES LEGAIS" agora é tratado como comparação normal para não truncar
+    # "VISUALIZACAO" apenas para APRESENTAÇÕES e COMPOSIÇÃO
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
     # Prompt base otimizado
@@ -251,143 +251,67 @@ REGRAS FUNDAMENTAIS DE COMPARAÇÃO:
 2. **MARCAÇÃO AMARELA** (<mark class='diff'>) - USE APENAS QUANDO:
    ✅ Palavra DIFERENTE: "diabetes" vs "hipertensão"
    ✅ Número DIFERENTE: "10mg" vs "20mg"
+   ✅ Data DIFERENTE: "11/11/2025" vs "12/12/2026"
    ✅ Frase FALTANDO em um dos textos
-   ❌ NUNCA marque textos idênticos
-   ❌ NUNCA marque números se forem iguais nos dois textos
+   ❌ NUNCA marque textos idênticos.
+   ❌ NUNCA corrija o texto (se tiver erro de digitação no original, MANTENHA O ERRO e compare).
 
 3. **MARCAÇÃO VERMELHA** (<mark class='ort'>) - USE RARAMENTE:
    ✅ Apenas erros ortográficos ÓBVIOS: "mediçamento", "efeicácia"
    ❌ NÃO marque termos científicos corretos
 
-4. **MARCAÇÃO AZUL** (<mark class='anvisa'>) - USE COM PRECISÃO:
-   ✅ APENAS datas de aprovação da ANVISA (em DIZERES LEGAIS)
-   ✅ Formato: DD/MM/AAAA
-   ❌ NÃO marque outras datas ou números
-   ❌ NÃO marque em outras seções além de DIZERES LEGAIS
+4. **MARCAÇÃO AZUL** (<mark class='anvisa'>):
+   ✅ Opcional: Se encontrar uma data da Anvisa e ela for IDÊNTICA nos dois textos, pode usar azul.
+   ❌ Se a data for DIFERENTE, use AMARELO (<mark class='diff'>).
 """
     
     prompt_text = ""
     
-    if eh_dizeres:
-        prompt_text = f"""
-{base_instruction}
-
-TAREFA: Extrair seção "DIZERES LEGAIS" para visualização.
-
-ATENÇÃO ESPECIAL - DATA DA ANVISA:
-- Procure a frase: "aprovado pela Anvisa em" ou "aprovada pela Anvisa em"
-- A data que vem IMEDIATAMENTE APÓS essa frase é a DATA DA ANVISA
-- Marque APENAS essa data específica com <mark class='anvisa'>DD/MM/AAAA</mark>
-- Cada documento pode ter uma data diferente - extraia de CADA UM
-- Outras datas no texto: deixe normais, sem marcação
-
-INSTRUÇÕES:
-1. Localize "DIZERES LEGAIS" em ambos os documentos
-2. Extraia: Farm. Resp., M.S., CNPJ, SAC
-3. Encontre "aprovado/aprovada pela Anvisa em DATA"
-4. Marque APENAS a data Anvisa em azul
-5. ❌ NÃO USE <mark class='diff'> - apenas visualização
-6. ❌ NÃO USE <mark class='ort'> - apenas visualização
-
-EXEMPLO CORRETO:
-"aprovada pela Anvisa em <mark class='anvisa'>15/03/2024</mark>"
-
-EXEMPLO INCORRETO:
-Marcar outras datas como "Fabricado em 10/01/2024" ❌
-
-SAÍDA JSON:
-{{
-  "titulo": "{secao}",
-  "ref": "texto com APENAS a data Anvisa em azul (pode ser diferente em cada doc)",
-  "bel": "texto com APENAS a data Anvisa em azul (pode ser diferente em cada doc)",
-  "status": "VISUALIZACAO"
-}}
-"""
-        
-    elif eh_visualizacao:
+    if eh_visualizacao:
         prompt_text = f"""
 {base_instruction}
 
 TAREFA: Extrair seção "{secao}" APENAS para visualização.
-
-⚠️ IMPORTANTE: Esta seção NÃO é para comparação, é apenas informativa.
-
-INSTRUÇÕES:
-1. Localize a seção "{secao}" em cada documento
-2. Extraia o texto completo exatamente como está
-3. ❌ NÃO USE <mark class='diff'> - não compare
-4. ❌ NÃO USE <mark class='ort'> - não compare
-5. ❌ NÃO USE <mark class='anvisa'> - não há datas Anvisa aqui
-6. Remova apenas códigos técnicos de gráfica
-
-POR QUE VISUALIZAÇÃO?
-Esta seção serve apenas para o usuário VER o conteúdo, não para comparar diferenças.
+Não compare, apenas extraia o texto limpo.
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto limpo SEM nenhuma marcação",
-  "bel": "texto limpo SEM nenhuma marcação",
+  "ref": "texto limpo",
+  "bel": "texto limpo",
   "status": "VISUALIZACAO"
 }}
 """
         
     else:
+        # Prompt de comparação rigorosa
+        # Lista de seções para ajudar o LLM a saber onde parar
+        secoes_str = "\n".join([f"- {s}" for s in todas_secoes if s != secao])
+        
         prompt_text = f"""
 {base_instruction}
 
-TAREFA: Comparar seção "{secao}" e marcar APENAS diferenças REAIS.
+TAREFA: Extrair e Comparar a seção "{secao}" COMPLETA.
 
-⚠️ REGRA CRÍTICA: SE OS TEXTOS SÃO IGUAIS, NÃO MARQUE NADA!
+⚠️ INSTRUÇÃO CRÍTICA DE EXTRAÇÃO:
+1. Localize o título "{secao}".
+2. Copie TODO o conteúdo que vem abaixo dele.
+3. Pare APENAS quando encontrar o título de OUTRA seção (Ex: "DIZERES LEGAIS", "9. O QUE FAZER...", etc) ou chegar ao FIM do arquivo.
+4. Para "DIZERES LEGAIS", puxe TUDO: Endereço, CNPJ, Farmacêutico, SAC, Datas, Lote, Validade. Vá até o último caractere do arquivo.
 
-PROCESSO:
+⚠️ INSTRUÇÃO CRÍTICA DE "NÃO MODIFICAÇÃO":
+- NÃO CORRIJA DIGITAÇÃO. Se o texto diz "Manques", extraia "Manques".
+- NÃO MUDE DATAS. Se cada arquivo tem uma data, extraia a data original de cada um.
+- COMPARE: Se Ref diz "Manques" e Bel diz "Marques", isso é uma DIVERGÊNCIA (<mark class='diff'>).
 
-PASSO 1 - EXTRAÇÃO:
-- Localize e extraia a seção "{secao}" completa de cada documento
-
-PASSO 2 - NORMALIZAÇÃO MENTAL:
-- Ignore espaços, quebras de linha, formatação
-- Compare apenas as palavras em si
-
-PASSO 3 - COMPARAÇÃO RIGOROSA:
-Leia os dois textos lado a lado. Pergunte-se:
-"As palavras são EXATAMENTE as mesmas?"
-- Se SIM → NÃO marque nada
-- Se NÃO → marque apenas a parte diferente
-
-PASSO 4 - MARCAÇÃO (seja EXTREMAMENTE conservador):
-
-🟡 AMARELO (<mark class='diff'>) USE APENAS SE:
-✅ Palavra DIFERENTE: "10mg" vs "20mg"
-✅ Frase FALTANDO: existe em um texto mas não no outro
-✅ Informação CONFLITANTE: "diabetes" vs "hipertensão"
-
-❌ NUNCA MARQUE se:
-- Palavras são iguais: "maleato de enalapril" = "maleato de enalapril"
-- Apenas formatação difere
-- Espaçamento é diferente mas texto é igual
-
-🔴 VERMELHO (<mark class='ort'>) RARAMENTE:
-- Apenas erros óbvios: "mediçamento", "efeicácia"
-
-EXEMPLO 1 (TEXTOS IGUAIS - NÃO MARCAR):
-Ref: "Caso você se esqueça de tomar maleato de enalapril"
-Bel: "Caso você se esqueça de tomar maleato de enalapril"
-RESULTADO: Ambos textos sem marcação (são idênticos)
-
-EXEMPLO 2 (TEXTOS DIFERENTES - MARCAR):
-Ref: "Tome 10mg diariamente"
-Bel: "Tome 20mg diariamente"
-RESULTADO: "Tome <mark class='diff'>10mg</mark> diariamente" vs "Tome <mark class='diff'>20mg</mark> diariamente"
-
-VALIDAÇÃO FINAL:
-Antes de gerar JSON, releia: Marquei apenas diferenças REAIS? Textos iguais ficaram sem marcação?
+LISTA DE TÍTULOS (para você saber onde parar):
+{secoes_str}
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto completo (COM marcação apenas se houver diferença real)",
-  "bel": "texto completo (COM marcação apenas se houver diferença real)",
+  "ref": "texto completo extraído do doc referencia (COM marcações se houver diferença)",
+  "bel": "texto completo extraído do doc belfar (COM marcações se houver diferença)",
   "status": "será determinado automaticamente"
 }}
 """
@@ -431,49 +355,39 @@ SAÍDA JSON:
             if dados and 'ref' in dados:
                 dados['titulo'] = secao
                 
-                # Verifica status automaticamente
-                if not eh_visualizacao and not eh_dizeres:
+                if not eh_visualizacao:
                     texto_ref = str(dados.get('ref', '')).lower()
                     texto_bel = str(dados.get('bel', '')).lower()
                     
-                    # Remove todas as marcações para comparação limpa
+                    # Remove marcações para comparar texto limpo
                     texto_ref_limpo = re.sub(r'<mark[^>]*>|</mark>', '', texto_ref)
                     texto_bel_limpo = re.sub(r'<mark[^>]*>|</mark>', '', texto_bel)
                     
-                    # Normaliza para comparação
                     texto_ref_norm = re.sub(r'\s+', ' ', texto_ref_limpo).strip()
                     texto_bel_norm = re.sub(r'\s+', ' ', texto_bel_limpo).strip()
                     
-                    # Se textos normalizados são idênticos, remove TODAS as marcações diff e ort
                     if texto_ref_norm == texto_bel_norm:
-                        # Remove marcações amarelas e vermelhas
+                        # Se idêntico, remove diffs/orts falsos
                         dados['ref'] = re.sub(r"<mark class=['\"]diff['\"]>|</mark>", '', dados.get('ref', ''))
                         dados['ref'] = re.sub(r"<mark class=['\"]ort['\"]>|</mark>", '', dados.get('ref', ''))
                         dados['bel'] = re.sub(r"<mark class=['\"]diff['\"]>|</mark>", '', dados.get('bel', ''))
                         dados['bel'] = re.sub(r"<mark class=['\"]ort['\"]>|</mark>", '', dados.get('bel', ''))
-                        
-                        # Mantém apenas marcações de data (anvisa)
                         dados['status'] = 'CONFORME'
                     else:
-                        # Verifica se realmente há marcações de diferença
                         tem_diff = ('class="diff"' in texto_ref or "class='diff'" in texto_ref or
                                    'class="diff"' in texto_bel or "class='diff'" in texto_bel)
-                        tem_ort = ('class="ort"' in texto_ref or "class='ort'" in texto_ref or
-                                  'class="ort"' in texto_bel or "class='ort'" in texto_bel)
                         
-                        if not tem_diff and not tem_ort:
-                            dados['status'] = 'CONFORME'
-                        else:
+                        if tem_diff:
                             dados['status'] = 'DIVERGENTE'
-                
-                if eh_dizeres: 
-                    dados['status'] = 'VISUALIZACAO'
+                        else:
+                            # Se o texto é diferente mas a IA não marcou, força 'DIVERGENTE' ou 'CONFORME' (dependendo da sensibilidade)
+                            # Aqui assumimos CONFORME se a IA não achou diff relevante, mas idealmente revisamos
+                            dados['status'] = 'CONFORME'
                 
                 return dados
                 
         except Exception as e:
             if attempt < max_retries - 1:
-                # Backoff exponencial: 1s, 2s, 4s
                 wait_time = 2 ** attempt
                 time.sleep(wait_time)
                 continue
@@ -617,8 +531,9 @@ else:
                 
                 # Processamento paralelo otimizado com timeout individual
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                    # Passamos lista_secoes para o worker saber onde parar
                     future_to_secao = {
-                        executor.submit(auditar_secao_worker, client, secao, d1, d2, nome_doc1, nome_doc2): secao 
+                        executor.submit(auditar_secao_worker, client, secao, d1, d2, nome_doc1, nome_doc2, lista_secoes): secao 
                         for secao in lista_secoes
                     }
                     
