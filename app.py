@@ -27,22 +27,100 @@ st.markdown("""
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
     .main { background-color: #f4f6f8; }
+    h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    .stCard { background-color: white; padding: 25px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 25px; border: 1px solid #e1e4e8; }
-    
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; font-weight: bold; border-bottom: 2px solid #ffc107; } 
-    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 3px; font-weight: bold; text-decoration: underline wavy red; } 
-    mark.anvisa { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
+    .stRadio > div[role="radiogroup"] > label {
+        background-color: white; border: 1px solid #e1e4e8; padding: 12px 15px;
+        border-radius: 8px; margin-bottom: 8px; transition: all 0.2s;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    .stRadio > div[role="radiogroup"] > label:hover {
+        background-color: #f0fbf7; border-color: #55a68e; color: #55a68e; cursor: pointer;
+    }
 
-    .texto-bula { font-size: 1.0rem; line-height: 1.6; color: #333; font-family: 'Segoe UI', sans-serif; white-space: pre-wrap; }
+    .stCard {
+        background-color: white; padding: 25px; border-radius: 15px;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px;
+        border: 1px solid #e1e4e8; transition: transform 0.2s; height: 100%;
+    }
+    .stCard:hover { transform: translateY(-5px); box-shadow: 0 15px 30px rgba(0,0,0,0.1); border-color: #55a68e; }
+
+    .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
+    .card-text { font-size: 0.95rem; color: #555; line-height: 1.6; }
+    .highlight-blue { background-color: #cff4fc; color: #055160; padding: 0 4px; border-radius: 4px; font-weight: 500; }
+
+    /* Marcações de texto */
+    mark.diff { 
+        background-color: #fff3cd; 
+        color: #856404; 
+        padding: 2px 4px; 
+        border-radius: 3px; 
+        font-weight: 500;
+        border-bottom: 2px solid #ffc107;
+    } 
+    mark.ort { 
+        background-color: #f8d7da; 
+        color: #721c24; 
+        padding: 2px 4px; 
+        border-radius: 3px; 
+        font-weight: 600;
+        border-bottom: 2px solid #dc3545;
+        text-decoration: underline wavy #dc3545;
+    } 
+    mark.anvisa { 
+        background-color: #d1ecf1; 
+        color: #0c5460; 
+        padding: 3px 6px; 
+        border-radius: 3px; 
+        font-weight: bold;
+        border: 1.5px solid #17a2b8;
+        box-shadow: 0 1px 3px rgba(23, 162, 184, 0.2);
+    }
+
+    .stButton>button { 
+        width: 100%; 
+        background-color: #55a68e; 
+        color: white; 
+        font-weight: bold; 
+        border-radius: 10px; 
+        height: 55px; 
+        border: none; 
+        font-size: 16px; 
+        box-shadow: 0 4px 6px rgba(85, 166, 142, 0.2); 
+    }
+    .stButton>button:hover { 
+        background-color: #448c75; 
+        box-shadow: 0 6px 8px rgba(85, 166, 142, 0.3); 
+    }
     
-    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 50px; border: none; font-size: 16px; }
+    .texto-bula { 
+        font-size: 1.05rem; 
+        line-height: 1.7; 
+        color: #333; 
+    }
+    
+    /* Animação de loading */
+    .loading-spinner {
+        border: 3px solid #f3f3f3;
+        border-top: 3px solid #55a68e;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 20px auto;
+    }
+    
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------- CONSTANTES -----------------
 SECOES_PACIENTE = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO",
+    "APRESENTAÇÕES",
+    "COMPOSIÇÃO",
     "1. PARA QUE ESTE MEDICAMENTO É INDICADO?",
     "2. COMO ESTE MEDICAMENTO FUNCIONA?",
     "3. QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?",
@@ -56,14 +134,22 @@ SECOES_PACIENTE = [
 ]
 
 SECOES_PROFISSIONAL = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO",
-    "1. INDICAÇÕES", "2. RESULTADOS DE EFICÁCIA",
-    "3. CARACTERÍSTICAS FARMACOLÓGICAS", "4. CONTRAINDICAÇÕES",
-    "5. ADVERTÊNCIAS E PRECAUÇÕES", "6. INTERAÇÕES MEDICAMENTOSAS",
-    "7. CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", "8. POSOLOGIA E MODO DE USAR",
-    "9. REAÇÕES ADVERSAS", "10. SUPERDOSE", "DIZERES LEGAIS"
+    "APRESENTAÇÕES",
+    "COMPOSIÇÃO",
+    "1. INDICAÇÕES",
+    "2. RESULTADOS DE EFICÁCIA",
+    "3. CARACTERÍSTICAS FARMACOLÓGICAS",
+    "4. CONTRAINDICAÇÕES",
+    "5. ADVERTÊNCIAS E PRECAUÇÕES",
+    "6. INTERAÇÕES MEDICAMENTOSAS",
+    "7. CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO",
+    "8. POSOLOGIA E MODO DE USAR",
+    "9. REAÇÕES ADVERSAS",
+    "10. SUPERDOSE",
+    "DIZERES LEGAIS"
 ]
 
+# Ajuste: Apenas APRESENTAÇÕES e COMPOSIÇÃO são visualização simples. O resto é auditoria.
 SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
@@ -77,52 +163,60 @@ def get_mistral_client():
     return Mistral(api_key=api_key) if api_key else None
 
 def image_to_base64(image):
+    """Converte imagem para base64 otimizado"""
     buffered = io.BytesIO()
-    image.save(buffered, format="JPEG", quality=90, optimize=True)
+    # Reduz qualidade para 80 (boa qualidade, menor tamanho)
+    image.save(buffered, format="JPEG", quality=80, optimize=True)
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def sanitize_text(text):
+    """Remove caracteres invisíveis e normaliza texto"""
     if not text: return ""
     text = unicodedata.normalize('NFKC', text)
-    text = text.replace('\xa0', ' ').replace('\u200b', '').replace('\u00ad', '').replace('\ufeff', '').replace('\t', ' ')
+    text = text.replace('\xa0', ' ')
+    text = text.replace('\u200b', '')
+    text = text.replace('\u00ad', '')
+    text = text.replace('\ufeff', '')
+    text = text.replace('\t', ' ')
     return re.sub(r'\s+', ' ', text).strip()
 
 def clean_noise(text):
-    """Limpa cabeçalhos e rodapés que atrapalham a leitura contínua"""
+    """Remove cabeçalhos de página, rodapés e repetições de título que poluem a extração"""
     lines = text.split('\n')
     cleaned_lines = []
-    # Padrões para remover (paginação, marcas, códigos de bula)
+    # Lista de termos para limpar
     ignore_patterns = [
-        r'^\d+(\s*de\s*\d+)?$', r'^Página\s*\d+\s*de\s*\d+$', # Paginação
-        r'^BELFAR$', r'^UBELFAR$', r'^SANOFI$', r'^MEDLEY$', r'^EUROFARMA$', # Marcas
-        r'^Bula do (Paciente|Profissional)$', r'^Versão\s*\d+$',
-        r'^\d+,\d+\s*mm$', r'^BUL\d+' # Códigos de gráfica e medidas
+        r'^\d+(\s*de\s*\d+)?$',  # Números de página isolados "1", "1 de 9"
+        r'^Página\s*\d+\s*de\s*\d+$', # "Página 1 de 9"
+        r'^BELFAR$', # Nome da empresa isolado
+        r'^UBELFAR$',
+        r'^SANOFI$',
+        r'^MEDLEY$',
+        r'^EUROFARMA$',
+        r'^EMS$',
+        r'^Bula do (Paciente|Profissional)$'
     ]
     
     for line in lines:
         l = line.strip()
         should_skip = False
-        if len(l) < 50: # Só analisa linhas curtas para evitar deletar texto real
-            for pattern in ignore_patterns:
-                if re.match(pattern, l, re.IGNORECASE):
-                    should_skip = True
-                    break
+        for pattern in ignore_patterns:
+            if re.match(pattern, l, re.IGNORECASE):
+                should_skip = True
+                break
+        
+        # Ignora linhas que são apenas repetições do nome do remédio no topo da página (se for muito curto)
+        if len(l) < 30 and ("BELSPAN" in l.upper() or "BELCOMPLEX" in l.upper() or "MALEATO" in l.upper()):
+             should_skip = True
+
         if not should_skip:
             cleaned_lines.append(line)
+            
     return "\n".join(cleaned_lines)
-
-def extract_json(text):
-    text = re.sub(r'```json|```', '', text).strip()
-    try:
-        start, end = text.find('{'), text.rfind('}') + 1
-        return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
-    except: return None
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
-    """
-    Lê o arquivo preservando a ordem das colunas e força OCR se necessário.
-    """
+    """Processa arquivo com cache otimizado e LEITURA DE COLUNAS APRIMORADA"""
     try:
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -133,137 +227,144 @@ def process_file_content(file_bytes, filename):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             
-            # 1. Tenta ler texto nativo ordenado por blocos (colunas)
+            # sort=True ordena visualmente: coluna 1 inteira, depois coluna 2 inteira
             for page in doc: 
                 blocks = page.get_text("blocks", sort=True)
                 for b in blocks:
-                    if b[6] == 0: # Tipo texto
-                        # Adiciona marcador [FIM_DO_BLOCO] para ajudar o LLM a ver a quebra de coluna
-                        full_text += b[4] + "\n[FIM_DO_BLOCO]\n" 
+                    if b[6] == 0:  # Tipo 0 = texto
+                        text_content = b[4]
+                        # Adiciona marcador visual de quebra
+                        full_text += text_content + "\n [BLOCO] \n" 
             
-            # 2. Se tiver pouco texto (imagem/curvas), usa OCR (Zoom 3x)
-            if len(full_text.strip()) < 200:
-                images = []
-                limit_pages = min(8, len(doc)) 
-                for i in range(limit_pages):
-                    page = doc[i]
-                    # Zoom alto para ler letras pequenas
-                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) 
-                    try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
-                    except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
-                    img = Image.open(img_byte_arr)
-                    if img.width > 2500: img.thumbnail((2500, 2500), Image.Resampling.LANCZOS)
-                    images.append(img)
-                doc.close()
-                return {"type": "images", "data": images}
-            
-            # 3. Limpa ruídos do texto nativo
+            # Limpeza extra de ruído
             full_text = clean_noise(full_text)
-            doc.close()
-            return {"type": "text", "data": sanitize_text(full_text)}
+
+            if len(full_text.strip()) > 500:
+                doc.close()
+                return {"type": "text", "data": sanitize_text(full_text)}
             
+            # OCR apenas se necessário (fallback)
+            images = []
+            limit_pages = min(5, len(doc))
+            for i in range(limit_pages):
+                page = doc[i]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
+                try: 
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
+                except: 
+                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                
+                img = Image.open(img_byte_arr)
+                if img.width > 2000:
+                    img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+                images.append(img)
+            
+            doc.close()
+            gc.collect()
+            return {"type": "images", "data": images}
     except Exception as e:
-        return {"type": "text", "data": ""}
+        st.error(f"Erro ao processar arquivo: {str(e)}")
+        return None
+    return None
+
+def extract_json(text):
+    """Extrai JSON de forma robusta"""
+    text = re.sub(r'```json|```', '', text).strip()
+    if text.startswith("json"): text = text[4:]
+    try:
+        start, end = text.find('{'), text.rfind('}') + 1
+        return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
+    except: 
+        return None
 
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
+    """Worker otimizado com prompts melhorados e retry inteligente"""
+    
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
-    # 1. STOP WORDS GLOBAIS: Todos os outros títulos são barreiras.
+    # Barreiras de parada: TODOS os outros títulos de seção.
     barreiras = [s for s in todas_secoes if s != secao]
     barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
     stop_markers_str = "\n".join([f"- {s}" for s in barreiras])
-
-    # 2. REGRAS ESPECÍFICAS PARA CORRIGIR OS ERROS RELATADOS
-    regra_especifica = ""
     
+    # Lógica específica para corrigir a SEÇÃO 1 que engole a 3
+    aviso_secao1 = ""
     if "1. PARA QUE" in secao.upper():
-        regra_especifica = """
-        ⚠️ REGRA CRÍTICA PARA SEÇÃO 1:
-        - Esta seção deve conter APENAS as indicações terapêuticas.
-        - **IMPORTANTE:** Se você encontrar "Atenção: Contém lactose", "Atenção: Contém açúcar" ou "Atenção: Contém corantes", **PARE**. Isso NÃO faz parte da Seção 1, pertence à Seção 3 ou 5.
-        - Não inclua o quadro de "Atenção" no texto desta seção.
-        """
-    elif "7. O QUE DEVO FAZER" in secao.upper():
-        regra_especifica = """
-        ⚠️ REGRA DE LITERALIDADE MÁXIMA (SEÇÃO 7):
-        - Você está PROIBIDO de reescrever.
-        - Se o texto diz "deixou de tomar", ESCREVA "deixou de tomar".
-        - Se o texto diz "se esquecer", ESCREVA "se esquecer".
-        - NÃO TROQUE UM PELO OUTRO. Copie palavra por palavra.
-        """
-    elif "9. O QUE FAZER SE" in secao.upper():
-        regra_especifica = """
-        ⚠️ REGRA DE CAPTURA COMPLETA (SEÇÃO 9):
-        - Esta seção geralmente tem duas partes: uma explicação e um alerta em negrito.
-        - Capture TODOS os parágrafos até encontrar "DIZERES LEGAIS".
-        - Inclua o trecho "Em caso de uso de grande quantidade...".
-        """
-    elif "3. QUANDO NÃO DEVO" in secao.upper():
-        regra_especifica = """
-        ⚠️ REGRA DE INCLUSÃO (SEÇÃO 3):
-        - Inclua os avisos de "Atenção: Contém lactose/açúcar/corantes" que aparecem logo após as contraindicações. Eles pertencem a esta seção.
-        """
-    elif "4. O QUE DEVO SABER" in secao.upper():
-        regra_especifica = """
-        ⚠️ REGRA DE CONTINUIDADE (SEÇÃO 4):
-        - Esta seção é longa e pode quebrar colunas.
-        - Continue copiando mesmo após quebras de linha (`[FIM_DO_BLOCO]`) até encontrar o título "5. ONDE, COMO...".
+        aviso_secao1 = """
+        ⚠️ REGRA ESPECÍFICA PARA SEÇÃO 1:
+        - A Seção 1 (Indicações) NUNCA contém avisos iniciados por "Atenção: Contém..." ou "Atenção: Este medicamento...".
+        - Se você encontrar um texto "Atenção:" logo após a indicação, verifique: se ele fala sobre lactose, açúcar, corantes ou "não deve ser usado", ISSO PERTENCE À SEÇÃO 3 (Contraindicações) ou 5 (Advertências).
+        - NÃO INCLUA esses avisos de "Atenção" na Seção 1. Pare de copiar antes deles.
         """
 
-    # 3. PROMPT "ROBÔ" (SEM CRIATIVIDADE)
     prompt_text = f"""
-    Você é um software de OCR (Reconhecimento Óptico de Caracteres) burro e literal.
-    Sua única função é copiar e colar texto. Você não pensa, não resume e não corrige.
-    
-    TAREFA: Extrair o conteúdo da seção: "{secao}".
-    
-    REGRAS DE OURO:
-    1. **ZERO CRIATIVIDADE**: Copie o texto EXATAMENTE como está no PDF.
-       - Original: "deixou de tomar" -> Sua Saída: "deixou de tomar". (NUNCA mude para "esqueceu").
-       - Original: "informe ao médico" -> Sua Saída: "informe ao médico".
-    
-    2. **RESPEITE OS MARCADORES**:
-       - O texto tem marcadores `[FIM_DO_BLOCO]`. Eles indicam fim de coluna.
-       - Se o texto da seção continua na próxima coluna, pule o marcador e continue copiando.
-       - Se a próxima coluna começa com OUTRO TÍTULO, pare imediatamente.
-    
-    {regra_especifica}
-    
-    ⛔ TÍTULOS DE PARADA (Se encontrar qualquer um destes, PARE DE COPIAR imediatamente):
-    {stop_markers_str}
-    
-    SAÍDA JSON:
-    {{
-      "titulo": "{secao}",
-      "ref": "cole aqui o texto LITERAL do documento 1",
-      "bel": "cole aqui o texto LITERAL do documento 2",
-      "status": "CONFORME"
-    }}
-    """
+REGRAS SUPREMAS DE EXTRAÇÃO DE TEXTO (OCR):
+
+Você NÃO é um redator. Você é um COPIADOR (SCANNER).
+Sua única função é recortar o texto exato de uma seção e colar no JSON.
+
+1. **PROIBIDO SINTETIZAR/RESUMIR/ALTERAR**:
+   - Se o texto diz "deixou de tomar", ESCREVA "deixou de tomar". NÃO escreva "se esquecer".
+   - Se o texto diz "Para que este medicamento é indicado?", NÃO escreva apenas "Indicações".
+   - Mantenha erros de português se existirem no original.
+
+2. **LÓGICA DE CONTINUIDADE (CRÍTICO):**
+   - O texto tem quebras de coluna. Se uma frase termina abruptamente no fim de um bloco, ELA CONTINUA no próximo bloco que não seja um título.
+   - **CONTINUE LENDO** através de colunas e páginas até encontrar um TÍTULO DE PARADA.
+
+3. **LÓGICA DE PARADA (CRÍTICO):**
+   - PARE IMEDIATAMENTE se encontrar qualquer um dos títulos abaixo.
+   - NÃO COPIE o título da próxima seção para dentro da atual.
+
+⛔ LISTA DE TÍTULOS DE PARADA (STOP MARKERS):
+{stop_markers_str}
+
+{aviso_secao1}
+
+TAREFA:
+Localize "{secao}" nos dois textos abaixo e extraia o conteúdo EXATO.
+
+SAÍDA JSON:
+{{
+  "titulo": "{secao}",
+  "ref": "cole aqui o texto exato do doc referencia",
+  "bel": "cole aqui o texto exato do doc belfar",
+  "status": "será determinado automaticamente"
+}}
+"""
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
+    # Limite de texto otimizado
     limit = 60000
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
-            if len(d['data']) < 50:
-                 messages_content.append({"type": "text", "text": f"\n--- {nome}: (Vazio/Ilegível) ---\n"})
-            else:
-                 messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
+            messages_content.append({
+                "type": "text", 
+                "text": f"\n--- {nome} ---\n{d['data'][:limit]}"
+            }) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagens) ---"})
-            # Envia mais páginas (até 6) para garantir captura de seções longas que quebram página
-            for img in d['data'][:6]: 
+            messages_content.append({
+                "type": "text", 
+                "text": f"\n--- {nome} (Imagem) ---"
+            })
+            # Apenas primeiras 2 imagens para velocidade
+            for img in d['data'][:2]: 
                 b64 = image_to_base64(img)
-                messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
+                messages_content.append({
+                    "type": "image_url", 
+                    "image_url": f"data:image/jpeg;base64,{b64}"
+                })
 
-    for attempt in range(2):
+    # Retry inteligente com backoff exponencial
+    max_retries = 2
+    for attempt in range(max_retries):
         try:
             chat_response = client.chat.complete(
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.0 # Temperatura zero para evitar alucinação
+                temperature=0.0
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
@@ -272,19 +373,33 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
                 dados['titulo'] = secao
                 
                 if not eh_visualizacao:
-                    # Limpeza para comparação apenas
-                    t_ref = re.sub(r'\s+', ' ', str(dados.get('ref', '')).strip().lower())
-                    t_bel = re.sub(r'\s+', ' ', str(dados.get('bel', '')).strip().lower())
-                    t_ref = re.sub(r'<[^>]+>', '', t_ref)
-                    t_bel = re.sub(r'<[^>]+>', '', t_bel)
-
-                    if t_ref == t_bel:
+                    texto_ref = str(dados.get('ref', '')).lower()
+                    texto_bel = str(dados.get('bel', '')).lower()
+                    
+                    # Remove marcações HTML residuais
+                    texto_ref = re.sub(r'<[^>]+>', '', texto_ref)
+                    texto_bel = re.sub(r'<[^>]+>', '', texto_bel)
+                    
+                    # Normaliza para comparação (remove espaços duplos)
+                    texto_ref_norm = re.sub(r'\s+', ' ', texto_ref).strip()
+                    texto_bel_norm = re.sub(r'\s+', ' ', texto_bel).strip()
+                    
+                    if texto_ref_norm == texto_bel_norm:
                         dados['status'] = 'CONFORME'
-                        # Remove marcações HTML se for conforme para visualização limpa
+                        # Limpa marcações se estiver conforme
                         dados['ref'] = re.sub(r'<mark[^>]*>|</mark>', '', dados.get('ref', ''))
                         dados['bel'] = re.sub(r'<mark[^>]*>|</mark>', '', dados.get('bel', ''))
                     else:
-                        dados['status'] = 'DIVERGENTE'
+                        # Se houver diferença real, mantém marcação ou status
+                        # Aqui confiamos na marcação da IA se ela usou <mark>, senão marcamos como divergente pelo texto
+                        if '<mark' in str(dados.get('ref', '')) or '<mark' in str(dados.get('bel', '')):
+                             dados['status'] = 'DIVERGENTE'
+                        else:
+                             # Se texto é diferente mas IA não marcou, força DIVERGENTE se a diferença for relevante
+                             if len(texto_ref_norm) != len(texto_bel_norm):
+                                 dados['status'] = 'DIVERGENTE'
+                             else:
+                                 dados['status'] = 'CONFORME'
                 
                 if "DIZERES LEGAIS" in secao.upper():
                     dados['status'] = "VISUALIZACAO"
@@ -292,28 +407,84 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
                 return dados
                 
         except Exception as e:
-            if attempt == 0: time.sleep(1)
-            else: return {"titulo": secao, "ref": f"Erro: {str(e)}", "bel": "Erro", "status": "ERRO"}
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                time.sleep(wait_time)
+                continue
+            else:
+                return {
+                    "titulo": secao,
+                    "ref": f"⚠️ Erro após {max_retries} tentativas: {str(e)[:100]}",
+                    "bel": f"⚠️ Erro após {max_retries} tentativas: {str(e)[:100]}",
+                    "status": "ERRO"
+                }
     
-    return {"titulo": secao, "ref": "Erro extração", "bel": "Erro extração", "status": "ERRO"}
+    return {
+        "titulo": secao,
+        "ref": "Texto não processado após tentativas.",
+        "bel": "Texto não processado após tentativas.",
+        "status": "ERRO"
+    }
 
 # ----------------- UI PRINCIPAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de bulas")
     client = get_mistral_client()
-    if client: st.success("✅ Sistema Online")
-    else: st.error("❌ Configuração pendente")
+    if client: 
+        st.success("✅ Sistema Online")
+    else: 
+        st.error("❌ Configuração pendente")
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v5.5 - Regras Específicas Finais")
+    st.caption("v4.0 - Lógica de Parada Rígida")
 
 if pagina == "🏠 Início":
-    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    with c1: st.info("✅ **Correção Seção 1:** Ignora 'Atenção' (pertencem à Seção 3).")
-    with c2: st.info("✅ **Correção Seção 7:** Proibido sinônimos (cópia literal).")
+    st.markdown("""
+    <div style="text-align: center; padding: 40px 20px;">
+        <h1 style="color: #55a68e; font-size: 3em;">Validador de Bulas</h1>
+        <p style="font-size: 1.2em; color: #7f8c8d;">Auditoria Inteligente e Precisa</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">🎯 Marcação Precisa</div>
+            <p class="card-text">
+            <mark class="diff">Amarelo</mark>: diferenças de conteúdo<br>
+            <mark class="ort">Vermelho</mark>: erros ortográficos<br>
+            <mark class="anvisa">Azul</mark>: datas Anvisa
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">⚡ Performance</div>
+            <p class="card-text">
+            Processamento paralelo de seções.<br>
+            Cache inteligente.<br>
+            Otimização de imagens e OCR.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown("""
+        <div class="stCard">
+            <div class="card-title">🔍 Análise Completa</div>
+            <p class="card-text">
+            Comparação palavra por palavra.<br>
+            Detecção automática de erros.<br>
+            Extração de dados regulatórios.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
 else:
     st.markdown(f"## {pagina}")
@@ -328,7 +499,8 @@ else:
         col_tipo, _ = st.columns([1, 2])
         with col_tipo:
             tipo_bula = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True)
-            if tipo_bula == "Profissional": lista_secoes = SECOES_PROFISSIONAL
+            if tipo_bula == "Profissional": 
+                lista_secoes = SECOES_PROFISSIONAL
     elif pagina == "📋 Conferência MKT":
         label_box1 = "📄 ANVISA"
         label_box2 = "📄 MKT"
@@ -342,58 +514,183 @@ else:
     
     st.divider()
     c1, c2 = st.columns(2)
-    with c1: f1 = st.file_uploader(label_box1, type=["pdf", "docx"], key="f1")
-    with c2: f2 = st.file_uploader(label_box2, type=["pdf", "docx"], key="f2")
+    with c1:
+        st.markdown(f"##### {label_box1}")
+        f1 = st.file_uploader("", type=["pdf", "docx"], key="f1")
+    with c2:
+        st.markdown(f"##### {label_box2}")
+        f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
         
     st.write("") 
     if st.button("🚀 INICIAR AUDITORIA"):
-        if not f1 or not f2 or not client:
-            st.warning("⚠️ Verifique arquivos e API Key.")
+        if not f1 or not f2:
+            st.warning("⚠️ Selecione ambos os arquivos.")
+        elif not client:
+            st.error("❌ Cliente Mistral não configurado. Verifique a API Key.")
+            st.stop()
         else:
+            # Feedback visual melhorado
             with st.status("🔄 Processando documentos...", expanded=True) as status:
                 st.write("📖 Lendo arquivos...")
-                d1 = process_file_content(f1.getvalue(), f1.name)
-                d2 = process_file_content(f2.getvalue(), f2.name)
                 
-                st.write("🔍 Auditando seções...")
-                resultados = []
-                bar = st.progress(0)
+                b1 = f1.getvalue()
+                b2 = f2.getvalue()
+                d1 = process_file_content(b1, f1.name.lower())
+                d2 = process_file_content(b2, f2.name.lower())
+                gc.collect()
+
+                if not d1 or not d2:
+                    st.error("❌ Erro ao processar arquivos.")
+                    st.stop()
                 
+                st.write("✅ Arquivos carregados")
+                st.write(f"🔍 Analisando {len(lista_secoes)} seções...")
+                
+                resultados_secoes = []
+                progress_bar = st.progress(0)
+                
+                # Processamento paralelo otimizado com timeout individual
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                    futures = {
-                        executor.submit(auditar_secao_worker, client, sec, d1, d2, nome_doc1, nome_doc2, lista_secoes): sec 
-                        for sec in lista_secoes
+                    # Passamos lista_secoes para o worker saber onde parar
+                    future_to_secao = {
+                        executor.submit(auditar_secao_worker, client, secao, d1, d2, nome_doc1, nome_doc2, lista_secoes): secao 
+                        for secao in lista_secoes
                     }
                     
-                    for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                        res = future.result()
-                        resultados.append(res)
-                        bar.progress((i + 1) / len(lista_secoes))
+                    completed = 0
+                    for future in concurrent.futures.as_completed(future_to_secao, timeout=180):
+                        try:
+                            data = future.result(timeout=120)  # 120s por seção
+                            if data: 
+                                resultados_secoes.append(data)
+                        except concurrent.futures.TimeoutError:
+                            secao = future_to_secao[future]
+                            resultados_secoes.append({
+                                "titulo": secao,
+                                "ref": "⏱️ Tempo limite excedido (seção muito extensa)",
+                                "bel": "⏱️ Tempo limite excedido (seção muito extensa)",
+                                "status": "TIMEOUT"
+                            })
+                        except Exception as e:
+                            secao = future_to_secao[future]
+                            resultados_secoes.append({
+                                "titulo": secao,
+                                "ref": f"⚠️ Erro: {str(e)[:150]}",
+                                "bel": f"⚠️ Erro: {str(e)[:150]}",
+                                "status": "ERRO"
+                            })
+                        
+                        completed += 1
+                        progress_bar.progress(completed / len(lista_secoes))
+                        st.write(f"✓ Seção {completed}/{len(lista_secoes)} concluída")
                 
-                status.update(label="✅ Concluído!", state="complete", expanded=False)
+                status.update(label="✅ Análise concluída!", state="complete", expanded=False)
+            
+            # Ordena resultados
+            resultados_secoes.sort(
+                key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999
+            )
+            
+            # Métricas
+            total = len(resultados_secoes)
+            conformes = sum(1 for x in resultados_secoes if "CONFORME" in str(x.get('status', '')))
+            divergentes = sum(1 for x in resultados_secoes if "DIVERGENTE" in str(x.get('status', '')))
+            visuais = sum(1 for x in resultados_secoes if "VISUALIZACAO" in str(x.get('status', '')))
+            erros = sum(1 for x in resultados_secoes if "ERRO" in str(x.get('status', '')) or "TIMEOUT" in str(x.get('status', '')))
+            
+            score = int(((conformes + visuais) / max(total, 1)) * 100)  # Evita divisão por zero
+            
+            # Extrai datas
+            datas_encontradas = []
+            for r in resultados_secoes:
+                if "DIZERES LEGAIS" in r['titulo']:
+                    texto_combinado = str(r.get('ref', '')) + " " + str(r.get('bel', ''))
+                    matches = re.findall(r'\d{2}/\d{2}/\d{4}', texto_combinado)
+                    for m in matches:
+                        if m not in datas_encontradas: 
+                            datas_encontradas.append(m)
+            
+            datas_texto = " | ".join(sorted(set(datas_encontradas))) if datas_encontradas else "N/D"
 
-            resultados.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
+            # Dashboard de métricas
+            m1, m2, m3, m4 = st.columns(4)
             
-            conformes = sum(1 for r in resultados if "CONFORME" in r.get('status', ''))
-            divergentes = sum(1 for r in resultados if "DIVERGENTE" in r.get('status', ''))
+            # Cor dinâmica baseada no score
+            score_color = "🟢" if score >= 90 else "🟡" if score >= 70 else "🔴"
+            m1.metric("Conformidade", f"{score_color} {score}%", f"{conformes} seções")
+            m2.metric("Divergências", divergentes, delta_color="inverse" if divergentes > 0 else "off")
+            m3.metric("Total Seções", total)
+            m4.metric("Datas Anvisa", len(datas_encontradas))
             
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Total", len(lista_secoes))
-            k2.metric("Conformes", conformes)
-            k3.metric("Divergentes", divergentes, delta_color="inverse")
+            # Alerta de erros
+            if erros > 0:
+                st.warning(f"⚠️ {erros} seção(ões) com erro de processamento. Verifique abaixo.")
+            
+            if datas_encontradas:
+                st.info(f"📅 **Datas encontradas:** {datas_texto}")
             
             st.divider()
             
-            for res in resultados:
-                status = res.get('status', 'ERRO')
-                icon = "✅" if "CONFORME" in status else "⚠️" if "DIVERGENTE" in status else "👁️"
-                cor = "#28a745" if "CONFORME" in status else "#ffc107" if "DIVERGENTE" in status else "#17a2b8"
+            # Legenda
+            st.markdown("""
+            **Legenda de Marcações:** <mark class='diff'>Amarelo</mark> = Diferença de conteúdo | 
+            <mark class='ort'>Vermelho</mark> = Erro ortográfico | 
+            <mark class='anvisa'>Azul</mark> = Data Anvisa
+            """, unsafe_allow_html=True)
+            
+            st.divider()
+            
+            # Resultados por seção com ícones dinâmicos
+            for sec in resultados_secoes:
+                status = sec.get('status', 'N/A')
+                titulo = sec.get('titulo', '').upper()
                 
-                with st.expander(f"{icon} {res['titulo']} - {status}", expanded=("DIVERGENTE" in status)):
-                    c_a, c_b = st.columns(2)
-                    with c_a:
-                        st.caption(nome_doc1)
-                        st.markdown(f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-left: 5px solid {cor};'>{res.get('ref', '')}</div>", unsafe_allow_html=True)
-                    with c_b:
-                        st.caption(nome_doc2)
-                        st.markdown(f"<div class='texto-bula' style='background:#fff; border:1px solid #ddd; padding:15px; border-left: 5px solid {cor};'>{res.get('bel', '')}</div>", unsafe_allow_html=True)
+                # Ícones e cores por status
+                if "CONFORME" in status:
+                    icon = "✅"
+                    cor_borda = "#28a745"
+                elif "DIVERGENTE" in status:
+                    icon = "⚠️"
+                    cor_borda = "#ffc107"
+                elif "VISUALIZACAO" in status:
+                    icon = "👁️"
+                    cor_borda = "#17a2b8"
+                elif "TIMEOUT" in status:
+                    icon = "⏱️"
+                    cor_borda = "#fd7e14"
+                elif "ERRO" in status:
+                    icon = "❌"
+                    cor_borda = "#dc3545"
+                else:
+                    icon = "❓"
+                    cor_borda = "#6c757d"
+                
+                # Expande automaticamente apenas divergências e erros
+                expandir = "DIVERGENTE" in status or "ERRO" in status or "TIMEOUT" in status
+                
+                with st.expander(f"{icon} {titulo} — {status}", expanded=expandir):
+                    cA, cB = st.columns(2)
+                    with cA:
+                        st.markdown(f"**{nome_doc1}**")
+                        st.markdown(
+                            f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-radius:5px; border-left: 4px solid {cor_borda};'>{str(sec.get('ref', 'Texto não extraído'))}</div>", 
+                            unsafe_allow_html=True
+                        )
+                    with cB:
+                        st.markdown(f"**{nome_doc2}**")
+                        st.markdown(
+                            f"<div class='texto-bula' style='background:#fff; border:1px solid #ddd; padding:15px; border-radius:5px; border-left: 4px solid {cor_borda};'>{str(sec.get('bel', 'Texto não extraído'))}</div>", 
+                            unsafe_allow_html=True
+                        )
+            
+            # Resumo final com recomendações
+            st.divider()
+            
+            if score >= 95:
+                st.success(f"🎉 **Excelente!** {conformes + visuais}/{total} seções conformes. Documentos altamente compatíveis.")
+            elif score >= 80:
+                st.success(f"✅ **Bom resultado!** {conformes + visuais}/{total} seções conformes. Revise as divergências encontradas.")
+            elif score >= 60:
+                st.warning(f"⚠️ **Atenção necessária.** {divergentes} divergência(s) encontrada(s). Revisão manual recomendada.")
+            else:
+                st.error(f"❌ **Revisão crítica necessária.** Múltiplas divergências detectadas. Verifique cada seção cuidadosamente.")
