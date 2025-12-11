@@ -281,24 +281,37 @@ SAÍDA JSON:
 """
         
     else:
-        # Cria lista de strings que indicam o FIM da seção atual (que são os títulos das outras seções)
-        stop_markers = "\n".join([f"- {s}" for s in todas_secoes if s != secao])
+        # Lógica de Limite: Identificar quais são as próximas seções possíveis
+        # para instruir a IA a parar EXATAMENTE quando encontrar uma delas.
+        try:
+            indice_atual = todas_secoes.index(secao)
+            # Pega todas as seções que vêm DEPOIS da atual
+            secoes_futuras = todas_secoes[indice_atual + 1:]
+        except ValueError:
+            secoes_futuras = []
+
+        # Adiciona marcadores de fim comuns em bulas
+        marcadores_fim = secoes_futuras + ["DIZERES LEGAIS", "Histórico de Alteração", "Anexo B"]
+        stop_markers_str = "\n".join([f"- {s}" for s in marcadores_fim if s != secao])
         
         prompt_text = f"""
 {base_instruction}
 
 TAREFA CRÍTICA: Extrair e Comparar a seção "{secao}" COMPLETA.
 
-⚠️ INSTRUÇÃO DE EXTRAÇÃO (IMPORTANTE):
-1. Encontre onde começa "{secao}".
-2. Copie TODO o texto que vem depois desse título.
-3. CONTINUE COPIANDO PARÁGRAFOS, TABELAS E ITENS "ATENÇÃO" ATÉ ENCONTRAR O PRÓXIMO TÍTULO DE SEÇÃO.
-4. **NÃO PARE** na primeira quebra de linha. Bulas têm colunas. Se o texto continuar na próxima coluna, PUXE A CONTINUAÇÃO.
-5. Só PARE de extrair quando encontrar um destes títulos abaixo (STOP MARKERS) ou o fim do arquivo:
-{stop_markers}
+⚠️ INSTRUÇÃO DE EXTRAÇÃO (LEIA COM ATENÇÃO):
+1. O texto da bula pode estar dividido em COLUNAS ou quebrado em várias PÁGINAS.
+2. Seu objetivo é: Localizar o título "{secao}" e capturar TODO o texto que vem depois dele.
+3. **NÃO PARE** ao ver um espaço em branco, quebra de página ou rodapé (ex: "Página 2 de 9").
+4. **CONTINUE LENDO** até encontrar um dos TÍTULOS DE PARADA listados abaixo.
+5. Se o texto estiver bagunçado com cabeçalhos repetidos (ex: nome do remédio no topo de cada página), IGNORE esses cabeçalhos e continue a frase da seção.
 
-⚠️ SOBRE "DIZERES LEGAIS":
-Se a seção atual for "{secao}", NÃO inclua "DIZERES LEGAIS" no texto. Pare imediatamente antes de "DIZERES LEGAIS".
+⛔ TÍTULOS DE PARADA (Pare SOMENTE se encontrar um destes):
+{stop_markers_str}
+
+⚠️ REGRA PARA "DIZERES LEGAIS":
+Se a seção atual NÃO for "DIZERES LEGAIS", pare IMEDIATAMENTE antes de começar "DIZERES LEGAIS".
+Se a seção atual FOR "DIZERES LEGAIS", vá até o final absoluto do arquivo.
 
 ⚠️ INSTRUÇÃO DE COMPARAÇÃO:
 - Se o documento Ref tem um parágrafo que o Doc Bel não tem (ou vice-versa), isso é DIVERGÊNCIA GRAVE. Marque todo o texto faltante com <mark class='diff'>.
@@ -421,7 +434,7 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v2.1 - Extração Robusta")
+    st.caption("v2.2 - Extração Inteligente")
 
 if pagina == "🏠 Início":
     st.markdown("""
