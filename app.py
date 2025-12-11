@@ -136,7 +136,7 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"]
+SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
 
@@ -260,23 +260,32 @@ REGRAS FUNDAMENTAIS DE COMPARAÇÃO:
 
 TAREFA: Extrair seção "DIZERES LEGAIS" para visualização.
 
-INSTRUÇÕES ESPECÍFICAS:
-1. Localize "DIZERES LEGAIS" em ambos os documentos
-2. Extraia Farm. Resp., M.S., CNPJ, SAC
-3. ❌ NÃO USE <mark class='diff'> - apenas visualização
-4. ❌ NÃO USE <mark class='ort'> - apenas visualização  
-5. 🔵 USE <mark class='anvisa'>DATA</mark> APENAS para:
-   - Datas de APROVAÇÃO da ANVISA
-   - Exemplo: "aprovado pela Anvisa em <mark class='anvisa'>15/03/2024</mark>"
-   - NÃO marque outras datas que não sejam de aprovação
+ATENÇÃO ESPECIAL - DATA DA ANVISA:
+- Procure a frase: "aprovado pela Anvisa em" ou "aprovada pela Anvisa em"
+- A data que vem IMEDIATAMENTE APÓS essa frase é a DATA DA ANVISA
+- Marque APENAS essa data específica com <mark class='anvisa'>DD/MM/AAAA</mark>
+- Cada documento pode ter uma data diferente - extraia de CADA UM
+- Outras datas no texto: deixe normais, sem marcação
 
-IMPORTANTE: Marque APENAS datas de aprovação Anvisa em azul, outras datas deixe normais.
+INSTRUÇÕES:
+1. Localize "DIZERES LEGAIS" em ambos os documentos
+2. Extraia: Farm. Resp., M.S., CNPJ, SAC
+3. Encontre "aprovado/aprovada pela Anvisa em DATA"
+4. Marque APENAS a data Anvisa em azul
+5. ❌ NÃO USE <mark class='diff'> - apenas visualização
+6. ❌ NÃO USE <mark class='ort'> - apenas visualização
+
+EXEMPLO CORRETO:
+"aprovada pela Anvisa em <mark class='anvisa'>15/03/2024</mark>"
+
+EXEMPLO INCORRETO:
+Marcar outras datas como "Fabricado em 10/01/2024" ❌
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto com APENAS datas de aprovação Anvisa em azul",
-  "bel": "texto com APENAS datas de aprovação Anvisa em azul",
+  "ref": "texto com APENAS a data Anvisa em azul (pode ser diferente em cada doc)",
+  "bel": "texto com APENAS a data Anvisa em azul (pode ser diferente em cada doc)",
   "status": "VISUALIZACAO"
 }}
 """
@@ -285,25 +294,26 @@ SAÍDA JSON:
         prompt_text = f"""
 {base_instruction}
 
-TAREFA: Extrair seção "{secao}" para visualização.
+TAREFA: Extrair seção "{secao}" APENAS para visualização.
 
-INSTRUÇÕES SIMPLES:
-1. Localize a seção "{secao}" em ambos documentos
-2. Extraia o texto completo e limpo
-3. ❌ NÃO USE NENHUMA MARCAÇÃO
-4. Remova apenas códigos de gráfica (pantone, sangria, etc)
+⚠️ IMPORTANTE: Esta seção NÃO é para comparação, é apenas informativa.
 
-ATENÇÃO: Esta é seção de VISUALIZAÇÃO PURA.
-- Não compare
-- Não marque diferenças
-- Não marque datas
-- Apenas extraia o texto
+INSTRUÇÕES:
+1. Localize a seção "{secao}" em cada documento
+2. Extraia o texto completo exatamente como está
+3. ❌ NÃO USE <mark class='diff'> - não compare
+4. ❌ NÃO USE <mark class='ort'> - não compare
+5. ❌ NÃO USE <mark class='anvisa'> - não há datas Anvisa aqui
+6. Remova apenas códigos técnicos de gráfica
+
+POR QUE VISUALIZAÇÃO?
+Esta seção serve apenas para o usuário VER o conteúdo, não para comparar diferenças.
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto limpo sem marcações",
-  "bel": "texto limpo sem marcações",
+  "ref": "texto limpo SEM nenhuma marcação",
+  "bel": "texto limpo SEM nenhuma marcação",
   "status": "VISUALIZACAO"
 }}
 """
@@ -312,43 +322,58 @@ SAÍDA JSON:
         prompt_text = f"""
 {base_instruction}
 
-TAREFA: Comparar seção "{secao}" e identificar diferenças REAIS.
+TAREFA: Comparar seção "{secao}" e marcar APENAS diferenças REAIS.
+
+⚠️ REGRA CRÍTICA: SE OS TEXTOS SÃO IGUAIS, NÃO MARQUE NADA!
 
 PROCESSO:
 
-ETAPA 1 - LOCALIZAÇÃO:
-- Encontre o início e fim da seção "{secao}" em cada documento
-- Extraia TODO o conteúdo da seção
+PASSO 1 - EXTRAÇÃO:
+- Localize e extraia a seção "{secao}" completa de cada documento
 
-ETAPA 2 - COMPARAÇÃO:
-- Compare linha por linha após normalizar espaços
-- Identifique onde há diferença REAL de conteúdo
-- Ignore diferenças de formatação
+PASSO 2 - NORMALIZAÇÃO MENTAL:
+- Ignore espaços, quebras de linha, formatação
+- Compare apenas as palavras em si
 
-ETAPA 3 - MARCAÇÃO (seja MUITO conservador):
+PASSO 3 - COMPARAÇÃO RIGOROSA:
+Leia os dois textos lado a lado. Pergunte-se:
+"As palavras são EXATAMENTE as mesmas?"
+- Se SIM → NÃO marque nada
+- Se NÃO → marque apenas a parte diferente
 
-🟡 AMARELO (<mark class='diff'>) APENAS SE:
-- Palavra está PRESENTE em um texto e AUSENTE no outro
-- Palavra é DIFERENTE: "diabetes" ≠ "hipertensão"
-- Número é DIFERENTE: "10" ≠ "20"
+PASSO 4 - MARCAÇÃO (seja EXTREMAMENTE conservador):
 
-❌ NUNCA marque amarelo se:
-- Texto é igual nos dois (mesmo com formatação diferente)
-- Números são iguais: "10mg" = "10mg"
-- Apenas espaçamento/formatação diferem
+🟡 AMARELO (<mark class='diff'>) USE APENAS SE:
+✅ Palavra DIFERENTE: "10mg" vs "20mg"
+✅ Frase FALTANDO: existe em um texto mas não no outro
+✅ Informação CONFLITANTE: "diabetes" vs "hipertensão"
+
+❌ NUNCA MARQUE se:
+- Palavras são iguais: "maleato de enalapril" = "maleato de enalapril"
+- Apenas formatação difere
+- Espaçamento é diferente mas texto é igual
 
 🔴 VERMELHO (<mark class='ort'>) RARAMENTE:
-- Apenas erros de português evidentes
+- Apenas erros óbvios: "mediçamento", "efeicácia"
 
-🔵 AZUL - NÃO USE nesta seção (apenas em Dizeres Legais)
+EXEMPLO 1 (TEXTOS IGUAIS - NÃO MARCAR):
+Ref: "Caso você se esqueça de tomar maleato de enalapril"
+Bel: "Caso você se esqueça de tomar maleato de enalapril"
+RESULTADO: Ambos textos sem marcação (são idênticos)
 
-VALIDAÇÃO: Antes de marcar, releia os dois textos. Se significado é igual = NÃO MARQUE.
+EXEMPLO 2 (TEXTOS DIFERENTES - MARCAR):
+Ref: "Tome 10mg diariamente"
+Bel: "Tome 20mg diariamente"
+RESULTADO: "Tome <mark class='diff'>10mg</mark> diariamente" vs "Tome <mark class='diff'>20mg</mark> diariamente"
+
+VALIDAÇÃO FINAL:
+Antes de gerar JSON, releia: Marquei apenas diferenças REAIS? Textos iguais ficaram sem marcação?
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto completo com marcações APENAS onde há diferença real",
-  "bel": "texto completo com marcações APENAS onde há diferença real",
+  "ref": "texto completo (COM marcação apenas se houver diferença real)",
+  "bel": "texto completo (COM marcação apenas se houver diferença real)",
   "status": "será determinado automaticamente"
 }}
 """
