@@ -34,7 +34,7 @@ st.markdown("""
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 3px; font-weight: bold; text-decoration: underline wavy red; } 
     mark.anvisa { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
 
-    .texto-bula { font-size: 1.0rem; line-height: 1.6; color: #333; font-family: 'Segoe UI', sans-serif; }
+    .texto-bula { font-size: 1.0rem; line-height: 1.6; color: #333; font-family: 'Segoe UI', sans-serif; white-space: pre-wrap; }
     
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 50px; border: none; font-size: 16px; }
 </style>
@@ -87,6 +87,30 @@ def sanitize_text(text):
     text = text.replace('\xa0', ' ').replace('\u200b', '').replace('\u00ad', '').replace('\ufeff', '').replace('\t', ' ')
     return re.sub(r'\s+', ' ', text).strip()
 
+def clean_noise(text):
+    """Limpa cabeçalhos e rodapés que atrapalham a leitura contínua"""
+    lines = text.split('\n')
+    cleaned_lines = []
+    # Padrões para remover (paginação, marcas, códigos de bula)
+    ignore_patterns = [
+        r'^\d+(\s*de\s*\d+)?$', r'^Página\s*\d+\s*de\s*\d+$', # Paginação
+        r'^BELFAR$', r'^UBELFAR$', r'^SANOFI$', r'^MEDLEY$', r'^EUROFARMA$', # Marcas
+        r'^Bula do (Paciente|Profissional)$', r'^Versão\s*\d+$',
+        r'^\d+,\d+\s*mm$', r'^BUL\d+' # Códigos de gráfica e medidas
+    ]
+    
+    for line in lines:
+        l = line.strip()
+        should_skip = False
+        if len(l) < 50: # Só analisa linhas curtas para evitar deletar texto real
+            for pattern in ignore_patterns:
+                if re.match(pattern, l, re.IGNORECASE):
+                    should_skip = True
+                    break
+        if not should_skip:
+            cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
 def extract_json(text):
     text = re.sub(r'```json|```', '', text).strip()
     try:
@@ -97,7 +121,7 @@ def extract_json(text):
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
     """
-    Processa arquivos com OCR FORÇADO se o texto nativo for insuficiente.
+    Lê o arquivo preservando a ordem das colunas e força OCR se necessário.
     """
     try:
         if filename.endswith('.docx'):
@@ -109,117 +133,127 @@ def process_file_content(file_bytes, filename):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             
-            # Tenta extrair texto nativo primeiro (rápido)
+            # 1. Tenta ler texto nativo ordenado por blocos (colunas)
             for page in doc: 
                 blocks = page.get_text("blocks", sort=True)
                 for b in blocks:
-                    if b[6] == 0: full_text += b[4] + "\n"
+                    if b[6] == 0: # Tipo texto
+                        # Adiciona marcador [FIM_DO_BLOCO] para ajudar o LLM a ver a quebra de coluna
+                        full_text += b[4] + "\n[FIM_DO_BLOCO]\n" 
             
-            # --- LÓGICA DE DECISÃO: TEXTO OU OCR? ---
-            # Se tiver pouco texto (menos de 500 chars), provavelmente é imagem/curvas.
-            # Nesse caso, ignoramos o texto extraído e partimos para OCR pesado.
-            usar_ocr = len(full_text.strip()) < 500
-            
-            if not usar_ocr:
-                # Limpeza básica de rodapés se for texto nativo
-                full_text = re.sub(r'(Página|Pag\.)\s*\d+(\s*de\s*\d+)?', '', full_text, flags=re.IGNORECASE)
+            # 2. Se tiver pouco texto (imagem/curvas), usa OCR (Zoom 3x)
+            if len(full_text.strip()) < 200:
+                images = []
+                limit_pages = min(8, len(doc)) 
+                for i in range(limit_pages):
+                    page = doc[i]
+                    # Zoom alto para ler letras pequenas
+                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) 
+                    try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
+                    except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                    img = Image.open(img_byte_arr)
+                    if img.width > 2500: img.thumbnail((2500, 2500), Image.Resampling.LANCZOS)
+                    images.append(img)
                 doc.close()
-                return {"type": "text", "data": sanitize_text(full_text)}
+                return {"type": "images", "data": images}
             
-            # --- MODO OCR (Alta Resolução) ---
-            # Se caiu aqui, é porque o PDF é imagem. Vamos "aumentar o zoom".
-            images = []
-            limit_pages = min(8, len(doc)) # Lê até 8 páginas
-            for i in range(limit_pages):
-                page = doc[i]
-                # Matrix(3.0, 3.0) aumenta a resolução em 3x (Zoom) para ler letras pequenas
-                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) 
-                try: 
-                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
-                except: 
-                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
-                
-                img = Image.open(img_byte_arr)
-                # Redimensiona se ficar monstrusamente grande, mas mantém qualidade alta
-                if img.width > 2500:
-                    img.thumbnail((2500, 2500), Image.Resampling.LANCZOS)
-                images.append(img)
-            
+            # 3. Limpa ruídos do texto nativo
+            full_text = clean_noise(full_text)
             doc.close()
-            gc.collect()
-            return {"type": "images", "data": images}
+            return {"type": "text", "data": sanitize_text(full_text)}
             
     except Exception as e:
-        st.error(f"Erro no processamento: {str(e)}")
         return {"type": "text", "data": ""}
 
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
-    # Barreiras
+    # 1. STOP WORDS GLOBAIS: Todos os outros títulos são barreiras.
     barreiras = [s for s in todas_secoes if s != secao]
     barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
     stop_markers_str = "\n".join([f"- {s}" for s in barreiras])
 
-    # Regras específicas Anti-Alucinação e Anti-Mistura
+    # 2. REGRAS ESPECÍFICAS PARA CORRIGIR OS ERROS RELATADOS
     regra_especifica = ""
+    
     if "1. PARA QUE" in secao.upper():
         regra_especifica = """
-        ATENÇÃO EXTREMA SEÇÃO 1:
-        - Esta seção geralmente é CURTA.
-        - Se você vir um quadro "Atenção: Contém...", "Atenção: Este medicamento...", "Não use se...", PARE. Isso pertence às Contraindicações (Seção 3).
-        - NÃO inclua avisos de "Atenção" na Seção 1.
+        ⚠️ REGRA CRÍTICA PARA SEÇÃO 1:
+        - Esta seção deve conter APENAS as indicações terapêuticas.
+        - **IMPORTANTE:** Se você encontrar "Atenção: Contém lactose", "Atenção: Contém açúcar" ou "Atenção: Contém corantes", **PARE**. Isso NÃO faz parte da Seção 1, pertence à Seção 3 ou 5.
+        - Não inclua o quadro de "Atenção" no texto desta seção.
+        """
+    elif "7. O QUE DEVO FAZER" in secao.upper():
+        regra_especifica = """
+        ⚠️ REGRA DE LITERALIDADE MÁXIMA (SEÇÃO 7):
+        - Você está PROIBIDO de reescrever.
+        - Se o texto diz "deixou de tomar", ESCREVA "deixou de tomar".
+        - Se o texto diz "se esquecer", ESCREVA "se esquecer".
+        - NÃO TROQUE UM PELO OUTRO. Copie palavra por palavra.
+        """
+    elif "9. O QUE FAZER SE" in secao.upper():
+        regra_especifica = """
+        ⚠️ REGRA DE CAPTURA COMPLETA (SEÇÃO 9):
+        - Esta seção geralmente tem duas partes: uma explicação e um alerta em negrito.
+        - Capture TODOS os parágrafos até encontrar "DIZERES LEGAIS".
+        - Inclua o trecho "Em caso de uso de grande quantidade...".
+        """
+    elif "3. QUANDO NÃO DEVO" in secao.upper():
+        regra_especifica = """
+        ⚠️ REGRA DE INCLUSÃO (SEÇÃO 3):
+        - Inclua os avisos de "Atenção: Contém lactose/açúcar/corantes" que aparecem logo após as contraindicações. Eles pertencem a esta seção.
         """
     elif "4. O QUE DEVO SABER" in secao.upper():
         regra_especifica = """
-        ATENÇÃO EXTREMA SEÇÃO 4:
-        - Esta seção é LONGA. Ela atravessa colunas.
-        - Não pare no primeiro parágrafo. Continue lendo até encontrar o título "5. ONDE, COMO..."
+        ⚠️ REGRA DE CONTINUIDADE (SEÇÃO 4):
+        - Esta seção é longa e pode quebrar colunas.
+        - Continue copiando mesmo após quebras de linha (`[FIM_DO_BLOCO]`) até encontrar o título "5. ONDE, COMO...".
         """
 
+    # 3. PROMPT "ROBÔ" (SEM CRIATIVIDADE)
     prompt_text = f"""
-    Você é um scanner de texto OCR forense.
+    Você é um software de OCR (Reconhecimento Óptico de Caracteres) burro e literal.
+    Sua única função é copiar e colar texto. Você não pensa, não resume e não corrige.
     
-    TAREFA: Localizar e copiar o texto da seção "{secao}".
+    TAREFA: Extrair o conteúdo da seção: "{secao}".
     
-    ⚠️ REGRAS DE SEGURANÇA (PARA NÃO INVENTAR):
-    1. **TOLERÂNCIA ZERO PARA INVENÇÃO**: Se você não encontrar o texto exato da seção, responda com string vazia "". NÃO INVENTE TEXTO DE OUTRAS BULAS (ex: não fale de "gel" se não estiver escrito).
-    2. **CÓPIA LITERAL**: Copie exatamente o que vê.
-       - Texto original: "deixou de tomar" -> Você escreve: "deixou de tomar". (NUNCA mude para "esqueceu").
-       - Texto original: "não deve ser utilizado" -> Você escreve: "não deve ser utilizado".
+    REGRAS DE OURO:
+    1. **ZERO CRIATIVIDADE**: Copie o texto EXATAMENTE como está no PDF.
+       - Original: "deixou de tomar" -> Sua Saída: "deixou de tomar". (NUNCA mude para "esqueceu").
+       - Original: "informe ao médico" -> Sua Saída: "informe ao médico".
     
-    ⚠️ REGRAS DE ESTRUTURA:
-    1. O texto original tem colunas. Siga o fluxo de leitura.
-    2. **PARE** imediatamente se encontrar qualquer título da lista abaixo.
+    2. **RESPEITE OS MARCADORES**:
+       - O texto tem marcadores `[FIM_DO_BLOCO]`. Eles indicam fim de coluna.
+       - Se o texto da seção continua na próxima coluna, pule o marcador e continue copiando.
+       - Se a próxima coluna começa com OUTRO TÍTULO, pare imediatamente.
     
     {regra_especifica}
     
-    ⛔ TÍTULOS DE PARADA (STOP MARKERS):
+    ⛔ TÍTULOS DE PARADA (Se encontrar qualquer um destes, PARE DE COPIAR imediatamente):
     {stop_markers_str}
     
     SAÍDA JSON:
     {{
       "titulo": "{secao}",
-      "ref": "texto exato extraído do documento 1",
-      "bel": "texto exato extraído do documento 2",
+      "ref": "cole aqui o texto LITERAL do documento 1",
+      "bel": "cole aqui o texto LITERAL do documento 2",
       "status": "CONFORME"
     }}
     """
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    # Se for texto, manda texto. Se for imagem (OCR forçado), manda imagem.
     limit = 60000
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
-            if len(d['data']) < 50: # Segurança contra texto vazio
-                 messages_content.append({"type": "text", "text": f"\n--- {nome}: (Arquivo vazio ou ilegível) ---\n"})
+            if len(d['data']) < 50:
+                 messages_content.append({"type": "text", "text": f"\n--- {nome}: (Vazio/Ilegível) ---\n"})
             else:
                  messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagens do PDF) ---"})
-            # Manda mais páginas (até 4) para garantir que pegue seções longas
-            for img in d['data'][:4]: 
+            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagens) ---"})
+            # Envia mais páginas (até 6) para garantir captura de seções longas que quebram página
+            for img in d['data'][:6]: 
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
@@ -229,7 +263,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.0
+                temperature=0.0 # Temperatura zero para evitar alucinação
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
@@ -238,17 +272,15 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
                 dados['titulo'] = secao
                 
                 if not eh_visualizacao:
-                    # Limpeza para comparação
+                    # Limpeza para comparação apenas
                     t_ref = re.sub(r'\s+', ' ', str(dados.get('ref', '')).strip().lower())
                     t_bel = re.sub(r'\s+', ' ', str(dados.get('bel', '')).strip().lower())
-                    
-                    # Remove tags HTML residuais
                     t_ref = re.sub(r'<[^>]+>', '', t_ref)
                     t_bel = re.sub(r'<[^>]+>', '', t_bel)
 
                     if t_ref == t_bel:
                         dados['status'] = 'CONFORME'
-                        # Remove marcações se estiver tudo certo
+                        # Remove marcações HTML se for conforme para visualização limpa
                         dados['ref'] = re.sub(r'<mark[^>]*>|</mark>', '', dados.get('ref', ''))
                         dados['bel'] = re.sub(r'<mark[^>]*>|</mark>', '', dados.get('bel', ''))
                     else:
@@ -260,10 +292,10 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
                 return dados
                 
         except Exception as e:
-            if attempt == 0: time.sleep(2)
+            if attempt == 0: time.sleep(1)
             else: return {"titulo": secao, "ref": f"Erro: {str(e)}", "bel": "Erro", "status": "ERRO"}
     
-    return {"titulo": secao, "ref": "Erro de processamento", "bel": "Erro de processamento", "status": "ERRO"}
+    return {"titulo": secao, "ref": "Erro extração", "bel": "Erro extração", "status": "ERRO"}
 
 # ----------------- UI PRINCIPAL -----------------
 with st.sidebar:
@@ -275,14 +307,13 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v4.5 - OCR + Anti-Alucinação")
+    st.caption("v5.5 - Regras Específicas Finais")
 
 if pagina == "🏠 Início":
-    st.markdown("""<div style="text-align: center;"><h1>Validador de Bulas</h1></div>""", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    with c1: st.info("🎯 **OCR Avançado:** Zoom 3x automático")
-    with c2: st.info("⚡ **Anti-Alucinação:** Bloqueio de invenção")
-    with c3: st.info("🔍 **Colunas:** Leitura visual inteligente")
+    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1: st.info("✅ **Correção Seção 1:** Ignora 'Atenção' (pertencem à Seção 3).")
+    with c2: st.info("✅ **Correção Seção 7:** Proibido sinônimos (cópia literal).")
 
 else:
     st.markdown(f"## {pagina}")
@@ -319,14 +350,10 @@ else:
         if not f1 or not f2 or not client:
             st.warning("⚠️ Verifique arquivos e API Key.")
         else:
-            with st.status("🔄 Processando documentos (OCR pode levar alguns segundos)...", expanded=True) as status:
+            with st.status("🔄 Processando documentos...", expanded=True) as status:
+                st.write("📖 Lendo arquivos...")
                 d1 = process_file_content(f1.getvalue(), f1.name)
                 d2 = process_file_content(f2.getvalue(), f2.name)
-                
-                # Feedback sobre o modo de leitura usado
-                modo1 = "OCR (Imagem)" if d1['type'] == 'images' else "Texto Nativo"
-                modo2 = "OCR (Imagem)" if d2['type'] == 'images' else "Texto Nativo"
-                st.write(f"ℹ️ Doc 1 lido como: **{modo1}** | Doc 2 lido como: **{modo2}**")
                 
                 st.write("🔍 Auditando seções...")
                 resultados = []
