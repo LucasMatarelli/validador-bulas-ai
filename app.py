@@ -174,12 +174,6 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
     # Regras Específicas para corrigir os erros relatados
     regra_extra = ""
     
-    # Lógica de Ponto de Partida: Se for pergunta (tem interrogação), começa após ela.
-    if "?" in secao:
-        instrucao_inicio = f'O conteúdo começa IMEDIATAMENTE APÓS o ponto de interrogação (?) do título "{secao}". NÃO repita o título, extraia apenas a resposta.'
-    else:
-        instrucao_inicio = f'Comece a extrair o conteúdo logo após o título "{secao}".'
-
     if "1. PARA QUE" in secao.upper():
         regra_extra = """
         ⚠️ REGRA DE OURO DA SEÇÃO 1:
@@ -189,11 +183,10 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
         """
     elif "4. O QUE DEVO SABER" in secao.upper() or "9. O QUE FAZER" in secao.upper():
         regra_extra = """
-        ⚠️ REGRA DE AGREGAÇÃO (TEXTO + CAIXAS):
-        - Esta seção contém múltiplos elementos: Texto corrido E Caixas de "Atenção".
-        - Você DEVE extrair TUDO (texto + avisos).
-        - O texto pode atravessar colunas e páginas. Leia até encontrar o título numérico da próxima seção (ex: '5. ONDE...' ou 'DIZERES LEGAIS').
-        - Na Seção 9, capture tanto o texto descritivo quanto o aviso em negrito "Em caso de uso...".
+        ⚠️ REGRA DE OURO DE SEÇÃO LONGA:
+        - Esta seção tem MÚLTIPLOS parágrafos e pode pular colunas.
+        - Não pare no primeiro ponto final. Continue lendo até encontrar um TÍTULO NUMÉRICO (ex: '5. ONDE...' ou 'DIZERES LEGAIS').
+        - Na Seção 9, capture tanto o texto descritivo quanto o aviso em negrito "Em caso de uso...". Capture TUDO.
         """
     elif "7. O QUE DEVO FAZER" in secao.upper():
         regra_extra = """
@@ -212,7 +205,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
     1. **NÃO REESCREVA**: Se o texto diz "deixou de tomar", ESCREVA "deixou de tomar". É proibido usar sinônimos.
     2. **NÃO RESUMA**: Se o texto tem 3 parágrafos, traga os 3 parágrafos.
     3. **RESPEITE OS LIMITES**:
-       - {instrucao_inicio}
+       - Comece no título "{secao}".
        - Pare se encontrar o título de QUALQUER OUTRA seção da lista abaixo.
     
     {regra_extra}
@@ -294,13 +287,13 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v5.2 - Início pós-pergunta")
+    st.caption("v5.1 - Final")
 
 if pagina == "🏠 Início":
     st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1: st.info("✅ **Correção Seção 1:** Ignora avisos de 'Atenção' (pertencem à Seção 3).")
-    with c2: st.info("✅ **Correção:** Conteúdo das perguntas começa após a interrogação.")
+    with c2: st.info("✅ **Correção Seção 4/9:** Força leitura de parágrafos múltiplos e colunas.")
 
 else:
     st.markdown(f"## {pagina}")
