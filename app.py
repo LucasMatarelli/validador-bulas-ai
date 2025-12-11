@@ -182,7 +182,7 @@ def sanitize_text(text):
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
-    """Processa arquivo com cache otimizado"""
+    """Processa arquivo com cache otimizado e LEITURA DE COLUNAS CORRIGIDA"""
     try:
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -192,20 +192,31 @@ def process_file_content(file_bytes, filename):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
+            
+            # --- CORREÇÃO DE LEITURA DE COLUNAS ---
+            # Em vez de ler a página inteira como texto corrido, lemos "blocos".
+            # sort=True ordena os blocos visualmente: de cima para baixo, e da esquerda para a direita.
+            # Isso garante que a Coluna 1 seja lida inteira antes de passar para a Coluna 2.
             for page in doc: 
-                full_text += page.get_text() + " "
+                blocks = page.get_text("blocks", sort=True)
+                
+                # Cada bloco é (x0, y0, x1, y1, "texto", block_no, block_type)
+                for b in blocks:
+                    # Filtra apenas blocos de texto (tipo 0)
+                    if b[6] == 0: 
+                        text_content = b[4]
+                        full_text += text_content + "\n\n" # Adiciona quebra para separar parágrafos
             
             # Se tem texto nativo suficiente, usa direto
             if len(full_text.strip()) > 500:
                 doc.close()
                 return {"type": "text", "data": sanitize_text(full_text)}
             
-            # OCR apenas se necessário
+            # OCR apenas se necessário (fallback)
             images = []
             limit_pages = min(5, len(doc))
             for i in range(limit_pages):
                 page = doc[i]
-                # Zoom 2.5 - equilíbrio entre qualidade e velocidade
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
                 try: 
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
@@ -213,7 +224,6 @@ def process_file_content(file_bytes, filename):
                     img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 
                 img = Image.open(img_byte_arr)
-                # Reduz tamanho se muito grande
                 if img.width > 2000:
                     img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
                 images.append(img)
@@ -283,8 +293,6 @@ SAÍDA JSON:
     else:
         # Lógica de "Barreira de Parada":
         # Passa TODAS as outras seções como barreiras.
-        # Assim, se estivermos na Seção 3, a Seção 4, 5, 6... todas são barreiras.
-        # Isso evita que o modelo "pule" uma seção faltante e engula a próxima.
         barreiras = [s for s in todas_secoes if s != secao]
         
         # Adiciona marcadores extras de fim de arquivo
@@ -297,14 +305,14 @@ SAÍDA JSON:
 
 TAREFA CRÍTICA: Extrair e Comparar a seção "{secao}" COMPLETA.
 
-⚠️ INSTRUÇÃO DE EXTRAÇÃO INTELIGENTE (COLUNAS E PÁGINAS):
-1. O texto da bula pode estar dividido em COLUNAS ou quebrado em várias PÁGINAS.
+⚠️ INSTRUÇÃO DE EXTRAÇÃO (IMPORTANTE):
+1. O texto foi processado em blocos lógicos.
 2. Seu objetivo: Localizar o título "{secao}" e capturar TODO o texto que pertence a ele.
-3. **NÃO PARE** apenas porque mudou de coluna ou página. O texto continua!
-4. **IGNORE** cabeçalhos de rodapé/topo como "Página 1 de 9", "BELFAR", ou nomes de remédios repetidos no topo da página. Pule isso e conecte o texto da seção.
+3. **NÃO PARE** apenas porque mudou de parágrafo. O texto continua!
+4. **IGNORE** cabeçalhos de rodapé/topo como "Página X de Y", "BELFAR", ou nomes de remédios repetidos no topo da página.
 
 ⛔ BARREIRAS DE PARADA (STOP MARKERS):
-Você DEVE parar a extração IMEDIATAMENTE se encontrar qualquer um destes títulos (mesmo que em outra coluna ou página):
+Você DEVE parar a extração IMEDIATAMENTE se encontrar qualquer um destes títulos (iniciando um novo bloco de texto):
 {stop_markers_str}
 
 EXEMPLO DE ERRO PROIBIDO:
@@ -431,7 +439,7 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v2.2 - Extração Inteligente")
+    st.caption("v2.3 - Correção de Colunas")
 
 if pagina == "🏠 Início":
     st.markdown("""
