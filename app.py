@@ -281,47 +281,44 @@ SAÍDA JSON:
 """
         
     else:
-        # Lógica de Limite: Identificar quais são as próximas seções possíveis
-        # para instruir a IA a parar EXATAMENTE quando encontrar uma delas.
-        try:
-            indice_atual = todas_secoes.index(secao)
-            # Pega todas as seções que vêm DEPOIS da atual
-            secoes_futuras = todas_secoes[indice_atual + 1:]
-        except ValueError:
-            secoes_futuras = []
-
-        # Adiciona marcadores de fim comuns em bulas
-        marcadores_fim = secoes_futuras + ["DIZERES LEGAIS", "Histórico de Alteração", "Anexo B"]
-        stop_markers_str = "\n".join([f"- {s}" for s in marcadores_fim if s != secao])
+        # Lógica de Limite REFORÇADA:
+        # Passa TODAS as outras seções como barreiras.
+        # Assim, se estivermos na Seção 3, a Seção 4, 5, 6... todas são barreiras.
+        # Isso evita que o modelo "pule" uma seção faltante e engula a próxima.
+        barreiras = [s for s in todas_secoes if s != secao]
+        barreiras.append("DIZERES LEGAIS")
+        barreiras.append("Anexo B")
+        barreiras.append("Histórico de Alteração")
+        
+        stop_markers_str = "\n".join([f"- {s}" for s in barreiras])
         
         prompt_text = f"""
 {base_instruction}
 
 TAREFA CRÍTICA: Extrair e Comparar a seção "{secao}" COMPLETA.
 
-⚠️ INSTRUÇÃO DE EXTRAÇÃO (LEIA COM ATENÇÃO):
-1. O texto da bula pode estar dividido em COLUNAS ou quebrado em várias PÁGINAS.
-2. Seu objetivo é: Localizar o título "{secao}" e capturar TODO o texto que vem depois dele.
-3. **NÃO PARE** ao ver um espaço em branco, quebra de página ou rodapé (ex: "Página 2 de 9").
-4. **CONTINUE LENDO** até encontrar um dos TÍTULOS DE PARADA listados abaixo.
-5. Se o texto estiver bagunçado com cabeçalhos repetidos (ex: nome do remédio no topo de cada página), IGNORE esses cabeçalhos e continue a frase da seção.
+⚠️ INSTRUÇÃO DE EXTRAÇÃO INTELIGENTE (COLUNAS E PÁGINAS):
+1. O texto da bula é complexo: tem colunas, quebras de página e cabeçalhos repetidos.
+2. Seu objetivo: Localizar o título "{secao}" e capturar TODO o texto que pertence a ele.
+3. **NÃO PARE** apenas porque mudou de coluna ou página. O texto continua!
+4. **IGNORE** cabeçalhos de rodapé/topo como "Página 1 de 9", "BELFAR", nomes de remédios repetidos no topo da página. Pule isso e conecte o texto.
 
-⛔ TÍTULOS DE PARADA (Pare SOMENTE se encontrar um destes):
+⛔ BARREIRAS DE PARADA (STOP MARKERS):
+Você DEVE parar a extração IMEDIATAMENTE se encontrar qualquer um destes títulos iniciando um novo parágrafo:
 {stop_markers_str}
 
-⚠️ REGRA PARA "DIZERES LEGAIS":
-Se a seção atual NÃO for "DIZERES LEGAIS", pare IMEDIATAMENTE antes de começar "DIZERES LEGAIS".
-Se a seção atual FOR "DIZERES LEGAIS", vá até o final absoluto do arquivo.
+EXEMPLO DE ERRO COMUM:
+Se você está extraindo a seção "3. QUANDO NÃO DEVO...", e no meio do texto aparece "4. O QUE DEVO...", você **DEVE PARAR** antes do "4.". Não inclua o texto da seção 4 dentro da seção 3.
 
 ⚠️ INSTRUÇÃO DE COMPARAÇÃO:
-- Se o documento Ref tem um parágrafo que o Doc Bel não tem (ou vice-versa), isso é DIVERGÊNCIA GRAVE. Marque todo o texto faltante com <mark class='diff'>.
-- Não resuma. Quero o texto RAW (bruto).
+- Compare o texto extraído de REF contra BEL.
+- Se faltar frases inteiras ou parágrafos, marque com <mark class='diff'>.
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto completo extraído do doc referencia",
-  "bel": "texto completo extraído do doc belfar",
+  "ref": "texto completo extraído do doc referencia (até encontrar a barreira)",
+  "bel": "texto completo extraído do doc belfar (até encontrar a barreira)",
   "status": "será determinado automaticamente"
 }}
 """
