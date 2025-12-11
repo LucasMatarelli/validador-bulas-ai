@@ -180,6 +180,21 @@ def sanitize_text(text):
     text = text.replace('\t', ' ')
     return re.sub(r'\s+', ' ', text).strip()
 
+def clean_noise(text):
+    """Remove cabeçalhos de página e rodapés comuns que poluem a extração"""
+    lines = text.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        l = line.strip()
+        # Remove números de página isolados ou 'Página X de Y'
+        if re.match(r'^(Página|Pag\.?)\s*\d+(\s*de\s*\d+)?$', l, re.IGNORECASE) or re.match(r'^\d+\s*de\s*\d+$', l) or re.match(r'^\d+$', l):
+            continue
+        # Remove nomes de laboratório repetidos (ajuste conforme necessário)
+        if l.upper() in ["BELFAR", "SANOFI", "EMS", "EUROFARMA", "MEDLEY"]:
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
     """Processa arquivo com cache otimizado e LEITURA DE COLUNAS CORRIGIDA"""
@@ -194,19 +209,18 @@ def process_file_content(file_bytes, filename):
             full_text = ""
             
             # --- CORREÇÃO DE LEITURA DE COLUNAS ---
-            # Em vez de ler a página inteira como texto corrido, lemos "blocos".
-            # sort=True ordena os blocos visualmente: de cima para baixo, e da esquerda para a direita.
-            # Isso garante que a Coluna 1 seja lida inteira antes de passar para a Coluna 2.
+            # sort=True ordena visualmente: coluna 1 inteira, depois coluna 2 inteira
             for page in doc: 
                 blocks = page.get_text("blocks", sort=True)
                 
-                # Cada bloco é (x0, y0, x1, y1, "texto", block_no, block_type)
                 for b in blocks:
-                    # Filtra apenas blocos de texto (tipo 0)
-                    if b[6] == 0: 
+                    if b[6] == 0:  # Tipo 0 = texto
                         text_content = b[4]
-                        full_text += text_content + "\n\n" # Adiciona quebra para separar parágrafos
+                        full_text += text_content + "\n" 
             
+            # Limpeza extra de ruído (cabeçalhos de página, etc)
+            full_text = clean_noise(full_text)
+
             # Se tem texto nativo suficiente, usa direto
             if len(full_text.strip()) > 500:
                 doc.close()
@@ -291,11 +305,12 @@ SAÍDA JSON:
 """
         
     else:
-        # Lógica de "Barreira de Parada":
-        # Passa TODAS as outras seções como barreiras.
-        barreiras = [s for s in todas_secoes if s != secao]
+        # Lógica de "Barreira de Parada" AGRESSIVA:
+        # A IA deve parar se encontrar O TÍTULO DE QUALQUER OUTRA SEÇÃO.
+        # Não apenas as futuras, mas QUALQUER uma que não seja a atual.
+        # Isso impede que ela leia a seção 1, acabe, e comece a ler a seção 2 que está na coluna ao lado.
         
-        # Adiciona marcadores extras de fim de arquivo
+        barreiras = [s for s in todas_secoes if s != secao]
         barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
         
         stop_markers_str = "\n".join([f"⛔ {s}" for s in barreiras])
@@ -305,28 +320,31 @@ SAÍDA JSON:
 
 TAREFA CRÍTICA: Extrair e Comparar a seção "{secao}" COMPLETA.
 
-⚠️ INSTRUÇÃO DE EXTRAÇÃO (IMPORTANTE):
-1. O texto foi processado em blocos lógicos.
-2. Seu objetivo: Localizar o título "{secao}" e capturar TODO o texto que pertence a ele.
-3. **NÃO PARE** apenas porque mudou de parágrafo. O texto continua!
-4. **IGNORE** cabeçalhos de rodapé/topo como "Página X de Y", "BELFAR", ou nomes de remédios repetidos no topo da página.
+⚠️ INSTRUÇÃO DE EXTRAÇÃO (LEIA COM ATENÇÃO):
+1. O texto foi processado para ler COLUNA POR COLUNA.
+2. Seu objetivo: Localizar onde começa o título "{secao}" e capturar TUDO o que vem depois.
+3. **PARADA OBRIGATÓRIA**: Você DEVE PARAR de extrair assim que encontrar o título de QUALQUER OUTRA SEÇÃO (lista abaixo).
+4. Se o texto da próxima coluna começar com outro título (ex: "2. COMO ESTE..."), NÃO inclua esse título nem o texto dele na sua extração.
 
-⛔ BARREIRAS DE PARADA (STOP MARKERS):
-Você DEVE parar a extração IMEDIATAMENTE se encontrar qualquer um destes títulos (iniciando um novo bloco de texto):
+⛔ LISTA DE TÍTULOS QUE FORÇAM A PARADA (STOP MARKERS):
 {stop_markers_str}
 
-EXEMPLO DE ERRO PROIBIDO:
-Se você está extraindo a seção "1. PARA QUE...", e no meio do texto aparece "2. COMO...", você **DEVE PARAR** antes do "2.". Não misture os textos!
+EXEMPLO DE COMPORTAMENTO ESPERADO:
+Texto original:
+"1. PARA QUE SERVE
+Serve para dor.
+2. COMO USAR
+Tome 1 cp."
 
-⚠️ INSTRUÇÃO DE COMPARAÇÃO:
-- Compare o texto extraído de REF contra BEL.
-- Se faltar frases inteiras ou parágrafos em um dos lados, marque com <mark class='diff'>.
+Se a tarefa é extrair "1. PARA QUE SERVE":
+CORRETO: "Serve para dor."
+ERRADO: "Serve para dor. 2. COMO USAR Tome 1 cp." (Você não parou no título da seção 2!)
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto completo extraído do doc referencia (até encontrar a barreira)",
-  "bel": "texto completo extraído do doc belfar (até encontrar a barreira)",
+  "ref": "texto completo (cortado exatamente antes da próxima seção)",
+  "bel": "texto completo (cortado exatamente antes da próxima seção)",
   "status": "será determinado automaticamente"
 }}
 """
@@ -439,7 +457,7 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v2.3 - Correção de Colunas")
+    st.caption("v2.4 - Correção Final de Colunas")
 
 if pagina == "🏠 Início":
     st.markdown("""
