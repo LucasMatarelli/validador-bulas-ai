@@ -270,6 +270,101 @@ SAÍDA JSON:
         "bel": "Erro",
         "status": "ERRO"
     }
+    # ----------------- FUNÇÕES QUE ESTÃO FALTANDO -----------------
+
+def sanitize_text(text):
+    """Remove caracteres ilegais sem alterar conteúdo"""
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKC", text)
+    text = text.replace("\x00", "").replace("\u0000", "")
+    return text.strip()
+
+
+def clean_noise(text):
+    """Remove lixo de OCR mas sem alterar palavras válidas"""
+    if not text:
+        return ""
+    linhas = text.split("\n")
+    filtradas = []
+    for ln in linhas:
+        ln2 = ln.strip()
+        if len(ln2) <= 1:
+            continue
+        if re.fullmatch(r"[.|\-•●]+", ln2):
+            continue
+        filtradas.append(ln)
+    return "\n".join(filtradas)
+
+
+def image_to_base64(img):
+    """Converte imagem PIL para base64"""
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def extract_json(text):
+    """Extrai JSON puro do modelo"""
+    try:
+        return json.loads(text)
+    except:
+        try:
+            inicio = text.find("{")
+            fim = text.rfind("}")
+            return json.loads(text[inicio:fim+1])
+        except:
+            return None
+
+
+def process_file_content(file_bytes, filename):
+    """Processa arquivo PDF/DOCX e retorna texto ou imagens para OCR"""
+    try:
+        # DOCX
+        if filename.endswith('.docx'):
+            doc = docx.Document(io.BytesIO(file_bytes))
+            text = "\n".join([p.text for p in doc.paragraphs])
+            return {"type": "text", "data": sanitize_text(text)}
+
+        # PDF
+        elif filename.endswith('.pdf'):
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            full_text = ""
+
+            for page in doc:
+                blocks = page.get_text("blocks", sort=True)
+                for b in blocks:
+                    if b[6] == 0:
+                        full_text += b[4] + "\n"
+
+            full_text = clean_noise(full_text)
+
+            if len(full_text.strip()) > 400:
+                doc.close()
+                return {"type": "text", "data": sanitize_text(full_text)}
+
+            # OCR fallback
+            images = []
+            limit_pages = min(5, len(doc))
+            for i in range(limit_pages):
+                page = doc[i]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
+                img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
+                img = Image.open(img_byte_arr)
+
+                if img.width > 2000:
+                    img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+
+                images.append(img)
+
+            doc.close()
+            gc.collect()
+            return {"type": "images", "data": images}
+
+    except Exception as e:
+        st.error(f"Erro ao processar arquivo: {str(e)}")
+        return None
+
 # ----------------- UI PRINCIPAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
