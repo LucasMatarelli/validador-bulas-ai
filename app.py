@@ -230,35 +230,26 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2):
     
     # Prompt base otimizado
     base_instruction = """
-INSTRUÇÕES CRÍTICAS DE COMPARAÇÃO:
+REGRAS FUNDAMENTAIS DE COMPARAÇÃO:
 
-1. **NORMALIZAÇÃO ABSOLUTA**: 
-   - Ignore TOTALMENTE formatação, espaços, quebras de linha, tabs, caracteres invisíveis
-   - Compare APENAS o significado e conteúdo visível
-   - "maleato de enalapril" = "maleato de enalapril" mesmo com códigos diferentes
+1. **IGNORE FORMATAÇÃO**: Espaços, quebras de linha, tabs são irrelevantes. Compare apenas conteúdo.
 
-2. **REGRA DE OURO - FALSO POSITIVO**:
-   - Se as palavras parecem VISUALMENTE IDÊNTICAS ao ler, são IDÊNTICAS
-   - NÃO MARQUE diferenças se o texto for o mesmo
-   - Exemplo: "insuficiência renal" nos dois textos → NÃO MARCAR
+2. **MARCAÇÃO AMARELA** (<mark class='diff'>) - USE APENAS QUANDO:
+   ✅ Palavra DIFERENTE: "diabetes" vs "hipertensão"
+   ✅ Número DIFERENTE: "10mg" vs "20mg"
+   ✅ Frase FALTANDO em um dos textos
+   ❌ NUNCA marque textos idênticos
+   ❌ NUNCA marque números se forem iguais nos dois textos
 
-3. **MARCAÇÃO AMARELA** (<mark class='diff'>) - USE APENAS QUANDO:
-   - Palavra COMPLETAMENTE DIFERENTE: "10mg" vs "20mg"
-   - Frase FALTANDO: texto existe em um mas não no outro
-   - Informação DIVERGENTE: dados conflitantes
-   - ❌ NUNCA marque texto idêntico
-   - ❌ NUNCA marque por diferenças de formatação
+3. **MARCAÇÃO VERMELHA** (<mark class='ort'>) - USE RARAMENTE:
+   ✅ Apenas erros ortográficos ÓBVIOS: "mediçamento", "efeicácia"
+   ❌ NÃO marque termos científicos corretos
 
-4. **MARCAÇÃO VERMELHA** (<mark class='ort'>):
-   - USE APENAS para erros ortográficos ÓBVIOS
-   - Exemplos: "mediçamento", "efeicácia", "paciennte"
-   - NÃO marque termos científicos corretos
-
-5. **MARCAÇÃO AZUL** (<mark class='anvisa'>):
-   - USE APENAS para datas DD/MM/AAAA
-   - Marque em AMBOS os textos (ref e bel)
-
-6. **TESTE FINAL**: Antes de marcar, pergunte-se: "Esse texto é REALMENTE diferente ou apenas parece diferente?"
+4. **MARCAÇÃO AZUL** (<mark class='anvisa'>) - USE COM PRECISÃO:
+   ✅ APENAS datas de aprovação da ANVISA (em DIZERES LEGAIS)
+   ✅ Formato: DD/MM/AAAA
+   ❌ NÃO marque outras datas ou números
+   ❌ NÃO marque em outras seções além de DIZERES LEGAIS
 """
     
     prompt_text = ""
@@ -267,61 +258,52 @@ INSTRUÇÕES CRÍTICAS DE COMPARAÇÃO:
         prompt_text = f"""
 {base_instruction}
 
-TAREFA ESPECIAL: Extrair "DIZERES LEGAIS" - MODO VISUALIZAÇÃO PURA
+TAREFA: Extrair seção "DIZERES LEGAIS" para visualização.
 
-⚠️ ATENÇÃO CRÍTICA: Esta seção é APENAS para visualização. NÃO compare conteúdo.
+INSTRUÇÕES ESPECÍFICAS:
+1. Localize "DIZERES LEGAIS" em ambos os documentos
+2. Extraia Farm. Resp., M.S., CNPJ, SAC
+3. ❌ NÃO USE <mark class='diff'> - apenas visualização
+4. ❌ NÃO USE <mark class='ort'> - apenas visualização  
+5. 🔵 USE <mark class='anvisa'>DATA</mark> APENAS para:
+   - Datas de APROVAÇÃO da ANVISA
+   - Exemplo: "aprovado pela Anvisa em <mark class='anvisa'>15/03/2024</mark>"
+   - NÃO marque outras datas que não sejam de aprovação
 
-INSTRUÇÕES:
-1. Localize a seção "DIZERES LEGAIS" em cada documento
-2. Extraia o texto completo SEM COMPARAR
-3. Marque APENAS as datas com <mark class='anvisa'>DD/MM/AAAA</mark>
-4. ❌ NÃO USE <mark class='diff'> em NENHUMA HIPÓTESE
-5. ❌ NÃO USE <mark class='ort'> em NENHUMA HIPÓTESE
-
-PROCURE POR:
-- Farm. Resp. / Farmacêutico Responsável
-- M.S. / Registro MS
-- CNPJ
-- SAC / Telefone
-- Datas (marque com azul)
+IMPORTANTE: Marque APENAS datas de aprovação Anvisa em azul, outras datas deixe normais.
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto extraído SEM marcação amarela, APENAS datas em azul",
-  "bel": "texto extraído SEM marcação amarela, APENAS datas em azul",
+  "ref": "texto com APENAS datas de aprovação Anvisa em azul",
+  "bel": "texto com APENAS datas de aprovação Anvisa em azul",
   "status": "VISUALIZACAO"
 }}
-
-LEMBRE-SE: Dizeres Legais = VISUALIZAÇÃO PURA, sem comparação!
 """
         
     elif eh_visualizacao:
         prompt_text = f"""
 {base_instruction}
 
-TAREFA ESPECIAL: Extrair "{secao}" - MODO VISUALIZAÇÃO PURA
+TAREFA: Extrair seção "{secao}" para visualização.
 
-⚠️ ATENÇÃO CRÍTICA: Esta seção é APENAS para visualização. NÃO compare conteúdo.
+INSTRUÇÕES SIMPLES:
+1. Localize a seção "{secao}" em ambos documentos
+2. Extraia o texto completo e limpo
+3. ❌ NÃO USE NENHUMA MARCAÇÃO
+4. Remova apenas códigos de gráfica (pantone, sangria, etc)
 
-INSTRUÇÕES:
-1. Localize e extraia a seção "{secao}" de ambos os documentos
-2. Copie o texto COMPLETO e LIMPO
-3. ❌ NÃO USE <mark class='diff'> - Esta é uma seção de VISUALIZAÇÃO
-4. ❌ NÃO USE <mark class='ort'> - Esta é uma seção de VISUALIZAÇÃO
-5. ❌ NÃO USE <mark class='anvisa'> - Não há datas nesta seção
-6. Remova apenas lixo técnico de impressão (códigos de barra, instruções de gráfica)
-
-IMPORTANTE: 
-- "Apresentações" e "Composição" são seções de REFERÊNCIA VISUAL
-- O objetivo é VER o conteúdo, NÃO comparar
-- Retorne texto puro sem nenhuma marcação
+ATENÇÃO: Esta é seção de VISUALIZAÇÃO PURA.
+- Não compare
+- Não marque diferenças
+- Não marque datas
+- Apenas extraia o texto
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto extraído SEM MARCAÇÕES",
-  "bel": "texto extraído SEM MARCAÇÕES",
+  "ref": "texto limpo sem marcações",
+  "bel": "texto limpo sem marcações",
   "status": "VISUALIZACAO"
 }}
 """
@@ -330,69 +312,43 @@ SAÍDA JSON:
         prompt_text = f"""
 {base_instruction}
 
-TAREFA: Comparar seção "{secao}" com PRECISÃO CIRÚRGICA.
+TAREFA: Comparar seção "{secao}" e identificar diferenças REAIS.
 
-PROCESSO DE 3 ETAPAS:
+PROCESSO:
 
-**ETAPA 1 - NORMALIZAÇÃO EXTREMA**:
-- Remova mentalmente: espaços extras, quebras de linha, tabs, pontuação extra
-- Converta para minúsculas mentalmente
-- Normalize caracteres especiais (á = a, ç = c para comparação)
-- Exemplo: "maleato  de\nenalapril" = "MALEATO DE ENALAPRIL" = "maleato de enalapril"
+ETAPA 1 - LOCALIZAÇÃO:
+- Encontre o início e fim da seção "{secao}" em cada documento
+- Extraia TODO o conteúdo da seção
 
-**ETAPA 2 - COMPARAÇÃO SEMÂNTICA**:
-- Compare o SIGNIFICADO, não os bytes
-- Se ambos dizem a mesma coisa = SÃO IGUAIS
-- Exemplo: "Não tome maleato de enalapril" = "Não tome maleato de enalapril"
+ETAPA 2 - COMPARAÇÃO:
+- Compare linha por linha após normalizar espaços
+- Identifique onde há diferença REAL de conteúdo
+- Ignore diferenças de formatação
 
-**ETAPA 3 - DECISÃO CRÍTICA**:
-Pergunte-se ANTES de marcar: 
-- "Esse texto transmite informação DIFERENTE?"
-- Se NÃO → NÃO MARQUE
-- Se SIM → marque apenas a palavra/frase específica diferente
+ETAPA 3 - MARCAÇÃO (seja MUITO conservador):
 
-✅ MARQUE COM AMARELO (<mark class='diff'>) SOMENTE SE:
-- Palavra COMPLETAMENTE DIFERENTE: "hipertensão" vs "diabetes"  
-- Número DIFERENTE: "10mg" vs "20mg"
-- Frase que existe APENAS EM UM dos textos
-- Informação que CONTRADIZ a outra
+🟡 AMARELO (<mark class='diff'>) APENAS SE:
+- Palavra está PRESENTE em um texto e AUSENTE no outro
+- Palavra é DIFERENTE: "diabetes" ≠ "hipertensão"
+- Número é DIFERENTE: "10" ≠ "20"
 
-❌ NUNCA MARQUE SE:
-- Textos são idênticos (mesmo com formatação diferente)
-- "maleato de enalapril" aparece igual nos dois
-- Mesmas palavras, mesma ordem, mesmo significado
-- Diferenças apenas em espaçamento ou quebra de linha
+❌ NUNCA marque amarelo se:
+- Texto é igual nos dois (mesmo com formatação diferente)
+- Números são iguais: "10mg" = "10mg"
+- Apenas espaçamento/formatação diferem
 
-🔴 MARQUE COM VERMELHO (<mark class='ort'>) SOMENTE:
-- Erros ortográficos ÓBVIOS e INCONTESTÁVEIS
-- Exemplos: "mediçamento", "efeicácia", "paciennte"
+🔴 VERMELHO (<mark class='ort'>) RARAMENTE:
+- Apenas erros de português evidentes
 
-🔵 MARQUE COM AZUL (<mark class='anvisa'>):
-- Datas DD/MM/AAAA em AMBOS os textos
+🔵 AZUL - NÃO USE nesta seção (apenas em Dizeres Legais)
 
-**VALIDAÇÃO FINAL OBRIGATÓRIA**:
-Antes de gerar o JSON, execute esta checklist:
-1. ✓ Li ambos os textos completamente?
-2. ✓ Comparei o SIGNIFICADO, não os bytes?
-3. ✓ Cada marcação amarela marca uma diferença REAL?
-4. ✓ Textos idênticos ficaram SEM marcação amarela/vermelha?
-5. ✓ Se "maleato de enalapril" está igual nos dois, NÃO marquei?
-
-EXEMPLO DE COMPARAÇÃO CORRETA:
-Texto 1: "Não tome maleato de enalapril se você já teve uma reação alérgica"
-Texto 2: "Não tome maleato de enalapril se você já teve uma reação alérgica"
-RESULTADO: ✅ TEXTOS IDÊNTICOS - NÃO MARCAR NADA
-
-EXEMPLO DE DIFERENÇA REAL:
-Texto 1: "Não tome maleato de enalapril 10mg"
-Texto 2: "Não tome maleato de enalapril 20mg"
-RESULTADO: ⚠️ Marcar apenas "<mark class='diff'>10mg</mark>" vs "<mark class='diff'>20mg</mark>"
+VALIDAÇÃO: Antes de marcar, releia os dois textos. Se significado é igual = NÃO MARQUE.
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto completo com marcações APENAS onde há diferença REAL",
-  "bel": "texto completo com marcações APENAS onde há diferença REAL",
+  "ref": "texto completo com marcações APENAS onde há diferença real",
+  "bel": "texto completo com marcações APENAS onde há diferença real",
   "status": "será determinado automaticamente"
 }}
 """
@@ -421,7 +377,7 @@ SAÍDA JSON:
                 })
 
     # Retry inteligente com backoff exponencial
-    max_retries = 3
+    max_retries = 2
     for attempt in range(max_retries):
         try:
             chat_response = client.chat.complete(
@@ -621,16 +577,16 @@ else:
                 progress_bar = st.progress(0)
                 
                 # Processamento paralelo otimizado com timeout individual
-                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     future_to_secao = {
                         executor.submit(auditar_secao_worker, client, secao, d1, d2, nome_doc1, nome_doc2): secao 
                         for secao in lista_secoes
                     }
                     
                     completed = 0
-                    for future in concurrent.futures.as_completed(future_to_secao, timeout=120):
+                    for future in concurrent.futures.as_completed(future_to_secao, timeout=180):
                         try:
-                            data = future.result(timeout=90)  # 90s por seção
+                            data = future.result(timeout=120)  # 120s por seção
                             if data: 
                                 resultados_secoes.append(data)
                         except concurrent.futures.TimeoutError:
@@ -645,8 +601,8 @@ else:
                             secao = future_to_secao[future]
                             resultados_secoes.append({
                                 "titulo": secao,
-                                "ref": f"⚠️ Erro: {str(e)[:100]}",
-                                "bel": f"⚠️ Erro: {str(e)[:100]}",
+                                "ref": f"⚠️ Erro: {str(e)[:150]}",
+                                "bel": f"⚠️ Erro: {str(e)[:150]}",
                                 "status": "ERRO"
                             })
                         
@@ -765,7 +721,3 @@ else:
                 st.warning(f"⚠️ **Atenção necessária.** {divergentes} divergência(s) encontrada(s). Revisão manual recomendada.")
             else:
                 st.error(f"❌ **Revisão crítica necessária.** Múltiplas divergências detectadas. Verifique cada seção cuidadosamente.")
-            
-            # Botão de exportação (placeholder para futura funcionalidade)
-            if st.button("📥 Exportar Relatório (Em breve)"):
-                st.info("Funcionalidade de exportação será adicionada em breve!")
