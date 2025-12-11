@@ -165,80 +165,76 @@ def process_file_content(file_bytes, filename):
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
-    # Lista padrão de barreiras
+    # Barreiras Padrão
     barreiras = [s for s in todas_secoes if s != secao]
     barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
     
-    # ---------------- LÓGICA DE BARREIRA DINÂMICA ----------------
-    # Se for a Seção 4, a ÚNICA barreira que importa é a Seção 5.
-    # Isso impede que ele pare antes da hora se houver confusão no texto.
+    # ---------------- BARREIRAS DINÂMICAS ----------------
+    # Se for a Seção 4, removemos todas as barreiras "menores" para evitar paradas falsas.
+    # A única barreira real passa a ser a Seção 5 ou Dizeres Legais.
     if "4. O QUE DEVO SABER" in secao.upper():
         stop_markers_str = "- 5. ONDE, COMO E POR QUANTO TEMPO"
     else:
         stop_markers_str = "\n".join([f"- {s}" for s in barreiras])
 
-    # ---------------- REGRAS ESPECÍFICAS ----------------
+    # ---------------- REGRAS ESPECÍFICAS DE CONTINUIDADE ----------------
     regra_extra = ""
     
     if "1. PARA QUE" in secao.upper():
         regra_extra = """
         ⚠️ REGRA DE OURO DA SEÇÃO 1:
-        - Esta seção termina ANTES dos avisos de "Atenção".
-        - Se vir "Atenção: Contém açúcar/lactose/etc", ISSO É DA SEÇÃO 3.
-        - Pare IMEDIATAMENTE antes desses avisos.
+        - Pare ANTES de avisos como "Atenção: Contém açúcar/lactose". Isso pertence à Seção 3.
         """
     elif "4. O QUE DEVO SABER" in secao.upper():
         regra_extra = """
-        ⚠️ REGRA DE CONTINUIDADE OBRIGATÓRIA (SEÇÃO 4):
-        - Esta seção é LONGA e QUEBRA PÁGINAS.
-        - O texto começa na página/coluna 1 e CONTINUA na página/coluna 2.
-        - Ignore cabeçalhos de página (ex: "Bula Paciente") no meio do texto.
-        - NÃO PARE no fim visual da coluna.
-        - **SEU ÚNICO SINAL DE PARADA É O TÍTULO:** "5. ONDE, COMO E POR QUANTO TEMPO..."
-        - Colete TUDO entre o título 4 e o título 5.
+        ⚠️ REGRA CRÍTICA DE MÚLTIPLAS PÁGINAS (SEÇÃO 4):
+        1. **TEXTO FRAGMENTADO:** Esta seção começa no FINAL da Página 1 e continua no TOPO da Página 2.
+        2. **CAPTURA COMPLETA:** Você DEVE capturar o texto narrativo (longo) E TAMBÉM as caixas de aviso ("Atenção: Contém lactose...").
+        3. **NÃO PARE:**
+           - Se encontrar o fim da coluna na imagem 1, PULE para a imagem 2 e continue lendo.
+           - Se encontrar uma caixa de "Atenção", continue lendo depois dela.
+           - Só pare EXCLUSIVAMENTE ao ler o título "5. ONDE, COMO E POR QUANTO TEMPO".
+        4. **JUNTAR TUDO:** Concatene o texto da página 1 com o texto da página 2. Não me devolva apenas um pedaço.
         """
     elif "9. O QUE FAZER" in secao.upper():
         regra_extra = """
         ⚠️ REGRA DA SEÇÃO 9:
-        - Esta seção também pode ser longa.
-        - Capture o texto descritivo E TAMBÉM o texto em negrito "Em caso de uso de grande quantidade...".
-        - Só pare quando ver "DIZERES LEGAIS".
+        - Capture o texto descritivo E o aviso em negrito "Em caso de uso de grande quantidade...".
+        - Essa seção pode estar dividida em duas colunas. Leia ambas.
         """
     elif "7. O QUE DEVO FAZER" in secao.upper():
-        regra_extra = """
-        ⚠️ REGRA DE LITERALIDADE:
-        - Copie EXATAMENTE: se diz "deixou de tomar", escreva "deixou de tomar".
-        """
+        regra_extra = "⚠️ Cópia Literal: Não troque 'deixou de tomar' por 'esqueceu'."
 
     prompt_text = f"""
-    Você é um robô de OCR (Recorte de Texto) cego e literal.
+    Você é um especialista em OCR forense.
     
-    TAREFA: Recortar o texto da seção "{secao}" exatamente como ele aparece.
+    TAREFA: Extrair TODO o conteúdo da seção "{secao}".
     
-    REGRAS INEGOCIÁVEIS:
-    1. **NÃO REESCREVA**: Proibido usar sinônimos.
-    2. **CONTINUIDADE**: Se o texto acaba numa coluna, pule para o topo da próxima e continue copiando.
-    3. **LIMITES**:
-       - Comece no título "{secao}".
-       - Pare APENAS se encontrar o título da próxima seção listado abaixo.
+    CONTEXTO VISUAL:
+    - O texto está em colunas e quebra de uma página para a outra.
+    - Você precisa agir como uma "ponte": leia o final da coluna anterior e conecte com o início da próxima.
+    
+    REGRAS:
+    1. **Extração Integral:** Não resuma. Copie cada palavra.
+    2. **Continuidade:** Se o texto acaba abruptamente, busque a continuação na próxima imagem/coluna.
     
     {regra_extra}
     
-    ⛔ TÍTULO DE PARADA (PARE SOMENTE AQUI):
+    ⛔ SINAL DE PARADA OBRIGATÓRIO (Pare APENAS ao ver):
     {stop_markers_str}
     
     SAÍDA JSON:
     {{
       "titulo": "{secao}",
-      "ref": "texto exato extraído do documento 1",
-      "bel": "texto exato extraído do documento 2",
+      "ref": "texto completo extraído do documento 1 (unindo páginas se necessário)",
+      "bel": "texto completo extraído do documento 2 (unindo páginas se necessário)",
       "status": "CONFORME"
     }}
     """
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    limit = 80000 # Aumentei o limite para garantir que pegue pag 2 inteira
+    limit = 90000 # Limite alto para cobrir 2 páginas de texto
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
             if len(d['data']) < 50:
@@ -246,8 +242,8 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
             else:
                  messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagens) ---"})
-            # Aumentei para 8 imagens para garantir que a seção 4 (que pode estar na pag 2 ou 3) seja vista
+            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagens Sequenciais) ---"})
+            # Manda até 8 imagens para garantir que a transição Pag 1 -> Pag 2 seja vista
             for img in d['data'][:8]: 
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
@@ -267,7 +263,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
                 dados['titulo'] = secao
                 
                 if not eh_visualizacao:
-                    # Limpeza para comparação apenas
+                    # Limpeza normalização
                     t_ref = re.sub(r'\s+', ' ', str(dados.get('ref', '')).strip().lower())
                     t_bel = re.sub(r'\s+', ' ', str(dados.get('bel', '')).strip().lower())
                     t_ref = re.sub(r'<[^>]+>', '', t_ref)
@@ -301,13 +297,13 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v6.0 - Correção Seção 4 (Multi-pág)")
+    st.caption("v6.1 - Fix Seção 4 (Ponte de Páginas)")
 
 if pagina == "🏠 Início":
     st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1: st.info("✅ **Correção Seção 1:** Ignora avisos de 'Atenção' (pertencem à Seção 3).")
-    with c2: st.info("✅ **Correção Seção 4:** Lê continuamente até encontrar a Seção 5, ignorando quebras de página.")
+    with c2: st.info("✅ **Correção Seção 4:** Une texto fragmentado entre colunas e páginas.")
 
 else:
     st.markdown(f"## {pagina}")
@@ -354,7 +350,7 @@ else:
                 modo2 = "OCR (Imagem)" if d2['type'] == 'images' else "Texto Nativo"
                 st.write(f"ℹ️ {nome_doc1}: {modo1} | {nome_doc2}: {modo2}")
 
-                st.write("🔍 Auditando seções com regras de continuidade...")
+                st.write("🔍 Auditando seções (Unindo quebras de página)...")
                 resultados = []
                 bar = st.progress(0)
                 
