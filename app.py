@@ -250,7 +250,7 @@ REGRAS FUNDAMENTAIS DE COMPARAÇÃO:
 2. **MARCAÇÃO AMARELA** (<mark class='diff'>) - USE APENAS QUANDO:
    ✅ Palavra DIFERENTE: "diabetes" vs "hipertensão"
    ✅ Número DIFERENTE: "10mg" vs "20mg"
-   ✅ Frase FALTANDO em um dos textos (Ex: se um texto tem 3 parágrafos e o outro só 2, marque o parágrafo inteiro faltando em amarelo).
+   ✅ Frase FALTANDO em um dos textos. Se um documento tem um parágrafo inteiro e o outro não, MARQUE TODO O TEXTO FALTANTE EM AMARELO.
    ❌ NUNCA marque textos idênticos.
    ❌ NUNCA corrija o texto (se tiver erro de digitação no original, MANTENHA O ERRO e compare).
 
@@ -281,16 +281,16 @@ SAÍDA JSON:
 """
         
     else:
-        # Lógica de Limite REFORÇADA:
+        # Lógica de "Barreira de Parada":
         # Passa TODAS as outras seções como barreiras.
         # Assim, se estivermos na Seção 3, a Seção 4, 5, 6... todas são barreiras.
         # Isso evita que o modelo "pule" uma seção faltante e engula a próxima.
         barreiras = [s for s in todas_secoes if s != secao]
-        barreiras.append("DIZERES LEGAIS")
-        barreiras.append("Anexo B")
-        barreiras.append("Histórico de Alteração")
         
-        stop_markers_str = "\n".join([f"- {s}" for s in barreiras])
+        # Adiciona marcadores extras de fim de arquivo
+        barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
+        
+        stop_markers_str = "\n".join([f"⛔ {s}" for s in barreiras])
         
         prompt_text = f"""
 {base_instruction}
@@ -298,21 +298,21 @@ SAÍDA JSON:
 TAREFA CRÍTICA: Extrair e Comparar a seção "{secao}" COMPLETA.
 
 ⚠️ INSTRUÇÃO DE EXTRAÇÃO INTELIGENTE (COLUNAS E PÁGINAS):
-1. O texto da bula é complexo: tem colunas, quebras de página e cabeçalhos repetidos.
+1. O texto da bula pode estar dividido em COLUNAS ou quebrado em várias PÁGINAS.
 2. Seu objetivo: Localizar o título "{secao}" e capturar TODO o texto que pertence a ele.
 3. **NÃO PARE** apenas porque mudou de coluna ou página. O texto continua!
-4. **IGNORE** cabeçalhos de rodapé/topo como "Página 1 de 9", "BELFAR", nomes de remédios repetidos no topo da página. Pule isso e conecte o texto.
+4. **IGNORE** cabeçalhos de rodapé/topo como "Página 1 de 9", "BELFAR", ou nomes de remédios repetidos no topo da página. Pule isso e conecte o texto da seção.
 
 ⛔ BARREIRAS DE PARADA (STOP MARKERS):
-Você DEVE parar a extração IMEDIATAMENTE se encontrar qualquer um destes títulos iniciando um novo parágrafo:
+Você DEVE parar a extração IMEDIATAMENTE se encontrar qualquer um destes títulos (mesmo que em outra coluna ou página):
 {stop_markers_str}
 
-EXEMPLO DE ERRO COMUM:
-Se você está extraindo a seção "3. QUANDO NÃO DEVO...", e no meio do texto aparece "4. O QUE DEVO...", você **DEVE PARAR** antes do "4.". Não inclua o texto da seção 4 dentro da seção 3.
+EXEMPLO DE ERRO PROIBIDO:
+Se você está extraindo a seção "1. PARA QUE...", e no meio do texto aparece "2. COMO...", você **DEVE PARAR** antes do "2.". Não misture os textos!
 
 ⚠️ INSTRUÇÃO DE COMPARAÇÃO:
 - Compare o texto extraído de REF contra BEL.
-- Se faltar frases inteiras ou parágrafos, marque com <mark class='diff'>.
+- Se faltar frases inteiras ou parágrafos em um dos lados, marque com <mark class='diff'>.
 
 SAÍDA JSON:
 {{
