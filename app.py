@@ -149,6 +149,7 @@ SECOES_PROFISSIONAL = [
     "DIZERES LEGAIS"
 ]
 
+# Ajuste: Apenas APRESENTAÇÕES e COMPOSIÇÃO são visualização simples. O resto é auditoria.
 SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
@@ -238,8 +239,6 @@ def extract_json(text):
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
     """Worker otimizado com prompts melhorados e retry inteligente"""
     
-    # "DIZERES LEGAIS" agora é tratado como comparação normal para não truncar
-    # "VISUALIZACAO" apenas para APRESENTAÇÕES e COMPOSIÇÃO
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
     # Prompt base otimizado
@@ -251,8 +250,7 @@ REGRAS FUNDAMENTAIS DE COMPARAÇÃO:
 2. **MARCAÇÃO AMARELA** (<mark class='diff'>) - USE APENAS QUANDO:
    ✅ Palavra DIFERENTE: "diabetes" vs "hipertensão"
    ✅ Número DIFERENTE: "10mg" vs "20mg"
-   ✅ Data DIFERENTE: "11/11/2025" vs "12/12/2026"
-   ✅ Frase FALTANDO em um dos textos
+   ✅ Frase FALTANDO em um dos textos (Ex: se um texto tem 3 parágrafos e o outro só 2, marque o parágrafo inteiro faltando em amarelo).
    ❌ NUNCA marque textos idênticos.
    ❌ NUNCA corrija o texto (se tiver erro de digitação no original, MANTENHA O ERRO e compare).
 
@@ -262,7 +260,6 @@ REGRAS FUNDAMENTAIS DE COMPARAÇÃO:
 
 4. **MARCAÇÃO AZUL** (<mark class='anvisa'>):
    ✅ Opcional: Se encontrar uma data da Anvisa e ela for IDÊNTICA nos dois textos, pode usar azul.
-   ❌ Se a data for DIFERENTE, use AMARELO (<mark class='diff'>).
 """
     
     prompt_text = ""
@@ -272,7 +269,7 @@ REGRAS FUNDAMENTAIS DE COMPARAÇÃO:
 {base_instruction}
 
 TAREFA: Extrair seção "{secao}" APENAS para visualização.
-Não compare, apenas extraia o texto limpo.
+Não compare, apenas extraia o texto limpo exatamente como está no arquivo.
 
 SAÍDA JSON:
 {{
@@ -284,34 +281,34 @@ SAÍDA JSON:
 """
         
     else:
-        # Prompt de comparação rigorosa
-        # Lista de seções para ajudar o LLM a saber onde parar
-        secoes_str = "\n".join([f"- {s}" for s in todas_secoes if s != secao])
+        # Cria lista de strings que indicam o FIM da seção atual (que são os títulos das outras seções)
+        stop_markers = "\n".join([f"- {s}" for s in todas_secoes if s != secao])
         
         prompt_text = f"""
 {base_instruction}
 
-TAREFA: Extrair e Comparar a seção "{secao}" COMPLETA.
+TAREFA CRÍTICA: Extrair e Comparar a seção "{secao}" COMPLETA.
 
-⚠️ INSTRUÇÃO CRÍTICA DE EXTRAÇÃO:
-1. Localize o título "{secao}".
-2. Copie TODO o conteúdo que vem abaixo dele.
-3. Pare APENAS quando encontrar o título de OUTRA seção (Ex: "DIZERES LEGAIS", "9. O QUE FAZER...", etc) ou chegar ao FIM do arquivo.
-4. Para "DIZERES LEGAIS", puxe TUDO: Endereço, CNPJ, Farmacêutico, SAC, Datas, Lote, Validade. Vá até o último caractere do arquivo.
+⚠️ INSTRUÇÃO DE EXTRAÇÃO (IMPORTANTE):
+1. Encontre onde começa "{secao}".
+2. Copie TODO o texto que vem depois desse título.
+3. CONTINUE COPIANDO PARÁGRAFOS, TABELAS E ITENS "ATENÇÃO" ATÉ ENCONTRAR O PRÓXIMO TÍTULO DE SEÇÃO.
+4. **NÃO PARE** na primeira quebra de linha. Bulas têm colunas. Se o texto continuar na próxima coluna, PUXE A CONTINUAÇÃO.
+5. Só PARE de extrair quando encontrar um destes títulos abaixo (STOP MARKERS) ou o fim do arquivo:
+{stop_markers}
 
-⚠️ INSTRUÇÃO CRÍTICA DE "NÃO MODIFICAÇÃO":
-- NÃO CORRIJA DIGITAÇÃO. Se o texto diz "Manques", extraia "Manques".
-- NÃO MUDE DATAS. Se cada arquivo tem uma data, extraia a data original de cada um.
-- COMPARE: Se Ref diz "Manques" e Bel diz "Marques", isso é uma DIVERGÊNCIA (<mark class='diff'>).
+⚠️ SOBRE "DIZERES LEGAIS":
+Se a seção atual for "{secao}", NÃO inclua "DIZERES LEGAIS" no texto. Pare imediatamente antes de "DIZERES LEGAIS".
 
-LISTA DE TÍTULOS (para você saber onde parar):
-{secoes_str}
+⚠️ INSTRUÇÃO DE COMPARAÇÃO:
+- Se o documento Ref tem um parágrafo que o Doc Bel não tem (ou vice-versa), isso é DIVERGÊNCIA GRAVE. Marque todo o texto faltante com <mark class='diff'>.
+- Não resuma. Quero o texto RAW (bruto).
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto completo extraído do doc referencia (COM marcações se houver diferença)",
-  "bel": "texto completo extraído do doc belfar (COM marcações se houver diferença)",
+  "ref": "texto completo extraído do doc referencia",
+  "bel": "texto completo extraído do doc belfar",
   "status": "será determinado automaticamente"
 }}
 """
@@ -380,10 +377,16 @@ SAÍDA JSON:
                         if tem_diff:
                             dados['status'] = 'DIVERGENTE'
                         else:
-                            # Se o texto é diferente mas a IA não marcou, força 'DIVERGENTE' ou 'CONFORME' (dependendo da sensibilidade)
-                            # Aqui assumimos CONFORME se a IA não achou diff relevante, mas idealmente revisamos
-                            dados['status'] = 'CONFORME'
+                            # Se os textos são diferentes mas a IA não marcou, força 'DIVERGENTE'
+                            # Isso ajuda a pegar casos onde faltou texto inteiro e a IA esqueceu de marcar
+                            if len(texto_ref_norm) != len(texto_bel_norm) and abs(len(texto_ref_norm) - len(texto_bel_norm)) > 10:
+                                 dados['status'] = 'DIVERGENTE'
+                            else:
+                                 dados['status'] = 'CONFORME' # Pequenas diferenças não marcadas
                 
+                if "DIZERES LEGAIS" in secao.upper():
+                    dados['status'] = "VISUALIZACAO"
+
                 return dados
                 
         except Exception as e:
@@ -418,7 +421,7 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v2.0 - Otimizado")
+    st.caption("v2.1 - Extração Robusta")
 
 if pagina == "🏠 Início":
     st.markdown("""
