@@ -174,6 +174,12 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
     # Regras Específicas para corrigir os erros relatados
     regra_extra = ""
     
+    # Lógica de Ponto de Partida: Se for pergunta (tem interrogação), começa após ela.
+    if "?" in secao:
+        instrucao_inicio = f'O conteúdo começa IMEDIATAMENTE APÓS o ponto de interrogação (?) do título "{secao}". NÃO repita o título, extraia apenas a resposta.'
+    else:
+        instrucao_inicio = f'Comece a extrair o conteúdo logo após o título "{secao}".'
+
     if "1. PARA QUE" in secao.upper():
         regra_extra = """
         ⚠️ REGRA DE OURO DA SEÇÃO 1:
@@ -205,7 +211,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
     1. **NÃO REESCREVA**: Se o texto diz "deixou de tomar", ESCREVA "deixou de tomar". É proibido usar sinônimos.
     2. **NÃO RESUMA**: Se o texto tem 3 parágrafos, traga os 3 parágrafos.
     3. **RESPEITE OS LIMITES**:
-       - Comece no título "{secao}".
+       - {instrucao_inicio}
        - Pare se encontrar o título de QUALQUER OUTRA seção da lista abaixo.
     
     {regra_extra}
@@ -287,13 +293,13 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v5.1 - Final")
+    st.caption("v5.2 - Início pós-pergunta")
 
 if pagina == "🏠 Início":
     st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1: st.info("✅ **Correção Seção 1:** Ignora avisos de 'Atenção' (pertencem à Seção 3).")
-    with c2: st.info("✅ **Correção Seção 4/9:** Força leitura de parágrafos múltiplos e colunas.")
+    with c2: st.info("✅ **Correção:** Conteúdo das perguntas começa após a interrogação.")
 
 else:
     st.markdown(f"## {pagina}")
