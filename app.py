@@ -187,10 +187,10 @@ def clean_noise(text):
     for line in lines:
         l = line.strip()
         # Remove números de página isolados ou 'Página X de Y'
-        if re.match(r'^(Página|Pag\.?)\s*\d+(\s*de\s*\d+)?$', l, re.IGNORECASE) or re.match(r'^\d+(\s*de\s*\d+)?$', l):
+        if re.match(r'^(Página|Pag\.?)\s*\d+(\s*de\s*\d+)?$', l, re.IGNORECASE) or re.match(r'^\d+(\s*de\s*\d+)?$', l) or re.match(r'^\d+$', l):
             continue
-        # Remove nomes de laboratório comuns que aparecem em rodapés
-        if l.upper() in ["BELFAR", "SANOFI", "EMS", "EUROFARMA", "MEDLEY", "ACHÉ", "NEO QUÍMICA"]:
+        # Remove nomes de laboratório comuns que aparecem em rodapés repetidamente
+        if l.upper() in ["BELFAR", "SANOFI", "EMS", "EUROFARMA", "MEDLEY", "ACHÉ", "NEO QUÍMICA", "UBELFAR"]:
             continue
         cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
@@ -210,6 +210,7 @@ def process_file_content(file_bytes, filename):
             
             # --- CORREÇÃO DE LEITURA DE COLUNAS ---
             # sort=True ordena visualmente: coluna 1 inteira, depois coluna 2 inteira
+            # Isso garante que o texto siga a ordem lógica de leitura humana
             for page in doc: 
                 blocks = page.get_text("blocks", sort=True)
                 
@@ -276,7 +277,7 @@ REGRAS FUNDAMENTAIS DE COMPARAÇÃO:
    ✅ Número DIFERENTE: "10mg" vs "20mg"
    ✅ Frase FALTANDO em um dos textos. Se um documento tem um parágrafo inteiro e o outro não, MARQUE TODO O TEXTO FALTANTE EM AMARELO.
    ❌ NUNCA marque textos idênticos.
-   ❌ NUNCA corrija o texto (MANTENHA OS ERROS ORIGINAIS).
+   ❌ NUNCA corrija o texto. Se o original diz "deixou de tomar", MANTENHA "deixou de tomar". NÃO MUDE para "esqueceu".
 
 3. **MARCAÇÃO VERMELHA** (<mark class='ort'>) - USE RARAMENTE:
    ✅ Apenas erros ortográficos ÓBVIOS: "mediçamento", "efeicácia"
@@ -305,41 +306,44 @@ SAÍDA JSON:
 """
         
     else:
-        # Lógica de "Barreira de Parada" AGRESSIVA e LISTA COMPLETA
+        # Lógica de "Barreira de Parada" TOTAL:
+        # Passa TODAS as seções como barreiras. O modelo deve parar se encontrar QUALQUER título de seção que não seja o atual.
         barreiras = [s for s in todas_secoes if s != secao]
         barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
         
+        # Cria lista formatada para o prompt
         stop_markers_str = "\n".join([f"⛔ {s}" for s in barreiras])
         
         prompt_text = f"""
 {base_instruction}
 
-TAREFA CRÍTICA: Extrair e Comparar a seção "{secao}" COMPLETA.
+TAREFA CRÍTICA: Extrair e Comparar a seção "{secao}" de forma LITERAL.
 
-⚠️ INSTRUÇÃO DE EXTRAÇÃO LITERAL (ROBÔ DE RECORTE):
-1. **NÃO REESCREVA**: Se o texto original diz "Se você deixou de tomar", NÃO altere para "Se você se esquecer". COPIE EXATAMENTE O QUE ESTÁ ESCRITO.
-2. **NÃO RESUMA**: Copie cada palavra, vírgula e ponto.
-3. **EXTRAÇÃO**: Localize o título "{secao}". Copie TUDO o que vem imediatamente depois dele.
-4. **PARADA OBRIGATÓRIA**: Pare a cópia IMEDIATAMENTE se encontrar o título de QUALQUER OUTRA SEÇÃO da lista abaixo.
+⚠️ VOCÊ É UM ROBÔ DE OCR. NÃO PENSE. NÃO RESUMA. NÃO SINONIMIZE.
+1. Se o texto diz "Se você deixou de tomar", ESCREVA "Se você deixou de tomar". NÃO MUDE PARA "Se você se esquecer".
+2. Se o texto diz "Atenção: Contém lactose", inclua isso APENAS se fizer parte desta seção específica.
 
-⛔ LISTA DE TÍTULOS DE PARADA (Se encontrar qualquer um destes, PARE e não copie ele):
+⚠️ INSTRUÇÃO DE EXTRAÇÃO E PARADA (MUITO IMPORTANTE):
+1. Localize o título "{secao}".
+2. Copie TUDO o que vem imediatamente depois.
+3. PARE IMEDIATAMENTE se encontrar um dos títulos abaixo (STOP MARKERS). Não copie o título da próxima seção e nem o texto dela.
+
+⛔ LISTA DE TÍTULOS DE PARADA (Se encontrar, PARE DE COPIAR antes de escrever o título):
 {stop_markers_str}
 
-EXEMPLO DE EXTRAÇÃO CORRETA:
-Texto: "1. PARA QUE SERVE Serve para dor. Atenção: cuidado. 2. COMO USAR Tome 1 cp."
-Seção Alvo: "1. PARA QUE SERVE"
-Extração Correta: "Serve para dor. Atenção: cuidado."
-(Note que parou antes do "2. COMO USAR")
+EXEMPLO DE ERRO GRAVE QUE VOCÊ NÃO PODE COMETER:
+Se a Seção 1 diz: "Serve para gripe." e logo depois vem "2. COMO USAR...", você deve extrair APENAS "Serve para gripe.".
+Se você extrair "Serve para gripe. 2. COMO USAR...", ESTARÁ ERRADO.
 
-EXEMPLO DE ERRO GRAVE (NÃO FAÇA ISSO):
-Extração Errada: "Serve para dor. Atenção: cuidado. 2. COMO USAR Tome 1 cp." (ERRO: Copiou a seção 2 junto!)
-Extração Errada 2: "Serve para dor." (ERRO: Esqueceu do 'Atenção' que estava antes da seção 2!)
+EXEMPLO DE SEÇÃO 9 (SUPERDOSE):
+Muitas vezes a seção 9 começa com um parágrafo ("Se você tomar uma dose muito grande...") e depois tem um aviso em negrito ("Em caso de uso...").
+VOCÊ DEVE PEGAR TUDO ISSO, até chegar em "DIZERES LEGAIS".
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto completo EXATO (cortado exatamente antes da próxima seção)",
-  "bel": "texto completo EXATO (cortado exatamente antes da próxima seção)",
+  "ref": "texto completo EXATO do doc referencia (respeitando as paradas)",
+  "bel": "texto completo EXATO do doc belfar (respeitando as paradas)",
   "status": "será determinado automaticamente"
 }}
 """
@@ -409,7 +413,6 @@ SAÍDA JSON:
                             dados['status'] = 'DIVERGENTE'
                         else:
                             # Se os textos são diferentes mas a IA não marcou, força 'DIVERGENTE'
-                            # Isso ajuda a pegar casos onde faltou texto inteiro e a IA esqueceu de marcar
                             if len(texto_ref_norm) != len(texto_bel_norm) and abs(len(texto_ref_norm) - len(texto_bel_norm)) > 10:
                                  dados['status'] = 'DIVERGENTE'
                             else:
