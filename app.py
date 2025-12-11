@@ -189,10 +189,11 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
         """
     elif "4. O QUE DEVO SABER" in secao.upper() or "9. O QUE FAZER" in secao.upper():
         regra_extra = """
-        ⚠️ REGRA DE OURO DE SEÇÃO LONGA:
-        - Esta seção tem MÚLTIPLOS parágrafos e pode pular colunas.
-        - Não pare no primeiro ponto final. Continue lendo até encontrar um TÍTULO NUMÉRICO (ex: '5. ONDE...' ou 'DIZERES LEGAIS').
-        - Na Seção 9, capture tanto o texto descritivo quanto o aviso em negrito "Em caso de uso...". Capture TUDO.
+        ⚠️ REGRA DE AGREGAÇÃO (TEXTO + CAIXAS):
+        - Esta seção contém múltiplos elementos: Texto corrido E Caixas de "Atenção".
+        - Você DEVE extrair TUDO (texto + avisos).
+        - O texto pode atravessar colunas e páginas. Leia até encontrar o título numérico da próxima seção (ex: '5. ONDE...' ou 'DIZERES LEGAIS').
+        - Na Seção 9, capture tanto o texto descritivo quanto o aviso em negrito "Em caso de uso...".
         """
     elif "7. O QUE DEVO FAZER" in secao.upper():
         regra_extra = """
@@ -209,11 +210,10 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
     
     REGRAS INEGOCIÁVEIS:
     1. **NÃO REESCREVA**: Se o texto diz "deixou de tomar", ESCREVA "deixou de tomar". É proibido usar sinônimos.
-    2. **NEGRITO É CONTEÚDO**: Texto em **negrito** faz parte do conteúdo. NUNCA ignore uma frase ou aviso só porque está em negrito. Copie integralmente.
-    3. **NÃO RESUMA**: Se o texto tem 3 parágrafos, traga os 3 parágrafos.
-    4. **RESPEITE OS LIMITES**:
+    2. **NÃO RESUMA**: Se o texto tem 3 parágrafos, traga os 3 parágrafos.
+    3. **RESPEITE OS LIMITES**:
        - {instrucao_inicio}
-       - Pare APENAS se encontrar o título de QUALQUER OUTRA seção da lista abaixo.
+       - Pare se encontrar o título de QUALQUER OUTRA seção da lista abaixo.
     
     {regra_extra}
     
@@ -277,7 +277,7 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
                     dados['status'] = "VISUALIZACAO"
 
                 return dados
-
+                
         except Exception as e:
             if attempt == 0: time.sleep(1)
             else: return {"titulo": secao, "ref": f"Erro: {str(e)}", "bel": "Erro", "status": "ERRO"}
@@ -294,13 +294,13 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v5.3 - Negrito = Conteúdo")
+    st.caption("v5.2 - Início pós-pergunta")
 
 if pagina == "🏠 Início":
     st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
-    with c1: st.info("✅ **Correção:** Conteúdo começa após interrogação.")
-    with c2: st.info("✅ **Regra Nova:** Texto em negrito é capturado como conteúdo obrigatório.")
+    with c1: st.info("✅ **Correção Seção 1:** Ignora avisos de 'Atenção' (pertencem à Seção 3).")
+    with c2: st.info("✅ **Correção:** Conteúdo das perguntas começa após a interrogação.")
 
 else:
     st.markdown(f"## {pagina}")
