@@ -187,10 +187,10 @@ def clean_noise(text):
     for line in lines:
         l = line.strip()
         # Remove números de página isolados ou 'Página X de Y'
-        if re.match(r'^(Página|Pag\.?)\s*\d+(\s*de\s*\d+)?$', l, re.IGNORECASE) or re.match(r'^\d+\s*de\s*\d+$', l) or re.match(r'^\d+$', l):
+        if re.match(r'^(Página|Pag\.?)\s*\d+(\s*de\s*\d+)?$', l, re.IGNORECASE) or re.match(r'^\d+(\s*de\s*\d+)?$', l):
             continue
-        # Remove nomes de laboratório repetidos (ajuste conforme necessário)
-        if l.upper() in ["BELFAR", "SANOFI", "EMS", "EUROFARMA", "MEDLEY"]:
+        # Remove nomes de laboratório comuns que aparecem em rodapés
+        if l.upper() in ["BELFAR", "SANOFI", "EMS", "EUROFARMA", "MEDLEY", "ACHÉ", "NEO QUÍMICA"]:
             continue
         cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
@@ -276,7 +276,7 @@ REGRAS FUNDAMENTAIS DE COMPARAÇÃO:
    ✅ Número DIFERENTE: "10mg" vs "20mg"
    ✅ Frase FALTANDO em um dos textos. Se um documento tem um parágrafo inteiro e o outro não, MARQUE TODO O TEXTO FALTANTE EM AMARELO.
    ❌ NUNCA marque textos idênticos.
-   ❌ NUNCA corrija o texto (se tiver erro de digitação no original, MANTENHA O ERRO e compare).
+   ❌ NUNCA corrija o texto (MANTENHA OS ERROS ORIGINAIS).
 
 3. **MARCAÇÃO VERMELHA** (<mark class='ort'>) - USE RARAMENTE:
    ✅ Apenas erros ortográficos ÓBVIOS: "mediçamento", "efeicácia"
@@ -305,11 +305,7 @@ SAÍDA JSON:
 """
         
     else:
-        # Lógica de "Barreira de Parada" AGRESSIVA:
-        # A IA deve parar se encontrar O TÍTULO DE QUALQUER OUTRA SEÇÃO.
-        # Não apenas as futuras, mas QUALQUER uma que não seja a atual.
-        # Isso impede que ela leia a seção 1, acabe, e comece a ler a seção 2 que está na coluna ao lado.
-        
+        # Lógica de "Barreira de Parada" AGRESSIVA e LISTA COMPLETA
         barreiras = [s for s in todas_secoes if s != secao]
         barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
         
@@ -320,31 +316,30 @@ SAÍDA JSON:
 
 TAREFA CRÍTICA: Extrair e Comparar a seção "{secao}" COMPLETA.
 
-⚠️ INSTRUÇÃO DE EXTRAÇÃO (LEIA COM ATENÇÃO):
-1. O texto foi processado para ler COLUNA POR COLUNA.
-2. Seu objetivo: Localizar onde começa o título "{secao}" e capturar TUDO o que vem depois.
-3. **PARADA OBRIGATÓRIA**: Você DEVE PARAR de extrair assim que encontrar o título de QUALQUER OUTRA SEÇÃO (lista abaixo).
-4. Se o texto da próxima coluna começar com outro título (ex: "2. COMO ESTE..."), NÃO inclua esse título nem o texto dele na sua extração.
+⚠️ INSTRUÇÃO DE EXTRAÇÃO LITERAL (ROBÔ DE RECORTE):
+1. **NÃO REESCREVA**: Se o texto original diz "Se você deixou de tomar", NÃO altere para "Se você se esquecer". COPIE EXATAMENTE O QUE ESTÁ ESCRITO.
+2. **NÃO RESUMA**: Copie cada palavra, vírgula e ponto.
+3. **EXTRAÇÃO**: Localize o título "{secao}". Copie TUDO o que vem imediatamente depois dele.
+4. **PARADA OBRIGATÓRIA**: Pare a cópia IMEDIATAMENTE se encontrar o título de QUALQUER OUTRA SEÇÃO da lista abaixo.
 
-⛔ LISTA DE TÍTULOS QUE FORÇAM A PARADA (STOP MARKERS):
+⛔ LISTA DE TÍTULOS DE PARADA (Se encontrar qualquer um destes, PARE e não copie ele):
 {stop_markers_str}
 
-EXEMPLO DE COMPORTAMENTO ESPERADO:
-Texto original:
-"1. PARA QUE SERVE
-Serve para dor.
-2. COMO USAR
-Tome 1 cp."
+EXEMPLO DE EXTRAÇÃO CORRETA:
+Texto: "1. PARA QUE SERVE Serve para dor. Atenção: cuidado. 2. COMO USAR Tome 1 cp."
+Seção Alvo: "1. PARA QUE SERVE"
+Extração Correta: "Serve para dor. Atenção: cuidado."
+(Note que parou antes do "2. COMO USAR")
 
-Se a tarefa é extrair "1. PARA QUE SERVE":
-CORRETO: "Serve para dor."
-ERRADO: "Serve para dor. 2. COMO USAR Tome 1 cp." (Você não parou no título da seção 2!)
+EXEMPLO DE ERRO GRAVE (NÃO FAÇA ISSO):
+Extração Errada: "Serve para dor. Atenção: cuidado. 2. COMO USAR Tome 1 cp." (ERRO: Copiou a seção 2 junto!)
+Extração Errada 2: "Serve para dor." (ERRO: Esqueceu do 'Atenção' que estava antes da seção 2!)
 
 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto completo (cortado exatamente antes da próxima seção)",
-  "bel": "texto completo (cortado exatamente antes da próxima seção)",
+  "ref": "texto completo EXATO (cortado exatamente antes da próxima seção)",
+  "bel": "texto completo EXATO (cortado exatamente antes da próxima seção)",
   "status": "será determinado automaticamente"
 }}
 """
@@ -457,7 +452,7 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v2.4 - Correção Final de Colunas")
+    st.caption("v2.5 - Correção Final de Texto")
 
 if pagina == "🏠 Início":
     st.markdown("""
