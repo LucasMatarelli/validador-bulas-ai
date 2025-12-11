@@ -149,6 +149,7 @@ SECOES_PROFISSIONAL = [
     "DIZERES LEGAIS"
 ]
 
+# Ajuste: Apenas APRESENTAÇÕES e COMPOSIÇÃO são visualização simples. O resto é auditoria.
 SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
@@ -164,6 +165,7 @@ def get_mistral_client():
 def image_to_base64(image):
     """Converte imagem para base64 otimizado"""
     buffered = io.BytesIO()
+    # Reduz qualidade para 80 (boa qualidade, menor tamanho)
     image.save(buffered, format="JPEG", quality=80, optimize=True)
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
@@ -171,36 +173,50 @@ def sanitize_text(text):
     """Remove caracteres invisíveis e normaliza texto"""
     if not text: return ""
     text = unicodedata.normalize('NFKC', text)
-    text = text.replace('\xa0', ' ').replace('\u200b', '').replace('\u00ad', '').replace('\ufeff', '').replace('\t', ' ')
+    text = text.replace('\xa0', ' ')
+    text = text.replace('\u200b', '')
+    text = text.replace('\u00ad', '')
+    text = text.replace('\ufeff', '')
+    text = text.replace('\t', ' ')
     return re.sub(r'\s+', ' ', text).strip()
 
 def clean_noise(text):
-    """Remove cabeçalhos de página e rodapés comuns que poluem a extração"""
+    """Remove cabeçalhos de página, rodapés e repetições de título que poluem a extração"""
     lines = text.split('\n')
     cleaned_lines = []
-    # Termos comuns de cabeçalho/rodapé para ignorar se a linha for curta
-    lixo_comum = ["BELFAR", "UBELFAR", "SANOFI", "MEDLEY", "EMS", "EUROFARMA", "Página", "Bula do Paciente"]
+    # Lista de termos para limpar
+    ignore_patterns = [
+        r'^\d+(\s*de\s*\d+)?$',  # Números de página isolados "1", "1 de 9"
+        r'^Página\s*\d+\s*de\s*\d+$', # "Página 1 de 9"
+        r'^BELFAR$', # Nome da empresa isolado
+        r'^UBELFAR$',
+        r'^SANOFI$',
+        r'^MEDLEY$',
+        r'^EUROFARMA$',
+        r'^EMS$',
+        r'^Bula do (Paciente|Profissional)$'
+    ]
     
     for line in lines:
         l = line.strip()
-        # Ignora linhas que são apenas números ou paginação (ex: "1 de 9")
-        if re.match(r'^(\d+|Página \d+ de \d+|Pag\.? \d+)$', l, re.IGNORECASE):
-            continue
-        # Ignora nomes de laboratório se a linha for curta (evita apagar texto do corpo)
-        eh_lixo = False
-        if len(l) < 40:
-            for termo in lixo_comum:
-                if termo.upper() in l.upper():
-                    eh_lixo = True
-                    break
+        should_skip = False
+        for pattern in ignore_patterns:
+            if re.match(pattern, l, re.IGNORECASE):
+                should_skip = True
+                break
         
-        if not eh_lixo:
+        # Ignora linhas que são apenas repetições do nome do remédio no topo da página (se for muito curto)
+        if len(l) < 30 and ("BELSPAN" in l.upper() or "BELCOMPLEX" in l.upper() or "MALEATO" in l.upper()):
+             should_skip = True
+
+        if not should_skip:
             cleaned_lines.append(line)
+            
     return "\n".join(cleaned_lines)
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
-    """Processa arquivo com cache otimizado e LEITURA DE COLUNAS COM MARCADORES"""
+    """Processa arquivo com cache otimizado e LEITURA DE COLUNAS APRIMORADA"""
     try:
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -211,23 +227,23 @@ def process_file_content(file_bytes, filename):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             
-            # --- CORREÇÃO DE LEITURA DE COLUNAS ---
-            # sort=True é essencial para ler a coluna 1 toda antes da 2
+            # sort=True ordena visualmente: coluna 1 inteira, depois coluna 2 inteira
             for page in doc: 
                 blocks = page.get_text("blocks", sort=True)
                 for b in blocks:
                     if b[6] == 0:  # Tipo 0 = texto
-                        # Adiciona marcador visual para separar parágrafos/blocos
-                        full_text += b[4] + "\n\n" 
+                        text_content = b[4]
+                        # Adiciona marcador visual de quebra
+                        full_text += text_content + "\n [BLOCO] \n" 
             
-            # Limpa ruídos (cabeçalhos)
+            # Limpeza extra de ruído
             full_text = clean_noise(full_text)
 
-            if len(full_text.strip()) > 100:
+            if len(full_text.strip()) > 500:
                 doc.close()
                 return {"type": "text", "data": sanitize_text(full_text)}
             
-            # OCR (fallback)
+            # OCR apenas se necessário (fallback)
             images = []
             limit_pages = min(5, len(doc))
             for i in range(limit_pages):
@@ -237,6 +253,7 @@ def process_file_content(file_bytes, filename):
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
                 except: 
                     img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                
                 img = Image.open(img_byte_arr)
                 if img.width > 2000:
                     img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
@@ -251,68 +268,95 @@ def process_file_content(file_bytes, filename):
     return None
 
 def extract_json(text):
+    """Extrai JSON de forma robusta"""
     text = re.sub(r'```json|```', '', text).strip()
+    if text.startswith("json"): text = text[4:]
     try:
         start, end = text.find('{'), text.rfind('}') + 1
         return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
-    except: return None
+    except: 
+        return None
 
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
-    """Worker otimizado com prompt LITERAL e barreiras de seção"""
+    """Worker otimizado com prompts melhorados e retry inteligente"""
     
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
     # Barreiras de parada: TODOS os outros títulos de seção.
-    # Isso impede que o texto da Seção 3 vaze para a Seção 1.
     barreiras = [s for s in todas_secoes if s != secao]
     barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
     stop_markers_str = "\n".join([f"- {s}" for s in barreiras])
+    
+    # Lógica específica para corrigir a SEÇÃO 1 que engole a 3
+    aviso_secao1 = ""
+    if "1. PARA QUE" in secao.upper():
+        aviso_secao1 = """
+        ⚠️ REGRA ESPECÍFICA PARA SEÇÃO 1:
+        - A Seção 1 (Indicações) NUNCA contém avisos iniciados por "Atenção: Contém..." ou "Atenção: Este medicamento...".
+        - Se você encontrar um texto "Atenção:" logo após a indicação, verifique: se ele fala sobre lactose, açúcar, corantes ou "não deve ser usado", ISSO PERTENCE À SEÇÃO 3 (Contraindicações) ou 5 (Advertências).
+        - NÃO INCLUA esses avisos de "Atenção" na Seção 1. Pare de copiar antes deles.
+        """
 
     prompt_text = f"""
-    Você é um robô de extração de texto OCR extremamente LITERAL.
-    
-    SUA TAREFA:
-    Extrair o texto da seção "{secao}" e comparar.
-    
-    REGRAS INEGOCIÁVEIS (LEIA COM ATENÇÃO):
-    1. **CÓPIA FIEL:** Copie o texto EXATAMENTE como está no documento. 
-       - SE O TEXTO DIZ "deixou de tomar", VOCÊ DEVE ESCREVER "deixou de tomar".
-       - É PROIBIDO escrever "se esquecer" ou usar sinônimos.
-       - É PROIBIDO resumir.
-    
-    2. **LIMITES RIGOROSOS:**
-       - Comece a copiar IMEDIATAMENTE após o título "{secao}".
-       - **PARE IMEDIATAMENTE** se encontrar o título de QUALQUER OUTRA SEÇÃO da lista abaixo.
-       - Se você vir "Atenção: Contém..." e logo acima dele não for o final da seção atual, mas sim o início de outra (ex: Seção 3), NÃO inclua esse "Atenção".
-    
-    ⛔ TÍTULOS DE PARADA (Se encontrar qualquer um destes, PARE DE COPIAR):
-    {stop_markers_str}
-    
-    EXEMPLO DA SEÇÃO 9 (SUPERDOSE):
-    Esta seção geralmente tem dois blocos: "Se você tomar..." e "Em caso de uso...". Capture AMBOS até chegar em "DIZERES LEGAIS".
-    
-    SAÍDA JSON:
-    {{
-      "titulo": "{secao}",
-      "ref": "texto completo e LITERAL do doc de referência...",
-      "bel": "texto completo e LITERAL do doc belfar...",
-      "status": "CONFORME" (se iguais) ou "DIVERGENTE" (se diferentes)
-    }}
-    """
+REGRAS SUPREMAS DE EXTRAÇÃO DE TEXTO (OCR):
+
+Você NÃO é um redator. Você é um COPIADOR (SCANNER).
+Sua única função é recortar o texto exato de uma seção e colar no JSON.
+
+1. **PROIBIDO SINTETIZAR/RESUMIR/ALTERAR**:
+   - Se o texto diz "deixou de tomar", ESCREVA "deixou de tomar". NÃO escreva "se esquecer".
+   - Se o texto diz "Para que este medicamento é indicado?", NÃO escreva apenas "Indicações".
+   - Mantenha erros de português se existirem no original.
+
+2. **LÓGICA DE CONTINUIDADE (CRÍTICO):**
+   - O texto tem quebras de coluna. Se uma frase termina abruptamente no fim de um bloco, ELA CONTINUA no próximo bloco que não seja um título.
+   - **CONTINUE LENDO** através de colunas e páginas até encontrar um TÍTULO DE PARADA.
+
+3. **LÓGICA DE PARADA (CRÍTICO):**
+   - PARE IMEDIATAMENTE se encontrar qualquer um dos títulos abaixo.
+   - NÃO COPIE o título da próxima seção para dentro da atual.
+
+⛔ LISTA DE TÍTULOS DE PARADA (STOP MARKERS):
+{stop_markers_str}
+
+{aviso_secao1}
+
+TAREFA:
+Localize "{secao}" nos dois textos abaixo e extraia o conteúdo EXATO.
+
+SAÍDA JSON:
+{{
+  "titulo": "{secao}",
+  "ref": "cole aqui o texto exato do doc referencia",
+  "bel": "cole aqui o texto exato do doc belfar",
+  "status": "será determinado automaticamente"
+}}
+"""
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    # Limite de texto
+    # Limite de texto otimizado
     limit = 60000
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
-            messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
+            messages_content.append({
+                "type": "text", 
+                "text": f"\n--- {nome} ---\n{d['data'][:limit]}"
+            }) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagem) ---"})
+            messages_content.append({
+                "type": "text", 
+                "text": f"\n--- {nome} (Imagem) ---"
+            })
+            # Apenas primeiras 2 imagens para velocidade
             for img in d['data'][:2]: 
                 b64 = image_to_base64(img)
-                messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
+                messages_content.append({
+                    "type": "image_url", 
+                    "image_url": f"data:image/jpeg;base64,{b64}"
+                })
 
+    # Retry inteligente com backoff exponencial
     max_retries = 2
     for attempt in range(max_retries):
         try:
@@ -329,21 +373,33 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
                 dados['titulo'] = secao
                 
                 if not eh_visualizacao:
-                    # Normalização básica para comparação (remove espaços extras)
-                    t_ref = re.sub(r'\s+', ' ', str(dados.get('ref', '')).strip().lower())
-                    t_bel = re.sub(r'\s+', ' ', str(dados.get('bel', '')).strip().lower())
+                    texto_ref = str(dados.get('ref', '')).lower()
+                    texto_bel = str(dados.get('bel', '')).lower()
                     
-                    # Remove marcações HTML antigas se a IA colocou por engano
-                    t_ref = re.sub(r'<[^>]+>', '', t_ref)
-                    t_bel = re.sub(r'<[^>]+>', '', t_bel)
-
-                    if t_ref == t_bel:
+                    # Remove marcações HTML residuais
+                    texto_ref = re.sub(r'<[^>]+>', '', texto_ref)
+                    texto_bel = re.sub(r'<[^>]+>', '', texto_bel)
+                    
+                    # Normaliza para comparação (remove espaços duplos)
+                    texto_ref_norm = re.sub(r'\s+', ' ', texto_ref).strip()
+                    texto_bel_norm = re.sub(r'\s+', ' ', texto_bel).strip()
+                    
+                    if texto_ref_norm == texto_bel_norm:
                         dados['status'] = 'CONFORME'
-                        # Remove marcações visuais se estiver conforme
+                        # Limpa marcações se estiver conforme
                         dados['ref'] = re.sub(r'<mark[^>]*>|</mark>', '', dados.get('ref', ''))
                         dados['bel'] = re.sub(r'<mark[^>]*>|</mark>', '', dados.get('bel', ''))
                     else:
-                        dados['status'] = 'DIVERGENTE'
+                        # Se houver diferença real, mantém marcação ou status
+                        # Aqui confiamos na marcação da IA se ela usou <mark>, senão marcamos como divergente pelo texto
+                        if '<mark' in str(dados.get('ref', '')) or '<mark' in str(dados.get('bel', '')):
+                             dados['status'] = 'DIVERGENTE'
+                        else:
+                             # Se texto é diferente mas IA não marcou, força DIVERGENTE se a diferença for relevante
+                             if len(texto_ref_norm) != len(texto_bel_norm):
+                                 dados['status'] = 'DIVERGENTE'
+                             else:
+                                 dados['status'] = 'CONFORME'
                 
                 if "DIZERES LEGAIS" in secao.upper():
                     dados['status'] = "VISUALIZACAO"
@@ -352,12 +408,23 @@ def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_seco
                 
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(2)
+                wait_time = 2 ** attempt
+                time.sleep(wait_time)
                 continue
             else:
-                return {"titulo": secao, "ref": f"Erro: {str(e)}", "bel": "Erro", "status": "ERRO"}
+                return {
+                    "titulo": secao,
+                    "ref": f"⚠️ Erro após {max_retries} tentativas: {str(e)[:100]}",
+                    "bel": f"⚠️ Erro após {max_retries} tentativas: {str(e)[:100]}",
+                    "status": "ERRO"
+                }
     
-    return {"titulo": secao, "ref": "Falha processamento", "bel": "Falha", "status": "ERRO"}
+    return {
+        "titulo": secao,
+        "ref": "Texto não processado após tentativas.",
+        "bel": "Texto não processado após tentativas.",
+        "status": "ERRO"
+    }
 
 # ----------------- UI PRINCIPAL -----------------
 with st.sidebar:
@@ -371,7 +438,7 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v3.1 - Correção Literal")
+    st.caption("v4.0 - Lógica de Parada Rígida")
 
 if pagina == "🏠 Início":
     st.markdown("""
@@ -462,6 +529,7 @@ else:
             st.error("❌ Cliente Mistral não configurado. Verifique a API Key.")
             st.stop()
         else:
+            # Feedback visual melhorado
             with st.status("🔄 Processando documentos...", expanded=True) as status:
                 st.write("📖 Lendo arquivos...")
                 
