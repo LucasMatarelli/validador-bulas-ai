@@ -149,7 +149,8 @@ SECOES_PROFISSIONAL = [
     "DIZERES LEGAIS"
 ]
 
-SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?"]
+# Ajustado: removida a seção 7 daqui para que ela seja comparada normalmente
+SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
 
