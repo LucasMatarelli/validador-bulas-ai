@@ -1,4 +1,5 @@
 streamlit
-mistralai
-PyMuPDF
+google-generativeai>=0.8.3
+pymupdf
 python-docx
+Pillow
