@@ -6,213 +6,205 @@ import docx
 import io
 import re
 import os
-import unicodedata
-
-# ----------------- CONFIGURAÇÃO DA CHAVE API -----------------
-# Sua chave foi configurada diretamente aqui para facilitar
-MINHA_API_KEY = "AIzaSyBcPfO6nlsy1vCvKW_VNofEmG7GaSdtiLE"
+import time
+from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador de Bulas Pro (Gemini)",
-    page_icon="🧠",
+    page_title="Validador Pro (Scan Support)",
+    page_icon="👁️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (Visual Limpo) -----------------
+# ----------------- CSS -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
     .main { background-color: #f4f6f8; }
-    
-    /* Cards de veredito */
     .stCard { background-color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    
-    /* Botão Roxo (Estilo Gemini Pro) */
-    .stButton>button { 
-        width: 100%; 
-        background-color: #6f42c1; 
-        color: white; 
-        font-weight: bold; 
-        border-radius: 8px; 
-        height: 50px; 
-        border: none;
-        font-size: 16px;
-    }
+    .stButton>button { width: 100%; background-color: #6f42c1; color: white; font-weight: bold; border-radius: 8px; height: 50px; font-size: 16px; }
     .stButton>button:hover { background-color: #5a32a3; }
-    
-    /* Áreas de texto */
-    .stTextArea textarea { font-size: 14px; color: #333; background-color: #f9f9f9; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- FUNÇÕES DE SISTEMA -----------------
-
-def configure_gemini():
-    """Configura a API do Google com a chave fornecida"""
-    if MINHA_API_KEY:
-        genai.configure(api_key=MINHA_API_KEY)
+# ----------------- SETUP DA API -----------------
+def configure_api():
+    # Tenta pegar do secrets do Streamlit, senão usa a variável direta (fallback)
+    api_key = st.secrets.get("GOOGLE_API_KEY")
+    if not api_key:
+        # Fallback caso o secrets falhe
+        api_key = "AIzaSyBcPfO6nlsy1vCvKW_VNofEmG7GaSdtiLE"
+    
+    if api_key:
+        genai.configure(api_key=api_key)
         return True
     return False
 
+# ----------------- LEITURA DE ARQUIVO (TEXTO E IMAGEM) -----------------
 def clean_noise(text):
-    """
-    Limpeza Cirúrgica (Baseada no seu código v105).
-    Remove sujeira técnica de gráfica (marcas de corte, pantone, etc)
-    mas mantém o conteúdo médico intacto.
-    """
+    """Limpeza técnica básica"""
     if not text: return ""
-    
-    # 1. Normalização
     text = text.replace('\xa0', ' ').replace('\r', '')
-    
-    # 2. Lista de padrões de lixo técnico para remover
     patterns = [
         r'^\d+(\s*de\s*\d+)?$', r'^Página\s*\d+\s*de\s*\d+$',
         r'^Bula do (Paciente|Profissional)$', r'^Versão\s*\d+$',
-        r'^\s*:\s*\d{1,3}\s*[xX]\s*\d{1,3}\s*$', # Dimensões
-        r'\b\d{1,3}\s*mm\b', r'\b\d{1,3}\s*cm\b',
-        r'.*:\s*19\s*,\s*0\s*x\s*45\s*,\s*0.*',
-        r'^\s*\d{1,3}\s*,\s*00\s*$',
+        r'^\s*:\s*\d{1,3}\s*[xX]\s*\d{1,3}\s*$', r'\b\d{1,3}\s*mm\b',
         r'.*Impess[ãa]o:.*', r'.*Negrito\s*[\.,]?\s*Corpo\s*\d+.*',
         r'.*artes.*belfar.*', r'.*Cor:\s*Preta.*', r'.*Papel:.*',
         r'.*Times New Roman.*', r'.*Cores?:.*', r'.*Pantone.*',
         r'.*Laetus.*', r'.*Pharmacode.*', r'^\s*BELFAR\s*$',
-        r'.*CNPJ:.*', r'.*SAC:.*', r'.*Farm\. Resp\..*',
-        r'^\s*VERSO\s*$', r'^\s*FRENTE\s*$'
+        r'.*CNPJ:.*', r'.*SAC:.*', r'.*Farm\. Resp\..*'
     ]
-    
     for p in patterns:
         text = re.sub(p, '', text, flags=re.IGNORECASE | re.MULTILINE)
-    
-    # Remove excesso de quebras de linha
     return re.sub(r'\n{3,}', '\n\n', text).strip()
 
-def extract_full_text(file_bytes, filename):
+def extract_content(file_bytes, filename):
     """
-    Lê o arquivo PDF ou DOCX e retorna o texto bruto limpo.
-    Usa PyMuPDF para PDF (rápido e preciso).
+    Lê o arquivo. Retorna um dicionário indicando se é TEXTO ou IMAGEM.
     """
     try:
-        text = ""
+        # CASO 1: DOCX (Sempre texto)
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
-        else:
-            doc = fitz.open(stream=file_bytes, filetype="pdf")
-            for page in doc: 
-                # Leitura em blocos para manter ordem das colunas
-                blocks = page.get_text("blocks", sort=True)
-                for b in blocks:
-                    if b[6] == 0: # Apenas texto
-                        text += b[4] + "\n"
+            return {"type": "text", "data": clean_noise(text)}
         
-        # Se tiver muito pouco texto, é provável que seja imagem/scan
-        if len(text) < 100: return None 
-        return clean_noise(text)
-    except: return None
+        # CASO 2: PDF
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        full_text = ""
+        
+        # Tenta extrair texto primeiro
+        for page in doc:
+            full_text += page.get_text() + "\n"
+        
+        # Se tiver texto suficiente, ótimo!
+        if len(full_text.strip()) > 100:
+            doc.close()
+            return {"type": "text", "data": clean_noise(full_text)}
+        
+        # CASO 3: SCAN (Pouco texto -> Converte para Imagens)
+        images = []
+        # Limitamos a 6 páginas para não estourar a API (geralmente bulas cabem nisso)
+        limit_pages = min(6, len(doc))
+        for i in range(limit_pages):
+            page = doc[i]
+            # Matrix 2.0 aumenta a qualidade (zoom) para OCR melhor
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            try:
+                img_data = pix.tobytes("jpeg")
+                img = Image.open(io.BytesIO(img_data))
+                images.append(img)
+            except: pass
+        doc.close()
+        
+        if images:
+            return {"type": "image", "data": images}
+        else:
+            return {"type": "error", "data": "Falha ao ler PDF."}
 
-# ----------------- RECORTE INTELIGENTE (SMART SLICE) -----------------
+    except Exception as e:
+        return {"type": "error", "data": str(e)}
 
+# ----------------- RECORTE DE TEXTO (PYTHON) -----------------
 def find_section_start(text, section_name):
-    """Encontra onde começa uma seção, tolerando pequenas diferenças"""
     text_lower = text.lower()
-    # Tenta achar título exato
     core_title = section_name.lower().split('?')[0]
     match = re.search(re.escape(core_title), text_lower)
     if match: return match.start()
     
-    # Fallback: Tenta achar "1. " se a seção for numerada
     if section_name[0].isdigit():
         num = section_name.split('.')[0]
         match = re.search(rf"\n\s*{num}\.\s", text_lower)
         if match: return match.start()
     return -1
 
-def get_section_text(full_text, section, all_sections):
-    """Corta o texto da seção atual até o início da próxima"""
-    if not full_text: return "Texto não detectado (Possível Scan/Imagem)"
-    
+def get_section_text_python(full_text, section, all_sections):
+    if not full_text: return ""
     start = find_section_start(full_text, section)
-    if start == -1: return "Seção não encontrada neste documento"
+    if start == -1: return "Seção não encontrada (Texto)"
     
     end = len(full_text)
     try:
         idx = all_sections.index(section)
-        # Procura a próxima seção que exista no texto para usar como fim
         for i in range(idx+1, len(all_sections)):
             next_start = find_section_start(full_text, all_sections[i])
             if next_start > start:
                 end = next_start
                 break
     except: pass
-    
     return full_text[start:end].strip()
 
-# ----------------- CÉREBRO DA IA (JUIZ) -----------------
+# ----------------- RECORTE DE IMAGEM (OCR GEMINI) -----------------
+def get_section_text_from_image(images, section):
+    """Usa o Gemini para ler a seção específica direto das imagens"""
+    
+    safety = {HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE, 
+              HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+              HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+              HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE}
+    
+    model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety)
+    
+    prompt = [
+        f"Você é uma máquina de OCR. Sua tarefa é transcrever o texto da seção '{section}'.",
+        "1. Olhe todas as imagens.",
+        f"2. Encontre onde começa o título '{section}'.",
+        "3. Transcreva tudo o que está abaixo desse título até encontrar o título da próxima seção.",
+        "4. Se não encontrar a seção, responda apenas 'Seção não encontrada'.",
+        "5. Não faça resumos. Transcrição literal."
+    ]
+    prompt.extend(images) # Adiciona as imagens ao prompt
+    
+    try:
+        resp = model.generate_content(prompt)
+        return resp.text.strip()
+    except Exception as e:
+        return f"Erro no OCR: {str(e)}"
 
+# ----------------- JUIZ (COMPARADOR) -----------------
 def ai_judge_diff(ref_text, bel_text, secao):
-    """
-    Usa o Gemini Pro apenas para JULGAR a diferença.
-    Não pede para ele extrair (evita bloqueio de copyright).
-    """
-    if len(ref_text) < 10 or len(bel_text) < 10: return "⚠️ Texto insuficiente para análise."
+    if len(ref_text) < 10 or len(bel_text) < 10: return "⚠️ Texto insuficiente."
     
-    # Configurações de segurança no ZERO para não bloquear bulas
-    safety = {
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    }
-    
-    # Usando o modelo Pro (Mais inteligente que o Flash)
-    model = genai.GenerativeModel('gemini-1.5-pro', safety_settings=safety)
+    safety = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
+    model = genai.GenerativeModel('gemini-1.5-pro', safety_settings=safety) # Pro para julgar melhor
     
     prompt = f"""
-    Atue como um Especialista em Assuntos Regulatórios da ANVISA.
+    Atue como Auditor de Qualidade. Compare os textos da seção "{secao}".
     
-    TAREFA: Compare os dois textos abaixo da seção "{secao}".
+    REF (Original):
+    {ref_text[:15000]}
     
-    --- TEXTO REFERÊNCIA (Arte/Anvisa) ---
-    {ref_text[:20000]}
-    
-    --- TEXTO GRÁFICA (Prova) ---
-    {bel_text[:20000]}
+    GRÁFICA (Prova):
+    {bel_text[:15000]}
     
     INSTRUÇÕES:
-    1. Ignore formatação, quebras de linha ou espaços extras.
-    2. Foque em CONTEÚDO: Números (mg, ml), nomes de substâncias, avisos de "Atenção" e "Negrito".
-    3. Se o texto da Gráfica tiver o mesmo conteúdo do texto de Referência, responda apenas: "CONFORME".
-    4. Se houver diferença de conteúdo (ex: falta um aviso, número errado), LISTE O ERRO.
+    1. Ignore formatação e quebras de linha.
+    2. Se os textos dizem a mesma coisa (mesmos números, substâncias, avisos), responda "CONFORME".
+    3. Se houver erro (número diferente, falta de aviso de alerta), descreva o erro.
     """
-    
     try:
         resp = model.generate_content(prompt)
         return resp.text
     except Exception as e:
-        return f"Erro na IA: {str(e)}"
+        return f"Erro Juiz: {str(e)}"
 
-# ----------------- INTERFACE PRINCIPAL -----------------
+# ----------------- UI -----------------
+st.title("👁️ Validador Pro (Com Suporte a Scan)")
+st.markdown("**Status:** Ativo | **Engine:** Gemini 1.5 Pro/Flash | **Modo:** Texto & Scan (OCR)")
 
-st.title("🧠 Validador Pro (Gemini Hybrid)")
-st.markdown("**Status:** Pronta para uso | **Engine:** Gemini 1.5 Pro | **Modo:** Extração Python + Análise IA")
-
-if configure_gemini():
-    st.success(f"✅ Chave API conectada com sucesso!")
+if configure_api():
+    st.success("✅ API Conectada")
 else:
-    st.error("❌ Erro na Chave API.")
+    st.error("❌ Erro na configuração da API Key")
 
-# Upload
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📄 Arquivo Referência (PDF/Word)", key="f1")
-f2 = c2.file_uploader("📄 Arquivo Gráfica (PDF/Word)", key="f2")
+f1 = c1.file_uploader("Referência", key="f1")
+f2 = c2.file_uploader("Gráfica", key="f2")
 
-# Definição das seções
-SECOES_PACIENTE = [
-    "APRESENTAÇÕES",
-    "COMPOSIÇÃO",
+SECOES = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO",
     "1. PARA QUE ESTE MEDICAMENTO É INDICADO?",
     "2. COMO ESTE MEDICAMENTO FUNCIONA?",
     "3. QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?",
@@ -225,60 +217,55 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-if f1 and f2:
-    st.divider()
-    if st.button("🚀 INICIAR AUDITORIA PRO"):
-        with st.spinner("Processando... Lendo arquivos..."):
-            # 1. Extração Python (Sem risco de alucinação)
-            t1 = extract_full_text(f1.getvalue(), f1.name)
-            t2 = extract_full_text(f2.getvalue(), f2.name)
+if f1 and f2 and st.button("🚀 EXECUTAR AUDITORIA"):
+    with st.spinner("Lendo documentos (Detectando se é Texto ou Scan)..."):
+        # Leitura
+        d1 = extract_content(f1.getvalue(), f1.name)
+        d2 = extract_content(f2.getvalue(), f2.name)
+        
+        # Exibe modo detectado
+        modo1 = "📝 TEXTO" if d1['type'] == 'text' else ("📷 SCAN (OCR)" if d1['type'] == 'image' else "❌ ERRO")
+        modo2 = "📝 TEXTO" if d2['type'] == 'text' else ("📷 SCAN (OCR)" if d2['type'] == 'image' else "❌ ERRO")
+        st.info(f"Modo de Leitura: Ref [{modo1}] vs Gráfica [{modo2}]")
+        
+        if d1['type'] == 'error' or d2['type'] == 'error':
+            st.error("Erro na leitura dos arquivos.")
+        else:
+            prog = st.progress(0)
             
-            if not t1 or not t2:
-                st.error("🚨 ERRO CRÍTICO: Um dos arquivos é imagem (Scan) ou está protegido. Este validador requer texto selecionável.")
-            else:
-                st.write("✅ Textos extraídos. Iniciando análise inteligente...")
-                prog = st.progress(0)
+            for i, sec in enumerate(SECOES):
+                # 1. Obter texto da Referência
+                if d1['type'] == 'text':
+                    txt_ref = get_section_text_python(d1['data'], sec, SECOES)
+                else:
+                    # Se for scan, usa OCR do Gemini
+                    txt_ref = get_section_text_from_image(d1['data'], sec)
                 
-                # Loop pelas seções
-                for i, sec in enumerate(SECOES_PACIENTE):
-                    # Recorta o texto exato da seção
-                    txt_ref = get_section_text(t1, sec, SECOES_PACIENTE)
-                    txt_bel = get_section_text(t2, sec, SECOES_PACIENTE)
-                    
-                    # Define cor e status inicial
-                    veredito = "..."
-                    color = "gray"
-                    
-                    # Verifica se o recorte funcionou
-                    if "não encontrada" in txt_ref:
-                         veredito = "❌ Seção não localizada na Referência"
-                         color = "orange"
-                    elif "não encontrada" in txt_bel:
-                         veredito = "❌ Seção não localizada na Gráfica"
-                         color = "orange"
-                    else:
-                         # Chama o Gemini para JULGAR (não copiar)
-                         analise = ai_judge_diff(txt_ref, txt_bel, sec)
-                         
-                         if "CONFORME" in analise.upper() and len(analise) < 100:
-                             veredito = "✅ CONFORME"
-                             color = "green"
-                         else:
-                             veredito = analise # Mostra o erro apontado pela IA
-                             color = "red"
+                # 2. Obter texto da Gráfica
+                if d2['type'] == 'text':
+                    txt_bel = get_section_text_python(d2['data'], sec, SECOES)
+                else:
+                    txt_bel = get_section_text_from_image(d2['data'], sec)
 
-                    # Exibe o resultado
-                    with st.expander(f"{sec}", expanded=(color=="red")):
-                        st.markdown(f":{color}[**RESULTADO: {veredito}**]")
-                        
-                        col_a, col_b = st.columns(2)
-                        col_a.markdown("**Texto Referência (Recorte):**")
-                        col_a.text_area("ref", txt_ref, height=200, label_visibility="collapsed", key=f"r_{i}")
-                        
-                        col_b.markdown("**Texto Gráfica (Recorte):**")
-                        col_b.text_area("bel", txt_bel, height=200, label_visibility="collapsed", key=f"b_{i}")
-                    
-                    # Atualiza barra
-                    prog.progress((i + 1) / len(SECOES_PACIENTE))
+                # 3. Comparação (Juiz)
+                # Verifica se extração falhou antes de gastar crédito de juiz
+                if "não encontrada" in txt_ref and "não encontrada" in txt_bel:
+                    veredito = "❌ Seção não localizada em nenhum documento"
+                    color = "orange"
+                else:
+                    veredito_raw = ai_judge_diff(txt_ref, txt_bel, sec)
+                    if "CONFORME" in veredito_raw.upper() and len(veredito_raw) < 100:
+                        veredito = "✅ CONFORME"
+                        color = "green"
+                    else:
+                        veredito = veredito_raw
+                        color = "red"
+
+                # Exibição
+                with st.expander(f"{sec}", expanded=(color=="red")):
+                    st.markdown(f":{color}[**{veredito}**]")
+                    ca, cb = st.columns(2)
+                    ca.text_area("Ref", txt_ref, height=150, key=f"r{i}")
+                    cb.text_area("Gráfica", txt_bel, height=150, key=f"b{i}")
                 
-                st.success("🏁 Auditoria Finalizada!")
+                prog.progress((i + 1) / len(SECOES))
