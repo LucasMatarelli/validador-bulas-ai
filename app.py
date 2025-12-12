@@ -7,18 +7,17 @@ import io
 import re
 import os
 import time
+import concurrent.futures
 from PIL import Image
 
-# ----------------- CONFIGURAÇÃO DA CHAVE API -----------------
-# Adicionei um fallback extra caso o secrets não esteja configurado
+# ----------------- CONFIGURAÇÃO DA CHAVE -----------------
 MINHA_API_KEY = st.secrets.get("GOOGLE_API_KEY", "AIzaSyBcPfO6nlsy1vCvKW_VNofEmG7GaSdtiLE")
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Pro (Auto-OCR Fallback)",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Validador Turbo (v15)",
+    page_icon="🚀",
+    layout="wide"
 )
 
 # ----------------- CSS -----------------
@@ -27,8 +26,8 @@ st.markdown("""
     header[data-testid="stHeader"] { display: none !important; }
     .main { background-color: #f4f6f8; }
     .stCard { background-color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .stButton>button { width: 100%; background-color: #007bff; color: white; font-weight: bold; border-radius: 8px; height: 50px; font-size: 16px; }
-    .stButton>button:hover { background-color: #0056b3; }
+    .stButton>button { width: 100%; background-color: #28a745; color: white; font-weight: bold; border-radius: 8px; height: 50px; font-size: 16px; }
+    .stButton>button:hover { background-color: #218838; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -36,7 +35,13 @@ st.markdown("""
 if MINHA_API_KEY:
     genai.configure(api_key=MINHA_API_KEY)
 
-# ----------------- LEITURA DE ARQUIVO (TEXTO + IMAGENS) -----------------
+# ----------------- FUNÇÕES AUXILIARES -----------------
+def normalize_for_comparison(text):
+    """Remove espaços, quebras de linha e deixa minúsculo para comparação rápida"""
+    if not text: return ""
+    # Remove tudo que não for letra ou número
+    return re.sub(r'[\W_]+', '', text).lower()
+
 def clean_noise(text):
     if not text: return ""
     text = text.replace('\xa0', ' ').replace('\r', '')
@@ -55,57 +60,39 @@ def clean_noise(text):
     return re.sub(r'\n{3,}', '\n\n', text).strip()
 
 def extract_content(file_bytes, filename):
-    """
-    Retorna um objeto com TEXTO e IMAGENS (para fallback).
-    Structure: {'text': str, 'images': [PIL.Image], 'is_scan': bool}
-    """
     try:
-        # 1. DOCX
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"text": clean_noise(text), "images": [], "is_scan": False}
         
-        # 2. PDF
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         full_text = ""
+        for page in doc: full_text += page.get_text() + "\n"
         
-        # Extrai Texto
-        for page in doc:
-            full_text += page.get_text() + "\n"
-        
-        # Gera Imagens (SEMPRE gera imagens agora, para ter como Fallback)
         images = []
-        limit_pages = min(8, len(doc)) 
-        for i in range(limit_pages):
-            page = doc[i]
-            # Zoom 2.0 para OCR legível
-            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-            try:
-                img_data = pix.tobytes("jpeg")
-                img = Image.open(io.BytesIO(img_data))
-                images.append(img)
-            except: pass
+        # Gera imagens apenas se necessário (Scan)
+        if len(full_text.strip()) < 200:
+            limit_pages = min(6, len(doc)) 
+            for i in range(limit_pages):
+                page = doc[i]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                try: images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
+                except: pass
+        
         doc.close()
-        
         is_scan = len(full_text.strip()) < 200
-        
-        return {
-            "text": clean_noise(full_text), 
-            "images": images, 
-            "is_scan": is_scan
-        }
+        return {"text": clean_noise(full_text), "images": images, "is_scan": is_scan}
 
     except Exception as e:
         return {"error": str(e)}
 
-# ----------------- RECORTE TEXTO (PYTHON) -----------------
+# ----------------- RECORTE PYTHON -----------------
 def find_section_start(text, section_name):
     text_lower = text.lower()
     core_title = section_name.lower().split('?')[0]
     match = re.search(re.escape(core_title), text_lower)
     if match: return match.start()
-    
     if section_name[0].isdigit():
         num = section_name.split('.')[0]
         match = re.search(rf"\n\s*{num}\.\s", text_lower)
@@ -115,8 +102,7 @@ def find_section_start(text, section_name):
 def get_section_text_python(full_text, section, all_sections):
     if not full_text: return ""
     start = find_section_start(full_text, section)
-    if start == -1: return "" # Retorna vazio para ativar o Fallback
-    
+    if start == -1: return ""
     end = len(full_text)
     try:
         idx = all_sections.index(section)
@@ -128,71 +114,95 @@ def get_section_text_python(full_text, section, all_sections):
     except: pass
     return full_text[start:end].strip()
 
-# ----------------- OCR COM FALLBACK -----------------
+# ----------------- OCR GEMINI (Fallback) -----------------
 def get_section_text_ocr(images, section):
-    """OCR do Gemini 2.5 Flash"""
-    if not images: return "Imagens não disponíveis para OCR."
-    
+    if not images: return "Imagens não disponíveis."
     safety = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
     model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety)
-    
-    prompt = [
-        f"Transcreva o texto da seção '{section}'. Copie até a próxima seção.",
-        "Se não achar, responda 'Seção não encontrada'."
-    ]
+    prompt = [f"Transcreva a seção '{section}'. Copie até a próxima seção. Se não achar, responda 'Seção não encontrada'."]
     prompt.extend(images)
     
-    # Retry Logic para evitar erro 429
     for attempt in range(3):
         try:
             resp = model.generate_content(prompt)
             return resp.text.strip()
         except Exception as e:
             if "429" in str(e): 
-                time.sleep(20)
+                time.sleep(5)
                 continue
-            return f"Erro OCR: {str(e)}"
-    return "Erro OCR: Limite excedido."
+            return ""
+    return ""
 
-# ----------------- JUIZ COM FREIO AUTOMÁTICO -----------------
+# ----------------- JUIZ (Com Otimização de Igualdade) -----------------
 def ai_judge_diff(ref_text, bel_text, secao):
-    if len(ref_text) < 5 or len(bel_text) < 5: 
-        return "⚠️ Texto insuficiente para comparação."
+    # 1. OTIMIZAÇÃO DE VELOCIDADE: Comparação Python Direta
+    # Se os textos forem tecnicamente iguais (removendo formatação), não chama a IA.
+    norm_ref = normalize_for_comparison(ref_text)
+    norm_bel = normalize_for_comparison(bel_text)
     
+    # Se ambos têm texto e são idênticos, retorna conforme direto (Zero Custo/Tempo)
+    if len(norm_ref) > 10 and norm_ref == norm_bel:
+        return "✅ CONFORME (Validação Automática)"
+
+    # 2. Se forem diferentes, chama o Juiz Gemini
     safety = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
     model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety)
     
     prompt = f"""
-    Comparação de Bula da ANVISA (Seção: {secao}).
-    
-    REF:
-    {ref_text[:10000]}
-    
-    GRÁFICA:
-    {bel_text[:10000]}
+    Comparação de Bula (Seção: {secao}).
+    REF: {ref_text[:10000]}
+    GRÁFICA: {bel_text[:10000]}
     
     Tarefa:
-    1. Verifique se o conteúdo da GRÁFICA está fiel à REF.
-    2. Ignore formatação. Foque em números e avisos.
-    3. Responda APENAS "CONFORME" se estiver ok. Caso contrário, liste o erro.
+    1. Ignore quebras de linha e formatação.
+    2. Verifique números, unidades e avisos.
+    3. Responda APENAS "CONFORME" se o sentido e dados forem iguais. Se não, liste o erro.
     """
     
-    for attempt in range(4): 
+    for attempt in range(3): 
         try:
             resp = model.generate_content(prompt)
             return resp.text
         except Exception as e:
             if "429" in str(e):
-                wait_time = 15 * (attempt + 1)
-                st.toast(f"⏳ Cota atingida. Pausa de {wait_time}s...", icon="⏸️")
-                time.sleep(wait_time)
+                time.sleep(5 + (attempt * 5))
                 continue
             return f"Erro API: {str(e)}"
-    return "❌ Falha persistente na API."
+    return "❌ Falha API"
+
+# ----------------- PROCESSAMENTO PARALELO -----------------
+def processar_secao_unica(sec, d1, d2, secoes_lista):
+    """Função isolada para rodar em paralelo"""
+    
+    # 1. Extração REF
+    txt_ref = get_section_text_python(d1['text'], sec, secoes_lista)
+    if (not txt_ref) and d1['images']: # Fallback OCR
+        txt_ref = get_section_text_ocr(d1['images'], sec)
+        
+    # 2. Extração BEL
+    txt_bel = get_section_text_python(d2['text'], sec, secoes_lista)
+    if (not txt_bel) and d2['images']: # Fallback OCR
+        txt_bel = get_section_text_ocr(d2['images'], sec)
+
+    # 3. Validação
+    if not txt_ref: txt_ref = "Não encontrada"
+    if not txt_bel: txt_bel = "Não encontrada"
+    
+    if "Não encontrada" in txt_ref and "Não encontrada" in txt_bel:
+        res = "❌ Seção não localizada"
+        cor = "orange"
+    else:
+        res = ai_judge_diff(txt_ref, txt_bel, sec)
+        if "CONFORME" in res.upper() and len(res) < 60:
+            res = "✅ CONFORME"
+            cor = "green"
+        else:
+            cor = "red"
+            
+    return {"titulo": sec, "ref": txt_ref, "bel": txt_bel, "veredito": res, "cor": cor}
 
 # ----------------- UI -----------------
-st.title("🛡️ Validador Pro (Auto-Fallback OCR)")
-st.markdown("**Status:** Online | **Modo:** Híbrido Automático (Texto -> se falhar -> OCR)")
+st.title("🚀 Validador Turbo (Rápido + Scan)")
 
 if MINHA_API_KEY: st.success("✅ API Conectada")
 else: st.error("❌ Erro API Key")
@@ -215,50 +225,33 @@ SECOES = [
     "DIZERES LEGAIS"
 ]
 
-if f1 and f2 and st.button("🚀 INICIAR AUDITORIA"):
-    with st.spinner("Processando arquivos..."):
+if f1 and f2 and st.button("🚀 INICIAR TURBO"):
+    with st.spinner("Processando..."):
         d1 = extract_content(f1.getvalue(), f1.name)
         d2 = extract_content(f2.getvalue(), f2.name)
         
         if "error" in d1 or "error" in d2:
-            st.error("Erro na leitura dos arquivos.")
+            st.error("Erro leitura.")
         else:
-            prog = st.progress(0)
+            # BARRA DE PROGRESSO
+            bar = st.progress(0)
+            results = []
             
-            for i, sec in enumerate(SECOES):
+            # PARALELISMO (3 Workers = 3x mais rápido, mas seguro pro Free Tier)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                futures = {executor.submit(processar_secao_unica, sec, d1, d2, SECOES): sec for sec in SECOES}
                 
-                # --- DOCUMENTO 1 (REF) ---
-                # Tenta Python primeiro
-                txt_ref = get_section_text_python(d1['text'], sec, SECOES)
-                # Se falhar (vazio ou erro), e tiver imagens, usa OCR
-                if (not txt_ref or "Seção não encontrada" in txt_ref) and d1['images']:
-                    # st.toast(f"Usando OCR para Ref: {sec}") # Debug
-                    txt_ref = get_section_text_ocr(d1['images'], sec)
-                
-                # --- DOCUMENTO 2 (GRÁFICA) ---
-                txt_bel = get_section_text_python(d2['text'], sec, SECOES)
-                if (not txt_bel or "Seção não encontrada" in txt_bel) and d2['images']:
-                    # st.toast(f"Usando OCR para Gráfica: {sec}") # Debug
-                    txt_bel = get_section_text_ocr(d2['images'], sec)
-
-                # --- VALIDAÇÃO ---
-                if (not txt_ref or "não encontrada" in txt_ref) and (not txt_bel or "não encontrada" in txt_bel):
-                    veredito = "❌ Seção não localizada (nem via OCR)"
-                    color = "orange"
-                else:
-                    veredito = ai_judge_diff(txt_ref, txt_bel, sec)
-                    if "CONFORME" in veredito.upper() and len(veredito) < 50:
-                        veredito = "✅ CONFORME"
-                        color = "green"
-                    else:
-                        color = "red"
-
-                # --- EXIBIÇÃO ---
-                with st.expander(f"{sec}", expanded=(color=="red")):
-                    st.markdown(f":{color}[**{veredito}**]")
+                for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                    results.append(future.result())
+                    bar.progress((i + 1) / len(SECOES))
+            
+            # ORDENAR RESULTADOS
+            results.sort(key=lambda x: SECOES.index(x['titulo']))
+            
+            # EXIBIR
+            for r in results:
+                with st.expander(f"{r['titulo']}", expanded=(r['cor']=="red")):
+                    st.markdown(f":{r['cor']}[**{r['veredito']}**]")
                     ca, cb = st.columns(2)
-                    ca.text_area("Ref (Final)", txt_ref, height=150, key=f"r{i}")
-                    cb.text_area("Gráfica (Final)", txt_bel, height=150, key=f"b{i}")
-                
-                prog.progress((i + 1) / len(SECOES))
-                time.sleep(5) # Pausa estratégica
+                    ca.text_area("Ref", r['ref'], height=120)
+                    cb.text_area("Gráfica", r['bel'], height=120)
