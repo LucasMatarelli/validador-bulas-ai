@@ -116,7 +116,7 @@ def process_uploaded_file(uploaded_file):
             
             # MODO IMAGEM (ALTA RESOLUÇÃO PARA VER COLUNAS)
             images = []
-            limit_pages = min(8, len(doc)) # Aumentei um pouco o limite para pegar quebras de página
+            limit_pages = min(8, len(doc)) 
             
             for i in range(limit_pages):
                 page = doc[i]
@@ -258,34 +258,48 @@ else:
                         """
 
                         # ==============================================================
-                        # CASCATA DE SOBREVIVÊNCIA
+                        # CASCATA DE SOBREVIVÊNCIA (SEM LITE/8B NA PRIORIDADE)
                         # ==============================================================
                         response = None
                         sucesso = False
                         error_log = []
                         
-                        # Prioridade: Gemini 1.5 Pro (Melhor visão espacial) -> Gemini 3 -> Flash
+                        # Lista Dinâmica: Removemos modelos "lite" ou "8b" da prioridade alta
                         try:
                             all_models = genai.list_models()
                             available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                             
                             def sort_priority(name):
-                                # Gemini 1.5 Pro costuma ser melhor para ler colunas complexas que o Flash
+                                # Prioridade 0: Gemini 1.5 Pro (O melhor para layout complexo)
                                 if "gemini-1.5-pro" in name and "latest" in name: return 0
                                 if "gemini-1.5-pro" in name: return 1
+                                
+                                # Prioridade 1: Gemini 3 ou Flash Standard (Bom balanço)
                                 if "gemini-3" in name: return 2
-                                if "flash" in name: return 3
-                                return 10
+                                if "gemini-1.5-flash" in name and not "lite" in name and not "8b" in name: return 3
+                                
+                                # Prioridade 2: Lite/8b (Último recurso, pois falham em layout complexo)
+                                if "lite" in name or "8b" in name: return 10
+                                
+                                return 5
                             
                             available_models.sort(key=sort_priority)
+                            
+                            # Fallback de segurança se a lista vier vazia
                             if not available_models: available_models = ["models/gemini-1.5-flash"]
                         except:
                             available_models = ["models/gemini-1.5-flash"]
 
-                        st.caption(f"Processando layout complexo...")
+                        st.caption(f"Analisando layout complexo com IA...")
 
                         for model_name in available_models:
                             try:
+                                # Pula modelos Lite se tivermos opção melhor, para evitar o erro de JSON
+                                if "lite" in model_name and not sucesso:
+                                    # Só usa lite se for o ÚNICO da lista
+                                    if len(available_models) > 1 and available_models.index(model_name) < len(available_models) - 1:
+                                        continue 
+
                                 model_run = genai.GenerativeModel(model_name)
                                 response = model_run.generate_content(
                                     [prompt] + payload,
@@ -324,7 +338,10 @@ else:
                                             cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                                             cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Erro ao ler resposta da IA. Layout muito complexo.")
+                                    st.error("Erro ao ler resposta da IA. O modelo pode ter falhado no JSON.")
+                                    # DEBUG PARA O USUÁRIO VER O QUE DEU ERRADO
+                                    with st.expander("🛠️ Ver Resposta Crua (Debug)"):
+                                        st.code(response.text, language='json')
                         else:
                             st.error("❌ Todos os modelos falharam.")
                             with st.expander("Logs"): st.write(error_log)
