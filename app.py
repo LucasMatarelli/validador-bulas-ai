@@ -92,7 +92,7 @@ def process_uploaded_file(uploaded_file):
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
         
-        # --- DETECÇÃO DE ARQUIVO EM CURVAS ---
+        # Palavras-chave para detectar arquivo de gráfica
         keywords_curva = ["curva", "traço", "outline", "convertido", "vetor"]
         is_curva = any(k in filename for k in keywords_curva)
         
@@ -104,6 +104,7 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
+            # Tenta texto puro se não for curva
             full_text = ""
             if not is_curva:
                 for page in doc:
@@ -113,17 +114,16 @@ def process_uploaded_file(uploaded_file):
                 doc.close()
                 return {"type": "text", "data": full_text, "is_image": False}
             
-            # --- MODO IMAGEM (ALTA RESOLUÇÃO) ---
+            # MODO IMAGEM (ALTA RESOLUÇÃO PARA VER COLUNAS)
             images = []
-            limit_pages = min(6, len(doc)) 
+            limit_pages = min(8, len(doc)) # Aumentei um pouco o limite para pegar quebras de página
             
             for i in range(limit_pages):
                 page = doc[i]
-                # CORREÇÃO CRÍTICA: Aumentei o zoom de 1.5 para 3.0.
-                # Isso ajuda a IA a ver o espaço em branco entre as colunas.
+                # Zoom 3.0 é essencial para ver o espaço branco entre colunas
                 pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
                 try:
-                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except:
                     img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -132,7 +132,7 @@ def process_uploaded_file(uploaded_file):
             gc.collect()
             
             if is_curva:
-                st.toast(f"📂 '{filename}': Modo Leitura Visual (Alta Resolução) Ativado.", icon="👁️")
+                st.toast(f"👁️ '{filename}': Modo Visual (Curvas) Ativado.", icon="📂")
                 
             return {"type": "images", "data": images, "is_image": True}
             
@@ -200,7 +200,7 @@ else:
         
     if st.button("🚀 INICIAR AUDITORIA"):
         if f1 and f2 and model_instance:
-            with st.spinner("Analisando documentos (Isso pode levar alguns segundos)..."):
+            with st.spinner("Analisando colunas e fluxo de texto..."):
                 try:
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
@@ -209,68 +209,80 @@ else:
                     if d1 and d2:
                         risco_copyright = d1['is_image'] or d2['is_image']
                         
-                        # Montagem do Payload
-                        payload = ["CONTEXTO: Comparação farmacêutica rigorosa."]
+                        payload = ["CONTEXTO: Auditoria de Bulas Farmacêuticas com layout complexo (colunas)."]
                         
                         if d1['type'] == 'text': payload.append(f"--- DOC 1 (TEXTO) ---\n{d1['data']}")
-                        else: payload.append("--- DOC 1 (IMAGEM/PÁGINAS) ---"); payload.extend(d1['data'])
+                        else: payload.append("--- DOC 1 (IMAGENS) ---"); payload.extend(d1['data'])
                         
                         if d2['type'] == 'text': payload.append(f"--- DOC 2 (TEXTO) ---\n{d2['data']}")
-                        else: payload.append("--- DOC 2 (IMAGEM/PÁGINAS) ---"); payload.extend(d2['data'])
+                        else: payload.append("--- DOC 2 (IMAGENS) ---"); payload.extend(d2['data'])
 
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
-                        # --- PROMPT REFORÇADO PARA COLUNAS E FLUIDEZ ---
+                        # ==========================================================
+                        # PROMPT REFINADO PARA FLUXO CONTÍNUO E SEM TÍTULOS
+                        # ==========================================================
                         prompt = f"""
-                        Atue como Auditor Farmacêutico. Compare DOC 1 e DOC 2.
+                        Você é um Auditor de Controle de Qualidade (Bulas). Compare DOC 1 e DOC 2.
                         
                         SEÇÕES ALVO: {secoes_str}
                         
-                        ⚠️ REGRAS CRÍTICAS DE LEITURA (VISÃO COMPUTACIONAL):
-                        1. LAYOUT EM COLUNAS: O texto está organizado em colunas (jornal). Leia a Coluna 1 até o fim (baixo), depois suba para o topo da Coluna 2, etc.
-                        2. NÃO LEIA EM LINHA RETA: Não cruze da coluna da esquerda para a direita no meio da página.
-                        3. QUEBRA DE PÁGINA: O texto da última coluna da Página 1 CONTINUA na primeira coluna da Página 2. Conecte as frases logicamente.
-                        4. RODAPÉS: Avisos de "Atenção" ou números de página no rodapé NÃO devem ser lidos antes do fim do texto principal da seção.
+                        ⚠️ REGRAS OBRIGATÓRIAS DE EXTRAÇÃO:
+                        1. **NÃO REPRODUZA O TÍTULO:** Na saída JSON, o campo "titulo" leva o nome da seção. Os campos "ref" e "bel" devem conter APENAS O CONTEÚDO (corpo do texto). Não repita a pergunta/título no início do texto.
                         
+                        2. **FLUXO CONTÍNUO (COSTURA DE COLUNAS):**
+                           - O texto está diagramado em colunas verticais.
+                           - Se o texto no fim de uma coluna terminar abruptamente (ex: "ou", "e", "para", "médico,"), A FRASE CONTINUA no topo da próxima coluna ou na página seguinte.
+                           - **NÃO PARE** a leitura no "ou". Busque a continuação lógica ("ou cirurgião-dentista", etc.) na imagem.
+                           - Junte os fragmentos para formar parágrafos coerentes.
+
+                        3. **IGNORE INTERRUPÇÕES:** Ignore números de página, códigos de barra ou rodapés que apareçam no meio da quebra de coluna.
+
+                        4. **ANÁLISE:**
+                           - Marque diferenças de texto com <mark class='diff'>.
+                           - Marque datas com <mark class='anvisa'>.
+                           - Ignore quebras de linha estéticas. Compare o conteúdo semântico.
+
                         SAÍDA JSON: 
                         {{ 
                             "METADADOS": {{ "score": 0, "datas": [] }}, 
                             "SECOES": [ 
                                 {{ 
-                                    "titulo": "Nome exato da seção", 
-                                    "ref": "Texto completo extraído da Referência", 
-                                    "bel": "Texto completo extraído do Candidato", 
-                                    "status": "OK" ou "DIVERGENTE" 
+                                    "titulo": "EXATAMENTE UM DOS TÍTULOS DA LISTA", 
+                                    "ref": "Conteúdo extraído (SEM O TÍTULO NO INÍCIO)", 
+                                    "bel": "Conteúdo extraído (SEM O TÍTULO NO INÍCIO)", 
+                                    "status": "OK" ou "DIVERGENTE" ou "FALTANTE" 
                                 }} 
                             ] 
                         }}
                         """
 
                         # ==============================================================
-                        # CASCATA DE SOBREVIVÊNCIA 4.0
+                        # CASCATA DE SOBREVIVÊNCIA
                         # ==============================================================
                         response = None
                         sucesso = False
                         error_log = []
                         
+                        # Prioridade: Gemini 1.5 Pro (Melhor visão espacial) -> Gemini 3 -> Flash
                         try:
-                            # Tenta descobrir o melhor modelo disponível
                             all_models = genai.list_models()
                             available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                             
                             def sort_priority(name):
-                                if "gemini-3" in name: return 0 
-                                if "gemini-1.5-pro" in name: return 1 # Pro lida melhor com colunas que o Flash
-                                if "flash" in name: return 2
+                                # Gemini 1.5 Pro costuma ser melhor para ler colunas complexas que o Flash
+                                if "gemini-1.5-pro" in name and "latest" in name: return 0
+                                if "gemini-1.5-pro" in name: return 1
+                                if "gemini-3" in name: return 2
+                                if "flash" in name: return 3
                                 return 10
                             
                             available_models.sort(key=sort_priority)
                             if not available_models: available_models = ["models/gemini-1.5-flash"]
-                                
                         except:
                             available_models = ["models/gemini-1.5-flash"]
 
-                        st.caption(f"🤖 Estratégia de IA: Tentando conectar ao melhor modelo para leitura de colunas...")
+                        st.caption(f"Processando layout complexo...")
 
                         for model_name in available_models:
                             try:
@@ -281,11 +293,10 @@ else:
                                     safety_settings=SAFETY_SETTINGS
                                 )
                                 sucesso = True
-                                st.success(f"✅ Análise realizada via: {model_name}")
+                                st.success(f"✅ Leitura concluída via: {model_name}")
                                 break 
                             except Exception as e:
-                                error_msg = str(e)
-                                error_log.append(f"{model_name}: {error_msg}")
+                                error_log.append(f"{model_name}: {str(e)}")
                                 continue
 
                         # --- RENDERIZAÇÃO ---
@@ -298,8 +309,8 @@ else:
                                     meta = data.get("METADADOS", {})
                                     cM1, cM2, cM3 = st.columns(3)
                                     cM1.metric("Score", f"{meta.get('score',0)}%")
-                                    cM2.metric("Seções Detectadas", len(data.get("SECOES", [])))
-                                    cM3.metric("Datas Encontradas", str(meta.get("datas", [])))
+                                    cM2.metric("Seções", len(data.get("SECOES", [])))
+                                    cM3.metric("Datas", str(meta.get("datas", [])))
                                     st.divider()
                                     
                                     for sec in data.get("SECOES", []):
@@ -313,11 +324,10 @@ else:
                                             cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                                             cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Erro ao processar resposta da IA. O layout complexo pode ter confundido o modelo.")
+                                    st.error("Erro ao ler resposta da IA. Layout muito complexo.")
                         else:
-                            st.error("❌ Todos os modelos falharam ou excederam a cota.")
-                            with st.expander("Ver Detalhes do Erro"):
-                                st.write(error_log)
+                            st.error("❌ Todos os modelos falharam.")
+                            with st.expander("Logs"): st.write(error_log)
                         
                 except Exception as e:
                     st.error(f"Erro geral: {e}")
