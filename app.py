@@ -43,7 +43,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- CONSTANTES -----------------
+# ----------------- CONSTANTES (LISTAS OFICIAIS) -----------------
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -54,6 +54,7 @@ SECOES_PACIENTE = [
     "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
     "DIZERES LEGAIS"
 ]
+
 SECOES_PROFISSIONAL = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
     "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
@@ -220,37 +221,31 @@ else:
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
                         # ==========================================================
-                        # PROMPT REFINADO PARA FLUXO CONTÍNUO E SEM TÍTULOS
+                        # PROMPT REFINADO: APENAS TÍTULOS PERMITIDOS
                         # ==========================================================
                         prompt = f"""
-                        Você é um Auditor de Controle de Qualidade (Bulas). Compare DOC 1 e DOC 2.
+                        Você é um Auditor de Controle de Qualidade. Compare DOC 1 e DOC 2.
                         
-                        SEÇÕES ALVO: {secoes_str}
+                        ⚠️ REGRA SUPREMA DE SEÇÕES (MUITO IMPORTANTE):
+                        Abaixo está a LISTA ESTRITA de seções permitidas. Você deve extrair APENAS estas seções. 
+                        NÃO INVENTE TÍTULOS COMO "COMPOSIÇÃO ADULTO" OU "GERAL". Se houver subseções, junte tudo na seção pai correspondente da lista.
                         
-                        ⚠️ REGRAS OBRIGATÓRIAS DE EXTRAÇÃO:
-                        1. **NÃO REPRODUZA O TÍTULO:** Na saída JSON, o campo "titulo" leva o nome da seção. Os campos "ref" e "bel" devem conter APENAS O CONTEÚDO (corpo do texto). Não repita a pergunta/título no início do texto.
+                        LISTA DE SEÇÕES PERMITIDAS:
+                        {secoes_str}
                         
-                        2. **FLUXO CONTÍNUO (COSTURA DE COLUNAS):**
-                           - O texto está diagramado em colunas verticais.
-                           - Se o texto no fim de uma coluna terminar abruptamente (ex: "ou", "e", "para", "médico,"), A FRASE CONTINUA no topo da próxima coluna ou na página seguinte.
-                           - **NÃO PARE** a leitura no "ou". Busque a continuação lógica ("ou cirurgião-dentista", etc.) na imagem.
-                           - Junte os fragmentos para formar parágrafos coerentes.
-
-                        3. **IGNORE INTERRUPÇÕES:** Ignore números de página, códigos de barra ou rodapés que apareçam no meio da quebra de coluna.
-
-                        4. **ANÁLISE:**
-                           - Marque diferenças de texto com <mark class='diff'>.
-                           - Marque datas com <mark class='anvisa'>.
-                           - Ignore quebras de linha estéticas. Compare o conteúdo semântico.
+                        OUTRAS REGRAS:
+                        1. **COSTURA DE COLUNAS:** O texto está em colunas. Se uma frase cortar ("ou", "e"), busque a continuação na próxima coluna.
+                        2. **SEM TÍTULOS NO TEXTO:** Nos campos 'ref' e 'bel', coloque apenas o conteúdo. Não repita o título.
+                        3. **IGNORE:** Rodapés, paginação e códigos de barra.
 
                         SAÍDA JSON: 
                         {{ 
                             "METADADOS": {{ "score": 0, "datas": [] }}, 
                             "SECOES": [ 
                                 {{ 
-                                    "titulo": "EXATAMENTE UM DOS TÍTULOS DA LISTA", 
-                                    "ref": "Conteúdo extraído (SEM O TÍTULO NO INÍCIO)", 
-                                    "bel": "Conteúdo extraído (SEM O TÍTULO NO INÍCIO)", 
+                                    "titulo": "EXATAMENTE UM TÍTULO DA LISTA ACIMA", 
+                                    "ref": "Conteúdo...", 
+                                    "bel": "Conteúdo...", 
                                     "status": "OK" ou "DIVERGENTE" ou "FALTANTE" 
                                 }} 
                             ] 
@@ -258,45 +253,36 @@ else:
                         """
 
                         # ==============================================================
-                        # CASCATA DE SOBREVIVÊNCIA (SEM LITE/8B NA PRIORIDADE)
+                        # CASCATA DE SOBREVIVÊNCIA (SEM LITE)
                         # ==============================================================
                         response = None
                         sucesso = False
                         error_log = []
                         
-                        # Lista Dinâmica: Removemos modelos "lite" ou "8b" da prioridade alta
                         try:
                             all_models = genai.list_models()
                             available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                             
                             def sort_priority(name):
-                                # Prioridade 0: Gemini 1.5 Pro (O melhor para layout complexo)
+                                # Evita modelos 'Lite' para garantir que ele siga as regras de seção estrita
                                 if "gemini-1.5-pro" in name and "latest" in name: return 0
                                 if "gemini-1.5-pro" in name: return 1
-                                
-                                # Prioridade 1: Gemini 3 ou Flash Standard (Bom balanço)
                                 if "gemini-3" in name: return 2
                                 if "gemini-1.5-flash" in name and not "lite" in name and not "8b" in name: return 3
-                                
-                                # Prioridade 2: Lite/8b (Último recurso, pois falham em layout complexo)
                                 if "lite" in name or "8b" in name: return 10
-                                
                                 return 5
                             
                             available_models.sort(key=sort_priority)
-                            
-                            # Fallback de segurança se a lista vier vazia
                             if not available_models: available_models = ["models/gemini-1.5-flash"]
                         except:
                             available_models = ["models/gemini-1.5-flash"]
 
-                        st.caption(f"Analisando layout complexo com IA...")
+                        st.caption(f"Validando estrutura da bula...")
 
                         for model_name in available_models:
                             try:
-                                # Pula modelos Lite se tivermos opção melhor, para evitar o erro de JSON
+                                # Pula modelos Lite se tiver opção melhor
                                 if "lite" in model_name and not sucesso:
-                                    # Só usa lite se for o ÚNICO da lista
                                     if len(available_models) > 1 and available_models.index(model_name) < len(available_models) - 1:
                                         continue 
 
@@ -307,7 +293,7 @@ else:
                                     safety_settings=SAFETY_SETTINGS
                                 )
                                 sucesso = True
-                                st.success(f"✅ Leitura concluída via: {model_name}")
+                                st.success(f"✅ Validação via: {model_name}")
                                 break 
                             except Exception as e:
                                 error_log.append(f"{model_name}: {str(e)}")
@@ -338,12 +324,10 @@ else:
                                             cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                                             cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Erro ao ler resposta da IA. O modelo pode ter falhado no JSON.")
-                                    # DEBUG PARA O USUÁRIO VER O QUE DEU ERRADO
-                                    with st.expander("🛠️ Ver Resposta Crua (Debug)"):
-                                        st.code(response.text, language='json')
+                                    st.error("Erro ao processar dados.")
+                                    with st.expander("Debug JSON"): st.code(response.text)
                         else:
-                            st.error("❌ Todos os modelos falharam.")
+                            st.error("❌ Falha na conexão com a IA.")
                             with st.expander("Logs"): st.write(error_log)
                         
                 except Exception as e:
