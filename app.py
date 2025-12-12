@@ -85,17 +85,6 @@ def get_gemini_model():
     # Mantém o 3.0 como padrão visual
     return genai.GenerativeModel("gemini-3-pro-preview"), "Modelo Ativo: gemini-3-pro-preview"
 
-def find_dynamic_fallback():
-    """Tenta achar modelos 2.5 ou 2.0 na conta."""
-    try:
-        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        for m in modelos:
-            if "gemini-2" in m and "flash" in m: return m # Prioriza Flash novo
-        for m in modelos:
-            if "gemini-2" in m: return m # Qualquer versão 2
-    except: pass
-    return None
-
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
     try:
@@ -118,11 +107,9 @@ def process_uploaded_file(uploaded_file):
                 return {"type": "text", "data": full_text, "is_image": False}
             
             images = []
-            # REDUZI PARA 6 PÁGINAS PARA ECONOMIZAR COTA DE TOKEN
             limit_pages = min(6, len(doc)) 
             for i in range(limit_pages):
                 page = doc[i]
-                # REDUZI RESOLUÇÃO PARA 1.0 (ECONOMIA DE DADOS)
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
                 try:
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=80))
@@ -228,13 +215,13 @@ else:
                         """
 
                         # ==============================================================
-                        # CASCATA DE SOBREVIVÊNCIA 2.0 (CORRIGIDA)
+                        # CASCATA DE SOBREVIVÊNCIA 3.0 (DYNAMIC DISCOVERY)
                         # ==============================================================
                         response = None
                         sucesso = False
                         error_log = []
                         
-                        # --- TENTATIVA 1: GEMINI 3 (Prioridade) ---
+                        # --- TENTATIVA 1: GEMINI 3 ---
                         try:
                             response = model_instance.generate_content(
                                 [prompt] + payload,
@@ -246,66 +233,70 @@ else:
                             error_msg = str(e)
                             error_log.append(f"Gemini 3: {error_msg}")
                             if "429" in error_msg or "Quota" in error_msg:
-                                st.warning("⚠️ Cota do Gemini 3 esgotada. Tentando fallback...")
+                                st.warning("⚠️ Cota do Gemini 3 esgotada. Buscando alternativa...")
                                 time.sleep(1)
                             else:
-                                st.warning(f"Erro técnico no Gemini 3. Tentando fallback...")
+                                st.warning(f"Erro no Gemini 3. Buscando alternativa...")
 
-                        # --- TENTATIVA 2: FALLBACK DINÂMICO (Gemini 2.0/2.5) ---
+                        # --- TENTATIVA 2 & 3: VARREDURA TOTAL ---
+                        # Se o principal falhou, listamos TUDO que sua chave API consegue ver
+                        # e tentamos um por um, priorizando os modelos 'Flash'
                         if not sucesso:
+                            st.caption("🛡️ Escaneando modelos disponíveis na API...")
                             try:
-                                fallback_name = find_dynamic_fallback()
-                                if fallback_name:
-                                    fb_model = genai.GenerativeModel(fallback_name)
-                                    response = fb_model.generate_content(
-                                        [prompt] + payload,
-                                        generation_config={"response_mime_type": "application/json"},
-                                        safety_settings=SAFETY_SETTINGS
-                                    )
-                                    sucesso = True
-                                else:
-                                    error_log.append("Nenhum modelo Gemini 2 encontrado.")
+                                # 1. Busca modelos disponíveis
+                                all_models = genai.list_models()
+                                available_models = []
+                                for m in all_models:
+                                    if 'generateContent' in m.supported_generation_methods:
+                                        available_models.append(m.name)
+                                
+                                # 2. Ordena: Flash primeiro, depois 1.5, depois Pro 1.0 (legado)
+                                # Isso garante que usamos o mais rápido/barato disponível
+                                def sort_priority(name):
+                                    if "flash" in name and "1.5" in name: return 0
+                                    if "flash" in name: return 1
+                                    if "pro" in name and "1.5" in name: return 2
+                                    if "gemini-pro" in name: return 3 # O antigo 1.0 é o último recurso
+                                    return 4
+                                
+                                available_models.sort(key=sort_priority)
+                                
+                                # 3. Adiciona fallback forçado caso a lista venha vazia por erro
+                                if not available_models:
+                                    available_models = ["models/gemini-1.5-flash", "models/gemini-pro"]
+
+                                # 4. Tenta conectar em loop
+                                for model_name in available_models:
+                                    # Pula o Gemini 3 que já falhou
+                                    if "gemini-3" in model_name: continue
+                                    
+                                    try:
+                                        # st.caption(f"Tentando: {model_name}...") # Debug
+                                        fallback_model = genai.GenerativeModel(model_name)
+                                        response = fallback_model.generate_content(
+                                            [prompt] + payload,
+                                            generation_config={"response_mime_type": "application/json"},
+                                            safety_settings=SAFETY_SETTINGS
+                                        )
+                                        sucesso = True
+                                        st.success(f"✅ Conectado via: {model_name}")
+                                        break # Sai do loop ao sucesso
+                                    except Exception as inner_e:
+                                        # Se for cota (429), continua tentando o próximo. 
+                                        # Se for 404, continua.
+                                        error_log.append(f"{model_name}: {str(inner_e)}")
+                                        continue
+
                             except Exception as e:
-                                error_msg = str(e)
-                                error_log.append(f"Intermediário: {error_msg}")
-                                st.warning(f"⚠️ Cota do Intermediário esgotada. Ativando Safety Net...")
-                                time.sleep(2)
+                                error_log.append(f"Erro na varredura: {str(e)}")
 
-                        # --- TENTATIVA 3: MODO DE SEGURANÇA (ROTAÇÃO DE VERSÕES FLASH) ---
-                        # Aqui corrigimos o erro 404 tentando várias versões até uma funcionar
+                        # --- RESULTADO FINAL ---
                         if not sucesso:
-                            st.caption("🛡️ Ativando Modo de Segurança (Safety Net)...")
-                            
-                            # Lista de modelos leves para tentar em sequência
-                            modelos_safety = [
-                                "gemini-1.5-flash-latest",
-                                "gemini-1.5-flash-002",
-                                "gemini-1.5-flash-001",
-                                "gemini-1.5-flash-8b",
-                                "gemini-1.5-flash"
-                            ]
-                            
-                            for safety_name in modelos_safety:
-                                try:
-                                    safe_model = genai.GenerativeModel(safety_name)
-                                    response = safe_model.generate_content(
-                                        [prompt] + payload,
-                                        generation_config={"response_mime_type": "application/json"},
-                                        safety_settings=SAFETY_SETTINGS
-                                    )
-                                    sucesso = True
-                                    st.success(f"✅ Conectado via {safety_name}")
-                                    break # Sai do loop se funcionar
-                                except Exception as e:
-                                    error_log.append(f"{safety_name}: {str(e)}")
-                                    continue # Tenta o próximo da lista
-
-                        # --- VERIFICAÇÃO FINAL ---
-                        if not sucesso:
-                            st.error("❌ FALHA CRÍTICA: Não foi possível processar em nenhum modelo.")
-                            with st.expander("Ver Logs Técnicos"):
+                            st.error("❌ FALHA CRÍTICA: Todas as cotas esgotadas ou erro de conexão.")
+                            with st.expander("Ver Logs Técnicos (Debug)"):
                                 st.write(error_log)
-                                st.info("Sugestão: Tente atualizar a biblioteca com 'pip install -U google-generativeai'")
+                                st.info("Sua chave API excedeu os limites gratuitos (Free Tier) de TODOS os modelos hoje.")
 
                         # ==============================================================
                         # RENDERIZAÇÃO
