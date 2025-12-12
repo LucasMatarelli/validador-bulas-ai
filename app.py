@@ -93,7 +93,6 @@ def process_uploaded_file(uploaded_file):
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
         
-        # Palavras-chave para detectar arquivo de gráfica
         keywords_curva = ["curva", "traço", "outline", "convertido", "vetor"]
         is_curva = any(k in filename for k in keywords_curva)
         
@@ -221,29 +220,28 @@ else:
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
                         # ==========================================================
-                        # PROMPT REFINADO: APENAS TÍTULOS PERMITIDOS
+                        # PROMPT REFINADO (COM REGRAS DE ATENÇÃO/LACTOSE)
                         # ==========================================================
                         prompt = f"""
                         Você é um Auditor de Controle de Qualidade. Compare DOC 1 e DOC 2.
                         
-                        ⚠️ REGRA SUPREMA DE SEÇÕES (MUITO IMPORTANTE):
-                        Abaixo está a LISTA ESTRITA de seções permitidas. Você deve extrair APENAS estas seções. 
-                        NÃO INVENTE TÍTULOS COMO "COMPOSIÇÃO ADULTO" OU "GERAL". Se houver subseções, junte tudo na seção pai correspondente da lista.
-                        
-                        LISTA DE SEÇÕES PERMITIDAS:
+                        LISTA DE SEÇÕES PERMITIDAS (Use apenas estas):
                         {secoes_str}
                         
-                        OUTRAS REGRAS:
-                        1. **COSTURA DE COLUNAS:** O texto está em colunas. Se uma frase cortar ("ou", "e"), busque a continuação na próxima coluna.
-                        2. **SEM TÍTULOS NO TEXTO:** Nos campos 'ref' e 'bel', coloque apenas o conteúdo. Não repita o título.
-                        3. **IGNORE:** Rodapés, paginação e códigos de barra.
+                        ⚠️ REGRAS DE EXTRAÇÃO:
+                        1. **COSTURA DE COLUNAS:** O texto está em colunas. Se uma frase no fim da coluna terminar incompleta (ex: "síndrome"), busque a continuação no topo da próxima coluna (ex: "de má-absorção").
+                        
+                        2. **CAPTURE OS AVISOS (ATENÇÃO/LACTOSE):** - Blocos começando com **"Atenção:"**, avisos sobre **"Lactose"**, **"Açúcar"** ou **"Corantes"** que aparecem no topo de uma coluna ou logo após o texto, DEVEM SER INCLUÍDOS na seção anterior (geralmente "QUANDO NÃO DEVO USAR..." ou "O QUE DEVO SABER...").
+                           - NÃO ignore o bloco "Atenção: Contém lactose...". Ele faz parte do texto da bula.
+
+                        3. **SEM TÍTULOS NO CONTEÚDO:** Nos campos 'ref' e 'bel', coloque apenas o corpo do texto. Não repita o título da seção.
 
                         SAÍDA JSON: 
                         {{ 
                             "METADADOS": {{ "score": 0, "datas": [] }}, 
                             "SECOES": [ 
                                 {{ 
-                                    "titulo": "EXATAMENTE UM TÍTULO DA LISTA ACIMA", 
+                                    "titulo": "TÍTULO DA LISTA", 
                                     "ref": "Conteúdo...", 
                                     "bel": "Conteúdo...", 
                                     "status": "OK" ou "DIVERGENTE" ou "FALTANTE" 
@@ -253,7 +251,7 @@ else:
                         """
 
                         # ==============================================================
-                        # CASCATA DE SOBREVIVÊNCIA (SEM LITE)
+                        # CASCATA DE SOBREVIVÊNCIA
                         # ==============================================================
                         response = None
                         sucesso = False
@@ -264,7 +262,6 @@ else:
                             available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                             
                             def sort_priority(name):
-                                # Evita modelos 'Lite' para garantir que ele siga as regras de seção estrita
                                 if "gemini-1.5-pro" in name and "latest" in name: return 0
                                 if "gemini-1.5-pro" in name: return 1
                                 if "gemini-3" in name: return 2
@@ -281,7 +278,6 @@ else:
 
                         for model_name in available_models:
                             try:
-                                # Pula modelos Lite se tiver opção melhor
                                 if "lite" in model_name and not sucesso:
                                     if len(available_models) > 1 and available_models.index(model_name) < len(available_models) - 1:
                                         continue 
