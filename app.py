@@ -6,42 +6,41 @@ import docx
 import io
 import re
 import os
+import time
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Pro (Gemini 2.5)",
-    page_icon="🧬",
+    page_title="Validador Pro (Anti-Erro 429)",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- CSS PARA VISUAL LIMPO -----------------
+# ----------------- CSS -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
     .main { background-color: #f4f6f8; }
     .stCard { background-color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .stButton>button { width: 100%; background-color: #007bff; color: white; font-weight: bold; border-radius: 8px; height: 50px; font-size: 16px; }
-    .stButton>button:hover { background-color: #0056b3; }
+    .stButton>button { width: 100%; background-color: #28a745; color: white; font-weight: bold; border-radius: 8px; height: 50px; font-size: 16px; }
+    .stButton>button:hover { background-color: #218838; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- CONFIGURAÇÃO DA API -----------------
+# ----------------- CONFIGURAÇÃO API -----------------
 def configure_api():
-    # Tenta pegar do secrets ou usa a chave direta (Fallback)
     api_key = st.secrets.get("GOOGLE_API_KEY")
     if not api_key:
-        api_key = "AIzaSyBcPfO6nlsy1vCvKW_VNofEmG7GaSdtiLE" # Sua chave
+        api_key = "AIzaSyBcPfO6nlsy1vCvKW_VNofEmG7GaSdtiLE"
     
     if api_key:
         genai.configure(api_key=api_key)
         return True
     return False
 
-# ----------------- FUNÇÕES DE LIMPEZA E LEITURA -----------------
+# ----------------- FUNÇÕES DE LIMPEZA -----------------
 def clean_noise(text):
-    """Limpeza técnica básica para remover lixo de PDF"""
     if not text: return ""
     text = text.replace('\xa0', ' ').replace('\r', '')
     patterns = [
@@ -59,12 +58,8 @@ def clean_noise(text):
     return re.sub(r'\n{3,}', '\n\n', text).strip()
 
 def extract_content(file_bytes, filename):
-    """
-    Lê o arquivo e decide se é TEXTO (PDF Nativo) ou IMAGEM (Scan).
-    Retorna: {'type': 'text', 'data': str} OU {'type': 'image', 'data': [PIL.Image]}
-    """
     try:
-        # 1. DOCX (Sempre Texto)
+        # 1. DOCX
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
@@ -73,23 +68,18 @@ def extract_content(file_bytes, filename):
         # 2. PDF
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         full_text = ""
+        for page in doc: full_text += page.get_text() + "\n"
         
-        # Tenta extrair texto
-        for page in doc:
-            full_text += page.get_text() + "\n"
-        
-        # SE TIVER TEXTO SUFICIENTE -> É PDF NATIVO
+        # Se tem texto suficiente -> PDF NATIVO
         if len(full_text.strip()) > 200:
             doc.close()
             return {"type": "text", "data": clean_noise(full_text)}
         
-        # SE NÃO TIVER TEXTO -> É SCAN (IMAGEM)
-        # Converte páginas para imagens para o Gemini ler
+        # Se não -> IMAGEM (SCAN)
         images = []
-        limit_pages = min(8, len(doc)) # Lê até 8 páginas para não estourar memória
+        limit_pages = min(8, len(doc)) 
         for i in range(limit_pages):
             page = doc[i]
-            # Matrix 2.0 melhora resolução para OCR
             pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
             try:
                 img_data = pix.tobytes("jpeg")
@@ -98,15 +88,13 @@ def extract_content(file_bytes, filename):
             except: pass
         doc.close()
         
-        if images:
-            return {"type": "image", "data": images}
-        else:
-            return {"type": "error", "data": "Falha ao processar arquivo (vazio ou corrompido)."}
+        if images: return {"type": "image", "data": images}
+        else: return {"type": "error", "data": "Arquivo vazio/corrompido."}
 
     except Exception as e:
         return {"type": "error", "data": str(e)}
 
-# ----------------- RECORTE (PYTHON TEXTO) -----------------
+# ----------------- RECORTE TEXTO (PYTHON) -----------------
 def find_section_start(text, section_name):
     text_lower = text.lower()
     core_title = section_name.lower().split('?')[0]
@@ -135,74 +123,76 @@ def get_section_text_python(full_text, section, all_sections):
     except: pass
     return full_text[start:end].strip()
 
-# ----------------- OCR (GEMINI LÊ IMAGEM) -----------------
+# ----------------- OCR SEGURO COM RETRY -----------------
 def get_section_text_ocr(images, section):
-    """
-    Usa o Gemini 2.5 Flash para ler a seção direto da imagem (Scan).
-    """
     safety = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
-    
-    # MODELO ATUALIZADO: 2.5 Flash
     model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety)
     
     prompt = [
-        f"Você é um especialista em OCR. Transcreva APENAS o texto da seção '{section}'.",
-        "1. Procure nas imagens onde esta seção começa.",
-        "2. Copie todo o texto dela até encontrar o título da próxima seção.",
-        "3. Se não achar, responda 'Seção não encontrada'.",
-        "4. Não invente nada. Cópia literal."
+        f"Transcreva o texto da seção '{section}'. Copie até a próxima seção.",
+        "Se não achar, responda 'Seção não encontrada'."
     ]
-    prompt.extend(images) # Envia as imagens junto
+    prompt.extend(images)
     
-    try:
-        resp = model.generate_content(prompt)
-        return resp.text.strip()
-    except Exception as e:
-        return f"Erro OCR: {str(e)}"
+    # RETRY LOGIC (Tentativas automáticas)
+    for attempt in range(3):
+        try:
+            resp = model.generate_content(prompt)
+            return resp.text.strip()
+        except Exception as e:
+            if "429" in str(e): # Se for erro de cota
+                time.sleep(20) # Espera 20s
+                continue # Tenta de novo
+            return f"Erro OCR: {str(e)}"
+    return "Erro OCR: Limite excedido após tentativas."
 
-# ----------------- JUIZ (COMPARADOR) -----------------
+# ----------------- JUIZ COM FREIO AUTOMÁTICO (RETRY) -----------------
 def ai_judge_diff(ref_text, bel_text, secao):
-    if len(ref_text) < 10 or len(bel_text) < 10: return "⚠️ Texto insuficiente para análise."
+    if len(ref_text) < 10 or len(bel_text) < 10: return "⚠️ Texto insuficiente."
     
     safety = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
-    
-    # MODELO ATUALIZADO: 2.5 Flash (Rápido e Eficiente)
     model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety)
     
     prompt = f"""
-    Atue como Auditor da ANVISA. Compare os dois textos da seção "{secao}".
+    Comparação de Bula da ANVISA (Seção: {secao}).
     
-    REF (Original):
-    {ref_text[:15000]}
+    REF:
+    {ref_text[:10000]}
     
-    GRÁFICA (Prova):
-    {bel_text[:15000]}
+    GRÁFICA:
+    {bel_text[:10000]}
     
-    INSTRUÇÕES:
-    1. O texto da Gráfica deve seguir o conteúdo da Referência.
-    2. Ignore formatação (quebras de linha, espaços).
-    3. Verifique números, unidades (mg, ml) e avisos de alerta.
-    4. Se estiver tudo certo, responda APENAS: "CONFORME".
-    5. Se houver erro, liste apenas o que está diferente.
+    Tarefa:
+    1. Verifique se o conteúdo da GRÁFICA está fiel à REF.
+    2. Ignore formatação. Foque em números e avisos.
+    3. Responda APENAS "CONFORME" se estiver ok. Caso contrário, liste o erro.
     """
-    try:
-        resp = model.generate_content(prompt)
-        return resp.text
-    except Exception as e:
-        return f"Erro Juiz: {str(e)}"
+    
+    # SISTEMA DE TENTATIVAS (ANTI-ERRO 429)
+    for attempt in range(4): # Tenta até 4 vezes
+        try:
+            resp = model.generate_content(prompt)
+            return resp.text
+        except Exception as e:
+            if "429" in str(e): # Erro de Cota/Quota
+                wait_time = 20 * (attempt + 1) # 20s, 40s, 60s...
+                st.toast(f"⏳ Cota atingida. Esperando {wait_time}s para tentar seção '{secao}' de novo...", icon="⏸️")
+                time.sleep(wait_time)
+                continue
+            return f"Erro API: {str(e)}"
+            
+    return "❌ Falha: Limite de cota excedido persistentemente."
 
-# ----------------- UI PRINCIPAL -----------------
-st.title("👁️ Validador Pro (Gemini 2.5)")
-st.markdown("**Status:** Online | **Engine:** Gemini 2.5 Flash | **Suporte:** PDF Texto & Scan")
+# ----------------- UI -----------------
+st.title("🛡️ Validador Pro (Anti-Bloqueio 429)")
+st.markdown("**Status:** Protegido contra Rate Limit | **Engine:** Gemini 2.5 Flash")
 
-if configure_api():
-    st.success("✅ API Conectada")
-else:
-    st.error("❌ Erro na API Key")
+if configure_api(): st.success("✅ API Conectada")
+else: st.error("❌ Erro API Key")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Referência (Word/PDF)", key="f1")
-f2 = c2.file_uploader("Gráfica (Scan/PDF)", key="f2")
+f1 = c1.file_uploader("Referência", key="f1")
+f2 = c2.file_uploader("Gráfica", key="f2")
 
 SECOES = [
     "APRESENTAÇÕES", "COMPOSIÇÃO",
@@ -218,36 +208,26 @@ SECOES = [
     "DIZERES LEGAIS"
 ]
 
-if f1 and f2 and st.button("🚀 INICIAR AUDITORIA"):
-    with st.spinner("Analisando documentos..."):
-        # 1. Leitura Inteligente (Detecta Texto ou Imagem)
+if f1 and f2 and st.button("🚀 INICIAR AUDITORIA SEGURA"):
+    with st.spinner("Lendo arquivos..."):
         d1 = extract_content(f1.getvalue(), f1.name)
         d2 = extract_content(f2.getvalue(), f2.name)
         
-        # Mostra o modo detectado
-        m1 = "TEXTO" if d1['type'] == 'text' else "SCAN (OCR)"
-        m2 = "TEXTO" if d2['type'] == 'text' else "SCAN (OCR)"
-        st.info(f"Modo: Ref [{m1}] vs Gráfica [{m2}]")
+        m1 = "TEXTO" if d1['type'] == 'text' else "OCR"
+        m2 = "TEXTO" if d2['type'] == 'text' else "OCR"
+        st.info(f"Modo: {m1} vs {m2}")
         
         if d1['type'] == 'error' or d2['type'] == 'error':
-            st.error("Erro ao ler arquivos. Tente novamente.")
+            st.error("Erro na leitura.")
         else:
             prog = st.progress(0)
             
             for i, sec in enumerate(SECOES):
-                # Extração Ref
-                if d1['type'] == 'text':
-                    txt_ref = get_section_text_python(d1['data'], sec, SECOES)
-                else:
-                    txt_ref = get_section_text_ocr(d1['data'], sec)
+                # Extração
+                txt_ref = get_section_text_python(d1['data'], sec, SECOES) if d1['type'] == 'text' else get_section_text_ocr(d1['data'], sec)
+                txt_bel = get_section_text_python(d2['data'], sec, SECOES) if d2['type'] == 'text' else get_section_text_ocr(d2['data'], sec)
                 
-                # Extração Gráfica
-                if d2['type'] == 'text':
-                    txt_bel = get_section_text_python(d2['data'], sec, SECOES)
-                else:
-                    txt_bel = get_section_text_ocr(d2['data'], sec)
-                
-                # Validação (Juiz)
+                # Validação
                 if "não encontrada" in txt_ref and "não encontrada" in txt_bel:
                     veredito = "❌ Seção não localizada"
                     color = "orange"
@@ -259,7 +239,6 @@ if f1 and f2 and st.button("🚀 INICIAR AUDITORIA"):
                     else:
                         color = "red"
 
-                # Exibição
                 with st.expander(f"{sec}", expanded=(color=="red")):
                     st.markdown(f":{color}[**{veredito}**]")
                     ca, cb = st.columns(2)
@@ -267,3 +246,7 @@ if f1 and f2 and st.button("🚀 INICIAR AUDITORIA"):
                     cb.text_area("Gráfica", txt_bel, height=150, key=f"b{i}")
                 
                 prog.progress((i + 1) / len(SECOES))
+                
+                # PAUSA ESTRATÉGICA ENTRE SEÇÕES (FREIO)
+                # Espera 5 segundos entre cada seção para evitar o bloqueio 429
+                time.sleep(5)
