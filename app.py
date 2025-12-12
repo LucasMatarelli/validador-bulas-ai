@@ -64,7 +64,7 @@ SECOES_PROFISSIONAL = [
     "9. REAÇÕES ADVERSAS", "10. SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO"]
+SECOES_VISUALIZACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
 
@@ -78,219 +78,211 @@ def get_mistral_client():
 
 def image_to_base64(image):
     buffered = io.BytesIO()
-    image.save(buffered, format="JPEG", quality=90, optimize=True)
+    image.save(buffered, format="JPEG", quality=95, optimize=True)
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 def sanitize_text(text):
     if not text: return ""
     text = unicodedata.normalize('NFKC', text)
-    text = text.replace('\xa0', ' ').replace('\u200b', '').replace('\u00ad', '').replace('\ufeff', '').replace('\t', ' ')
-    return re.sub(r'\s+', ' ', text).strip()
+    text = text.replace('\xa0', ' ').replace('\u200b', '').replace('\u00ad', '').replace('\ufeff', '')
+    return text.strip()
 
-def clean_noise(text):
-    """Limpa cabeçalhos e rodapés sem remover conteúdo relevante"""
+def clean_header_footer(text):
+    """Remove apenas cabeçalhos/rodapés, mantém conteúdo"""
     lines = text.split('\n')
-    cleaned_lines = []
-    ignore_patterns = [
-        r'^\d+(\s*de\s*\d+)?$', r'^Página\s*\d+\s*de\s*\d+$',
-        r'^BELFAR$', r'^UBELFAR$', r'^SANOFI$', r'^MEDLEY$',
-        r'^Bula do (Paciente|Profissional)$', r'^Versão\s*\d+$',
+    cleaned = []
+    
+    noise_patterns = [
         r'^\d{2}\s*\d{4}-\d{4}$',  # Telefones
-        r'^Belcomplex_B_comprimido_BUL\d+V\d+$',  # Códigos de arquivo
-        r'^(FRENTE|VERSO)$', r'^Medida da bula:', r'^Tipologia da bula:',
-        r'^Impressão:', r'^Papel:', r'^Cor:', r'^Belcomplex: Times'
+        r'^Belcomplex_B_comprimido_BUL\d+',  # Códigos
+        r'^(FRENTE|VERSO)$',
+        r'^Medida da bula:',
+        r'^Tipologia da bula:',
+        r'^Impressão:',
+        r'^Papel:',
+        r'^Cor:',
+        r'^Belcomplex: Times',
+        r'^\d+ª PROVA',
+        r'^Página \d+',
+        r'^\d+$'  # Números sozinhos
     ]
     
     for line in lines:
         l = line.strip()
-        should_skip = False
-        if len(l) < 60:  # Aumentei para não cortar parágrafos curtos importantes
-            for pattern in ignore_patterns:
+        if not l:
+            continue
+        
+        is_noise = False
+        if len(l) < 50:  # Só verifica linhas curtas
+            for pattern in noise_patterns:
                 if re.match(pattern, l, re.IGNORECASE):
-                    should_skip = True
+                    is_noise = True
                     break
-        if not should_skip and l:  # Só adiciona se tiver conteúdo
-            cleaned_lines.append(line)
-    return "\n".join(cleaned_lines)
+        
+        if not is_noise:
+            cleaned.append(line)
+    
+    return "\n".join(cleaned)
 
 def extract_json(text):
     text = re.sub(r'```json|```', '', text).strip()
     try:
         start, end = text.find('{'), text.rfind('}') + 1
-        return json.loads(text[start:end]) if start != -1 and end != -1 else json.loads(text)
-    except: return None
+        if start != -1 and end > start:
+            return json.loads(text[start:end])
+        return json.loads(text)
+    except:
+        return None
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
-    """Lê o arquivo preservando ordem de colunas e estrutura"""
+    """Processa arquivo extraindo texto com preservação de layout"""
     try:
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
+            text = clean_header_footer(text)
             return {"type": "text", "data": sanitize_text(text)}
         
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             
-            # Lê texto nativo com ordenação de blocos (respeitando colunas)
-            for page in doc: 
+            # Tenta extração de texto nativo com ordenação por posição
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                
+                # Usa blocks ordenados por posição (respeita colunas)
                 blocks = page.get_text("blocks", sort=True)
-                for b in blocks:
-                    if b[6] == 0:  # Tipo texto
-                        full_text += b[4] + "\n"
+                
+                for block in blocks:
+                    if block[6] == 0:  # Tipo texto
+                        block_text = block[4].strip()
+                        if block_text:
+                            full_text += block_text + "\n"
             
-            # Se pouco texto, usa OCR de alta resolução
-            if len(full_text.strip()) < 500:
+            # Se texto muito curto, usa OCR
+            if len(full_text.strip()) < 300:
                 images = []
-                limit_pages = min(10, len(doc))  # Aumentei para 10 páginas
-                for i in range(limit_pages):
+                for i in range(min(12, len(doc))):
                     page = doc[i]
-                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
-                    try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
-                    except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
-                    img = Image.open(img_byte_arr)
-                    if img.width > 2500: img.thumbnail((2500, 2500), Image.Resampling.LANCZOS)
+                    # Alta resolução para OCR preciso
+                    pix = page.get_pixmap(matrix=fitz.Matrix(4.0, 4.0))
+                    
+                    try:
+                        img_bytes = io.BytesIO(pix.tobytes("jpeg"))
+                    except:
+                        img_bytes = io.BytesIO(pix.tobytes("png"))
+                    
+                    img = Image.open(img_bytes)
+                    # Reduz tamanho se muito grande
+                    if img.width > 3000:
+                        img.thumbnail((3000, 3000), Image.Resampling.LANCZOS)
+                    
                     images.append(img)
+                
                 doc.close()
                 return {"type": "images", "data": images}
             
-            full_text = clean_noise(full_text)
+            # Limpa ruídos
+            full_text = clean_header_footer(full_text)
             doc.close()
             return {"type": "text", "data": sanitize_text(full_text)}
             
     except Exception as e:
+        st.error(f"Erro ao processar arquivo: {e}")
         return {"type": "text", "data": ""}
 
-def get_next_section_title(current_section, all_sections):
-    """Retorna o título da próxima seção"""
+def get_section_boundaries(secao, todas_secoes):
+    """Retorna título da próxima seção"""
     try:
-        idx = all_sections.index(current_section)
-        if idx + 1 < len(all_sections):
-            return all_sections[idx + 1]
-        return "DIZERES LEGAIS"
+        idx = todas_secoes.index(secao)
+        if idx + 1 < len(todas_secoes):
+            return todas_secoes[idx + 1]
     except:
-        return "DIZERES LEGAIS"
+        pass
+    return None
 
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
-    eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
+    """Worker para auditoria de uma seção"""
     
-    # Identifica a PRÓXIMA seção para saber onde parar
-    proxima_secao = get_next_section_title(secao, todas_secoes)
+    eh_visualizacao = secao in SECOES_VISUALIZACAO
+    proxima_secao = get_section_boundaries(secao, todas_secoes)
     
-    # Lista completa de barreiras
-    barreiras = [s for s in todas_secoes if s != secao]
-    stop_markers_str = "\n".join([f"- {s}" for s in barreiras[:15]])  # Limita para não explodir o prompt
-
-    # ===== INSTRUÇÕES UNIVERSAIS =====
-    instrucoes_base = f"""
-🤖 VOCÊ É UM EXTRATOR DE TEXTO LITERAL - NÃO REESCREVA NADA
-
-📍 CONTEXTO DE LEITURA:
-- Bulas têm MÚLTIPLAS COLUNAS (esquerda → direita)
-- SEMPRE leia coluna por coluna, de cima para baixo
-- O texto continua na próxima coluna quando acaba uma
-
-🎯 SUA MISSÃO:
-Extrair TODO o conteúdo da seção "{secao}" até encontrar o título "{proxima_secao}"
-
-⚠️ REGRAS CRÍTICAS:
-
-1️⃣ LITERALIDADE 100%:
-   - Copie cada palavra EXATAMENTE como está
-   - Mantenha erros de digitação do original
-   - NÃO corrija gramática
-   - NÃO use sinônimos
-   - NÃO resuma
-
-2️⃣ COMPLETUDE:
-   - Capture TODOS os parágrafos
-   - Não pare no primeiro ponto final
-   - Continue até encontrar o próximo título numerado
-   - Se há avisos "Atenção:", capture TODOS eles
-
-3️⃣ DELIMITAÇÃO:
-   - COMECE em: "{secao}"
-   - PARE em: "{proxima_secao}"
-   - Ignore cabeçalhos/rodapés (ex: "BELFAR", "31 3514-2900")
-"""
-
-    # ===== REGRAS ESPECÍFICAS POR SEÇÃO =====
-    regra_especifica = ""
+    # Monta prompt ultra-específico
+    stop_instruction = f"PARE imediatamente quando encontrar o título: '{proxima_secao}'" if proxima_secao else "Continue até o final da seção"
     
-    if "1. PARA QUE" in secao.upper():
-        regra_especifica = """
-🚨 ATENÇÃO SEÇÃO 1:
-Esta seção contém APENAS indicações terapêuticas.
-PARE ANTES de qualquer texto que comece com "Atenção:".
+    # Instruções específicas por seção
+    instrucoes_secao = ""
+    
+    if "1. PARA QUE" in secao:
+        instrucoes_secao = """
+🎯 SEÇÃO 1 - REGRA CRÍTICA:
+Esta seção contém APENAS as indicações terapêuticas.
+EXEMPLO: "Belcomplex B é indicado como suplemento vitamínico nos seguintes casos: em dietas restritivas, em indivíduos com doenças infecciosas ou inflamatórias, em pacientes com má-absorção de glicose-galactose."
 
-❌ NÃO INCLUA:
-- "Atenção: Contém açúcar..."
-- "Atenção: Contém lactose..."
-- "Atenção: Contém os corantes..."
+⛔ NÃO INCLUA:
+- Avisos que começam com "Atenção:"
+- Avisos sobre corantes/lactose
+- USO ORAL / USO ADULTO
 
-Esses textos pertencem à SEÇÃO 3.
-
-✅ FORMATO ESPERADO:
-"[Nome do medicamento] é indicado como suplemento vitamínico nos seguintes casos: em dietas restritivas, em indivíduos com doenças infecciosas ou inflamatórias, em pacientes com má-absorção de glicose-galactose."
-[FIM - PARE AQUI]
+PARE no ponto final ANTES de qualquer "Atenção:".
 """
     
-    elif "3. QUANDO NÃO" in secao.upper():
-        regra_especifica = """
-🚨 ATENÇÃO SEÇÃO 3:
-Esta seção é COMPLEXA e tem múltiplos blocos:
+    elif "3. QUANDO NÃO" in secao:
+        instrucoes_secao = """
+🎯 SEÇÃO 3 - REGRA CRÍTICA:
+Esta seção tem múltiplos blocos de "Atenção:".
 
-ESTRUTURA OBRIGATÓRIA:
-1️⃣ Contraindicação principal (hipersensibilidade)
-2️⃣ "Atenção: Contém lactose. Este medicamento não deve ser usado..."
-3️⃣ "Atenção: Contém os corantes dióxido de titânio e marrom laca de alumínio..."
+ESTRUTURA COMPLETA:
+1. Contraindicação: "Belcomplex B é contraindicado para pacientes com hipersensibilidade às vitaminas do complexo B ou aos outros componentes da fórmula."
+2. "Atenção: Contém lactose. Este medicamento não deve ser usado por pessoas com síndrome de má-absorção de glicose-galactose."
+3. "Atenção: Contém os corantes dióxido de titânio e marrom laca de alumínio que podem, eventualmente, causar reações alérgicas."
 
-✅ VOCÊ DEVE capturar os 3 blocos acima.
-Continue lendo até encontrar "4. O QUE DEVO SABER"
+✅ CAPTURE OS 3 BLOCOS.
+Continue até encontrar "4. O QUE DEVO SABER"
 """
     
-    elif "4. O QUE DEVO SABER" in secao.upper():
-        regra_especifica = """
-🚨 ATENÇÃO SEÇÃO 4:
-Esta é a seção MAIS LONGA da bula. Pode ter 3-4 parágrafos.
+    elif "4. O QUE DEVO SABER" in secao:
+        instrucoes_secao = """
+🎯 SEÇÃO 4 - SEÇÃO LONGA - REGRA CRÍTICA:
+Esta é a seção mais longa. Tem múltiplos parágrafos E avisos finais obrigatórios.
 
-✅ VOCÊ DEVE capturar:
-1️⃣ Todos os parágrafos sobre precauções
-2️⃣ Informações sobre interações medicamentosas
-3️⃣ Avisos finais em negrito:
-   - "Atenção: Contém lactose. Este medicamento não deve ser usado..."
-   - "Atenção: Contém os corantes dióxido de titânio..."
-   - "Este medicamento não deve ser utilizado por mulheres grávidas..."
-   - "Informe ao seu médico ou cirurgião-dentista se você está fazendo uso..."
+VOCÊ DEVE CAPTURAR:
+1. Todos os parágrafos sobre precauções (renais, gravidez, parkinsonianos, etc)
+2. Parágrafos sobre interações medicamentosas
+3. AVISOS FINAIS OBRIGATÓRIOS (ao final da seção):
+   - "Atenção: Contém os corantes dióxido de titânio e marrom laca de alumínio que podem, eventualmente, causar reações alérgicas."
+   - "Atenção: Contém lactose. Este medicamento não deve ser usado por pessoas com síndrome de má-absorção de glicose-galactose."
+   - "Este medicamento não deve ser utilizado por mulheres grávidas sem orientação médica ou do cirurgião-dentista."
+   - "Informe ao seu médico ou cirurgião-dentista se você está fazendo uso de algum outro medicamento."
 
-⚠️ NÃO PARE até capturar TODOS os 4 avisos finais acima.
-Continue até encontrar "5. ONDE, COMO E POR QUANTO TEMPO"
+⚠️ NÃO PARE até capturar TODOS os 4 avisos finais.
 """
     
-    elif "7. O QUE DEVO FAZER" in secao.upper():
-        regra_especifica = """
-🚨 ATENÇÃO SEÇÃO 7 - MODO SCANNER:
-Você é um SCANNER de texto. Copie EXATAMENTE.
+    elif "7. O QUE DEVO FAZER" in secao:
+        instrucoes_secao = """
+🎯 SEÇÃO 7 - MODO SCANNER LITERAL:
+Você é um ROBÔ. Copie EXATAMENTE cada palavra.
 
-❌ PROIBIDO:
-- Mudar "deixou de tomar" para "esqueceu"
-- Mudar "deverá tomar" para "deve tomar"
-- Alterar QUALQUER palavra
+⚠️ LITERALIDADE ABSOLUTA:
+- Se diz "deixou de tomar" → escreva "deixou de tomar"
+- Se diz "deverá tomar" → escreva "deverá tomar"
+- PROIBIDO usar sinônimos
 
-✅ ESTRUTURA ESPERADA:
-Parágrafo 1: Instruções sobre dose esquecida
-Parágrafo 2: "Em caso de dúvidas procure orientação do farmacêutico..."
+ESTRUTURA:
+Parágrafo 1: Instrução sobre dose esquecida
+Parágrafo 2: "Em caso de dúvidas procure orientação do farmacêutico ou de seu médico ou cirurgião-dentista."
 
-Capture AMBOS os parágrafos.
+Capture AMBOS.
 """
     
-    elif "9. O QUE FAZER" in secao.upper():
-        regra_especifica = """
-🚨 ATENÇÃO SEÇÃO 9:
-Esta seção tem DOIS blocos distintos:
+    elif "9. O QUE FAZER" in secao:
+        instrucoes_secao = """
+🎯 SEÇÃO 9 - REGRA CRÍTICA:
+Esta seção tem DOIS blocos separados:
 
-BLOCO 1 (Descrição clínica):
+BLOCO 1 (Descrição):
 "Se você tomar uma dose muito grande deste medicamento acidentalmente, deve procurar um médico ou um centro de intoxicação imediatamente. O apoio médico imediato é fundamental para adultos e crianças, mesmo se os sinais e sintomas de intoxicação não estiverem presentes. Ainda não foram descritos os sintomas de intoxicação do medicamento após a superdosagem."
 
 BLOCO 2 (Aviso padrão):
@@ -299,158 +291,182 @@ BLOCO 2 (Aviso padrão):
 ✅ CAPTURE AMBOS OS BLOCOS COMPLETOS.
 """
 
-    prompt_final = f"""
-{instrucoes_base}
+    prompt = f"""
+Você é um EXTRATOR DE TEXTO LITERAL. Sua única função é COPIAR texto, não interpretar.
 
-{regra_especifica}
+📋 TAREFA: Extrair o conteúdo da seção "{secao}"
 
-🛑 PARE SE ENCONTRAR (próxima seção):
-{proxima_secao}
+🔒 REGRAS ABSOLUTAS:
+1. LITERALIDADE: Copie palavra por palavra, vírgula por vírgula
+2. COMPLETUDE: Não omita parágrafos
+3. PRECISÃO: {stop_instruction}
 
-📤 FORMATO DE SAÍDA JSON:
+{instrucoes_secao}
+
+📍 CONTEXTO:
+- Bulas têm múltiplas colunas (leia esquerda → direita, cima → baixo)
+- Ignore cabeçalhos/rodapés (telefones, códigos)
+- Mantenha quebras de parágrafo
+
+📤 SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto literal copiado do documento 1",
-  "bel": "texto literal copiado do documento 2",
+  "ref": "conteúdo literal do documento 1",
+  "bel": "conteúdo literal do documento 2",
   "status": "CONFORME"
 }}
 
-⚠️ LEMBRE-SE: Você é um robô. Não pense, apenas COPIE.
+⚠️ CRÍTICO: Não invente. Não resuma. Não melhore. Apenas COPIE.
 """
+
+    messages = [{"type": "text", "text": prompt}]
     
-    messages_content = [{"type": "text", "text": prompt_final}]
-
-    # Prepara os documentos
-    limit = 80000  # Aumentei o limite
-    for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
-        if d['type'] == 'text':
-            if len(d['data']) < 50:
-                 messages_content.append({"type": "text", "text": f"\n--- {nome}: (Vazio/Ilegível) ---\n"})
+    # Adiciona documentos
+    for doc, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
+        if doc['type'] == 'text':
+            if len(doc['data']) < 50:
+                messages.append({"type": "text", "text": f"\n=== {nome} ===\n[Documento vazio ou ilegível]\n"})
             else:
-                 messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
+                # Envia texto completo (até 100k chars)
+                messages.append({"type": "text", "text": f"\n=== {nome} ===\n{doc['data'][:100000]}\n"})
         else:
-            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagens OCR) ---"})
-            for img in d['data'][:8]:  # Aumentei para 8 imagens
+            messages.append({"type": "text", "text": f"\n=== {nome} (OCR) ===\n"})
+            # Envia todas as imagens disponíveis
+            for img in doc['data'][:10]:
                 b64 = image_to_base64(img)
-                messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
-
-    # Chamada à API com retry
-    for attempt in range(3):  # 3 tentativas
+                messages.append({
+                    "type": "image_url",
+                    "image_url": f"data:image/jpeg;base64,{b64}"
+                })
+    
+    # Chamada à API
+    for attempt in range(3):
         try:
-            chat_response = client.chat.complete(
-                model="pixtral-large-latest", 
-                messages=[{"role": "user", "content": messages_content}],
+            response = client.chat.complete(
+                model="pixtral-large-latest",
+                messages=[{"role": "user", "content": messages}],
                 response_format={"type": "json_object"},
                 temperature=0.0,
-                max_tokens=4096  # Aumentei para respostas longas
+                max_tokens=8192
             )
-            raw_content = chat_response.choices[0].message.content
-            dados = extract_json(raw_content)
             
-            if dados and 'ref' in dados:
+            content = response.choices[0].message.content
+            dados = extract_json(content)
+            
+            if dados and 'ref' in dados and 'bel' in dados:
                 dados['titulo'] = secao
                 
                 if not eh_visualizacao:
-                    # Comparação para definir status
-                    t_ref = re.sub(r'\s+', ' ', str(dados.get('ref', '')).strip().lower())
-                    t_bel = re.sub(r'\s+', ' ', str(dados.get('bel', '')).strip().lower())
-                    t_ref = re.sub(r'<[^>]+>', '', t_ref)
-                    t_bel = re.sub(r'<[^>]+>', '', t_bel)
-
-                    if t_ref == t_bel:
-                        dados['status'] = 'CONFORME'
-                        dados['ref'] = re.sub(r'<mark[^>]*>|</mark>', '', dados.get('ref', ''))
-                        dados['bel'] = re.sub(r'<mark[^>]*>|</mark>', '', dados.get('bel', ''))
-                    else:
-                        dados['status'] = 'DIVERGENTE'
+                    # Normaliza para comparação
+                    ref_norm = re.sub(r'\s+', ' ', dados.get('ref', '').lower().strip())
+                    bel_norm = re.sub(r'\s+', ' ', dados.get('bel', '').lower().strip())
+                    
+                    dados['status'] = 'CONFORME' if ref_norm == bel_norm else 'DIVERGENTE'
+                else:
+                    dados['status'] = 'VISUALIZACAO'
                 
-                if "DIZERES LEGAIS" in secao.upper():
-                    dados['status'] = "VISUALIZACAO"
-
                 return dados
-                
+            
         except Exception as e:
             if attempt < 2:
-                time.sleep(2)  # Aguarda antes de retry
+                time.sleep(2)
             else:
-                return {"titulo": secao, "ref": f"Erro: {str(e)}", "bel": "Erro", "status": "ERRO"}
+                return {
+                    "titulo": secao,
+                    "ref": f"Erro na extração: {str(e)}",
+                    "bel": "Erro",
+                    "status": "ERRO"
+                }
     
-    return {"titulo": secao, "ref": "Erro extração", "bel": "Erro extração", "status": "ERRO"}
+    return {
+        "titulo": secao,
+        "ref": "Falha na extração",
+        "bel": "Falha na extração",
+        "status": "ERRO"
+    }
 
 # ----------------- UI PRINCIPAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de bulas")
     client = get_mistral_client()
-    if client: st.success("✅ Sistema Online")
-    else: st.error("❌ Configuração pendente")
+    if client:
+        st.success("✅ Sistema Online")
+    else:
+        st.error("❌ Configure MISTRAL_API_KEY")
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v6.0 - Extração Sequencial")
+    st.caption("v7.0 - Extração Literal Rigorosa")
 
 if pagina == "🏠 Início":
-    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
-    st.success("✅ **Nova Versão - Extração Sequencial por Colunas**")
+    st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas v7.0</h1>", unsafe_allow_html=True)
+    st.success("✅ **Versão Reescrita - Extração Ultra-Precisa**")
     st.write("")
-    st.write("**Melhorias implementadas:**")
-    st.write("- ✅ Leitura coluna por coluna (esquerda → direita)")
-    st.write("- ✅ Delimitação precisa: para na próxima seção")
-    st.write("- ✅ Captura completa de avisos 'Atenção:' nas seções corretas")
-    st.write("- ✅ Modo literal: não reescreve texto original")
-    st.write("- ✅ Remove ruídos (telefones, códigos de arquivo)")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("**Melhorias:**")
+        st.write("- Instruções específicas por seção")
+        st.write("- Modo scanner literal (Seção 7)")
+        st.write("- Captura completa de avisos")
+    with col2:
+        st.info("**Correções:**")
+        st.write("- Seção 1: Para antes de 'Atenção:'")
+        st.write("- Seção 3: Captura 3 blocos")
+        st.write("- Seção 4: Captura avisos finais")
 
 else:
     st.markdown(f"## {pagina}")
     
     lista_secoes = SECOES_PACIENTE
-    nome_doc1 = "REFERÊNCIA"
-    nome_doc2 = "BELFAR"
+    nome_doc1, nome_doc2 = "REFERÊNCIA", "BELFAR"
     
     if pagina == "💊 Ref x BELFAR":
-        label_box1 = "📄 Referência"
-        label_box2 = "📄 BELFAR"
+        label1, label2 = "📄 Referência", "📄 BELFAR"
         col_tipo, _ = st.columns([1, 2])
         with col_tipo:
-            tipo_bula = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True)
-            if tipo_bula == "Profissional": lista_secoes = SECOES_PROFISSIONAL
+            tipo = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True)
+            if tipo == "Profissional":
+                lista_secoes = SECOES_PROFISSIONAL
     elif pagina == "📋 Conferência MKT":
-        label_box1 = "📄 ANVISA"
-        label_box2 = "📄 MKT"
-        nome_doc1 = "ANVISA"
-        nome_doc2 = "MKT"
-    elif pagina == "🎨 Gráfica x Arte":
-        label_box1 = "📄 Arte Vigente"
-        label_box2 = "📄 Gráfica"
-        nome_doc1 = "ARTE VIGENTE"
-        nome_doc2 = "GRÁFICA"
+        label1, label2 = "📄 ANVISA", "📄 MKT"
+        nome_doc1, nome_doc2 = "ANVISA", "MKT"
+    else:  # Gráfica x Arte
+        label1, label2 = "📄 Arte Vigente", "📄 Gráfica"
+        nome_doc1, nome_doc2 = "ARTE VIGENTE", "GRÁFICA"
     
     st.divider()
     c1, c2 = st.columns(2)
-    with c1: f1 = st.file_uploader(label_box1, type=["pdf", "docx"], key="f1")
-    with c2: f2 = st.file_uploader(label_box2, type=["pdf", "docx"], key="f2")
-        
-    st.write("") 
+    with c1:
+        f1 = st.file_uploader(label1, type=["pdf", "docx"], key="f1")
+    with c2:
+        f2 = st.file_uploader(label2, type=["pdf", "docx"], key="f2")
+    
+    st.write("")
     if st.button("🚀 INICIAR AUDITORIA"):
         if not f1 or not f2 or not client:
-            st.warning("⚠️ Verifique arquivos e API Key.")
+            st.warning("⚠️ Carregue ambos os arquivos e verifique a API Key")
         else:
-            with st.status("🔄 Processando documentos...", expanded=True) as status:
-                st.write("📖 Lendo arquivos (coluna por coluna)...")
+            with st.status("🔄 Processando...", expanded=True) as status:
+                st.write("📖 Lendo arquivos...")
                 d1 = process_file_content(f1.getvalue(), f1.name)
                 d2 = process_file_content(f2.getvalue(), f2.name)
                 
-                modo1 = "OCR (Imagem)" if d1['type'] == 'images' else "Texto Nativo"
-                modo2 = "OCR (Imagem)" if d2['type'] == 'images' else "Texto Nativo"
+                modo1 = "OCR" if d1['type'] == 'images' else "Texto"
+                modo2 = "OCR" if d2['type'] == 'images' else "Texto"
                 st.write(f"ℹ️ {nome_doc1}: {modo1} | {nome_doc2}: {modo2}")
-
-                st.write("🔍 Extraindo seções literalmente...")
+                
+                st.write("🔍 Extraindo seções...")
                 resultados = []
                 bar = st.progress(0)
                 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                     futures = {
-                        executor.submit(auditar_secao_worker, client, sec, d1, d2, nome_doc1, nome_doc2, lista_secoes): sec 
+                        executor.submit(
+                            auditar_secao_worker,
+                            client, sec, d1, d2,
+                            nome_doc1, nome_doc2, lista_secoes
+                        ): sec
                         for sec in lista_secoes
                     }
                     
@@ -460,11 +476,13 @@ else:
                         bar.progress((i + 1) / len(lista_secoes))
                 
                 status.update(label="✅ Concluído!", state="complete", expanded=False)
-
+            
+            # Ordena resultados
             resultados.sort(key=lambda x: lista_secoes.index(x['titulo']) if x['titulo'] in lista_secoes else 999)
             
-            conformes = sum(1 for r in resultados if "CONFORME" in r.get('status', ''))
-            divergentes = sum(1 for r in resultados if "DIVERGENTE" in r.get('status', ''))
+            # Métricas
+            conformes = sum(1 for r in resultados if r.get('status') == 'CONFORME')
+            divergentes = sum(1 for r in resultados if r.get('status') == 'DIVERGENTE')
             
             k1, k2, k3 = st.columns(3)
             k1.metric("Total", len(lista_secoes))
@@ -473,16 +491,32 @@ else:
             
             st.divider()
             
+            # Exibe resultados
             for res in resultados:
-                status = res.get('status', 'ERRO')
-                icon = "✅" if "CONFORME" in status else "⚠️" if "DIVERGENTE" in status else "👁️"
-                cor = "#28a745" if "CONFORME" in status else "#ffc107" if "DIVERGENTE" in status else "#17a2b8"
+                status_val = res.get('status', 'ERRO')
                 
-                with st.expander(f"{icon} {res['titulo']} - {status}", expanded=("DIVERGENTE" in status)):
-                    c_a, c_b = st.columns(2)
-                    with c_a:
-                        st.caption(nome_doc1)
-                        st.markdown(f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-left: 5px solid {cor};'>{res.get('ref', '')}</div>", unsafe_allow_html=True)
-                    with c_b:
-                        st.caption(nome_doc2)
-                        st.markdown(f"<div class='texto-bula' style='background:#fff; border:1px solid #ddd; padding:15px; border-left: 5px solid {cor};'>{res.get('bel', '')}</div>", unsafe_allow_html=True)
+                if status_val == 'CONFORME':
+                    icon, cor = "✅", "#28a745"
+                elif status_val == 'DIVERGENTE':
+                    icon, cor = "⚠️", "#ffc107"
+                elif status_val == 'VISUALIZACAO':
+                    icon, cor = "👁️", "#17a2b8"
+                else:
+                    icon, cor = "❌", "#dc3545"
+                
+                expanded = (status_val == 'DIVERGENTE')
+                
+                with st.expander(f"{icon} {res['titulo']} — {status_val}", expanded=expanded):
+                    ca, cb = st.columns(2)
+                    with ca:
+                        st.caption(f"**{nome_doc1}**")
+                        st.markdown(
+                            f"<div class='texto-bula' style='background:#f9f9f9; padding:15px; border-left:5px solid {cor};'>{res.get('ref', '')}</div>",
+                            unsafe_allow_html=True
+                        )
+                    with cb:
+                        st.caption(f"**{nome_doc2}**")
+                        st.markdown(
+                            f"<div class='texto-bula' style='background:#fff; border:1px solid #ddd; padding:15px; border-left:5px solid {cor};'>{res.get('bel', '')}</div>",
+                            unsafe_allow_html=True
+                        )
