@@ -6,44 +6,42 @@ import docx
 import io
 import re
 import os
-import time
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Pro (Scan Support)",
-    page_icon="👁️",
+    page_title="Validador Pro (Gemini 2.5)",
+    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- CSS -----------------
+# ----------------- CSS PARA VISUAL LIMPO -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
     .main { background-color: #f4f6f8; }
     .stCard { background-color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .stButton>button { width: 100%; background-color: #6f42c1; color: white; font-weight: bold; border-radius: 8px; height: 50px; font-size: 16px; }
-    .stButton>button:hover { background-color: #5a32a3; }
+    .stButton>button { width: 100%; background-color: #007bff; color: white; font-weight: bold; border-radius: 8px; height: 50px; font-size: 16px; }
+    .stButton>button:hover { background-color: #0056b3; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- SETUP DA API -----------------
+# ----------------- CONFIGURAÇÃO DA API -----------------
 def configure_api():
-    # Tenta pegar do secrets do Streamlit, senão usa a variável direta (fallback)
+    # Tenta pegar do secrets ou usa a chave direta (Fallback)
     api_key = st.secrets.get("GOOGLE_API_KEY")
     if not api_key:
-        # Fallback caso o secrets falhe
-        api_key = "AIzaSyBcPfO6nlsy1vCvKW_VNofEmG7GaSdtiLE"
+        api_key = "AIzaSyBcPfO6nlsy1vCvKW_VNofEmG7GaSdtiLE" # Sua chave
     
     if api_key:
         genai.configure(api_key=api_key)
         return True
     return False
 
-# ----------------- LEITURA DE ARQUIVO (TEXTO E IMAGEM) -----------------
+# ----------------- FUNÇÕES DE LIMPEZA E LEITURA -----------------
 def clean_noise(text):
-    """Limpeza técnica básica"""
+    """Limpeza técnica básica para remover lixo de PDF"""
     if not text: return ""
     text = text.replace('\xa0', ' ').replace('\r', '')
     patterns = [
@@ -62,35 +60,36 @@ def clean_noise(text):
 
 def extract_content(file_bytes, filename):
     """
-    Lê o arquivo. Retorna um dicionário indicando se é TEXTO ou IMAGEM.
+    Lê o arquivo e decide se é TEXTO (PDF Nativo) ou IMAGEM (Scan).
+    Retorna: {'type': 'text', 'data': str} OU {'type': 'image', 'data': [PIL.Image]}
     """
     try:
-        # CASO 1: DOCX (Sempre texto)
+        # 1. DOCX (Sempre Texto)
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": clean_noise(text)}
         
-        # CASO 2: PDF
+        # 2. PDF
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         full_text = ""
         
-        # Tenta extrair texto primeiro
+        # Tenta extrair texto
         for page in doc:
             full_text += page.get_text() + "\n"
         
-        # Se tiver texto suficiente, ótimo!
-        if len(full_text.strip()) > 100:
+        # SE TIVER TEXTO SUFICIENTE -> É PDF NATIVO
+        if len(full_text.strip()) > 200:
             doc.close()
             return {"type": "text", "data": clean_noise(full_text)}
         
-        # CASO 3: SCAN (Pouco texto -> Converte para Imagens)
+        # SE NÃO TIVER TEXTO -> É SCAN (IMAGEM)
+        # Converte páginas para imagens para o Gemini ler
         images = []
-        # Limitamos a 6 páginas para não estourar a API (geralmente bulas cabem nisso)
-        limit_pages = min(6, len(doc))
+        limit_pages = min(8, len(doc)) # Lê até 8 páginas para não estourar memória
         for i in range(limit_pages):
             page = doc[i]
-            # Matrix 2.0 aumenta a qualidade (zoom) para OCR melhor
+            # Matrix 2.0 melhora resolução para OCR
             pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
             try:
                 img_data = pix.tobytes("jpeg")
@@ -102,12 +101,12 @@ def extract_content(file_bytes, filename):
         if images:
             return {"type": "image", "data": images}
         else:
-            return {"type": "error", "data": "Falha ao ler PDF."}
+            return {"type": "error", "data": "Falha ao processar arquivo (vazio ou corrompido)."}
 
     except Exception as e:
         return {"type": "error", "data": str(e)}
 
-# ----------------- RECORTE DE TEXTO (PYTHON) -----------------
+# ----------------- RECORTE (PYTHON TEXTO) -----------------
 def find_section_start(text, section_name):
     text_lower = text.lower()
     core_title = section_name.lower().split('?')[0]
@@ -136,42 +135,42 @@ def get_section_text_python(full_text, section, all_sections):
     except: pass
     return full_text[start:end].strip()
 
-# ----------------- RECORTE DE IMAGEM (OCR GEMINI) -----------------
-def get_section_text_from_image(images, section):
-    """Usa o Gemini para ler a seção específica direto das imagens"""
+# ----------------- OCR (GEMINI LÊ IMAGEM) -----------------
+def get_section_text_ocr(images, section):
+    """
+    Usa o Gemini 2.5 Flash para ler a seção direto da imagem (Scan).
+    """
+    safety = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
     
-    safety = {HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE, 
-              HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-              HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-              HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE}
-    
-    model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety)
+    # MODELO ATUALIZADO: 2.5 Flash
+    model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety)
     
     prompt = [
-        f"Você é uma máquina de OCR. Sua tarefa é transcrever o texto da seção '{section}'.",
-        "1. Olhe todas as imagens.",
-        f"2. Encontre onde começa o título '{section}'.",
-        "3. Transcreva tudo o que está abaixo desse título até encontrar o título da próxima seção.",
-        "4. Se não encontrar a seção, responda apenas 'Seção não encontrada'.",
-        "5. Não faça resumos. Transcrição literal."
+        f"Você é um especialista em OCR. Transcreva APENAS o texto da seção '{section}'.",
+        "1. Procure nas imagens onde esta seção começa.",
+        "2. Copie todo o texto dela até encontrar o título da próxima seção.",
+        "3. Se não achar, responda 'Seção não encontrada'.",
+        "4. Não invente nada. Cópia literal."
     ]
-    prompt.extend(images) # Adiciona as imagens ao prompt
+    prompt.extend(images) # Envia as imagens junto
     
     try:
         resp = model.generate_content(prompt)
         return resp.text.strip()
     except Exception as e:
-        return f"Erro no OCR: {str(e)}"
+        return f"Erro OCR: {str(e)}"
 
 # ----------------- JUIZ (COMPARADOR) -----------------
 def ai_judge_diff(ref_text, bel_text, secao):
-    if len(ref_text) < 10 or len(bel_text) < 10: return "⚠️ Texto insuficiente."
+    if len(ref_text) < 10 or len(bel_text) < 10: return "⚠️ Texto insuficiente para análise."
     
     safety = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
-    model = genai.GenerativeModel('gemini-1.5-pro', safety_settings=safety) # Pro para julgar melhor
+    
+    # MODELO ATUALIZADO: 2.5 Flash (Rápido e Eficiente)
+    model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety)
     
     prompt = f"""
-    Atue como Auditor de Qualidade. Compare os textos da seção "{secao}".
+    Atue como Auditor da ANVISA. Compare os dois textos da seção "{secao}".
     
     REF (Original):
     {ref_text[:15000]}
@@ -180,9 +179,11 @@ def ai_judge_diff(ref_text, bel_text, secao):
     {bel_text[:15000]}
     
     INSTRUÇÕES:
-    1. Ignore formatação e quebras de linha.
-    2. Se os textos dizem a mesma coisa (mesmos números, substâncias, avisos), responda "CONFORME".
-    3. Se houver erro (número diferente, falta de aviso de alerta), descreva o erro.
+    1. O texto da Gráfica deve seguir o conteúdo da Referência.
+    2. Ignore formatação (quebras de linha, espaços).
+    3. Verifique números, unidades (mg, ml) e avisos de alerta.
+    4. Se estiver tudo certo, responda APENAS: "CONFORME".
+    5. Se houver erro, liste apenas o que está diferente.
     """
     try:
         resp = model.generate_content(prompt)
@@ -190,18 +191,18 @@ def ai_judge_diff(ref_text, bel_text, secao):
     except Exception as e:
         return f"Erro Juiz: {str(e)}"
 
-# ----------------- UI -----------------
-st.title("👁️ Validador Pro (Com Suporte a Scan)")
-st.markdown("**Status:** Ativo | **Engine:** Gemini 1.5 Pro/Flash | **Modo:** Texto & Scan (OCR)")
+# ----------------- UI PRINCIPAL -----------------
+st.title("👁️ Validador Pro (Gemini 2.5)")
+st.markdown("**Status:** Online | **Engine:** Gemini 2.5 Flash | **Suporte:** PDF Texto & Scan")
 
 if configure_api():
     st.success("✅ API Conectada")
 else:
-    st.error("❌ Erro na configuração da API Key")
+    st.error("❌ Erro na API Key")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Referência", key="f1")
-f2 = c2.file_uploader("Gráfica", key="f2")
+f1 = c1.file_uploader("Referência (Word/PDF)", key="f1")
+f2 = c2.file_uploader("Gráfica (Scan/PDF)", key="f2")
 
 SECOES = [
     "APRESENTAÇÕES", "COMPOSIÇÃO",
@@ -217,48 +218,45 @@ SECOES = [
     "DIZERES LEGAIS"
 ]
 
-if f1 and f2 and st.button("🚀 EXECUTAR AUDITORIA"):
-    with st.spinner("Lendo documentos (Detectando se é Texto ou Scan)..."):
-        # Leitura
+if f1 and f2 and st.button("🚀 INICIAR AUDITORIA"):
+    with st.spinner("Analisando documentos..."):
+        # 1. Leitura Inteligente (Detecta Texto ou Imagem)
         d1 = extract_content(f1.getvalue(), f1.name)
         d2 = extract_content(f2.getvalue(), f2.name)
         
-        # Exibe modo detectado
-        modo1 = "📝 TEXTO" if d1['type'] == 'text' else ("📷 SCAN (OCR)" if d1['type'] == 'image' else "❌ ERRO")
-        modo2 = "📝 TEXTO" if d2['type'] == 'text' else ("📷 SCAN (OCR)" if d2['type'] == 'image' else "❌ ERRO")
-        st.info(f"Modo de Leitura: Ref [{modo1}] vs Gráfica [{modo2}]")
+        # Mostra o modo detectado
+        m1 = "TEXTO" if d1['type'] == 'text' else "SCAN (OCR)"
+        m2 = "TEXTO" if d2['type'] == 'text' else "SCAN (OCR)"
+        st.info(f"Modo: Ref [{m1}] vs Gráfica [{m2}]")
         
         if d1['type'] == 'error' or d2['type'] == 'error':
-            st.error("Erro na leitura dos arquivos.")
+            st.error("Erro ao ler arquivos. Tente novamente.")
         else:
             prog = st.progress(0)
             
             for i, sec in enumerate(SECOES):
-                # 1. Obter texto da Referência
+                # Extração Ref
                 if d1['type'] == 'text':
                     txt_ref = get_section_text_python(d1['data'], sec, SECOES)
                 else:
-                    # Se for scan, usa OCR do Gemini
-                    txt_ref = get_section_text_from_image(d1['data'], sec)
+                    txt_ref = get_section_text_ocr(d1['data'], sec)
                 
-                # 2. Obter texto da Gráfica
+                # Extração Gráfica
                 if d2['type'] == 'text':
                     txt_bel = get_section_text_python(d2['data'], sec, SECOES)
                 else:
-                    txt_bel = get_section_text_from_image(d2['data'], sec)
-
-                # 3. Comparação (Juiz)
-                # Verifica se extração falhou antes de gastar crédito de juiz
+                    txt_bel = get_section_text_ocr(d2['data'], sec)
+                
+                # Validação (Juiz)
                 if "não encontrada" in txt_ref and "não encontrada" in txt_bel:
-                    veredito = "❌ Seção não localizada em nenhum documento"
+                    veredito = "❌ Seção não localizada"
                     color = "orange"
                 else:
-                    veredito_raw = ai_judge_diff(txt_ref, txt_bel, sec)
-                    if "CONFORME" in veredito_raw.upper() and len(veredito_raw) < 100:
+                    veredito = ai_judge_diff(txt_ref, txt_bel, sec)
+                    if "CONFORME" in veredito.upper() and len(veredito) < 50:
                         veredito = "✅ CONFORME"
                         color = "green"
                     else:
-                        veredito = veredito_raw
                         color = "red"
 
                 # Exibição
