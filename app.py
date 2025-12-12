@@ -88,24 +88,28 @@ def sanitize_text(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 def clean_noise(text):
-    """Limpa cabeçalhos e rodapés que atrapalham a leitura contínua"""
+    """Limpa cabeçalhos e rodapés sem remover conteúdo relevante"""
     lines = text.split('\n')
     cleaned_lines = []
     ignore_patterns = [
         r'^\d+(\s*de\s*\d+)?$', r'^Página\s*\d+\s*de\s*\d+$',
         r'^BELFAR$', r'^UBELFAR$', r'^SANOFI$', r'^MEDLEY$',
-        r'^Bula do (Paciente|Profissional)$', r'^Versão\s*\d+$'
+        r'^Bula do (Paciente|Profissional)$', r'^Versão\s*\d+$',
+        r'^\d{2}\s*\d{4}-\d{4}$',  # Telefones
+        r'^Belcomplex_B_comprimido_BUL\d+V\d+$',  # Códigos de arquivo
+        r'^(FRENTE|VERSO)$', r'^Medida da bula:', r'^Tipologia da bula:',
+        r'^Impressão:', r'^Papel:', r'^Cor:', r'^Belcomplex: Times'
     ]
     
     for line in lines:
         l = line.strip()
         should_skip = False
-        if len(l) < 40:
+        if len(l) < 60:  # Aumentei para não cortar parágrafos curtos importantes
             for pattern in ignore_patterns:
                 if re.match(pattern, l, re.IGNORECASE):
                     should_skip = True
                     break
-        if not should_skip:
+        if not should_skip and l:  # Só adiciona se tiver conteúdo
             cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
 
@@ -118,7 +122,7 @@ def extract_json(text):
 
 @st.cache_data(show_spinner=False)
 def process_file_content(file_bytes, filename):
-    """Lê o arquivo preservando a ordem das colunas e força OCR se necessário."""
+    """Lê o arquivo preservando ordem de colunas e estrutura"""
     try:
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -129,18 +133,20 @@ def process_file_content(file_bytes, filename):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             
+            # Lê texto nativo com ordenação de blocos (respeitando colunas)
             for page in doc: 
                 blocks = page.get_text("blocks", sort=True)
                 for b in blocks:
-                    if b[6] == 0:
-                        full_text += b[4] + "\n\n"
+                    if b[6] == 0:  # Tipo texto
+                        full_text += b[4] + "\n"
             
+            # Se pouco texto, usa OCR de alta resolução
             if len(full_text.strip()) < 500:
                 images = []
-                limit_pages = min(8, len(doc)) 
+                limit_pages = min(10, len(doc))  # Aumentei para 10 páginas
                 for i in range(limit_pages):
                     page = doc[i]
-                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) 
+                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
                     try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
                     except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                     img = Image.open(img_byte_arr)
@@ -156,122 +162,166 @@ def process_file_content(file_bytes, filename):
     except Exception as e:
         return {"type": "text", "data": ""}
 
+def get_next_section_title(current_section, all_sections):
+    """Retorna o título da próxima seção"""
+    try:
+        idx = all_sections.index(current_section)
+        if idx + 1 < len(all_sections):
+            return all_sections[idx + 1]
+        return "DIZERES LEGAIS"
+    except:
+        return "DIZERES LEGAIS"
+
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
+    # Identifica a PRÓXIMA seção para saber onde parar
+    proxima_secao = get_next_section_title(secao, todas_secoes)
+    
+    # Lista completa de barreiras
     barreiras = [s for s in todas_secoes if s != secao]
-    barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
-    stop_markers_str = "\n".join([f"- {s}" for s in barreiras])
+    stop_markers_str = "\n".join([f"- {s}" for s in barreiras[:15]])  # Limita para não explodir o prompt
+
+    # ===== INSTRUÇÕES UNIVERSAIS =====
+    instrucoes_base = f"""
+🤖 VOCÊ É UM EXTRATOR DE TEXTO LITERAL - NÃO REESCREVA NADA
+
+📍 CONTEXTO DE LEITURA:
+- Bulas têm MÚLTIPLAS COLUNAS (esquerda → direita)
+- SEMPRE leia coluna por coluna, de cima para baixo
+- O texto continua na próxima coluna quando acaba uma
+
+🎯 SUA MISSÃO:
+Extrair TODO o conteúdo da seção "{secao}" até encontrar o título "{proxima_secao}"
+
+⚠️ REGRAS CRÍTICAS:
+
+1️⃣ LITERALIDADE 100%:
+   - Copie cada palavra EXATAMENTE como está
+   - Mantenha erros de digitação do original
+   - NÃO corrija gramática
+   - NÃO use sinônimos
+   - NÃO resuma
+
+2️⃣ COMPLETUDE:
+   - Capture TODOS os parágrafos
+   - Não pare no primeiro ponto final
+   - Continue até encontrar o próximo título numerado
+   - Se há avisos "Atenção:", capture TODOS eles
+
+3️⃣ DELIMITAÇÃO:
+   - COMECE em: "{secao}"
+   - PARE em: "{proxima_secao}"
+   - Ignore cabeçalhos/rodapés (ex: "BELFAR", "31 3514-2900")
+"""
 
     # ===== REGRAS ESPECÍFICAS POR SEÇÃO =====
-    regra_extra = ""
+    regra_especifica = ""
     
     if "1. PARA QUE" in secao.upper():
-        regra_extra = """
-        🚨 REGRA CRÍTICA SEÇÃO 1:
-        - Esta seção contém APENAS as indicações terapêuticas.
-        - PARE IMEDIATAMENTE antes de qualquer texto que comece com "Atenção:".
-        - Textos como "Atenção: Contém açúcar", "Atenção: Contém lactose" NÃO pertencem aqui.
-        - CORTE o texto no ponto final ANTES do primeiro "Atenção:".
-        
-        EXEMPLO CORRETO:
-        "Belcomplex B é indicado como suplemento vitamínico nos seguintes casos: em dietas restritivas, em indivíduos com doenças infecciosas ou inflamatórias, em pacientes com má-absorção de glicose-galactose."
-        [FIM - NÃO CONTINUE]
-        """
+        regra_especifica = """
+🚨 ATENÇÃO SEÇÃO 1:
+Esta seção contém APENAS indicações terapêuticas.
+PARE ANTES de qualquer texto que comece com "Atenção:".
+
+❌ NÃO INCLUA:
+- "Atenção: Contém açúcar..."
+- "Atenção: Contém lactose..."
+- "Atenção: Contém os corantes..."
+
+Esses textos pertencem à SEÇÃO 3.
+
+✅ FORMATO ESPERADO:
+"[Nome do medicamento] é indicado como suplemento vitamínico nos seguintes casos: em dietas restritivas, em indivíduos com doenças infecciosas ou inflamatórias, em pacientes com má-absorção de glicose-galactose."
+[FIM - PARE AQUI]
+"""
     
     elif "3. QUANDO NÃO" in secao.upper():
-        regra_extra = """
-        🚨 REGRA CRÍTICA SEÇÃO 3:
-        - Esta seção começa com contraindicações E DEVE incluir TODOS os avisos "Atenção:".
-        - Capture TODO o texto até encontrar o título "4. O QUE DEVO SABER".
-        - Esta seção deve ter múltiplos parágrafos com "Atenção:".
-        
-        ESTRUTURA ESPERADA:
-        1º parágrafo: Contraindicação principal
-        2º parágrafo: "Atenção: Contém lactose..."
-        3º parágrafo: "Atenção: Contém os corantes..."
-        [Continue até o próximo título numerado]
-        """
+        regra_especifica = """
+🚨 ATENÇÃO SEÇÃO 3:
+Esta seção é COMPLEXA e tem múltiplos blocos:
+
+ESTRUTURA OBRIGATÓRIA:
+1️⃣ Contraindicação principal (hipersensibilidade)
+2️⃣ "Atenção: Contém lactose. Este medicamento não deve ser usado..."
+3️⃣ "Atenção: Contém os corantes dióxido de titânio e marrom laca de alumínio..."
+
+✅ VOCÊ DEVE capturar os 3 blocos acima.
+Continue lendo até encontrar "4. O QUE DEVO SABER"
+"""
     
     elif "4. O QUE DEVO SABER" in secao.upper():
-        regra_extra = """
-        🚨 REGRA CRÍTICA SEÇÃO 4:
-        - Esta é uma seção LONGA com múltiplos parágrafos.
-        - IGNORE pontos finais intermediários - continue lendo.
-        - A seção termina com frases obrigatórias em negrito/destaque:
-          * "Atenção: Contém lactose. Este medicamento não deve ser usado..."
-          * "Atenção: Contém os corantes dióxido de titânio..."
-          * "Este medicamento não deve ser utilizado por mulheres grávidas..."
-          * "Informe ao seu médico ou cirurgião-dentista se você está fazendo uso..."
-        
-        - VOCÊ DEVE capturar TODOS esses avisos finais obrigatórios.
-        - Só pare quando encontrar "5. ONDE, COMO E POR QUANTO TEMPO".
-        """
+        regra_especifica = """
+🚨 ATENÇÃO SEÇÃO 4:
+Esta é a seção MAIS LONGA da bula. Pode ter 3-4 parágrafos.
+
+✅ VOCÊ DEVE capturar:
+1️⃣ Todos os parágrafos sobre precauções
+2️⃣ Informações sobre interações medicamentosas
+3️⃣ Avisos finais em negrito:
+   - "Atenção: Contém lactose. Este medicamento não deve ser usado..."
+   - "Atenção: Contém os corantes dióxido de titânio..."
+   - "Este medicamento não deve ser utilizado por mulheres grávidas..."
+   - "Informe ao seu médico ou cirurgião-dentista se você está fazendo uso..."
+
+⚠️ NÃO PARE até capturar TODOS os 4 avisos finais acima.
+Continue até encontrar "5. ONDE, COMO E POR QUANTO TEMPO"
+"""
     
     elif "7. O QUE DEVO FAZER" in secao.upper():
-        regra_extra = """
-        🚨 REGRA CRÍTICA SEÇÃO 7 - MODO ROBÔ OCR:
-        - VOCÊ É UM SCANNER. Copie LETRA POR LETRA.
-        - Se o texto diz "deixou de tomar", escreva "deixou de tomar".
-        - Se o texto diz "se esquecer", escreva "se esquecer".
-        - PROIBIDO usar sinônimos ou reescrever.
-        - PROIBIDO "melhorar" o texto.
-        
-        EXEMPLO ERRADO (NÃO FAÇA):
-        Original: "Se você deixou de tomar uma dose"
-        Erro: "Se você se esquecer de tomar uma dose" ❌
-        
-        CORRETO:
-        Copie exatamente: "Se você deixou de tomar uma dose" ✅
-        
-        - Capture também a frase final: "Em caso de dúvidas procure orientação do farmacêutico..."
-        """
+        regra_especifica = """
+🚨 ATENÇÃO SEÇÃO 7 - MODO SCANNER:
+Você é um SCANNER de texto. Copie EXATAMENTE.
+
+❌ PROIBIDO:
+- Mudar "deixou de tomar" para "esqueceu"
+- Mudar "deverá tomar" para "deve tomar"
+- Alterar QUALQUER palavra
+
+✅ ESTRUTURA ESPERADA:
+Parágrafo 1: Instruções sobre dose esquecida
+Parágrafo 2: "Em caso de dúvidas procure orientação do farmacêutico..."
+
+Capture AMBOS os parágrafos.
+"""
     
     elif "9. O QUE FAZER" in secao.upper():
-        regra_extra = """
-        🚨 REGRA CRÍTICA SEÇÃO 9:
-        - Esta seção tem DOIS blocos de texto:
-          
-        BLOCO 1 (Descrição):
-        "Se você tomar uma dose muito grande deste medicamento acidentalmente, deve procurar um médico... Ainda não foram descritos os sintomas de intoxicação..."
-        
-        BLOCO 2 (Aviso Padrão):
-        "Em caso de uso de grande quantidade deste medicamento, procure rapidamente socorro médico... Ligue para 0800 722 6001..."
-        
-        - VOCÊ DEVE capturar AMBOS os blocos.
-        - Não pare no primeiro ponto final.
-        - Continue até o final da seção ou até encontrar "DIZERES LEGAIS".
-        """
+        regra_especifica = """
+🚨 ATENÇÃO SEÇÃO 9:
+Esta seção tem DOIS blocos distintos:
 
-    prompt_text = f"""
-Você é um ROBÔ DE EXTRAÇÃO DE TEXTO LITERAL. Sua única função é RECORTAR texto, não reescrever.
+BLOCO 1 (Descrição clínica):
+"Se você tomar uma dose muito grande deste medicamento acidentalmente, deve procurar um médico ou um centro de intoxicação imediatamente. O apoio médico imediato é fundamental para adultos e crianças, mesmo se os sinais e sintomas de intoxicação não estiverem presentes. Ainda não foram descritos os sintomas de intoxicação do medicamento após a superdosagem."
 
-📋 SEÇÃO ALVO: "{secao}"
+BLOCO 2 (Aviso padrão):
+"Em caso de uso de grande quantidade deste medicamento, procure rapidamente socorro médico e leve a embalagem ou bula do medicamento, se possível. Ligue para 0800 722 6001, se você precisar de mais orientações."
 
-🔒 REGRAS ABSOLUTAS:
-1. LITERALIDADE 100%: Copie cada palavra, vírgula e ponto EXATAMENTE como está.
-2. ZERO CRIATIVIDADE: Não use sinônimos. Não melhore gramática. Não resuma.
-3. RESPEITE OS LIMITES: Comece no título da seção. Pare no próximo título numerado.
+✅ CAPTURE AMBOS OS BLOCOS COMPLETOS.
+"""
 
-{regra_extra}
+    prompt_final = f"""
+{instrucoes_base}
 
-⛔ PARE SE ENCONTRAR (Títulos de outras seções):
-{stop_markers_str}
+{regra_especifica}
 
-📤 FORMATO DE SAÍDA (JSON):
+🛑 PARE SE ENCONTRAR (próxima seção):
+{proxima_secao}
+
+📤 FORMATO DE SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "texto literal do documento 1 - PALAVRA POR PALAVRA",
-  "bel": "texto literal do documento 2 - PALAVRA POR PALAVRA",
+  "ref": "texto literal copiado do documento 1",
+  "bel": "texto literal copiado do documento 2",
   "status": "CONFORME"
 }}
 
-⚠️ ATENÇÃO: Se você alterar UMA PALAVRA sequer do texto original, você falhou.
+⚠️ LEMBRE-SE: Você é um robô. Não pense, apenas COPIE.
 """
     
-    messages_content = [{"type": "text", "text": prompt_text}]
+    messages_content = [{"type": "text", "text": prompt_final}]
 
-    limit = 60000
+    # Prepara os documentos
+    limit = 80000  # Aumentei o limite
     for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
         if d['type'] == 'text':
             if len(d['data']) < 50:
@@ -279,18 +329,20 @@ Você é um ROBÔ DE EXTRAÇÃO DE TEXTO LITERAL. Sua única função é RECORTA
             else:
                  messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
         else:
-            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagens) ---"})
-            for img in d['data'][:6]: 
+            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagens OCR) ---"})
+            for img in d['data'][:8]:  # Aumentei para 8 imagens
                 b64 = image_to_base64(img)
                 messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
-    for attempt in range(2):
+    # Chamada à API com retry
+    for attempt in range(3):  # 3 tentativas
         try:
             chat_response = client.chat.complete(
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.0
+                temperature=0.0,
+                max_tokens=4096  # Aumentei para respostas longas
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
@@ -299,6 +351,7 @@ Você é um ROBÔ DE EXTRAÇÃO DE TEXTO LITERAL. Sua única função é RECORTA
                 dados['titulo'] = secao
                 
                 if not eh_visualizacao:
+                    # Comparação para definir status
                     t_ref = re.sub(r'\s+', ' ', str(dados.get('ref', '')).strip().lower())
                     t_bel = re.sub(r'\s+', ' ', str(dados.get('bel', '')).strip().lower())
                     t_ref = re.sub(r'<[^>]+>', '', t_ref)
@@ -317,8 +370,10 @@ Você é um ROBÔ DE EXTRAÇÃO DE TEXTO LITERAL. Sua única função é RECORTA
                 return dados
                 
         except Exception as e:
-            if attempt == 0: time.sleep(1)
-            else: return {"titulo": secao, "ref": f"Erro: {str(e)}", "bel": "Erro", "status": "ERRO"}
+            if attempt < 2:
+                time.sleep(2)  # Aguarda antes de retry
+            else:
+                return {"titulo": secao, "ref": f"Erro: {str(e)}", "bel": "Erro", "status": "ERRO"}
     
     return {"titulo": secao, "ref": "Erro extração", "bel": "Erro extração", "status": "ERRO"}
 
@@ -332,16 +387,18 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v5.2 - Correção Literal")
+    st.caption("v6.0 - Extração Sequencial")
 
 if pagina == "🏠 Início":
     st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
-    st.success("✅ **Correções Implementadas:**")
-    st.write("- **Seção 1:** Ignora avisos 'Atenção:' (pertencem à Seção 3)")
-    st.write("- **Seção 3:** Captura TODOS os avisos 'Atenção:' da contraindicação")
-    st.write("- **Seção 4:** Captura avisos finais obrigatórios completos")
-    st.write("- **Seção 7:** Modo OCR literal - não reescreve texto")
-    st.write("- **Seção 9:** Captura ambos os parágrafos (descritivo + aviso padrão)")
+    st.success("✅ **Nova Versão - Extração Sequencial por Colunas**")
+    st.write("")
+    st.write("**Melhorias implementadas:**")
+    st.write("- ✅ Leitura coluna por coluna (esquerda → direita)")
+    st.write("- ✅ Delimitação precisa: para na próxima seção")
+    st.write("- ✅ Captura completa de avisos 'Atenção:' nas seções corretas")
+    st.write("- ✅ Modo literal: não reescreve texto original")
+    st.write("- ✅ Remove ruídos (telefones, códigos de arquivo)")
 
 else:
     st.markdown(f"## {pagina}")
@@ -379,7 +436,7 @@ else:
             st.warning("⚠️ Verifique arquivos e API Key.")
         else:
             with st.status("🔄 Processando documentos...", expanded=True) as status:
-                st.write("📖 Lendo arquivos e detectando colunas...")
+                st.write("📖 Lendo arquivos (coluna por coluna)...")
                 d1 = process_file_content(f1.getvalue(), f1.name)
                 d2 = process_file_content(f2.getvalue(), f2.name)
                 
@@ -387,7 +444,7 @@ else:
                 modo2 = "OCR (Imagem)" if d2['type'] == 'images' else "Texto Nativo"
                 st.write(f"ℹ️ {nome_doc1}: {modo1} | {nome_doc2}: {modo2}")
 
-                st.write("🔍 Auditando seções com extração literal...")
+                st.write("🔍 Extraindo seções literalmente...")
                 resultados = []
                 bar = st.progress(0)
                 
