@@ -75,16 +75,16 @@ def image_to_base64(image):
 
 def sanitize_text(text):
     if not text: return ""
+    # Normalização leve, mantendo quebras de linha essenciais para detecção de títulos
     text = unicodedata.normalize('NFKC', text)
-    text = text.replace('\xa0', ' ').replace('\u200b', '').replace('\u00ad', '').replace('\ufeff', '').replace('\t', ' ')
-    return re.sub(r'\s+', ' ', text).strip()
+    text = text.replace('\xa0', ' ').replace('\u200b', '').replace('\ufeff', '').replace('\t', ' ')
+    return text
 
 def clean_noise(text):
-    """Limpeza técnica (marcas de corte, etc), preservando texto médico."""
+    """Limpeza técnica que remove lixo de gráfica sem apagar conteúdo médico."""
     if not text: return ""
-    text = text.replace('\xa0', ' ').replace('\r', '')
     
-    # Remove apenas lixo técnico estrito
+    # 1. Padrões de lixo técnico (Gráfica/Impressão)
     patterns = [
         r'^\d+(\s*de\s*\d+)?$', r'^Página\s*\d+\s*de\s*\d+$',
         r'^Bula do (Paciente|Profissional)$', r'^Versão\s*\d+$',
@@ -101,7 +101,7 @@ def clean_noise(text):
         r'.*Cor:\s*Preta.*', r'.*Papel:.*', r'.*Ap\s*\d+gr.*',
         r'.*Times New Roman.*', r'.*Cores?:.*', r'.*Pantone.*',
         r'.*Laetus.*', r'.*Pharmacode.*',
-        r'^\s*BELFAR\s*$', r'^\s*UBELFAR\s*$', r'^\s*SANOFI\s*$', r'^\s*MEDLEY\s*$',
+        r'^\s*BELFAR\s*$', r'^\s*UBELFAR\s*$', r'^\s*SANOFI\s*$',
         r'.*CNPJ:.*', r'.*SAC:.*', r'.*Farm\. Resp\..*',
         r'^\s*VERSO\s*$', r'^\s*FRENTE\s*$'
     ]
@@ -110,59 +110,75 @@ def clean_noise(text):
     for pattern in patterns:
         cleaned_text = re.sub(pattern, '', cleaned_text, flags=re.IGNORECASE | re.MULTILINE)
     
+    # Reduz quebras de linha excessivas
     cleaned_text = re.sub(r'\n{3,}', '\n\n', cleaned_text)
     return cleaned_text.strip()
 
-def get_section_header_regex(secao):
-    """Gera regex flexível para encontrar o título da seção."""
-    # Extrai o número se houver (ex: "1. PARA QUE" -> "1")
-    match = re.search(r'^(\d+)\.', secao)
-    if match:
-        num = match.group(1)
-        # Regex que aceita "1. TÍTULO", "1 TÍTULO", "1 - TÍTULO", case insensitive
-        # Pega a parte principal do título para evitar falhas por pequenos erros
-        core_title = secao.split('?')[0].replace(f"{num}.", "").strip()[:15] 
-        return re.compile(rf"{num}\s*[\.\-\)]?\s*{re.escape(core_title)}", re.IGNORECASE)
+def find_section_start(text, section_name):
+    """
+    Localiza o índice de início de uma seção no texto, tolerando quebras de linha no título.
+    Retorna o índice ou -1 se não encontrar.
+    """
+    # Normaliza para busca (remove espaços extras e lowercase)
+    text_norm = re.sub(r'\s+', ' ', text).lower()
+    
+    # Prepara o título para busca (ex: "1. para que..." -> "1. para que")
+    match_num = re.search(r'^(\d+)\.', section_name)
+    if match_num:
+        num = match_num.group(1)
+        # Pega as primeiras 4 palavras do título para busca robusta
+        core_title = " ".join(section_name.replace(f"{num}.", "").split()[:4]).lower()
+        search_pattern = rf"{num}\s*[\.\-\)]?\s*{re.escape(core_title)}"
     else:
-        # Para seções sem número (APRESENTAÇÕES, DIZERES)
-        return re.compile(re.escape(secao.split(' ')[0]), re.IGNORECASE)
+        # Títulos sem número (APRESENTAÇÃO, DIZERES)
+        search_pattern = re.escape(section_name.split()[0].lower())
 
-def slice_section_text(full_text, secao_alvo, lista_secoes):
+    match = re.search(search_pattern, text_norm)
+    if match:
+        # Se achou no texto normalizado, precisamos achar a posição no texto original.
+        # Aproximação: conta caracteres até o match.
+        # (Método simplificado: busca o regex direto no texto original com flag DOTALL)
+        
+        # Recria regex para texto original, permitindo \s+ (inclui \n) entre palavras
+        words = section_name.split()
+        if match_num: # Remove número para fazer regex palavra por palavra
+             words = words[1:]
+             regex_orig = rf"{num}\s*[\.\-\)]?\s*" + r"\s+".join([re.escape(w) for w in words[:4]])
+        else:
+             regex_orig = r"\s+".join([re.escape(w) for w in words[:1]])
+             
+        match_orig = re.search(regex_orig, text, re.IGNORECASE)
+        if match_orig:
+            return match_orig.start()
+            
+    return -1
+
+def smart_slice(full_text, current_section, all_sections):
     """
-    Corta o texto EXATAMENTE onde começa a seção alvo e onde começa a PRÓXIMA.
-    Isso impede que a seção 1 pegue texto da seção 4, ou que a 6 pegue a 7.
+    Corta o texto da seção atual até o início da PRÓXIMA seção encontrada.
+    Se a próxima imediata não for achada, procura a seguinte, e assim por diante.
     """
-    if not full_text or len(full_text) < 10: return ""
-    
-    # 1. Encontrar início da seção alvo
-    regex_alvo = get_section_header_regex(secao_alvo)
-    match_alvo = regex_alvo.search(full_text)
-    
-    if not match_alvo:
-        return full_text # Se não achar o título, manda tudo (fallback)
-    
-    start_idx = match_alvo.start()
-    
-    # 2. Encontrar o início da PRÓXIMA seção para usar como fim
+    start_idx = find_section_start(full_text, current_section)
+    if start_idx == -1:
+        return "" # Seção não encontrada neste doc
+
+    # Encontrar onde parar (início da próxima seção válida)
     end_idx = len(full_text)
-    idx_alvo_na_lista = -1
-    
-    try: idx_alvo_na_lista = lista_secoes.index(secao_alvo)
+    curr_idx_list = -1
+    try: curr_idx_list = all_sections.index(current_section)
     except: pass
     
-    if idx_alvo_na_lista != -1 and idx_alvo_na_lista < len(lista_secoes) - 1:
-        # Tenta achar qualquer uma das próximas seções (para caso pule alguma)
-        for i in range(idx_alvo_na_lista + 1, len(lista_secoes)):
-            prox_sec = lista_secoes[i]
-            regex_prox = get_section_header_regex(prox_sec)
-            match_prox = regex_prox.search(full_text, pos=start_idx + 10) # Busca APÓS o inicio da atual
+    if curr_idx_list != -1:
+        # Procura a barreira mais próxima dentre as seções subsequentes
+        for i in range(curr_idx_list + 1, len(all_sections)):
+            next_sec = all_sections[i]
+            next_start = find_section_start(full_text, next_sec)
             
-            if match_prox:
-                end_idx = match_prox.start()
-                break # Achou a barreira mais próxima
+            # A próxima seção deve estar DEPOIS da atual
+            if next_start > start_idx:
+                end_idx = next_start
+                break # Achou a barreira mais próxima, para aqui.
     
-    # 3. Recorta o texto com uma pequena margem de segurança
-    # Inclui o "Atenção" que costuma estar logo antes do próximo título
     return full_text[start_idx:end_idx].strip()
 
 def extract_json(text):
@@ -185,12 +201,13 @@ def process_file_content(file_bytes, filename):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             for page in doc: 
-                # Sort=True é vital para ler colunas na ordem certa
+                # Sort=True mantém a ordem lógica de leitura (colunas)
                 blocks = page.get_text("blocks", sort=True)
                 for b in blocks:
                     if b[6] == 0: full_text += b[4] + "\n\n"
             
-            if len(full_text.strip()) < 500: # Scan/Imagem
+            # Se for imagem/scan
+            if len(full_text.strip()) < 200:
                 images = []
                 limit_pages = min(8, len(doc)) 
                 for i in range(limit_pages):
@@ -204,6 +221,7 @@ def process_file_content(file_bytes, filename):
                 doc.close()
                 return {"type": "images", "data": images}
             
+            # Limpeza
             full_text = clean_noise(full_text)
             return {"type": "text", "data": sanitize_text(full_text)}
             
@@ -213,65 +231,77 @@ def process_file_content(file_bytes, filename):
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
-    # PREPARAÇÃO DO TEXTO (Corte Cirúrgico)
-    # Se for texto, cortamos antes de enviar. Se for imagem, mandamos as imagens.
-    texto_ref_focado = ""
-    texto_bel_focado = ""
+    # 1. RECORTE INTELIGENTE
+    # Cortamos o texto antes de enviar para a IA. Isso impede "vazamento" de seções.
+    texto_ref = ""
+    texto_bel = ""
     
-    # Documento 1
     if d1['type'] == 'text':
-        texto_ref_focado = slice_section_text(d1['data'], secao, todas_secoes)
-        if len(texto_ref_focado) < 10: texto_ref_focado = d1['data'][:30000] # Fallback
+        texto_ref = smart_slice(d1['data'], secao, todas_secoes)
+        # Se falhou o slice (vazio), usamos um fallback seguro (pequeno pedaço)
+        if not texto_ref: texto_ref = "(Seção não encontrada ou texto ilegível no documento original)"
     
-    # Documento 2
     if d2['type'] == 'text':
-        texto_bel_focado = slice_section_text(d2['data'], secao, todas_secoes)
-        if len(texto_bel_focado) < 10: texto_bel_focado = d2['data'][:30000] # Fallback
+        texto_bel = smart_slice(d2['data'], secao, todas_secoes)
+        if not texto_bel: texto_bel = "(Seção não encontrada ou texto ilegível no documento original)"
 
+    # REGRAS DE PROMPT
     regra_extra = ""
-    if "7. O QUE DEVO FAZER" in secao.upper():
-        regra_extra = "MODO SCANNER: Copie o texto EXATAMENTE como está. Não resuma. Copie até a frase 'Em caso de dúvidas procure orientação do farmacêutico'."
-    elif "4. O QUE DEVO SABER" in secao.upper() or "3. QUANDO NÃO" in secao.upper():
-        regra_extra = "IMPORTANTE: Inclua TODOS os avisos de 'Atenção:', 'Contém lactose', 'Gravidez' que estiverem no final do texto fornecido."
+    if "3. QUANDO NÃO" in secao.upper() or "4. O QUE DEVO SABER" in secao.upper():
+        regra_extra = """
+        ⚠️ CRÍTICO:
+        - O texto fornecido termina com AVISOS em negrito (Lactose, Açúcar, Gravidez).
+        - VOCÊ DEVE COPIAR ESSES AVISOS. Eles pertencem a esta seção.
+        - Não pare no primeiro ponto final. Copie até o fim do texto fornecido.
+        """
+    elif "7. O QUE DEVO FAZER" in secao.upper():
+        regra_extra = """
+        - Copie TODO o texto fornecido.
+        - Inclua a frase "Em caso de dúvidas procure orientação...".
+        """
+    elif "9. O QUE FAZER" in secao.upper():
+        regra_extra = """
+        - Copie o texto de superdose E o texto do "0800" / "Ligue para".
+        - Ambos são obrigatórios.
+        """
 
     prompt_text = f"""
-Você é um EXTRATOR DE CONTEÚDO DE BULAS.
-Sua tarefa: Limpar e formatar o texto da seção "{secao}".
+Você é um COPIADOR DE TEXTO DE BULAS.
+Sua única função é limpar a formatação e devolver o texto da seção "{secao}".
 
-O texto que você receberá ABAIXO já foi recortado do documento original, mas pode conter sujeira no início ou fim.
+ENTRADA:
+Você receberá abaixo um recorte de texto que COMEÇA na seção correta e VAI ATÉ o início da próxima seção.
 
-SEU OBJETIVO:
-1. Identifique onde começa o texto REAL da seção "{secao}".
-2. Copie TUDO até o final do bloco fornecido, INCLUINDO frases em negrito como "Atenção:...", "Informe ao seu médico...", "Ligue para 0800...".
-3. NÃO inclua o título da PRÓXIMA seção (ex: não inclua "5. ONDE..." se estivermos na seção 4).
-4. Se o texto estiver cortado abruptamente, copie até onde der.
+TAREFA:
+1. Ignore o título da seção no início (se aparecer).
+2. Copie TODO o restante do conteúdo.
+3. INCLUA todos os parágrafos de alerta no final (Atenção, Negritos, Rodapés da seção).
+4. NÃO invente texto. Se o texto estiver vazio, retorne string vazia.
 
 {regra_extra}
 
-SAÍDA JSON:
+SAÍDA (JSON):
 {{
   "titulo": "{secao}",
-  "ref": "Texto limpo extraído do Doc 1",
-  "bel": "Texto limpo extraído do Doc 2",
+  "ref": "Texto limpo Doc 1",
+  "bel": "Texto limpo Doc 2",
   "status": "CONFORME"
 }}
 """
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    # Adiciona o conteúdo já focado (recortado)
-    # DOC 1
+    # Adiciona o conteúdo JÁ RECORTADO
     if d1['type'] == 'text':
-        messages_content.append({"type": "text", "text": f"\n--- TEXTO {nome_doc1} (RECORTADO) ---\n{texto_ref_focado}"})
+        messages_content.append({"type": "text", "text": f"\n--- {nome_doc1} (RECORTADO) ---\n{texto_ref}"})
     else:
         messages_content.append({"type": "text", "text": f"\n--- {nome_doc1} (IMAGENS) ---"})
         for img in d1['data'][:6]: 
             b64 = image_to_base64(img)
             messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
-    # DOC 2
     if d2['type'] == 'text':
-        messages_content.append({"type": "text", "text": f"\n--- TEXTO {nome_doc2} (RECORTADO) ---\n{texto_bel_focado}"})
+        messages_content.append({"type": "text", "text": f"\n--- {nome_doc2} (RECORTADO) ---\n{texto_bel}"})
     else:
         messages_content.append({"type": "text", "text": f"\n--- {nome_doc2} (IMAGENS) ---"})
         for img in d2['data'][:6]: 
@@ -284,7 +314,7 @@ SAÍDA JSON:
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.0
+                temperature=0.0 # Zero criatividade
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
@@ -292,15 +322,17 @@ SAÍDA JSON:
             if dados and 'ref' in dados:
                 dados['titulo'] = secao
                 if not eh_visualizacao:
+                    # Normalização para comparação
                     t_ref = re.sub(r'\s+', ' ', str(dados.get('ref', '')).strip().lower())
                     t_bel = re.sub(r'\s+', ' ', str(dados.get('bel', '')).strip().lower())
                     t_ref = re.sub(r'<[^>]+>', '', t_ref)
                     t_bel = re.sub(r'<[^>]+>', '', t_bel)
 
-                    if t_ref == t_bel:
+                    # Comparação simples + Verificação de erro
+                    if "(seção não encontrada" in t_ref or "(seção não encontrada" in t_bel:
+                         dados['status'] = 'ERRO LEITURA'
+                    elif t_ref == t_bel:
                         dados['status'] = 'CONFORME'
-                        dados['ref'] = dados.get('ref', '')
-                        dados['bel'] = dados.get('bel', '')
                     else:
                         dados['status'] = 'DIVERGENTE'
                 
@@ -311,7 +343,7 @@ SAÍDA JSON:
             if attempt == 0: time.sleep(1)
             else: return {"titulo": secao, "ref": f"Erro: {str(e)}", "bel": "Erro", "status": "ERRO"}
     
-    return {"titulo": secao, "ref": "Erro extração", "bel": "Erro extração", "status": "ERRO"}
+    return {"titulo": secao, "ref": "Erro API", "bel": "Erro API", "status": "ERRO"}
 
 # ----------------- UI PRINCIPAL -----------------
 with st.sidebar:
@@ -323,16 +355,16 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v5.5 - Corte Híbrido")
+    st.caption("v5.6 - Smart Slice & Regex")
 
 if pagina == "🏠 Início":
     st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
-    st.success("✅ **Correções Implementadas (v5.5):**")
+    st.success("✅ **Correções Definitivas (v5.6):**")
     st.markdown("""
-    - **CORTE FÍSICO DO TEXTO:** O sistema agora recorta o texto da Seção X até a Seção Y antes de enviar para a IA.
-    - **FIM DA MISTURA DE SEÇÕES:** Impossível a Seção 1 conter texto da Seção 4, pois o texto da 4 é removido antes da análise.
-    - **CAPTURA DE AVISOS:** Como o corte vai até o título da próxima seção, ele obrigatoriamente inclui os rodapés (Atenção, Negritos) da seção atual.
-    - **CORREÇÃO SEÇÃO 7:** Garante que o texto final 'Em caso de dúvidas...' seja capturado.
+    - **SMART SLICE:** Recorta o texto EXATAMENTE entre o título atual e o próximo.
+    - **FIM DAS ALUCINAÇÕES:** Se não achar a seção, avisa erro em vez de inventar texto.
+    - **Atenção/Lactose:** Como o corte vai até o *início* da próxima seção, ele obrigatoriamente pega o rodapé da seção atual.
+    - **Tolerância a Quebras:** Encontra títulos mesmo se quebrados (ex: "1. PARA QUE ESTE MEDICAMENTO É \\n INDICADO?").
     """)
 
 else:
@@ -371,12 +403,12 @@ else:
             st.warning("⚠️ Verifique arquivos e API Key.")
         else:
             with st.status("🔄 Processando documentos...", expanded=True) as status:
-                st.write("📖 Lendo arquivos e aplicando recorte inteligente...")
+                st.write("📖 Lendo arquivos e mapeando seções...")
                 d1 = process_file_content(f1.getvalue(), f1.name)
                 d2 = process_file_content(f2.getvalue(), f2.name)
                 
-                modo1 = "OCR (Imagem)" if d1['type'] == 'images' else "Texto Nativo (Recortado)"
-                modo2 = "OCR (Imagem)" if d2['type'] == 'images' else "Texto Nativo (Recortado)"
+                modo1 = "OCR (Imagem)" if d1['type'] == 'images' else "Smart Slice (Texto)"
+                modo2 = "OCR (Imagem)" if d2['type'] == 'images' else "Smart Slice (Texto)"
                 st.write(f"ℹ️ {nome_doc1}: {modo1} | {nome_doc2}: {modo2}")
 
                 st.write("🔍 Auditando seções...")
