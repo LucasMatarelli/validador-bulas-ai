@@ -85,8 +85,7 @@ def get_gemini_model():
 
 def process_uploaded_file(uploaded_file):
     """
-    Processa o arquivo. Se detectar 'CURVA' no nome ou falhar ao extrair texto,
-    converte para imagens para o Gemini 'ver' o conteúdo.
+    Processa o arquivo. Detecta CURVAS e aumenta resolução para leitura de colunas.
     """
     if not uploaded_file: return None
     try:
@@ -94,7 +93,6 @@ def process_uploaded_file(uploaded_file):
         filename = uploaded_file.name.lower()
         
         # --- DETECÇÃO DE ARQUIVO EM CURVAS ---
-        # Palavras-chave que indicam arquivo de gráfica sem texto editável
         keywords_curva = ["curva", "traço", "outline", "convertido", "vetor"]
         is_curva = any(k in filename for k in keywords_curva)
         
@@ -106,28 +104,26 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # 1. Tenta extrair texto (SOMENTE se não for detectado como curva)
             full_text = ""
             if not is_curva:
                 for page in doc:
                     full_text += page.get_text() + "\n"
             
-            # 2. Se achou texto suficiente e não é curva, retorna texto (mais barato/rápido)
             if len(full_text.strip()) > 100 and not is_curva:
                 doc.close()
                 return {"type": "text", "data": full_text, "is_image": False}
             
-            # 3. FALLBACK PARA IMAGEM (Se for curva OU se o texto extraído for inútil)
+            # --- MODO IMAGEM (ALTA RESOLUÇÃO) ---
             images = []
-            # Limita a 6 páginas para economizar cota (Bulas geralmente cabem nisso)
             limit_pages = min(6, len(doc)) 
             
             for i in range(limit_pages):
                 page = doc[i]
-                # Aumentei um pouco a resolução (1.5) para ler letras pequenas em curvas
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                # CORREÇÃO CRÍTICA: Aumentei o zoom de 1.5 para 3.0.
+                # Isso ajuda a IA a ver o espaço em branco entre as colunas.
+                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
                 try:
-                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=85))
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
                 except:
                     img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -135,9 +131,8 @@ def process_uploaded_file(uploaded_file):
             doc.close()
             gc.collect()
             
-            # Adiciona aviso visual se foi forçado por curva
             if is_curva:
-                st.toast(f"📂 Arquivo '{filename}' detectado como CURVAS. Usando visão computacional.", icon="👁️")
+                st.toast(f"📂 '{filename}': Modo Leitura Visual (Alta Resolução) Ativado.", icon="👁️")
                 
             return {"type": "images", "data": images, "is_image": True}
             
@@ -205,9 +200,8 @@ else:
         
     if st.button("🚀 INICIAR AUDITORIA"):
         if f1 and f2 and model_instance:
-            with st.spinner("Analisando documentos..."):
+            with st.spinner("Analisando documentos (Isso pode levar alguns segundos)..."):
                 try:
-                    # Processamento dos arquivos
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
                     gc.collect()
@@ -215,90 +209,71 @@ else:
                     if d1 and d2:
                         risco_copyright = d1['is_image'] or d2['is_image']
                         
-                        # Montagem do Payload Híbrido (Texto + Imagem)
-                        payload = ["CONTEXTO: Comparação rigorosa de bulas de remédio."]
+                        # Montagem do Payload
+                        payload = ["CONTEXTO: Comparação farmacêutica rigorosa."]
                         
-                        # Adiciona DOC 1
-                        if d1['type'] == 'text': 
-                            payload.append(f"--- DOC 1 (TEXTO REFERÊNCIA) ---\n{d1['data']}")
-                        else: 
-                            payload.append("--- DOC 1 (IMAGEM/CURVAS) ---")
-                            payload.extend(d1['data'])
+                        if d1['type'] == 'text': payload.append(f"--- DOC 1 (TEXTO) ---\n{d1['data']}")
+                        else: payload.append("--- DOC 1 (IMAGEM/PÁGINAS) ---"); payload.extend(d1['data'])
                         
-                        # Adiciona DOC 2
-                        if d2['type'] == 'text': 
-                            payload.append(f"--- DOC 2 (TEXTO CANDIDATO) ---\n{d2['data']}")
-                        else: 
-                            payload.append("--- DOC 2 (IMAGEM/CURVAS) ---")
-                            payload.extend(d2['data'])
+                        if d2['type'] == 'text': payload.append(f"--- DOC 2 (TEXTO) ---\n{d2['data']}")
+                        else: payload.append("--- DOC 2 (IMAGEM/PÁGINAS) ---"); payload.extend(d2['data'])
 
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
+                        # --- PROMPT REFORÇADO PARA COLUNAS E FLUIDEZ ---
                         prompt = f"""
-                        Atue como Auditor de Controle de Qualidade Farmacêutica.
-                        Compare DOC 1 e DOC 2.
-                        Nota: Um ou ambos os arquivos podem ser imagens de arte final (curvas). Use OCR visual para ler o conteúdo.
+                        Atue como Auditor Farmacêutico. Compare DOC 1 e DOC 2.
                         
-                        SEÇÕES PARA ANALISAR: {secoes_str}
+                        SEÇÕES ALVO: {secoes_str}
                         
-                        REGRAS:
-                        1. Ignore diferenças de quebra de linha ou formatação visual. Foque no CONTEÚDO do texto.
-                        2. Se um texto estiver em imagem (curva), transcreva-o mentalmente para comparar.
-                        3. Marque diferenças críticas com <mark class='diff'>texto diferente</mark>.
-                        4. Identifique erros ortográficos com <mark class='ort'>erro</mark>.
-                        5. Encontre e destaque a data da bula no formato <mark class='anvisa'>dd/mm/aaaa</mark>.
+                        ⚠️ REGRAS CRÍTICAS DE LEITURA (VISÃO COMPUTACIONAL):
+                        1. LAYOUT EM COLUNAS: O texto está organizado em colunas (jornal). Leia a Coluna 1 até o fim (baixo), depois suba para o topo da Coluna 2, etc.
+                        2. NÃO LEIA EM LINHA RETA: Não cruze da coluna da esquerda para a direita no meio da página.
+                        3. QUEBRA DE PÁGINA: O texto da última coluna da Página 1 CONTINUA na primeira coluna da Página 2. Conecte as frases logicamente.
+                        4. RODAPÉS: Avisos de "Atenção" ou números de página no rodapé NÃO devem ser lidos antes do fim do texto principal da seção.
                         
-                        SAÍDA JSON OBRIGATÓRIA: 
+                        SAÍDA JSON: 
                         {{ 
-                            "METADADOS": {{ "score": 0 a 100, "datas": ["data1", "data2"] }}, 
+                            "METADADOS": {{ "score": 0, "datas": [] }}, 
                             "SECOES": [ 
                                 {{ 
-                                    "titulo": "Nome da Seção", 
-                                    "ref": "Texto extraído da Referência (resumido se igual)", 
-                                    "bel": "Texto extraído do Doc Avaliado", 
-                                    "status": "OK" ou "DIVERGENTE" ou "FALTANTE" 
+                                    "titulo": "Nome exato da seção", 
+                                    "ref": "Texto completo extraído da Referência", 
+                                    "bel": "Texto completo extraído do Candidato", 
+                                    "status": "OK" ou "DIVERGENTE" 
                                 }} 
                             ] 
                         }}
                         """
 
                         # ==============================================================
-                        # CASCATA DE SOBREVIVÊNCIA 3.0 (COM SUPORTE A VISÃO)
+                        # CASCATA DE SOBREVIVÊNCIA 4.0
                         # ==============================================================
                         response = None
                         sucesso = False
                         error_log = []
                         
-                        # Lista de Modelos para tentar (Ordem: Melhor -> Mais Rápido -> Legado)
-                        # O Gemini 3 e os Flashs recentes suportam Visão (Imagens)
-                        
-                        # Tenta listar dinamicamente o que a conta suporta
                         try:
+                            # Tenta descobrir o melhor modelo disponível
                             all_models = genai.list_models()
                             available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                             
-                            # Função de prioridade para ordenação
                             def sort_priority(name):
-                                if "gemini-3" in name: return 0      # Tenta o 3.0 primeiro
-                                if "flash" in name and "1.5" in name: return 1 # Depois Flash 1.5
-                                if "pro" in name and "1.5" in name: return 2   # Depois Pro 1.5
+                                if "gemini-3" in name: return 0 
+                                if "gemini-1.5-pro" in name: return 1 # Pro lida melhor com colunas que o Flash
+                                if "flash" in name: return 2
                                 return 10
                             
                             available_models.sort(key=sort_priority)
-                            
-                            if not available_models:
-                                available_models = ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
+                            if not available_models: available_models = ["models/gemini-1.5-flash"]
                                 
                         except:
-                            available_models = ["models/gemini-1.5-flash"] # Fallback manual
+                            available_models = ["models/gemini-1.5-flash"]
 
-                        st.caption(f"🛡️ Estratégia de IA: Tentando {len(available_models)} modelos disponíveis...")
+                        st.caption(f"🤖 Estratégia de IA: Tentando conectar ao melhor modelo para leitura de colunas...")
 
                         for model_name in available_models:
                             try:
-                                # Se for imagem, pulamos modelos antigos que não veem imagem (ex: gemini-pro-vision é ok, mas gemini-pro texto não)
-                                # Mas hoje em dia a maioria dos listados suporta multimodalidade.
-                                
                                 model_run = genai.GenerativeModel(model_name)
                                 response = model_run.generate_content(
                                     [prompt] + payload,
@@ -306,41 +281,25 @@ else:
                                     safety_settings=SAFETY_SETTINGS
                                 )
                                 sucesso = True
-                                st.success(f"✅ Processado com sucesso via: {model_name}")
-                                break # Sai do loop se funcionar
-                                
+                                st.success(f"✅ Análise realizada via: {model_name}")
+                                break 
                             except Exception as e:
                                 error_msg = str(e)
                                 error_log.append(f"{model_name}: {error_msg}")
-                                if "429" in error_msg or "Quota" in error_msg:
-                                    continue # Tenta próximo
-                                elif "404" in error_msg:
-                                    continue # Tenta próximo
-                                else:
-                                    # Se for outro erro, as vezes vale tentar o proximo modelo
-                                    continue
+                                continue
 
-                        # --- RESULTADO FINAL ---
-                        if not sucesso:
-                            st.error("❌ FALHA CRÍTICA: Não foi possível processar (Cotas ou Erro de Imagem).")
-                            with st.expander("Ver Logs Técnicos"):
-                                st.write(error_log)
-                                st.info("Dica: Arquivos em curva são pesados para a IA. Tente reduzir o número de páginas se possível.")
-
-                        # ==============================================================
-                        # RENDERIZAÇÃO
-                        # ==============================================================
+                        # --- RENDERIZAÇÃO ---
                         if sucesso and response:
                             if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-                                st.error("⚠️ Bloqueio de Segurança (Copyright)")
+                                st.error("⚠️ Bloqueio de Segurança")
                             else:
                                 data = extract_json(response.text)
                                 if data:
                                     meta = data.get("METADADOS", {})
                                     cM1, cM2, cM3 = st.columns(3)
                                     cM1.metric("Score", f"{meta.get('score',0)}%")
-                                    cM2.metric("Seções", len(data.get("SECOES", [])))
-                                    cM3.metric("Datas", str(meta.get("datas", [])))
+                                    cM2.metric("Seções Detectadas", len(data.get("SECOES", [])))
+                                    cM3.metric("Datas Encontradas", str(meta.get("datas", [])))
                                     st.divider()
                                     
                                     for sec in data.get("SECOES", []):
@@ -351,10 +310,14 @@ else:
                                         
                                         with st.expander(f"{icon} {sec['titulo']} - {status}"):
                                             cA, cB = st.columns(2)
-                                            cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                                            cB.markdown(f"**Belfar**\n<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                                            cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                                            cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Erro ao ler resposta da IA (JSON Inválido). Tente novamente.")
+                                    st.error("Erro ao processar resposta da IA. O layout complexo pode ter confundido o modelo.")
+                        else:
+                            st.error("❌ Todos os modelos falharam ou excederam a cota.")
+                            with st.expander("Ver Detalhes do Erro"):
+                                st.write(error_log)
                         
                 except Exception as e:
                     st.error(f"Erro geral: {e}")
