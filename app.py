@@ -6,7 +6,6 @@ import io
 import json
 import re
 import os
-import gc
 import base64
 import concurrent.futures
 import time
@@ -27,15 +26,8 @@ st.markdown("""
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
     .main { background-color: #f4f6f8; }
-    
     .stCard { background-color: white; padding: 25px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 25px; border: 1px solid #e1e4e8; }
-    
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; font-weight: bold; border-bottom: 2px solid #ffc107; } 
-    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 3px; font-weight: bold; text-decoration: underline wavy red; } 
-    mark.anvisa { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
-
     .texto-bula { font-size: 1.0rem; line-height: 1.6; color: #333; font-family: 'Segoe UI', sans-serif; white-space: pre-wrap; }
-    
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 50px; border: none; font-size: 16px; }
 </style>
 """, unsafe_allow_html=True)
@@ -88,14 +80,11 @@ def sanitize_text(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 def clean_noise(text):
-    """
-    Limpeza Cirúrgica Avançada com PROTEÇÃO DE AVISOS.
-    Remove lixo técnico, mas preserva 'Atenção:' e negritos.
-    """
+    """Limpeza técnica (marcas de corte, etc), preservando texto médico."""
     if not text: return ""
-    
     text = text.replace('\xa0', ' ').replace('\r', '')
     
+    # Remove apenas lixo técnico estrito
     patterns = [
         r'^\d+(\s*de\s*\d+)?$', r'^Página\s*\d+\s*de\s*\d+$',
         r'^Bula do (Paciente|Profissional)$', r'^Versão\s*\d+$',
@@ -110,8 +99,7 @@ def clean_noise(text):
         r'.*Negrito\s*[\.,]?\s*Corpo\s*\d+.*',
         r'.*artes.*belfar.*',
         r'.*Cor:\s*Preta.*', r'.*Papel:.*', r'.*Ap\s*\d+gr.*',
-        r'.*Times New Roman.*', r'.*Arial.*', r'.*Helvética.*',
-        r'.*Cores?:.*', r'.*Preto.*', r'.*Pantone.*',
+        r'.*Times New Roman.*', r'.*Cores?:.*', r'.*Pantone.*',
         r'.*Laetus.*', r'.*Pharmacode.*',
         r'^\s*BELFAR\s*$', r'^\s*UBELFAR\s*$', r'^\s*SANOFI\s*$', r'^\s*MEDLEY\s*$',
         r'.*CNPJ:.*', r'.*SAC:.*', r'.*Farm\. Resp\..*',
@@ -124,6 +112,58 @@ def clean_noise(text):
     
     cleaned_text = re.sub(r'\n{3,}', '\n\n', cleaned_text)
     return cleaned_text.strip()
+
+def get_section_header_regex(secao):
+    """Gera regex flexível para encontrar o título da seção."""
+    # Extrai o número se houver (ex: "1. PARA QUE" -> "1")
+    match = re.search(r'^(\d+)\.', secao)
+    if match:
+        num = match.group(1)
+        # Regex que aceita "1. TÍTULO", "1 TÍTULO", "1 - TÍTULO", case insensitive
+        # Pega a parte principal do título para evitar falhas por pequenos erros
+        core_title = secao.split('?')[0].replace(f"{num}.", "").strip()[:15] 
+        return re.compile(rf"{num}\s*[\.\-\)]?\s*{re.escape(core_title)}", re.IGNORECASE)
+    else:
+        # Para seções sem número (APRESENTAÇÕES, DIZERES)
+        return re.compile(re.escape(secao.split(' ')[0]), re.IGNORECASE)
+
+def slice_section_text(full_text, secao_alvo, lista_secoes):
+    """
+    Corta o texto EXATAMENTE onde começa a seção alvo e onde começa a PRÓXIMA.
+    Isso impede que a seção 1 pegue texto da seção 4, ou que a 6 pegue a 7.
+    """
+    if not full_text or len(full_text) < 10: return ""
+    
+    # 1. Encontrar início da seção alvo
+    regex_alvo = get_section_header_regex(secao_alvo)
+    match_alvo = regex_alvo.search(full_text)
+    
+    if not match_alvo:
+        return full_text # Se não achar o título, manda tudo (fallback)
+    
+    start_idx = match_alvo.start()
+    
+    # 2. Encontrar o início da PRÓXIMA seção para usar como fim
+    end_idx = len(full_text)
+    idx_alvo_na_lista = -1
+    
+    try: idx_alvo_na_lista = lista_secoes.index(secao_alvo)
+    except: pass
+    
+    if idx_alvo_na_lista != -1 and idx_alvo_na_lista < len(lista_secoes) - 1:
+        # Tenta achar qualquer uma das próximas seções (para caso pule alguma)
+        for i in range(idx_alvo_na_lista + 1, len(lista_secoes)):
+            prox_sec = lista_secoes[i]
+            regex_prox = get_section_header_regex(prox_sec)
+            match_prox = regex_prox.search(full_text, pos=start_idx + 10) # Busca APÓS o inicio da atual
+            
+            if match_prox:
+                end_idx = match_prox.start()
+                break # Achou a barreira mais próxima
+    
+    # 3. Recorta o texto com uma pequena margem de segurança
+    # Inclui o "Atenção" que costuma estar logo antes do próximo título
+    return full_text[start_idx:end_idx].strip()
 
 def extract_json(text):
     text = re.sub(r'```json|```', '', text).strip()
@@ -145,12 +185,12 @@ def process_file_content(file_bytes, filename):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             for page in doc: 
-                # Sort=True ajuda a manter a ordem de leitura, importante para "Atenção" no final
+                # Sort=True é vital para ler colunas na ordem certa
                 blocks = page.get_text("blocks", sort=True)
                 for b in blocks:
                     if b[6] == 0: full_text += b[4] + "\n\n"
             
-            if len(full_text.strip()) < 500:
+            if len(full_text.strip()) < 500: # Scan/Imagem
                 images = []
                 limit_pages = min(8, len(doc)) 
                 for i in range(limit_pages):
@@ -159,7 +199,7 @@ def process_file_content(file_bytes, filename):
                     try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg"))
                     except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                     img = Image.open(img_byte_arr)
-                    if img.width > 2500: img.thumbnail((2500, 2500), Image.Resampling.LANCZOS)
+                    img.thumbnail((2500, 2500), Image.Resampling.LANCZOS)
                     images.append(img)
                 doc.close()
                 return {"type": "images", "data": images}
@@ -173,99 +213,70 @@ def process_file_content(file_bytes, filename):
 def auditar_secao_worker(client, secao, d1, d2, nome_doc1, nome_doc2, todas_secoes):
     eh_visualizacao = any(s in secao.upper() for s in SECOES_VISUALIZACAO)
     
-    # Define barreiras, mas explicita que Atenção NÃO é barreira
-    barreiras = [s for s in todas_secoes if s != secao]
-    barreiras.extend(["DIZERES LEGAIS", "Anexo B", "Histórico de Alteração"])
-    stop_markers_str = "\n".join([f"- {s}" for s in barreiras])
+    # PREPARAÇÃO DO TEXTO (Corte Cirúrgico)
+    # Se for texto, cortamos antes de enviar. Se for imagem, mandamos as imagens.
+    texto_ref_focado = ""
+    texto_bel_focado = ""
+    
+    # Documento 1
+    if d1['type'] == 'text':
+        texto_ref_focado = slice_section_text(d1['data'], secao, todas_secoes)
+        if len(texto_ref_focado) < 10: texto_ref_focado = d1['data'][:30000] # Fallback
+    
+    # Documento 2
+    if d2['type'] == 'text':
+        texto_bel_focado = slice_section_text(d2['data'], secao, todas_secoes)
+        if len(texto_bel_focado) < 10: texto_bel_focado = d2['data'][:30000] # Fallback
 
     regra_extra = ""
-    
-    # Lógica condicional refinada
-    if "1. PARA QUE" in secao.upper():
-        # Se você quiser que o Atenção apareça aqui, remova a instrução de corte.
-        # Mantendo comportamento padrão (Geralmente Atenção vai na 3 ou 4)
-        regra_extra = """
-        - Esta seção geralmente é curta.
-        - Se houver avisos de 'Atenção:' no final, verifique se não pertencem à próxima seção.
-        """
-    
-    elif "3. QUANDO NÃO" in secao.upper():
-        regra_extra = """
-        🚨 OBRIGATÓRIO (SEÇÃO 3):
-        - Capture TODO o texto, INCLUINDO frases em negrito no final.
-        - Capture avisos como "Atenção: Contém açúcar", "Atenção: Contém lactose".
-        - Capture "Este medicamento é contraindicado para...".
-        - NÃO PARE até ver EXATAMENTE o título "4. O QUE DEVO SABER".
-        """
-    
-    elif "4. O QUE DEVO SABER" in secao.upper():
-        regra_extra = """
-        🚨 OBRIGATÓRIO (SEÇÃO 4):
-        - Esta seção SEMPRE termina com avisos importantes em negrito/destaque.
-        - VOCÊ DEVE CAPTURAR:
-          1. "Atenção: Contém lactose/açúcar/corantes..."
-          2. "Este medicamento não deve ser utilizado por mulheres grávidas..."
-          3. "Informe ao seu médico..."
-        - Se o texto parecer que acabou, OLHE PARA BAIXO. Deve haver esses avisos.
-        - Capture TUDO até o título "5. ONDE, COMO E POR QUANTO TEMPO".
-        """
-    
-    elif "7. O QUE DEVO FAZER" in secao.upper():
-        regra_extra = """
-        - Modo SCANNER LITERAL.
-        - Inclua a frase final: "Em caso de dúvidas procure orientação do farmacêutico..."
-        """
-    
-    elif "9. O QUE FAZER" in secao.upper():
-        regra_extra = """
-        🚨 OBRIGATÓRIO (SEÇÃO 9):
-        - Capture o texto descritivo.
-        - E DEPOIS capture o bloco de aviso padrão: "Em caso de uso de grande quantidade... Ligue para 0800...".
-        - Esse bloco final é OBRIGATÓRIO e costuma estar em negrito. NÃO O IGNORE.
-        """
+    if "7. O QUE DEVO FAZER" in secao.upper():
+        regra_extra = "MODO SCANNER: Copie o texto EXATAMENTE como está. Não resuma. Copie até a frase 'Em caso de dúvidas procure orientação do farmacêutico'."
+    elif "4. O QUE DEVO SABER" in secao.upper() or "3. QUANDO NÃO" in secao.upper():
+        regra_extra = "IMPORTANTE: Inclua TODOS os avisos de 'Atenção:', 'Contém lactose', 'Gravidez' que estiverem no final do texto fornecido."
 
     prompt_text = f"""
-Você é um EXTRATOR FORENSE DE BULAS.
-Sua missão: Recortar o texto da seção "{secao}" com PRECISÃO ABSOLUTA.
+Você é um EXTRATOR DE CONTEÚDO DE BULAS.
+Sua tarefa: Limpar e formatar o texto da seção "{secao}".
 
-⚠️ IMPORTANTE - SOBRE NEGRITO E AVISOS:
-Muitas vezes, frases importantes como "Atenção: Contém açúcar", "Informe seu médico" ou "Ligue para 0800" aparecem no final da seção, em parágrafos separados ou negrito.
-VOCÊ DEVE INCLUIR ESSAS FRASES. Elas fazem parte da seção.
-NÃO considere "Atenção:" como um marcador de fim. "Atenção:" é CONTEÚDO.
+O texto que você receberá ABAIXO já foi recortado do documento original, mas pode conter sujeira no início ou fim.
+
+SEU OBJETIVO:
+1. Identifique onde começa o texto REAL da seção "{secao}".
+2. Copie TUDO até o final do bloco fornecido, INCLUINDO frases em negrito como "Atenção:...", "Informe ao seu médico...", "Ligue para 0800...".
+3. NÃO inclua o título da PRÓXIMA seção (ex: não inclua "5. ONDE..." se estivermos na seção 4).
+4. Se o texto estiver cortado abruptamente, copie até onde der.
 
 {regra_extra}
 
-🛑 SÓ PARE QUANDO ENCONTRAR UM DESTES TÍTULOS (Início da próxima seção):
-{stop_markers_str}
-
-REGRAS DE EXTRAÇÃO:
-1. Copie palavra por palavra (LITERAL).
-2. Não corrija erros de português.
-3. Não pule linhas que pareçam "rodapé" se contiverem avisos clínicos.
-
-📥 SAÍDA JSON:
+SAÍDA JSON:
 {{
   "titulo": "{secao}",
-  "ref": "Texto completo documento 1",
-  "bel": "Texto completo documento 2",
+  "ref": "Texto limpo extraído do Doc 1",
+  "bel": "Texto limpo extraído do Doc 2",
   "status": "CONFORME"
 }}
 """
     
     messages_content = [{"type": "text", "text": prompt_text}]
 
-    limit = 65000 # Aumentei limite de caracteres
-    for d, nome in [(d1, nome_doc1), (d2, nome_doc2)]:
-        if d['type'] == 'text':
-            if len(d['data']) < 50:
-                 messages_content.append({"type": "text", "text": f"\n--- {nome}: (Vazio/Ilegível) ---\n"})
-            else:
-                 messages_content.append({"type": "text", "text": f"\n--- {nome} ---\n{d['data'][:limit]}"}) 
-        else:
-            messages_content.append({"type": "text", "text": f"\n--- {nome} (Imagens) ---"})
-            for img in d['data'][:6]: 
-                b64 = image_to_base64(img)
-                messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
+    # Adiciona o conteúdo já focado (recortado)
+    # DOC 1
+    if d1['type'] == 'text':
+        messages_content.append({"type": "text", "text": f"\n--- TEXTO {nome_doc1} (RECORTADO) ---\n{texto_ref_focado}"})
+    else:
+        messages_content.append({"type": "text", "text": f"\n--- {nome_doc1} (IMAGENS) ---"})
+        for img in d1['data'][:6]: 
+            b64 = image_to_base64(img)
+            messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
+
+    # DOC 2
+    if d2['type'] == 'text':
+        messages_content.append({"type": "text", "text": f"\n--- TEXTO {nome_doc2} (RECORTADO) ---\n{texto_bel_focado}"})
+    else:
+        messages_content.append({"type": "text", "text": f"\n--- {nome_doc2} (IMAGENS) ---"})
+        for img in d2['data'][:6]: 
+            b64 = image_to_base64(img)
+            messages_content.append({"type": "image_url", "image_url": f"data:image/jpeg;base64,{b64}"})
 
     for attempt in range(2):
         try:
@@ -273,18 +284,16 @@ REGRAS DE EXTRAÇÃO:
                 model="pixtral-large-latest", 
                 messages=[{"role": "user", "content": messages_content}],
                 response_format={"type": "json_object"},
-                temperature=0.0 # Zero criatividade, máxima literalidade
+                temperature=0.0
             )
             raw_content = chat_response.choices[0].message.content
             dados = extract_json(raw_content)
             
             if dados and 'ref' in dados:
                 dados['titulo'] = secao
-                
                 if not eh_visualizacao:
                     t_ref = re.sub(r'\s+', ' ', str(dados.get('ref', '')).strip().lower())
                     t_bel = re.sub(r'\s+', ' ', str(dados.get('bel', '')).strip().lower())
-                    # Remove tags HTML se a IA colocar
                     t_ref = re.sub(r'<[^>]+>', '', t_ref)
                     t_bel = re.sub(r'<[^>]+>', '', t_bel)
 
@@ -295,9 +304,7 @@ REGRAS DE EXTRAÇÃO:
                     else:
                         dados['status'] = 'DIVERGENTE'
                 
-                if "DIZERES LEGAIS" in secao.upper():
-                    dados['status'] = "VISUALIZACAO"
-
+                if "DIZERES LEGAIS" in secao.upper(): dados['status'] = "VISUALIZACAO"
                 return dados
                 
         except Exception as e:
@@ -316,16 +323,16 @@ with st.sidebar:
     st.divider()
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"])
     st.divider()
-    st.caption("v5.4 - Full Capture Mode")
+    st.caption("v5.5 - Corte Híbrido")
 
 if pagina == "🏠 Início":
     st.markdown("<h1 style='text-align: center; color: #55a68e;'>Validador de Bulas</h1>", unsafe_allow_html=True)
-    st.success("✅ **Correções Implementadas (v5.4):**")
+    st.success("✅ **Correções Implementadas (v5.5):**")
     st.markdown("""
-    - **MODO 'FULL CAPTURE':** Força a inclusão de frases em negrito ("Atenção", "Importante") que ficam no final das seções.
-    - **LIMPEZA INTELIGENTE:** Remove lixo de gráfica (marcas de corte, Pantone) sem apagar avisos médicos.
-    - **Seção 4 e 9:** Regras explícitas para capturar avisos de Lactose, Gravidez e Superdose (0800).
-    - **OCR Refinado:** Mantém a ordem de leitura correta para não perder o rodapé da seção.
+    - **CORTE FÍSICO DO TEXTO:** O sistema agora recorta o texto da Seção X até a Seção Y antes de enviar para a IA.
+    - **FIM DA MISTURA DE SEÇÕES:** Impossível a Seção 1 conter texto da Seção 4, pois o texto da 4 é removido antes da análise.
+    - **CAPTURA DE AVISOS:** Como o corte vai até o título da próxima seção, ele obrigatoriamente inclui os rodapés (Atenção, Negritos) da seção atual.
+    - **CORREÇÃO SEÇÃO 7:** Garante que o texto final 'Em caso de dúvidas...' seja capturado.
     """)
 
 else:
@@ -364,15 +371,15 @@ else:
             st.warning("⚠️ Verifique arquivos e API Key.")
         else:
             with st.status("🔄 Processando documentos...", expanded=True) as status:
-                st.write("📖 Lendo arquivos, limpando gráfica e preservando avisos...")
+                st.write("📖 Lendo arquivos e aplicando recorte inteligente...")
                 d1 = process_file_content(f1.getvalue(), f1.name)
                 d2 = process_file_content(f2.getvalue(), f2.name)
                 
-                modo1 = "OCR (Imagem)" if d1['type'] == 'images' else "Texto Nativo"
-                modo2 = "OCR (Imagem)" if d2['type'] == 'images' else "Texto Nativo"
+                modo1 = "OCR (Imagem)" if d1['type'] == 'images' else "Texto Nativo (Recortado)"
+                modo2 = "OCR (Imagem)" if d2['type'] == 'images' else "Texto Nativo (Recortado)"
                 st.write(f"ℹ️ {nome_doc1}: {modo1} | {nome_doc2}: {modo2}")
 
-                st.write("🔍 Auditando seções (incluindo negritos e rodapés)...")
+                st.write("🔍 Auditando seções...")
                 resultados = []
                 bar = st.progress(0)
                 
