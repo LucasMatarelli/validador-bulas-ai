@@ -8,6 +8,7 @@ import re
 import os
 import time
 import concurrent.futures
+import unicodedata  # <--- FALTAVA ISSO AQUI
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA CHAVE -----------------
@@ -15,7 +16,7 @@ MINHA_API_KEY = st.secrets.get("GOOGLE_API_KEY", "AIzaSyBcPfO6nlsy1vCvKW_VNofEmG
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Turbo (Fix)",
+    page_title="Validador Turbo (Fix V2)",
     page_icon="🚀",
     layout="wide"
 )
@@ -68,7 +69,7 @@ def extract_content(file_bytes, filename):
         full_text = ""
         for page in doc: full_text += page.get_text() + "\n"
         
-        # AGORA SEMPRE GERAMOS IMAGENS (Para garantir o Fallback do OCR)
+        # Gera imagens SEMPRE (para o fallback funcionar)
         images = []
         limit_pages = min(6, len(doc)) 
         for i in range(limit_pages):
@@ -88,15 +89,20 @@ def extract_content(file_bytes, filename):
 def find_section_start(text, section_name):
     text_lower = text.lower()
     core_title = section_name.lower().split('?')[0]
+    
+    # 1. Busca Exata
     match = re.search(re.escape(core_title), text_lower)
     if match: return match.start()
     
-    # Tentativa extra: busca sem acentos (caso o PDF esteja bugado)
-    core_title_norm = unicodedata.normalize('NFKD', core_title).encode('ASCII', 'ignore').decode('ASCII')
-    text_norm = unicodedata.normalize('NFKD', text_lower).encode('ASCII', 'ignore').decode('ASCII')
-    match_norm = re.search(re.escape(core_title_norm), text_norm)
-    if match_norm: return match_norm.start()
+    # 2. Busca sem acentos (Robustez)
+    try:
+        core_title_norm = unicodedata.normalize('NFKD', core_title).encode('ASCII', 'ignore').decode('ASCII')
+        text_norm = unicodedata.normalize('NFKD', text_lower).encode('ASCII', 'ignore').decode('ASCII')
+        match_norm = re.search(re.escape(core_title_norm), text_norm)
+        if match_norm: return match_norm.start()
+    except: pass
     
+    # 3. Busca por número
     if section_name[0].isdigit():
         num = section_name.split('.')[0]
         match = re.search(rf"\n\s*{num}\.\s", text_lower)
@@ -172,8 +178,6 @@ def ai_judge_diff(ref_text, bel_text, secao):
 
 # ----------------- PROCESSAMENTO PARALELO -----------------
 def processar_secao_unica(sec, d1, d2, secoes_lista):
-    import unicodedata # Garantia para thread
-
     # 1. Extração REF
     txt_ref = get_section_text_python(d1['text'], sec, secoes_lista)
     if (not txt_ref) and d1['images']: 
@@ -202,7 +206,7 @@ def processar_secao_unica(sec, d1, d2, secoes_lista):
     return {"titulo": sec, "ref": txt_ref, "bel": txt_bel, "veredito": res, "cor": cor}
 
 # ----------------- UI -----------------
-st.title("🚀 Validador Turbo (Fix)")
+st.title("🚀 Validador Turbo (Final V16.1)")
 
 if MINHA_API_KEY: st.success("✅ API Conectada")
 else: st.error("❌ Erro API Key")
@@ -226,7 +230,7 @@ SECOES = [
 ]
 
 if f1 and f2 and st.button("🚀 INICIAR TURBO"):
-    with st.spinner("Lendo arquivos e preparando imagens para OCR..."):
+    with st.spinner("Lendo arquivos..."):
         d1 = extract_content(f1.getvalue(), f1.name)
         d2 = extract_content(f2.getvalue(), f2.name)
         
@@ -245,11 +249,9 @@ if f1 and f2 and st.button("🚀 INICIAR TURBO"):
             
             results.sort(key=lambda x: SECOES.index(x['titulo']))
             
-            # EXIBIÇÃO CORRIGIDA (Com Key Única)
             for i, r in enumerate(results):
                 with st.expander(f"{r['titulo']}", expanded=(r['cor']=="red")):
                     st.markdown(f":{r['cor']}[**{r['veredito']}**]")
                     ca, cb = st.columns(2)
-                    # ADICIONEI O KEY=f"..._{i}" PARA RESOLVER O ERRO
                     ca.text_area("Ref", r['ref'], height=120, key=f"ref_{i}")
                     cb.text_area("Gráfica", r['bel'], height=120, key=f"bel_{i}")
