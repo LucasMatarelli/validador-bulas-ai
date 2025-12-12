@@ -12,7 +12,7 @@ from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Farmacêutico 3.0",
+    page_title="Validador Universal IA",
     page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -62,8 +62,6 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-# Configuração de Segurança: LIBERADO (Block None)
-# Isso é crucial para evitar bloqueios indevidos em textos técnicos de bula.
 SAFETY_SETTINGS = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -71,12 +69,11 @@ SAFETY_SETTINGS = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# ----------------- FUNÇÕES DE BACKEND -----------------
+# ----------------- FUNÇÕES DE BACKEND (AUTO-DETECÇÃO) -----------------
 
-def get_gemini_model():
+def get_best_available_model():
     """
-    Conecta aos modelos de última geração (Gen 3 e 2.5).
-    Evita modelos antigos para prevenir erro 404.
+    Descobre quais modelos a chave API realmente pode ver e escolhe o melhor.
     """
     api_key = None
     try:
@@ -89,25 +86,39 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    # LISTA ATUALIZADA (Dez 2025) - Prioridade para o 3.0 Preview
-    modelos_novos = [
-        "gemini-3-pro-preview",    # O mais novo (Reasoning SOTA)
-        "gemini-2.5-pro",          # Versão estável anterior
-        "gemini-2.5-flash",        # Versão rápida 2.5
-        "gemini-2.0-flash-exp"     # Fallback experimental
-    ]
+    try:
+        # LISTAGEM DINÂMICA: Pergunta pra API o que está disponível
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        if not available_models:
+            return None, "Erro: Chave válida, mas sem modelos de texto disponíveis."
 
-    for modelo in modelos_novos:
-        try:
-            m = genai.GenerativeModel(modelo)
-            # Teste rápido (Ping de 1 token) para garantir que a API aceita o modelo
-            m.generate_content("Ping", request_options={"timeout": 10})
-            return m, f"Conectado: {modelo.upper()}"
-        except Exception as e:
-            # Se falhar (ex: chave sem acesso ao preview), tenta o próximo silenciosamente
-            continue
-    
-    return None, "Erro Crítico: Sua chave API não tem acesso aos modelos Gemini 3 ou 2.5."
+        # Lógica de Preferência (O código procura por strings parciais na lista real)
+        preferencias = ["gemini-3", "gemini-2.5-pro", "gemini-1.5-pro", "gemini-pro"]
+        
+        modelo_escolhido = None
+        
+        # Tenta achar o melhor modelo da lista de preferências
+        for pref in preferencias:
+            for real_name in available_models:
+                if pref in real_name:
+                    modelo_escolhido = real_name
+                    break
+            if modelo_escolhido: break
+            
+        # Fallback: Se não achar nenhum preferido, pega o primeiro da lista (geralmente Flash)
+        if not modelo_escolhido:
+            modelo_escolhido = available_models[0]
+
+        # Instancia o modelo escolhido
+        model = genai.GenerativeModel(modelo_escolhido)
+        return model, f"Conectado: {modelo_escolhido.replace('models/', '')}"
+
+    except Exception as e:
+        return None, f"Erro de conexão: {str(e)}"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -115,28 +126,23 @@ def process_uploaded_file(uploaded_file):
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
         
-        # DOCX (Prioritário - Texto Puro)
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text, "is_image": False}
             
-        # PDF
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            
             full_text = ""
             for page in doc:
                 full_text += page.get_text() + "\n"
             
-            # Se tem texto selecionável, usa ele (Melhor para IA processar)
             if len(full_text.strip()) > 100:
                 doc.close()
                 return {"type": "text", "data": full_text, "is_image": False}
             
-            # Se for SCAN, renderiza imagens
             images = []
-            limit_pages = min(15, len(doc)) # Gemini 3 aguenta contexto longo
+            limit_pages = min(15, len(doc)) 
             for i in range(limit_pages):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
@@ -173,12 +179,14 @@ def extract_json(text):
 # ----------------- UI LATERAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.markdown("### Validador Gen 3")
+    st.markdown("### Validador Auto-Detect")
     
-    model_instance, status_msg = get_gemini_model()
+    # CHAMA A FUNÇÃO QUE LISTA E ESCOLHE O MELHOR
+    model_instance, status_msg = get_best_available_model()
     
     if model_instance:
-        st.success(f"🚀 {status_msg}")
+        st.success(f"🤖 {status_msg}")
+        st.caption("Modelo detectado automaticamente pela sua chave.")
     else:
         st.error(f"❌ {status_msg}")
     
@@ -189,7 +197,7 @@ with st.sidebar:
 # ----------------- PÁGINAS -----------------
 if pagina == "🏠 Home":
     st.title("Validador Farmacêutico IA")
-    st.info("Sistema atualizado para Gemini 3 Pro Preview / 2.5 Pro.")
+    st.info("O sistema identificou automaticamente o modelo mais avançado disponível na sua conta.")
     
     c1, c2 = st.columns(2)
     c1.markdown("### 💊 Comparador\nVerificação cruzada de documentos (Word/PDF).")
@@ -212,11 +220,11 @@ else:
     f1 = c1.file_uploader(label1, type=["pdf", "docx"], key="f1")
     f2 = c2.file_uploader(label2, type=["pdf", "docx"], key="f2")
         
-    if st.button("🚀 EXECUTAR ANÁLISE SOTA"):
+    if st.button("🚀 EXECUTAR ANÁLISE"):
         if not model_instance:
-            st.error("Erro Crítico: Não foi possível ativar nenhum modelo Gemini 3/2.5.")
+            st.error("Erro Crítico: Nenhum modelo disponível.")
         elif f1 and f2:
-            with st.spinner("Analisando com raciocínio avançado..."):
+            with st.spinner("Analisando documentos..."):
                 try:
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
@@ -233,24 +241,20 @@ else:
 
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
-                        # Prompt ajustado para a capacidade de raciocínio do Gemini 3
                         prompt = f"""
                         ATUE COMO: Auditor Sênior da Qualidade.
                         TAREFA: Comparar DOC REF vs DOC CANDIDATO.
                         
-                        INSTRUÇÕES DE ALTA PRECISÃO:
+                        INSTRUÇÕES:
                         1. Identifique qualquer desvio de texto (supressão, adição, alteração).
                         2. Verifique a grafia correta de termos técnicos e posologias.
-                        3. Ignore diferenças apenas de formatação (negrito/itálico), foque no conteúdo.
+                        3. Ignore formatação, foque no conteúdo textual e numérico.
                         
                         SEÇÕES PARA AUDITAR:
                         {secoes_str}
 
                         SAÍDA JSON OBRIGATÓRIA:
-                        Use tags HTML para destacar as falhas no texto 'bel':
-                        <mark class='diff'>Diferença</mark>
-                        <mark class='ort'>Erro Ortográfico</mark>
-                        <mark class='anvisa'>Data</mark>
+                        Use tags HTML: <mark class='diff'>Diferença</mark>, <mark class='ort'>Erro</mark>, <mark class='anvisa'>Data</mark>.
 
                         Schema:
                         {{
@@ -258,8 +262,8 @@ else:
                             "SECOES": [
                                 {{ 
                                     "titulo": "Nome da Seção", 
-                                    "ref": "Trecho da Referência", 
-                                    "bel": "Trecho do Candidato com as tags de erro aplicadas", 
+                                    "ref": "Texto da Referência", 
+                                    "bel": "Texto do Candidato com tags", 
                                     "status": "CONFORME" ou "DIVERGENTE" 
                                 }}
                             ]
@@ -267,7 +271,7 @@ else:
                         """
 
                         try:
-                            # Configurações para Gemini 3 (Suporta temperature baixa para rigor técnico)
+                            # Configurações genéricas que funcionam em todos os modelos
                             response = model_instance.generate_content(
                                 [prompt] + payload,
                                 generation_config={"response_mime_type": "application/json", "temperature": 0.0},
@@ -275,10 +279,9 @@ else:
                                 request_options={"timeout": 900}
                             )
                             
-                            # Tratamento de erro de Copyright (comum em bulas escaneadas)
                             if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                                 st.error("⚠️ Bloqueio de Copyright.")
-                                st.warning("O arquivo parece ser um material protegido. Use arquivos editáveis (Word) se possível para evitar esse bloqueio.")
+                                st.warning("Tente usar arquivos Word (.docx) ou extrair o texto manualmente.")
                             else:
                                 data = extract_json(response.text)
                                 if data:
@@ -304,7 +307,7 @@ else:
                                             cB.caption("Análise")
                                             cB.markdown(f"<div style='background:#fff; border:1px solid #ddd; padding:10px; border-radius:5px'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Falha ao interpretar a resposta da IA. (JSON Inválido)")
+                                    st.error("Falha ao interpretar a resposta da IA.")
                                     
                         except Exception as e:
                             st.error(f"Erro na execução da IA: {e}")
