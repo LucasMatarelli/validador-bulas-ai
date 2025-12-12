@@ -12,7 +12,7 @@ from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Farmacêutico Pro",
+    page_title="Validador Farmacêutico 3.0",
     page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -32,11 +32,11 @@ st.markdown("""
         border: 1px solid #e2e8f0;
     }
     .stButton>button { 
-        width: 100%; background-color: #3b82f6; color: white; 
+        width: 100%; background-color: #2563eb; color: white; 
         font-weight: 600; border-radius: 8px; height: 50px; border: none; 
         transition: all 0.2s;
     }
-    .stButton>button:hover { background-color: #2563eb; transform: translateY(-1px); }
+    .stButton>button:hover { background-color: #1d4ed8; transform: translateY(-1px); }
     
     mark.diff { background-color: #fef9c3; color: #854d0e; padding: 2px 6px; border-radius: 4px; font-weight: bold; border: 1px solid #fde047; }
     mark.ort { background-color: #fee2e2; color: #991b1b; padding: 2px 6px; border-radius: 4px; border-bottom: 2px solid #ef4444; }
@@ -62,7 +62,8 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-# Configuração de Segurança: LIBERADO (Block None) para evitar falsos positivos
+# Configuração de Segurança: LIBERADO (Block None)
+# Isso é crucial para evitar bloqueios indevidos em textos técnicos de bula.
 SAFETY_SETTINGS = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -74,7 +75,8 @@ SAFETY_SETTINGS = {
 
 def get_gemini_model():
     """
-    Configura EXCLUSIVAMENTE o modelo PRO.
+    Conecta aos modelos de última geração (Gen 3 e 2.5).
+    Evita modelos antigos para prevenir erro 404.
     """
     api_key = None
     try:
@@ -87,20 +89,25 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    # ---------------------------------------------------------
-    # DEFINIÇÃO DO MODELO - AQUI ESTÁ A LÓGICA RESTRITIVA
-    # ---------------------------------------------------------
-    # Usamos 'gemini-1.5-pro' pois é a tag oficial para o modelo Pro mais recente.
-    # Se você tiver acesso beta ao 2.5 ou 3.0, mude a string abaixo.
-    MODELO_ALVO = "gemini-1.5-pro" 
+    # LISTA ATUALIZADA (Dez 2025) - Prioridade para o 3.0 Preview
+    modelos_novos = [
+        "gemini-3-pro-preview",    # O mais novo (Reasoning SOTA)
+        "gemini-2.5-pro",          # Versão estável anterior
+        "gemini-2.5-flash",        # Versão rápida 2.5
+        "gemini-2.0-flash-exp"     # Fallback experimental
+    ]
+
+    for modelo in modelos_novos:
+        try:
+            m = genai.GenerativeModel(modelo)
+            # Teste rápido (Ping de 1 token) para garantir que a API aceita o modelo
+            m.generate_content("Ping", request_options={"timeout": 10})
+            return m, f"Conectado: {modelo.upper()}"
+        except Exception as e:
+            # Se falhar (ex: chave sem acesso ao preview), tenta o próximo silenciosamente
+            continue
     
-    try:
-        model = genai.GenerativeModel(MODELO_ALVO)
-        # Teste de conexão (Ping)
-        model.generate_content("Ping", request_options={"timeout": 5})
-        return model, f"Conectado: {MODELO_ALVO.upper()}"
-    except Exception as e:
-        return None, f"Erro ao conectar no {MODELO_ALVO}: {e}"
+    return None, "Erro Crítico: Sua chave API não tem acesso aos modelos Gemini 3 ou 2.5."
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -114,7 +121,7 @@ def process_uploaded_file(uploaded_file):
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"type": "text", "data": text, "is_image": False}
             
-        # PDF (Tenta texto, se falhar vai para imagem de alta resolução)
+        # PDF
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
@@ -122,18 +129,17 @@ def process_uploaded_file(uploaded_file):
             for page in doc:
                 full_text += page.get_text() + "\n"
             
-            # Se o PDF tem texto selecionável, usamos ele (mais rápido e preciso)
+            # Se tem texto selecionável, usa ele (Melhor para IA processar)
             if len(full_text.strip()) > 100:
                 doc.close()
                 return {"type": "text", "data": full_text, "is_image": False}
             
             # Se for SCAN, renderiza imagens
             images = []
-            # Pro Models aguentam mais contexto, podemos processar mais páginas se necessário
-            limit_pages = min(15, len(doc)) 
+            limit_pages = min(15, len(doc)) # Gemini 3 aguenta contexto longo
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) # Alta resolução para o Pro ler bem
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 try:
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except:
@@ -167,12 +173,12 @@ def extract_json(text):
 # ----------------- UI LATERAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.markdown("### Validador Pro")
+    st.markdown("### Validador Gen 3")
     
     model_instance, status_msg = get_gemini_model()
     
     if model_instance:
-        st.success(f"💎 {status_msg}")
+        st.success(f"🚀 {status_msg}")
     else:
         st.error(f"❌ {status_msg}")
     
@@ -183,7 +189,7 @@ with st.sidebar:
 # ----------------- PÁGINAS -----------------
 if pagina == "🏠 Home":
     st.title("Validador Farmacêutico IA")
-    st.info("Sistema configurado para utilizar exclusivamente a arquitetura Gemini Pro.")
+    st.info("Sistema atualizado para Gemini 3 Pro Preview / 2.5 Pro.")
     
     c1, c2 = st.columns(2)
     c1.markdown("### 💊 Comparador\nVerificação cruzada de documentos (Word/PDF).")
@@ -206,11 +212,11 @@ else:
     f1 = c1.file_uploader(label1, type=["pdf", "docx"], key="f1")
     f2 = c2.file_uploader(label2, type=["pdf", "docx"], key="f2")
         
-    if st.button("🚀 EXECUTAR ANÁLISE PRO"):
+    if st.button("🚀 EXECUTAR ANÁLISE SOTA"):
         if not model_instance:
-            st.error("Erro Crítico: API Key inválida ou Modelo Pro indisponível.")
+            st.error("Erro Crítico: Não foi possível ativar nenhum modelo Gemini 3/2.5.")
         elif f1 and f2:
-            with st.spinner("Analisando com modelo de alta precisão..."):
+            with st.spinner("Analisando com raciocínio avançado..."):
                 try:
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
@@ -227,12 +233,12 @@ else:
 
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
-                        # Prompt Otimizado para o Modelo Pro (Mais complexo e detalhista)
+                        # Prompt ajustado para a capacidade de raciocínio do Gemini 3
                         prompt = f"""
                         ATUE COMO: Auditor Sênior da Qualidade.
                         TAREFA: Comparar DOC REF vs DOC CANDIDATO.
                         
-                        INSTRUÇÕES RIGOROSAS:
+                        INSTRUÇÕES DE ALTA PRECISÃO:
                         1. Identifique qualquer desvio de texto (supressão, adição, alteração).
                         2. Verifique a grafia correta de termos técnicos e posologias.
                         3. Ignore diferenças apenas de formatação (negrito/itálico), foque no conteúdo.
@@ -261,17 +267,18 @@ else:
                         """
 
                         try:
-                            # Configurações para o modelo PRO (Temperatura baixa para precisão)
+                            # Configurações para Gemini 3 (Suporta temperature baixa para rigor técnico)
                             response = model_instance.generate_content(
                                 [prompt] + payload,
                                 generation_config={"response_mime_type": "application/json", "temperature": 0.0},
                                 safety_settings=SAFETY_SETTINGS,
-                                request_options={"timeout": 900} # Timeout maior pois o Pro demora mais
+                                request_options={"timeout": 900}
                             )
                             
+                            # Tratamento de erro de Copyright (comum em bulas escaneadas)
                             if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-                                st.error("⚠️ Bloqueio de Copyright detectado.")
-                                st.warning("O documento parece ser um material protegido publicado. Tente usar versão em Word.")
+                                st.error("⚠️ Bloqueio de Copyright.")
+                                st.warning("O arquivo parece ser um material protegido. Use arquivos editáveis (Word) se possível para evitar esse bloqueio.")
                             else:
                                 data = extract_json(response.text)
                                 if data:
@@ -297,7 +304,7 @@ else:
                                             cB.caption("Análise")
                                             cB.markdown(f"<div style='background:#fff; border:1px solid #ddd; padding:10px; border-radius:5px'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Falha ao interpretar a resposta da IA.")
+                                    st.error("Falha ao interpretar a resposta da IA. (JSON Inválido)")
                                     
                         except Exception as e:
                             st.error(f"Erro na execução da IA: {e}")
