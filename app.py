@@ -61,7 +61,6 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-# Configurações de Segurança
 SAFETY_SETTINGS = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -73,7 +72,7 @@ SAFETY_SETTINGS = {
 
 def get_gemini_model():
     """
-    Tenta conectar no Gemini 3 Pro Preview primeiro.
+    Configura o modelo principal (Gemini 3).
     """
     api_key = None
     try:
@@ -86,24 +85,37 @@ def get_gemini_model():
 
     genai.configure(api_key=api_key)
     
-    # Ordem de preferência
-    modelos_para_testar = [
-        "gemini-3-pro-preview", # O que você quer
-        "gemini-2.5-pro",
-        "gemini-2.0-flash-exp"
-    ]
+    # Tenta conectar no 3.0 diretamente
+    try:
+        model = genai.GenerativeModel("gemini-3-pro-preview")
+        return model, "Modelo Ativo: gemini-3-pro-preview"
+    except:
+        pass
+        
+    # Se falhar a instância direta, retorna genérico para tratamento posterior
+    return genai.GenerativeModel("gemini-3-pro-preview"), "Modelo Ativo: gemini-3-pro-preview"
 
-    for nome_modelo in modelos_para_testar:
-        try:
-            model = genai.GenerativeModel(nome_modelo)
-            # Ping rápido
-            model.generate_content("Oi", request_options={"timeout": 5})
-            return model, f"Conectado: {nome_modelo}"
-        except:
-            continue
+def find_fallback_model_name():
+    """
+    Procura AUTOMATICAMENTE um modelo válido na conta do usuário para fallback.
+    Evita erro 404 listando o que realmente existe.
+    """
+    try:
+        available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 1. Tenta achar algum Flash (mais rápido/barato para fallback)
+        for m in available:
+            if "flash" in m.lower(): return m
             
-    # Se tudo falhar, fallback seguro
-    return genai.GenerativeModel("gemini-1.5-flash"), "Conectado: gemini-1.5-flash (Fallback)"
+        # 2. Tenta achar algum Pro (alternativo)
+        for m in available:
+            if "pro" in m.lower() and "gemini-3" not in m: return m
+            
+        # 3. Retorna o primeiro que tiver
+        if available: return available[0]
+    except:
+        return None
+    return None
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -127,10 +139,10 @@ def process_uploaded_file(uploaded_file):
                 return {"type": "text", "data": full_text, "is_image": False}
             
             images = []
-            limit_pages = min(10, len(doc)) # Reduzi levemente para ajudar na Cota
+            limit_pages = min(8, len(doc)) # Reduzi paginas para evitar COTA no Gemini 3
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # Resolução média para economizar token
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                 try:
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=85))
                 except:
@@ -169,7 +181,7 @@ with st.sidebar:
     model_instance, model_name = get_gemini_model()
     
     if model_instance:
-        st.success(f"🤖 {model_name}")
+        st.success(f"✅ {model_name}")
     else:
         st.error("❌ Verifique a Chave API")
     
@@ -234,10 +246,10 @@ else:
                         SAÍDA JSON: {{ "METADADOS": {{ "score": 0, "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "..." }} ] }}
                         """
 
-                        # ---------------- LÓGICA DE RETRY E FALLBACK (CORREÇÃO DO ERRO 429) ----------------
+                        # ---------------- LOGICA DE EXECUÇÃO BLINDADA ----------------
                         response = None
                         try:
-                            # Tentativa 1: Modelo Principal (Gemini 3)
+                            # TENTA O MODELO 3.0 PRIMEIRO
                             response = model_instance.generate_content(
                                 [prompt] + payload,
                                 generation_config={"response_mime_type": "application/json"},
@@ -245,29 +257,36 @@ else:
                             )
                         except Exception as e:
                             erro_str = str(e)
-                            # Se for erro de COTA (429)
-                            if "429" in erro_str or "Quota exceeded" in erro_str:
-                                st.warning("⚠️ Cota do Gemini 3 excedida. Alternando para Gemini Flash automaticamente para completar a tarefa...")
-                                time.sleep(2) # Pequena pausa
-                                try:
-                                    # Fallback: Usa o Flash (mais barato e rápido)
-                                    fallback_model = genai.GenerativeModel("gemini-1.5-flash")
-                                    response = fallback_model.generate_content(
-                                        [prompt] + payload,
-                                        generation_config={"response_mime_type": "application/json"},
-                                        safety_settings=SAFETY_SETTINGS
-                                    )
-                                except Exception as e2:
-                                    st.error(f"Erro também no fallback: {e2}")
+                            # Se for COTA (429) ou NÃO ENCONTRADO (404) ou SERVER ERROR (500)
+                            if any(x in erro_str for x in ["429", "404", "500", "Quota", "not found"]):
+                                st.warning(f"⚠️ O Gemini 3 está instável ou excedeu a cota. Tentando modelo alternativo...")
+                                time.sleep(1)
+                                
+                                # BUSCA DINÂMICA DE MODELO ALTERNATIVO (SEM HARDCODE)
+                                fallback_name = find_fallback_model_name()
+                                
+                                if fallback_name:
+                                    try:
+                                        st.caption(f"Usando fallback: {fallback_name}")
+                                        fallback_model = genai.GenerativeModel(fallback_name)
+                                        response = fallback_model.generate_content(
+                                            [prompt] + payload,
+                                            generation_config={"response_mime_type": "application/json"},
+                                            safety_settings=SAFETY_SETTINGS
+                                        )
+                                    except Exception as e2:
+                                        st.error(f"Erro no fallback ({fallback_name}): {e2}")
+                                else:
+                                    st.error("Nenhum modelo alternativo encontrado na sua conta.")
                             else:
-                                raise e # Se for outro erro, lança normal
+                                st.error(f"Erro irrecuperável: {e}")
 
-                        # ---------------- PROCESSAMENTO DA RESPOSTA ----------------
+                        # ---------------- RENDERIZAÇÃO ----------------
                         if response:
                             if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                                 st.error("⚠️ Bloqueio de Segurança (Copyright)")
                                 if risco_copyright:
-                                    st.warning("Arquivo protegido detectado. Tente usar .DOCX.")
+                                    st.warning("O arquivo foi bloqueado por parecer material protegido. Use .DOCX.")
                             else:
                                 data = extract_json(response.text)
                                 if data:
@@ -289,7 +308,7 @@ else:
                                             cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                                             cB.markdown(f"**Belfar**\n<div style='background:#f0fff4;padding:10px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Erro ao ler resposta da IA.")
+                                    st.error("Erro ao ler resposta da IA (JSON Inválido).")
                         
                 except Exception as e:
                     st.error(f"Erro geral: {e}")
