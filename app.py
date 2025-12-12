@@ -85,9 +85,6 @@ def get_gemini_model():
     return genai.GenerativeModel("gemini-3-pro-preview"), "Modelo Ativo: gemini-3-pro-preview"
 
 def process_uploaded_file(uploaded_file):
-    """
-    Processa o arquivo. Detecta CURVAS e aumenta resolução para leitura de colunas.
-    """
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
@@ -104,7 +101,6 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # Tenta texto puro se não for curva
             full_text = ""
             if not is_curva:
                 for page in doc:
@@ -114,13 +110,13 @@ def process_uploaded_file(uploaded_file):
                 doc.close()
                 return {"type": "text", "data": full_text, "is_image": False}
             
-            # MODO IMAGEM (ALTA RESOLUÇÃO PARA VER COLUNAS)
+            # MODO IMAGEM (ALTA RESOLUÇÃO)
             images = []
             limit_pages = min(8, len(doc)) 
             
             for i in range(limit_pages):
                 page = doc[i]
-                # Zoom 3.0 é essencial para ver o espaço branco entre colunas
+                # Zoom 3.0 para ler colunas
                 pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
                 try:
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
@@ -142,19 +138,58 @@ def process_uploaded_file(uploaded_file):
     return None
 
 def clean_json_response(text):
+    # Limpeza bruta de markdown
     text = text.replace("```json", "").replace("```", "").strip()
-    text = re.sub(r'//.*', '', text)
+    text = re.sub(r'//.*', '', text) # Remove comentários
     if text.startswith("json"): text = text[4:]
     return text
 
 def extract_json(text):
+    """
+    Parser robusto que tenta encontrar o JSON mesmo que haja lixo ao redor.
+    """
+    cleaned = clean_json_response(text)
     try:
-        clean = clean_json_response(text)
-        start = clean.find('{')
-        end = clean.rfind('}') + 1
-        if start != -1 and end != -1: return json.loads(clean[start:end])
-        return json.loads(clean)
-    except: return None
+        # Tenta parse direto
+        return json.loads(cleaned)
+    except:
+        # Tenta encontrar o maior bloco {...} possível
+        try:
+            start = cleaned.find('{')
+            end = cleaned.rfind('}') + 1
+            if start != -1 and end != -1:
+                json_str = cleaned[start:end]
+                # Tenta corrigir quebras de linha dentro de strings que quebram o JSON
+                json_str = re.sub(r'(?<=: ")(.*?)(?=")', lambda m: m.group(1).replace('\n', ' '), json_str, flags=re.DOTALL)
+                return json.loads(json_str)
+        except:
+            return None
+    return None
+
+def normalize_sections(data_json, allowed_titles):
+    """
+    Remove seções inventadas pela IA que não estão na lista permitida.
+    """
+    if not data_json or "SECOES" not in data_json:
+        return data_json
+    
+    clean_sections = []
+    # Normaliza a lista permitida para comparação (upper case e strip)
+    allowed_set = {t.strip().upper() for t in allowed_titles}
+    
+    for sec in data_json["SECOES"]:
+        titulo_ia = sec.get("titulo", "").strip().upper()
+        
+        # Correção fuzzy básica ou verificação exata
+        if titulo_ia in allowed_set:
+            clean_sections.append(sec)
+        else:
+            # Se a IA inventou um título, tenta ver se parece com algum permitido
+            # Se não, descarta para não poluir a tela (como o caso "COMPOSO ORAL")
+            pass
+            
+    data_json["SECOES"] = clean_sections
+    return data_json
 
 # ----------------- UI LATERAL -----------------
 with st.sidebar:
@@ -200,7 +235,7 @@ else:
         
     if st.button("🚀 INICIAR AUDITORIA"):
         if f1 and f2 and model_instance:
-            with st.spinner("Analisando colunas e fluxo de texto..."):
+            with st.spinner("Analisando colunas, fluxo e layout..."):
                 try:
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
@@ -209,7 +244,7 @@ else:
                     if d1 and d2:
                         risco_copyright = d1['is_image'] or d2['is_image']
                         
-                        payload = ["CONTEXTO: Auditoria de Bulas Farmacêuticas com layout complexo (colunas)."]
+                        payload = ["CONTEXTO: Auditoria Farmacêutica (Layout Complexo em Colunas)."]
                         
                         if d1['type'] == 'text': payload.append(f"--- DOC 1 (TEXTO) ---\n{d1['data']}")
                         else: payload.append("--- DOC 1 (IMAGENS) ---"); payload.extend(d1['data'])
@@ -220,38 +255,38 @@ else:
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
                         # ==========================================================
-                        # PROMPT REFINADO (COM REGRAS DE ATENÇÃO/LACTOSE)
+                        # PROMPT BLINDADO
                         # ==========================================================
                         prompt = f"""
-                        Você é um Auditor de Controle de Qualidade. Compare DOC 1 e DOC 2.
+                        Você é um Auditor de Qualidade. Sua tarefa é extrair e comparar o texto de bulas.
                         
-                        LISTA DE SEÇÕES PERMITIDAS (Use apenas estas):
+                        SEÇÕES PERMITIDAS (Ignorar qualquer outra):
                         {secoes_str}
                         
-                        ⚠️ REGRAS DE EXTRAÇÃO:
-                        1. **COSTURA DE COLUNAS:** O texto está em colunas. Se uma frase no fim da coluna terminar incompleta (ex: "síndrome"), busque a continuação no topo da próxima coluna (ex: "de má-absorção").
+                        ⚠️ INSTRUÇÕES CRÍTICAS DE LEITURA:
+                        1. **COLUNAS:** O texto está em colunas. Se uma frase termina abruptamente no fim de uma coluna (ex: "ou", "para"), ela continua no topo da próxima. Não quebre o parágrafo.
                         
-                        2. **CAPTURE OS AVISOS (ATENÇÃO/LACTOSE):** - Blocos começando com **"Atenção:"**, avisos sobre **"Lactose"**, **"Açúcar"** ou **"Corantes"** que aparecem no topo de uma coluna ou logo após o texto, DEVEM SER INCLUÍDOS na seção anterior (geralmente "QUANDO NÃO DEVO USAR..." ou "O QUE DEVO SABER...").
-                           - NÃO ignore o bloco "Atenção: Contém lactose...". Ele faz parte do texto da bula.
+                        2. **ATENÇÃO / LACTOSE:** Blocos de aviso ("Atenção: Contém lactose", "Atenção: Contém açúcar") que aparecem soltos no meio ou fim da coluna PERTENCEM à seção de texto imediatamente acima deles. Junte-os.
+                        
+                        3. **SEM ALUCINAÇÃO:** - NÃO crie títulos novos (ex: "Composição Adulto"). Use apenas os da lista.
+                           - NÃO repita o título dentro do conteúdo.
 
-                        3. **SEM TÍTULOS NO CONTEÚDO:** Nos campos 'ref' e 'bel', coloque apenas o corpo do texto. Não repita o título da seção.
-
-                        SAÍDA JSON: 
+                        SAÍDA JSON (Estrita): 
                         {{ 
                             "METADADOS": {{ "score": 0, "datas": [] }}, 
                             "SECOES": [ 
                                 {{ 
-                                    "titulo": "TÍTULO DA LISTA", 
-                                    "ref": "Conteúdo...", 
-                                    "bel": "Conteúdo...", 
-                                    "status": "OK" ou "DIVERGENTE" ou "FALTANTE" 
+                                    "titulo": "EXATAMENTE UM TÍTULO DA LISTA", 
+                                    "ref": "Texto completo...", 
+                                    "bel": "Texto completo...", 
+                                    "status": "OK" 
                                 }} 
                             ] 
                         }}
                         """
 
                         # ==============================================================
-                        # CASCATA DE SOBREVIVÊNCIA
+                        # SELEÇÃO DE MODELOS (BLOQUEIO DE EXPERIMENTAL)
                         # ==============================================================
                         response = None
                         sucesso = False
@@ -262,26 +297,37 @@ else:
                             available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                             
                             def sort_priority(name):
-                                if "gemini-1.5-pro" in name and "latest" in name: return 0
+                                # BLOQUEIA MODELOS INSTÁVEIS
+                                if "robotics" in name or "experimental" in name or "preview" in name: 
+                                    # Só usa se for a ÚNICA opção da conta (raríssimo)
+                                    return 100 
+
+                                # Prioriza modelos estáveis
+                                if "gemini-1.5-pro" in name and "002" in name: return 0
                                 if "gemini-1.5-pro" in name: return 1
                                 if "gemini-3" in name: return 2
                                 if "gemini-1.5-flash" in name and not "lite" in name and not "8b" in name: return 3
-                                if "lite" in name or "8b" in name: return 10
-                                return 5
+                                
+                                return 50
                             
                             available_models.sort(key=sort_priority)
+                            # Remove duplicatas mantendo ordem
+                            seen = set()
+                            available_models = [x for x in available_models if not (x in seen or seen.add(x))]
+                            
                             if not available_models: available_models = ["models/gemini-1.5-flash"]
                         except:
                             available_models = ["models/gemini-1.5-flash"]
 
-                        st.caption(f"Validando estrutura da bula...")
+                        st.caption(f"Processando com modelo estável...")
 
                         for model_name in available_models:
+                            # Se for modelo proibido e tivermos outros, pula
+                            if ("robotics" in model_name or "preview" in model_name) and len(available_models) > 1 and not sucesso:
+                                if available_models.index(model_name) < len(available_models) - 1:
+                                    continue
+                                    
                             try:
-                                if "lite" in model_name and not sucesso:
-                                    if len(available_models) > 1 and available_models.index(model_name) < len(available_models) - 1:
-                                        continue 
-
                                 model_run = genai.GenerativeModel(model_name)
                                 response = model_run.generate_content(
                                     [prompt] + payload,
@@ -289,7 +335,7 @@ else:
                                     safety_settings=SAFETY_SETTINGS
                                 )
                                 sucesso = True
-                                st.success(f"✅ Validação via: {model_name}")
+                                st.success(f"✅ Concluído via: {model_name}")
                                 break 
                             except Exception as e:
                                 error_log.append(f"{model_name}: {str(e)}")
@@ -300,8 +346,11 @@ else:
                             if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
                                 st.error("⚠️ Bloqueio de Segurança")
                             else:
-                                data = extract_json(response.text)
-                                if data:
+                                raw_data = extract_json(response.text)
+                                if raw_data:
+                                    # FILTRO PYTHON: Remove seções alucinadas antes de exibir
+                                    data = normalize_sections(raw_data, lista_secoes)
+                                    
                                     meta = data.get("METADADOS", {})
                                     cM1, cM2, cM3 = st.columns(3)
                                     cM1.metric("Score", f"{meta.get('score',0)}%")
@@ -309,21 +358,25 @@ else:
                                     cM3.metric("Datas", str(meta.get("datas", [])))
                                     st.divider()
                                     
+                                    if len(data.get("SECOES", [])) == 0:
+                                        st.warning("Nenhuma seção válida identificada. Tente melhorar a qualidade do PDF.")
+                                    
                                     for sec in data.get("SECOES", []):
                                         status = sec.get('status', 'N/A')
                                         icon = "✅"
                                         if "DIVERGENTE" in status: icon = "❌"
                                         elif "FALTANTE" in status: icon = "🚨"
+                                        elif "DIVERGRIFO" in status: icon = "❓" # Trata o erro anterior visualmente
                                         
                                         with st.expander(f"{icon} {sec['titulo']} - {status}"):
                                             cA, cB = st.columns(2)
                                             cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                                             cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Erro ao processar dados.")
-                                    with st.expander("Debug JSON"): st.code(response.text)
+                                    st.error("Erro ao estruturar dados. O modelo retornou formato inválido.")
+                                    with st.expander("Ver Resposta Bruta (Debug)"): st.code(response.text)
                         else:
-                            st.error("❌ Falha na conexão com a IA.")
+                            st.error("❌ Todos os modelos falharam.")
                             with st.expander("Logs"): st.write(error_log)
                         
                 except Exception as e:
