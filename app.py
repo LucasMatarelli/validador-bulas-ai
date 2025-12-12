@@ -15,7 +15,7 @@ MINHA_API_KEY = st.secrets.get("GOOGLE_API_KEY", "AIzaSyBcPfO6nlsy1vCvKW_VNofEmG
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Turbo (v15)",
+    page_title="Validador Turbo (Fix)",
     page_icon="🚀",
     layout="wide"
 )
@@ -37,9 +37,7 @@ if MINHA_API_KEY:
 
 # ----------------- FUNÇÕES AUXILIARES -----------------
 def normalize_for_comparison(text):
-    """Remove espaços, quebras de linha e deixa minúsculo para comparação rápida"""
     if not text: return ""
-    # Remove tudo que não for letra ou número
     return re.sub(r'[\W_]+', '', text).lower()
 
 def clean_noise(text):
@@ -70,15 +68,14 @@ def extract_content(file_bytes, filename):
         full_text = ""
         for page in doc: full_text += page.get_text() + "\n"
         
+        # AGORA SEMPRE GERAMOS IMAGENS (Para garantir o Fallback do OCR)
         images = []
-        # Gera imagens apenas se necessário (Scan)
-        if len(full_text.strip()) < 200:
-            limit_pages = min(6, len(doc)) 
-            for i in range(limit_pages):
-                page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                try: images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
-                except: pass
+        limit_pages = min(6, len(doc)) 
+        for i in range(limit_pages):
+            page = doc[i]
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            try: images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
+            except: pass
         
         doc.close()
         is_scan = len(full_text.strip()) < 200
@@ -93,6 +90,13 @@ def find_section_start(text, section_name):
     core_title = section_name.lower().split('?')[0]
     match = re.search(re.escape(core_title), text_lower)
     if match: return match.start()
+    
+    # Tentativa extra: busca sem acentos (caso o PDF esteja bugado)
+    core_title_norm = unicodedata.normalize('NFKD', core_title).encode('ASCII', 'ignore').decode('ASCII')
+    text_norm = unicodedata.normalize('NFKD', text_lower).encode('ASCII', 'ignore').decode('ASCII')
+    match_norm = re.search(re.escape(core_title_norm), text_norm)
+    if match_norm: return match_norm.start()
+    
     if section_name[0].isdigit():
         num = section_name.split('.')[0]
         match = re.search(rf"\n\s*{num}\.\s", text_lower)
@@ -116,7 +120,7 @@ def get_section_text_python(full_text, section, all_sections):
 
 # ----------------- OCR GEMINI (Fallback) -----------------
 def get_section_text_ocr(images, section):
-    if not images: return "Imagens não disponíveis."
+    if not images: return ""
     safety = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
     model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety)
     prompt = [f"Transcreva a seção '{section}'. Copie até a próxima seção. Se não achar, responda 'Seção não encontrada'."]
@@ -133,18 +137,14 @@ def get_section_text_ocr(images, section):
             return ""
     return ""
 
-# ----------------- JUIZ (Com Otimização de Igualdade) -----------------
+# ----------------- JUIZ -----------------
 def ai_judge_diff(ref_text, bel_text, secao):
-    # 1. OTIMIZAÇÃO DE VELOCIDADE: Comparação Python Direta
-    # Se os textos forem tecnicamente iguais (removendo formatação), não chama a IA.
     norm_ref = normalize_for_comparison(ref_text)
     norm_bel = normalize_for_comparison(bel_text)
     
-    # Se ambos têm texto e são idênticos, retorna conforme direto (Zero Custo/Tempo)
     if len(norm_ref) > 10 and norm_ref == norm_bel:
         return "✅ CONFORME (Validação Automática)"
 
-    # 2. Se forem diferentes, chama o Juiz Gemini
     safety = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
     model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety)
     
@@ -172,16 +172,16 @@ def ai_judge_diff(ref_text, bel_text, secao):
 
 # ----------------- PROCESSAMENTO PARALELO -----------------
 def processar_secao_unica(sec, d1, d2, secoes_lista):
-    """Função isolada para rodar em paralelo"""
-    
+    import unicodedata # Garantia para thread
+
     # 1. Extração REF
     txt_ref = get_section_text_python(d1['text'], sec, secoes_lista)
-    if (not txt_ref) and d1['images']: # Fallback OCR
+    if (not txt_ref) and d1['images']: 
         txt_ref = get_section_text_ocr(d1['images'], sec)
         
     # 2. Extração BEL
     txt_bel = get_section_text_python(d2['text'], sec, secoes_lista)
-    if (not txt_bel) and d2['images']: # Fallback OCR
+    if (not txt_bel) and d2['images']: 
         txt_bel = get_section_text_ocr(d2['images'], sec)
 
     # 3. Validação
@@ -202,7 +202,7 @@ def processar_secao_unica(sec, d1, d2, secoes_lista):
     return {"titulo": sec, "ref": txt_ref, "bel": txt_bel, "veredito": res, "cor": cor}
 
 # ----------------- UI -----------------
-st.title("🚀 Validador Turbo (Rápido + Scan)")
+st.title("🚀 Validador Turbo (Fix)")
 
 if MINHA_API_KEY: st.success("✅ API Conectada")
 else: st.error("❌ Erro API Key")
@@ -226,18 +226,16 @@ SECOES = [
 ]
 
 if f1 and f2 and st.button("🚀 INICIAR TURBO"):
-    with st.spinner("Processando..."):
+    with st.spinner("Lendo arquivos e preparando imagens para OCR..."):
         d1 = extract_content(f1.getvalue(), f1.name)
         d2 = extract_content(f2.getvalue(), f2.name)
         
         if "error" in d1 or "error" in d2:
             st.error("Erro leitura.")
         else:
-            # BARRA DE PROGRESSO
             bar = st.progress(0)
             results = []
             
-            # PARALELISMO (3 Workers = 3x mais rápido, mas seguro pro Free Tier)
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 futures = {executor.submit(processar_secao_unica, sec, d1, d2, SECOES): sec for sec in SECOES}
                 
@@ -245,13 +243,13 @@ if f1 and f2 and st.button("🚀 INICIAR TURBO"):
                     results.append(future.result())
                     bar.progress((i + 1) / len(SECOES))
             
-            # ORDENAR RESULTADOS
             results.sort(key=lambda x: SECOES.index(x['titulo']))
             
-            # EXIBIR
-            for r in results:
+            # EXIBIÇÃO CORRIGIDA (Com Key Única)
+            for i, r in enumerate(results):
                 with st.expander(f"{r['titulo']}", expanded=(r['cor']=="red")):
                     st.markdown(f":{r['cor']}[**{r['veredito']}**]")
                     ca, cb = st.columns(2)
-                    ca.text_area("Ref", r['ref'], height=120)
-                    cb.text_area("Gráfica", r['bel'], height=120)
+                    # ADICIONEI O KEY=f"..._{i}" PARA RESOLVER O ERRO
+                    ca.text_area("Ref", r['ref'], height=120, key=f"ref_{i}")
+                    cb.text_area("Gráfica", r['bel'], height=120, key=f"bel_{i}")
