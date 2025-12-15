@@ -19,7 +19,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (MENU MELHORADO) -----------------
+# ----------------- ESTILOS CSS -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -45,45 +45,41 @@ st.markdown("""
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
 
-    /* --- NOVO ESTILO DO MENU LATERAL (SIDEBAR) --- */
+    /* --- MENU LATERAL (SIDEBAR) --- */
     section[data-testid="stSidebar"] {
         background-color: #ffffff;
         border-right: 1px solid #eee;
     }
-    /* Transforma os Radios em Botões Estilizados */
     section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] {
-        display: flex;
-        flex-direction: column;
         gap: 10px;
     }
     section[data-testid="stSidebar"] .stRadio label {
-        background-color: #f8f9fa;
-        padding: 15px 15px;
-        border-radius: 10px;
-        border: 1px solid #e9ecef;
+        background-color: #f8f9fa !important;
+        padding: 15px 20px !important;
+        border-radius: 10px !important;
+        border: 1px solid #e9ecef !important;
         cursor: pointer;
-        transition: all 0.2s ease;
         margin: 0 !important;
-        font-weight: 500;
-        color: #495057;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+        color: #495057 !important;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
     }
     section[data-testid="stSidebar"] .stRadio label:hover {
-        background-color: #e8f5e9;
-        border-color: #55a68e;
-        color: #55a68e;
-        transform: translateX(3px);
+        background-color: #e8f5e9 !important;
+        border-color: #55a68e !important;
+        color: #55a68e !important;
     }
-    /* Estilo do Item Selecionado */
     section[data-testid="stSidebar"] .stRadio div[aria-checked="true"] label {
         background-color: #55a68e !important;
         color: white !important;
         border-color: #448c75 !important;
         box-shadow: 0 4px 6px rgba(85, 166, 142, 0.3);
     }
-    /* Esconde a bolinha padrão do radio (HACK VISUAL) */
-    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label div:first-child {
-        display: none; 
+    section[data-testid="stSidebar"] .stRadio label p {
+        color: inherit !important;
+        font-weight: 600 !important;
+        font-size: 16px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -191,12 +187,12 @@ def clean_json_response(text):
 
 def extract_json(text):
     """
-    Parser robusto que tenta encontrar o JSON mesmo que haja lixo ao redor.
+    Parser robusto corrigido (Removemos a regex perigosa e usamos strict=False)
     """
     cleaned = clean_json_response(text)
     try:
-        # Tenta parse direto
-        return json.loads(cleaned)
+        # Tenta parse com strict=False para aceitar quebras de linha dentro de strings (comum em IAs)
+        return json.loads(cleaned, strict=False)
     except:
         # Tenta encontrar o maior bloco {...} possível
         try:
@@ -204,9 +200,8 @@ def extract_json(text):
             end = cleaned.rfind('}') + 1
             if start != -1 and end != -1:
                 json_str = cleaned[start:end]
-                # Tenta corrigir quebras de linha dentro de strings que quebram o JSON
-                json_str = re.sub(r'(?<=: ")(.*?)(?=")', lambda m: m.group(1).replace('\n', ' '), json_str, flags=re.DOTALL)
-                return json.loads(json_str)
+                # Aqui removemos a regex antiga que estava quebrando o texto
+                return json.loads(json_str, strict=False)
         except:
             return None
     return None
@@ -225,12 +220,9 @@ def normalize_sections(data_json, allowed_titles):
     for sec in data_json["SECOES"]:
         titulo_ia = sec.get("titulo", "").strip().upper()
         
-        # Correção fuzzy básica ou verificação exata
         if titulo_ia in allowed_set:
             clean_sections.append(sec)
         else:
-            # Se a IA inventou um título, tenta ver se parece com algum permitido
-            # Se não, descarta para não poluir a tela (como o caso "COMPOSO ORAL")
             pass
             
     data_json["SECOES"] = clean_sections
@@ -241,7 +233,6 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.markdown("<h2 style='text-align: center; color: #55a68e; margin-bottom: 20px;'>Validador de Bulas</h2>", unsafe_allow_html=True)
     
-    # Menu melhorado visualmente pelo CSS acima
     pagina = st.radio(
         "Navegação:", 
         ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"],
@@ -305,7 +296,7 @@ else:
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
                         # ==========================================================
-                        # PROMPT BLINDADO (Com Instrução de Não Adivinhação)
+                        # PROMPT BLINDADO
                         # ==========================================================
                         prompt = f"""
                         Você é um Auditor de Qualidade. Sua tarefa é extrair e comparar o texto de bulas.
@@ -352,21 +343,14 @@ else:
                             available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                             
                             def sort_priority(name):
-                                # BLOQUEIA MODELOS INSTÁVEIS
-                                if "robotics" in name or "experimental" in name or "preview" in name: 
-                                    # Só usa se for a ÚNICA opção da conta (raríssimo)
-                                    return 100 
-
-                                # Prioriza modelos estáveis
+                                if "robotics" in name or "experimental" in name or "preview" in name: return 100 
                                 if "gemini-1.5-pro" in name and "002" in name: return 0
                                 if "gemini-1.5-pro" in name: return 1
                                 if "gemini-3" in name: return 2
                                 if "gemini-1.5-flash" in name and not "lite" in name and not "8b" in name: return 3
-                                
                                 return 50
                             
                             available_models.sort(key=sort_priority)
-                            # Remove duplicatas mantendo ordem
                             seen = set()
                             available_models = [x for x in available_models if not (x in seen or seen.add(x))]
                             
@@ -377,16 +361,19 @@ else:
                         st.caption(f"Processando com modelo estável...")
 
                         for model_name in available_models:
-                            # Se for modelo proibido e tivermos outros, pula
                             if ("robotics" in model_name or "preview" in model_name) and len(available_models) > 1 and not sucesso:
                                 if available_models.index(model_name) < len(available_models) - 1:
                                     continue
                                     
                             try:
                                 model_run = genai.GenerativeModel(model_name)
+                                # AQUI: Aumentamos o limite de tokens para evitar corte no JSON
                                 response = model_run.generate_content(
                                     [prompt] + payload,
-                                    generation_config={"response_mime_type": "application/json"},
+                                    generation_config={
+                                        "response_mime_type": "application/json",
+                                        "max_output_tokens": 8192
+                                    },
                                     safety_settings=SAFETY_SETTINGS
                                 )
                                 sucesso = True
@@ -403,7 +390,6 @@ else:
                             else:
                                 raw_data = extract_json(response.text)
                                 if raw_data:
-                                    # FILTRO PYTHON: Remove seções alucinadas antes de exibir
                                     data = normalize_sections(raw_data, lista_secoes)
                                     
                                     meta = data.get("METADADOS", {})
@@ -414,25 +400,24 @@ else:
                                     st.divider()
                                     
                                     if len(data.get("SECOES", [])) == 0:
-                                        st.warning("Nenhuma seção válida identificada. Tente melhorar a qualidade do PDF.")
+                                        st.warning("Nenhuma seção válida identificada.")
                                     
                                     for sec in data.get("SECOES", []):
                                         status = sec.get('status', 'N/A')
                                         icon = "✅"
                                         if "DIVERGENTE" in status: icon = "❌"
                                         elif "FALTANTE" in status: icon = "🚨"
-                                        elif "DIVERGRIFO" in status: icon = "❓" # Trata o erro anterior visualmente
+                                        elif "DIVERGRIFO" in status: icon = "❓"
                                         
                                         with st.expander(f"{icon} {sec['titulo']} - {status}"):
                                             cA, cB = st.columns(2)
                                             cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                                             cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Erro ao estruturar dados. O modelo retornou formato inválido.")
+                                    st.error("Erro ao estruturar dados.")
                                     with st.expander("Ver Resposta Bruta (Debug)"): st.code(response.text)
                         else:
                             st.error("❌ Todos os modelos falharam.")
-                            with st.expander("Logs"): st.write(error_log)
                         
                 except Exception as e:
                     st.error(f"Erro geral: {e}")
