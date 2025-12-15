@@ -103,30 +103,34 @@ def configure_gemini():
     genai.configure(api_key=api_key)
     return True
 
-def get_best_model_name():
-    """Encontra o melhor modelo disponível dinamicamente."""
+def get_real_model_name():
+    """
+    Busca o nome EXATO do modelo disponível na conta do usuário para evitar erro 404.
+    """
     try:
-        all_models = genai.list_models()
-        valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
+        models = genai.list_models()
+        # Filtra apenas modelos que suportam gerar conteúdo
+        names = [m.name for m in models if 'generateContent' in m.supported_generation_methods]
         
-        # Sistema de Pontuação para evitar modelos ruins
-        def score_model(name):
-            if "lite" in name: return -100 # Proibido (corta texto)
-            if "experimental" in name or "preview" in name: return -50 # Instável
-            
-            if "gemini-1.5-pro" in name:
-                if "002" in name: return 100 
-                return 90
-            if "gemini-1.5-flash" in name:
-                if "002" in name: return 80
-                return 70
-            return 0
-            
-        valid_models.sort(key=score_model, reverse=True)
-        best = next((m for m in valid_models if score_model(m) > 0), None)
+        # 1. Tenta achar o Flash (melhor custo benefício)
+        # Procura por strings que contenham 'flash' e '1.5'
+        flash = next((n for n in names if 'flash' in n and '1.5' in n), None)
+        if flash: return flash
+
+        # 2. Tenta achar o Pro 1.5
+        pro15 = next((n for n in names if 'pro' in n and '1.5' in n), None)
+        if pro15: return pro15
         
-        # Fallback seguro se não achar Pro
-        return best if best else "models/gemini-1.5-flash"
+        # 3. Tenta o Pro 1.0 (Gemini Pro clássico)
+        pro10 = next((n for n in names if 'gemini-pro' in n), None)
+        if pro10: return pro10
+
+        # 4. Se nada específico for achado, pega o primeiro da lista que seja Gemini
+        any_gemini = next((n for n in names if 'gemini' in n), None)
+        if any_gemini: return any_gemini
+
+        # Fallback final se a listagem falhar
+        return "models/gemini-1.5-flash"
     except:
         return "models/gemini-1.5-flash"
 
@@ -230,8 +234,9 @@ else:
         
     if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
         if f1 and f2 and api_configured:
-            model_name = get_best_model_name()
-            # st.caption(f"Utilizando motor de IA: {model_name}") 
+            # Seleciona o modelo exato disponível na conta
+            model_name = get_real_model_name()
+            # st.caption(f"Usando modelo: {model_name}") # Pode descomentar para debug
             
             with st.spinner("Processando documentos..."):
                 d1 = process_uploaded_file(f1)
@@ -241,7 +246,7 @@ else:
             if d1 and d2:
                 model_instance = genai.GenerativeModel(model_name)
                 
-                # --- CONFIGURAÇÃO DE RETENTATIVA E DELAY ---
+                # Divisão em partes (Chunks)
                 chunk_size = 4
                 chunks = [lista_secoes[i:i + chunk_size] for i in range(0, len(lista_secoes), chunk_size)]
                 
@@ -257,9 +262,8 @@ else:
                 else: payload_base.extend(["--- DOC CANDIDATO (IMAGENS) ---"] + d2['data'])
 
                 for i, chunk in enumerate(chunks):
-                    # Delay automático entre partes para evitar erro 429
-                    if i > 0:
-                        time.sleep(2) # Pequena pausa padrão
+                    # Delay inicial para evitar sobrecarga
+                    if i > 0: time.sleep(2)
                         
                     st.toast(f"Analisando parte {i+1}/{len(chunks)}...", icon="⏳")
                     secoes_str = "\n".join([f"- {s}" for s in chunk])
@@ -287,8 +291,7 @@ else:
                     
                     # --- LOOP DE RETENTATIVA PARA ERRO 429 ---
                     max_retries = 3
-                    retry_delay = 30 # Segundos de espera se der erro
-                    success_part = False
+                    retry_delay = 30 # Segundos de espera
                     
                     for attempt in range(max_retries):
                         try:
@@ -303,17 +306,17 @@ else:
                                 final_sections.extend(norm.get("SECOES", []))
                                 if part_data.get("METADADOS", {}).get("datas"):
                                     final_dates.extend(part_data["METADADOS"]["datas"])
-                            success_part = True
-                            break # Sucesso, sai do loop de tentativas
+                            break # Sucesso
                             
                         except Exception as e:
-                            if "429" in str(e) or "quota" in str(e).lower():
+                            # Se for erro de cota (429) ou erro temporário (503)
+                            if "429" in str(e) or "quota" in str(e).lower() or "503" in str(e):
                                 if attempt < max_retries - 1:
-                                    st.toast(f"Muitos pedidos (429). Aguardando {retry_delay}s...", icon="✋")
+                                    st.toast(f"Aguardando API ({retry_delay}s)...", icon="⏳")
                                     time.sleep(retry_delay)
-                                    continue # Tenta de novo
+                                    continue
                             
-                            # Se não for 429 ou acabaram as tentativas
+                            # Se for outro erro ou acabou as tentativas
                             st.error(f"Erro na parte {i+1}: {str(e)}")
                             break
                     
