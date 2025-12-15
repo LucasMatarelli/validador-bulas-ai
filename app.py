@@ -92,15 +92,48 @@ SAFETY_SETTINGS = {
 
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
-def get_gemini_model():
+def configure_gemini():
+    """Apenas configura a API Key."""
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
     except: api_key = os.environ.get("GEMINI_API_KEY")
     
-    if not api_key: return None, "Sem Chave API"
+    if not api_key: return False
     genai.configure(api_key=api_key)
-    # Tenta pegar um modelo robusto para evitar cortes
-    return genai.GenerativeModel("gemini-1.5-pro-latest"), "Modelo: gemini-1.5-pro"
+    return True
+
+def get_best_model_name():
+    """Encontra o melhor modelo disponível dinamicamente."""
+    try:
+        all_models = genai.list_models()
+        # Filtra apenas modelos que geram texto
+        valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
+        
+        # Ordem de prioridade (Pro > Flash > resto)
+        # Exclui explicitamente LITE e EXPERIMENTAL para evitar erros
+        def score_model(name):
+            if "lite" in name: return -100 # Proibido (corta texto)
+            if "experimental" in name or "preview" in name: return -50 # Instável
+            
+            if "gemini-1.5-pro" in name:
+                if "002" in name: return 100 # Melhor versão atual
+                return 90
+            if "gemini-1.5-flash" in name:
+                if "002" in name: return 80
+                return 70
+            return 0
+            
+        valid_models.sort(key=score_model, reverse=True)
+        
+        # Pega o melhor modelo que não tenha score negativo (ou o primeiro disponível se tudo falhar)
+        best = next((m for m in valid_models if score_model(m) > 0), None)
+        
+        if not best and valid_models:
+            best = valid_models[0] # Fallback
+            
+        return best if best else "models/gemini-1.5-flash"
+    except:
+        return "models/gemini-1.5-flash"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -180,8 +213,12 @@ with st.sidebar:
     
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"], label_visibility="collapsed")
     st.divider()
-    model_instance, m_name = get_gemini_model()
-    if model_instance: st.markdown(f"<div style='text-align:center;padding:10px;background:#e8f5e9;border-radius:8px;color:#2e7d32;font-size:0.8em'>✅ {m_name}</div>", unsafe_allow_html=True)
+    
+    api_configured = configure_gemini()
+    if api_configured:
+        st.markdown(f"<div style='text-align:center;padding:10px;background:#e8f5e9;border-radius:8px;color:#2e7d32;font-size:0.8em'>✅ API Conectada</div>", unsafe_allow_html=True)
+    else:
+        st.error("❌ Verifique a Chave API")
 
 # ----------------- LÓGICA PRINCIPAL -----------------
 if pagina == "🏠 Início":
@@ -201,15 +238,21 @@ else:
     f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
         
     if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
-        if f1 and f2 and model_instance:
+        if f1 and f2 and api_configured:
+            # 1. Escolhe o melhor modelo ANTES de começar
+            model_name = get_best_model_name()
+            st.caption(f"Utilizando motor de IA: {model_name}")
+            
             with st.spinner("Processando documentos..."):
                 d1 = process_uploaded_file(f1)
                 d2 = process_uploaded_file(f2)
                 gc.collect()
 
             if d1 and d2:
-                # ESTRATÉGIA DE DIVISÃO (CHUNKING) PARA NÃO CORTAR SEÇÕES
-                # Divide a lista de seções em grupos de 4 para garantir que a IA consiga ler tudo
+                # 2. Inicializa o modelo selecionado
+                model_instance = genai.GenerativeModel(model_name)
+                
+                # 3. ESTRATÉGIA DE DIVISÃO (CHUNKING)
                 chunk_size = 4
                 chunks = [lista_secoes[i:i + chunk_size] for i in range(0, len(lista_secoes), chunk_size)]
                 
@@ -275,12 +318,12 @@ else:
                 # Cálculo de Score simples baseado em divergências
                 divs = sum(1 for s in final_sections if "DIVERGENTE" in s['status'])
                 total = len(final_sections)
-                score = 100 - int((divs/max(1, total))*100)
+                score = 100 - int((divs/max(1, total))*100) if total > 0 else 0
                 
                 cM1.metric("Score Aprovação", f"{score}%")
                 cM2.metric("Seções Analisadas", f"{total}/{len(lista_secoes)}")
                 
-                # Exibe Data Anvisa (pega a primeira encontrada ou 'N/A')
+                # Exibe Data Anvisa
                 data_anvisa = next((d for d in final_dates if d), "Não identificada")
                 cM3.metric("Data Anvisa", str(data_anvisa))
                 
