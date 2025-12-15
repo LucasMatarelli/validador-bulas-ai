@@ -92,7 +92,7 @@ SAFETY_SETTINGS = {
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
 def configure_gemini():
-    """Configura API e retorna lista de modelos disponíveis."""
+    """Configura API e retorna lista de modelos REAIS."""
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
     except: api_key = os.environ.get("GEMINI_API_KEY")
@@ -100,19 +100,30 @@ def configure_gemini():
     if not api_key: return None, []
     genai.configure(api_key=api_key)
     
-    # Lista modelos reais da conta do usuário para evitar erro 404
     try:
+        # Tenta listar os modelos OFICIAIS da conta
         model_list = []
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 model_list.append(m.name)
         
-        # Ordena para mostrar os melhores primeiro (Pro > Flash)
-        model_list.sort(key=lambda x: "flash" in x, reverse=False) 
-        return True, model_list
+        # Filtra lixo e ordena para priorizar o Flash 1.5
+        valid_models = [m for m in model_list if "gemini" in m and "vision" not in m]
+        
+        # Coloca o 1.5 Flash no topo da lista se existir
+        flash_models = [m for m in valid_models if "flash" in m and "1.5" in m]
+        other_models = [m for m in valid_models if m not in flash_models]
+        
+        final_list = flash_models + other_models
+        
+        if not final_list:
+            # Fallback se a lista vier vazia
+            return True, ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
+            
+        return True, final_list
     except:
-        # Lista de fallback se a API falhar em listar
-        return True, ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-1.0-pro"]
+        # Fallback de segurança
+        return True, ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -139,7 +150,7 @@ def process_uploaded_file(uploaded_file):
             images = []
             limit = min(8, len(doc))
             for i in range(limit):
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) # Alta resolução para leitura
+                pix = doc[i].get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -147,7 +158,7 @@ def process_uploaded_file(uploaded_file):
             return {"type": "images", "data": images}
             
     except Exception as e:
-        st.error(f"Erro: {e}")
+        st.error(f"Erro no arquivo: {e}")
         return None
     return None
 
@@ -189,22 +200,20 @@ with st.sidebar:
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"], label_visibility="collapsed")
     st.divider()
     
-    # --- SELETOR DE MODELO (SOLUÇÃO PARA O ERRO 404) ---
+    # Configuração de Modelos Corrigida
     is_connected, available_models = configure_gemini()
     
     selected_model = None
     if is_connected:
         st.success("✅ API Conectada")
         if available_models:
-            # Permite o usuário escolher o modelo (incluindo Gemini 3/2.0 se disponível)
             selected_model = st.selectbox(
                 "Escolha o Cérebro da IA:", 
                 available_models, 
-                index=0,
-                help="Se der erro, tente trocar para um modelo 'Flash' ou 'Pro'."
+                index=0 # O código agora força o Flash para o topo, então index 0 é seguro
             )
         else:
-            st.error("Nenhum modelo encontrado na conta.")
+            st.error("Nenhum modelo encontrado.")
     else:
         st.error("❌ Verifique a Chave API")
 
@@ -238,7 +247,6 @@ else:
                 final_sections = []
                 final_dates = []
                 
-                # Payload único para evitar bloqueio de taxa (429)
                 payload = ["CONTEXTO: Comparação Estrita de Textos (Auditoria)."]
                 if d1['type'] == 'text': payload.append(f"--- TEXTO ORIGINAL (REFERÊNCIA) ---\n{d1['data']}")
                 else: payload.extend(["--- IMAGEM ORIGINAL (REFERÊNCIA) ---"] + d1['data'])
@@ -248,15 +256,14 @@ else:
 
                 secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                 
-                # --- PROMPT ANTIALUCINAÇÃO ---
+                # --- PROMPT BLINDADO ---
                 prompt = f"""
-                ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO DE TEXTO (SEM CRIATIVIDADE).
+                ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO DE TEXTO.
                 
                 SUA MISSÃO:
                 1. Ler o texto da IMAGEM ORIGINAL e da IMAGEM CANDIDATO.
                 2. Extrair o texto EXATAMENTE como está escrito (IPSIS LITTERIS).
                 3. NÃO corrija erros de português. NÃO complete frases. NÃO invente palavras.
-                4. Se a palavra na imagem for "caza", escreva "caza". Se for "casa", escreva "casa".
                 
                 TAREFA DE COMPARAÇÃO:
                 Compare o texto extraído das seções abaixo.
@@ -283,9 +290,9 @@ else:
                 
                 st.toast("Processando... Por favor aguarde.", icon="🤖")
                 
-                # Loop de tentativa para erros de conexão
                 max_retries = 3
                 success = False
+                last_error = None
                 
                 for attempt in range(max_retries):
                     try:
@@ -294,7 +301,7 @@ else:
                             generation_config={
                                 "response_mime_type": "application/json", 
                                 "max_output_tokens": 8192,
-                                "temperature": 0.0  # ZERO CRIATIVIDADE (IMPORTANTE!)
+                                "temperature": 0.0
                             },
                             safety_settings=SAFETY_SETTINGS,
                             request_options={"timeout": 600}
@@ -308,14 +315,21 @@ else:
                             success = True
                             break
                     except Exception as e:
-                        if "429" in str(e):
+                        last_error = str(e)
+                        # Se for erro 404, não adianta tentar de novo, o modelo não existe
+                        if "404" in last_error or "not found" in last_error.lower():
+                            st.error(f"Erro Fatal: O modelo selecionado ({selected_model}) não existe ou não está disponível na sua conta.")
+                            break
+                        
+                        # Se for erro 429 (Cota), espera
+                        if "429" in last_error:
                             st.toast(f"Aguardando servidor... ({attempt+1}/{max_retries})", icon="⏳")
                             time.sleep(30)
                             continue
-                        else:
-                            st.error(f"Erro no modelo {selected_model}: {str(e)}")
-                            st.info("Dica: Tente selecionar outro modelo no menu lateral.")
-                            break
+                        
+                        # Outros erros
+                        st.error(f"Erro na tentativa {attempt+1}: {last_error}")
+                        break
                 
                 if success:
                     st.divider()
@@ -344,3 +358,5 @@ else:
                             cA, cB = st.columns(2)
                             cA.markdown(f"**Referência (Original)**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                             cB.markdown(f"**Candidato (Auditado)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                elif last_error:
+                     st.error(f"Não foi possível concluir a auditoria. Erro final: {last_error}")
