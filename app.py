@@ -187,23 +187,40 @@ def clean_json_response(text):
 
 def extract_json(text):
     """
-    Parser robusto corrigido (Removemos a regex perigosa e usamos strict=False)
+    Parser robusto com recuperação de dados truncados.
     """
     cleaned = clean_json_response(text)
+    
+    # 1. Tenta parse direto (Ideal)
     try:
-        # Tenta parse com strict=False para aceitar quebras de linha dentro de strings (comum em IAs)
         return json.loads(cleaned, strict=False)
     except:
-        # Tenta encontrar o maior bloco {...} possível
-        try:
-            start = cleaned.find('{')
-            end = cleaned.rfind('}') + 1
-            if start != -1 and end != -1:
-                json_str = cleaned[start:end]
-                # Aqui removemos a regex antiga que estava quebrando o texto
-                return json.loads(json_str, strict=False)
-        except:
-            return None
+        pass
+
+    # 2. Tenta Recuperação de Truncamento (Salva-vidas)
+    # Se o texto foi cortado (erro comum em bulas longas), tentamos fechar o JSON 
+    # no último objeto válido encontrado na lista de seções.
+    try:
+        if '"SECOES":' in cleaned:
+            # Encontra o último divisor de objeto válido "},"
+            last_valid_comma = cleaned.rfind("},")
+            if last_valid_comma != -1:
+                # Corta o lixo final e fecha a estrutura manualmente
+                fixed_json_str = cleaned[:last_valid_comma+1] + "]}"
+                return json.loads(fixed_json_str, strict=False)
+    except:
+        pass
+
+    # 3. Fallback: Tenta encontrar o maior bloco {...} fechado possível
+    try:
+        start = cleaned.find('{')
+        end = cleaned.rfind('}') + 1
+        if start != -1 and end != -1:
+            json_str = cleaned[start:end]
+            return json.loads(json_str, strict=False)
+    except:
+        pass
+        
     return None
 
 def normalize_sections(data_json, allowed_titles):
@@ -332,7 +349,7 @@ else:
                         """
 
                         # ==============================================================
-                        # SELEÇÃO DE MODELOS (BLOQUEIO DE EXPERIMENTAL)
+                        # SELEÇÃO DE MODELOS (BLOQUEIO DE EXPERIMENTAL E LITE)
                         # ==============================================================
                         response = None
                         sucesso = False
@@ -343,11 +360,15 @@ else:
                             available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                             
                             def sort_priority(name):
+                                # Penaliza "lite" (tende a cortar texto) e "experimental"
+                                if "lite" in name: return 90 
                                 if "robotics" in name or "experimental" in name or "preview" in name: return 100 
+
+                                # Prioriza modelos Pro e Flash padrão
                                 if "gemini-1.5-pro" in name and "002" in name: return 0
                                 if "gemini-1.5-pro" in name: return 1
                                 if "gemini-3" in name: return 2
-                                if "gemini-1.5-flash" in name and not "lite" in name and not "8b" in name: return 3
+                                if "gemini-1.5-flash" in name and not "8b" in name: return 3
                                 return 50
                             
                             available_models.sort(key=sort_priority)
@@ -361,13 +382,14 @@ else:
                         st.caption(f"Processando com modelo estável...")
 
                         for model_name in available_models:
+                            # Pula modelos instáveis se houver opção melhor
                             if ("robotics" in model_name or "preview" in model_name) and len(available_models) > 1 and not sucesso:
                                 if available_models.index(model_name) < len(available_models) - 1:
                                     continue
                                     
                             try:
                                 model_run = genai.GenerativeModel(model_name)
-                                # AQUI: Aumentamos o limite de tokens para evitar corte no JSON
+                                # Token alto para tentar evitar corte
                                 response = model_run.generate_content(
                                     [prompt] + payload,
                                     generation_config={
@@ -415,6 +437,7 @@ else:
                                             cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
                                     st.error("Erro ao estruturar dados.")
+                                    # Mostra o texto bruto se falhar mesmo com o fix
                                     with st.expander("Ver Resposta Bruta (Debug)"): st.code(response.text)
                         else:
                             st.error("❌ Todos os modelos falharam.")
