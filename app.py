@@ -91,38 +91,44 @@ SAFETY_SETTINGS = {
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
 def configure_gemini():
-    """Conecta e BUSCA A LISTA REAL DE MODELOS DA SUA CONTA."""
+    """Conecta e verifica API."""
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
     except: api_key = os.environ.get("GEMINI_API_KEY")
     
-    if not api_key: return False, []
+    if not api_key: return False
     genai.configure(api_key=api_key)
-    
+    return True
+
+def get_smart_model_list():
+    """Gera lista de prioridade baseada no que existe na conta."""
     try:
-        # Pede para o Google: "Quais modelos eu tenho acesso?"
-        all_models = list(genai.list_models())
-        valid_models = []
-        for m in all_models:
-            # Filtra apenas os que geram texto
-            if 'generateContent' in m.supported_generation_methods:
-                # Remove o prefixo 'models/' para ficar limpo no menu
-                name = m.name.replace("models/", "")
-                valid_models.append(name)
+        available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # ORDENAÇÃO INTELIGENTE (Prioriza o que você pediu)
-        # Tenta jogar Experimental, 8b (Lite) para o topo
-        valid_models.sort(key=lambda x: (
-            "gemini-2" in x,     # Tenta achar Gemini 2.0 (futuro 2.5/3)
-            "exp" in x,          # Tenta achar Experimental
-            "8b" in x,           # Tenta achar o Lite (8b)
-            "flash" in x         # Flash depois
-        ), reverse=True)
+        # Ordem de preferência: 
+        # 1. Gemini 1.5 Pro (Melhor raciocínio)
+        # 2. Gemini 1.5 Flash (Melhor velocidade/cota)
+        # 3. Gemini Pro (Fallback)
+        priority_queue = []
         
-        return True, valid_models
-    except Exception as e:
-        # Se falhar a listagem, usa lista de segurança
-        return True, ["gemini-1.5-flash-8b", "gemini-1.5-flash", "gemini-pro"]
+        # Procura versões específicas
+        pro_15 = next((m for m in available if 'gemini-1.5-pro' in m and 'latest' in m), None)
+        if not pro_15: pro_15 = next((m for m in available if 'gemini-1.5-pro' in m), None)
+        
+        flash_15 = next((m for m in available if 'gemini-1.5-flash' in m and 'latest' in m), None)
+        if not flash_15: flash_15 = next((m for m in available if 'gemini-1.5-flash' in m), None)
+        
+        if pro_15: priority_queue.append(pro_15)
+        if flash_15: priority_queue.append(flash_15)
+        
+        # Se não achou os principais, tenta qualquer 'gemini'
+        if not priority_queue:
+            priority_queue = [m for m in available if 'gemini' in m]
+            
+        return priority_queue
+    except:
+        # Lista de segurança absoluta se a API de listagem falhar
+        return ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -199,24 +205,11 @@ with st.sidebar:
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"], label_visibility="collapsed")
     st.divider()
     
-    is_connected, available_models = configure_gemini()
+    is_connected = configure_gemini()
     
-    selected_model_name = None
     if is_connected:
-        st.success("✅ API Conectada")
-        if available_models:
-            # Menu dinâmico: Mostra apenas o que sua conta suporta
-            selected_model_name = st.selectbox("Escolha a IA (Lista Real):", available_models, index=0)
-            
-            # Legenda para ajudar você a achar o "Lite" e o "Experimental"
-            if "8b" in selected_model_name:
-                st.caption("ℹ️ Este é o Gemini 'Lite' (8B).")
-            elif "exp" in selected_model_name:
-                st.caption("ℹ️ Esta é uma versão Experimental (Mais nova).")
-            elif "flash" in selected_model_name:
-                st.caption("ℹ️ Versão Flash (Padrão rápido).")
-        else:
-            st.error("Nenhum modelo encontrado. Verifique se sua chave API tem acesso.")
+        st.markdown(f"<div style='text-align:center;padding:10px;background:#e8f5e9;border-radius:8px;color:#2e7d32;font-size:0.8em'>✅ IA Conectada (Auto)</div>", unsafe_allow_html=True)
+        st.caption("Modo Piloto Automático ativado.")
     else:
         st.error("❌ Verifique a Chave API")
 
@@ -237,21 +230,21 @@ else:
     f1 = c1.file_uploader("Referência", type=["pdf", "docx"], key="f1")
     f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
         
-    if st.button("🚀 INICIAR AUDITORIA"):
-        if f1 and f2 and selected_model_name:
-            with st.spinner(f"Processando com {selected_model_name}..."):
+    if st.button("🚀 INICIAR AUDITORIA (AUTO)"):
+        if f1 and f2 and is_connected:
+            with st.spinner("Lendo arquivos..."):
                 d1 = process_uploaded_file(f1)
                 d2 = process_uploaded_file(f2)
                 gc.collect()
 
             if d1 and d2:
-                # Usa exatamente o nome que veio da lista (adiciona models/ de volta se precisar, a lib geralmente aceita ambos)
-                model_instance = genai.GenerativeModel(selected_model_name)
+                # 1. OBTÉM LISTA DE MODELOS REAIS E ORDENADOS
+                model_queue = get_smart_model_list()
                 
                 final_sections = []
                 final_dates = []
                 success = False
-                last_error = ""
+                used_model = ""
 
                 payload = ["CONTEXTO: Auditoria de Texto Farmacêutico (OCR e Comparação)."]
                 if d1['type'] == 'text': payload.append(f"--- TEXTO ORIGINAL (REFERÊNCIA) ---\n{d1['data']}")
@@ -262,7 +255,7 @@ else:
 
                 secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                 
-                # PROMPT BLINDADO
+                # PROMPT
                 prompt = f"""
                 ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO DE TEXTO.
                 
@@ -294,11 +287,14 @@ else:
                 }}
                 """
                 
-                st.toast("Iniciando auditoria inteligente...", icon="🤖")
+                st.toast("Iniciando auditoria automática...", icon="🤖")
                 
-                max_retries = 3
-                for attempt in range(max_retries):
+                # 2. TENTA A LISTA DE MODELOS EM ORDEM
+                for model_name in model_queue:
                     try:
+                        # st.caption(f"Tentando motor: {model_name}...") # Debug visual opcional
+                        model_instance = genai.GenerativeModel(model_name)
+                        
                         response = model_instance.generate_content(
                             [prompt] + payload,
                             generation_config={
@@ -316,18 +312,20 @@ else:
                             final_sections = norm.get("SECOES", [])
                             final_dates = full_data.get("METADADOS", {}).get("datas", [])
                             success = True
-                            break 
+                            used_model = model_name
+                            break # SUCESSO! Sai do loop.
                             
                     except Exception as e:
-                        last_error = str(e)
-                        if "429" in last_error:
-                            st.toast(f"Cota cheia. Aguardando 10s... ({attempt+1}/{max_retries})", icon="⏳")
-                            time.sleep(10)
-                        else:
-                            # Se for outro erro (404, 500), mostra e para
-                            break
+                        error_msg = str(e)
+                        # Se for 429 (Cota), continua tentando o próximo da lista
+                        if "429" in error_msg:
+                            continue 
+                        # Se for 404 (Não existe na região), continua
+                        if "404" in error_msg:
+                            continue
                 
                 if success:
+                    st.toast(f"Sucesso! Processado por {used_model}", icon="✅")
                     st.divider()
                     cM1, cM2, cM3 = st.columns(3)
                     divs = sum(1 for s in final_sections if "DIVERGENTE" in s['status'])
@@ -342,7 +340,7 @@ else:
                     st.markdown("---")
                     
                     if not final_sections:
-                        st.warning("O documento foi processado, mas nenhuma seção foi encontrada. O PDF pode estar ilegível ou vazio.")
+                        st.warning("O documento foi processado, mas nenhuma seção foi encontrada.")
                     
                     for sec in final_sections:
                         status = sec.get('status', 'OK')
@@ -355,5 +353,5 @@ else:
                             cA.markdown(f"**Referência (Original)**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                             cB.markdown(f"**Candidato (Auditado)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
-                     st.error(f"Erro na execução: {last_error}")
-                     st.warning("Dica: Se o erro for '404', escolha outro modelo na lista. Se for '429', aguarde 1 minuto.")
+                     st.error("Não foi possível processar com nenhum modelo de IA disponível no momento.")
+                     st.info("Pode ser um bloqueio temporário de cota (Erro 429). Aguarde 1 minuto e tente novamente.")
