@@ -92,38 +92,14 @@ SAFETY_SETTINGS = {
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
 def configure_gemini():
-    """Configura API e retorna lista de modelos REAIS."""
+    """Configura API e retorna STATUS."""
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
     except: api_key = os.environ.get("GEMINI_API_KEY")
     
-    if not api_key: return None, []
+    if not api_key: return False
     genai.configure(api_key=api_key)
-    
-    try:
-        # Tenta listar os modelos OFICIAIS da conta
-        model_list = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                model_list.append(m.name)
-        
-        # Filtra lixo e ordena para priorizar o Flash 1.5
-        valid_models = [m for m in model_list if "gemini" in m and "vision" not in m]
-        
-        # Coloca o 1.5 Flash no topo da lista se existir
-        flash_models = [m for m in valid_models if "flash" in m and "1.5" in m]
-        other_models = [m for m in valid_models if m not in flash_models]
-        
-        final_list = flash_models + other_models
-        
-        if not final_list:
-            # Fallback se a lista vier vazia
-            return True, ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
-            
-        return True, final_list
-    except:
-        # Fallback de segurança
-        return True, ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
+    return True
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -200,20 +176,21 @@ with st.sidebar:
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"], label_visibility="collapsed")
     st.divider()
     
-    # Configuração de Modelos Corrigida
-    is_connected, available_models = configure_gemini()
+    is_connected = configure_gemini()
     
     selected_model = None
     if is_connected:
         st.success("✅ API Conectada")
-        if available_models:
-            selected_model = st.selectbox(
-                "Escolha o Cérebro da IA:", 
-                available_models, 
-                index=0 # O código agora força o Flash para o topo, então index 0 é seguro
-            )
-        else:
-            st.error("Nenhum modelo encontrado.")
+        # LISTA FIXA DE MODELOS REAIS (SEM ALUCINAÇÃO)
+        model_options = [
+            "models/gemini-1.5-flash", # Mais rápido e estável
+            "models/gemini-1.5-pro",   # Mais inteligente, mas mais lento
+        ]
+        selected_model = st.selectbox(
+            "Escolha o Cérebro da IA:", 
+            model_options, 
+            index=0
+        )
     else:
         st.error("❌ Verifique a Chave API")
 
@@ -242,12 +219,13 @@ else:
                 gc.collect()
 
             if d1 and d2:
+                # Inicializa o modelo REAL selecionado
                 model_instance = genai.GenerativeModel(selected_model)
                 
                 final_sections = []
                 final_dates = []
                 
-                payload = ["CONTEXTO: Comparação Estrita de Textos (Auditoria)."]
+                payload = ["CONTEXTO: Auditoria Farmacêutica."]
                 if d1['type'] == 'text': payload.append(f"--- TEXTO ORIGINAL (REFERÊNCIA) ---\n{d1['data']}")
                 else: payload.extend(["--- IMAGEM ORIGINAL (REFERÊNCIA) ---"] + d1['data'])
                 
@@ -256,7 +234,7 @@ else:
 
                 secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                 
-                # --- PROMPT BLINDADO ---
+                # PROMPT FIXO E SEGURO
                 prompt = f"""
                 ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO DE TEXTO.
                 
@@ -301,7 +279,7 @@ else:
                             generation_config={
                                 "response_mime_type": "application/json", 
                                 "max_output_tokens": 8192,
-                                "temperature": 0.0
+                                "temperature": 0.0 # Garante que não inventa nada
                             },
                             safety_settings=SAFETY_SETTINGS,
                             request_options={"timeout": 600}
@@ -316,20 +294,13 @@ else:
                             break
                     except Exception as e:
                         last_error = str(e)
-                        # Se for erro 404, não adianta tentar de novo, o modelo não existe
-                        if "404" in last_error or "not found" in last_error.lower():
-                            st.error(f"Erro Fatal: O modelo selecionado ({selected_model}) não existe ou não está disponível na sua conta.")
-                            break
-                        
-                        # Se for erro 429 (Cota), espera
                         if "429" in last_error:
                             st.toast(f"Aguardando servidor... ({attempt+1}/{max_retries})", icon="⏳")
                             time.sleep(30)
                             continue
-                        
-                        # Outros erros
-                        st.error(f"Erro na tentativa {attempt+1}: {last_error}")
-                        break
+                        else:
+                            # Se der erro 404 ou outro, para na hora e mostra
+                            break
                 
                 if success:
                     st.divider()
@@ -346,7 +317,7 @@ else:
                     st.markdown("---")
                     
                     if not final_sections:
-                        st.warning("O documento foi lido, mas nenhuma seção padrão foi encontrada. Verifique se o PDF é legível.")
+                        st.warning("O documento foi lido, mas nenhuma seção padrão foi encontrada.")
                     
                     for sec in final_sections:
                         status = sec.get('status', 'OK')
@@ -358,5 +329,6 @@ else:
                             cA, cB = st.columns(2)
                             cA.markdown(f"**Referência (Original)**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                             cB.markdown(f"**Candidato (Auditado)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
-                elif last_error:
-                     st.error(f"Não foi possível concluir a auditoria. Erro final: {last_error}")
+                else:
+                     st.error(f"Erro ao processar: {last_error}")
+                     st.info("Verifique se o modelo selecionado na barra lateral é 'gemini-1.5-flash'.")
