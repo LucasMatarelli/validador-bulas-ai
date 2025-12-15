@@ -103,37 +103,6 @@ def configure_gemini():
     genai.configure(api_key=api_key)
     return True
 
-def get_real_model_name():
-    """
-    Busca o nome EXATO do modelo disponível na conta do usuário para evitar erro 404.
-    """
-    try:
-        models = genai.list_models()
-        # Filtra apenas modelos que suportam gerar conteúdo
-        names = [m.name for m in models if 'generateContent' in m.supported_generation_methods]
-        
-        # 1. Tenta achar o Flash (melhor custo benefício)
-        # Procura por strings que contenham 'flash' e '1.5'
-        flash = next((n for n in names if 'flash' in n and '1.5' in n), None)
-        if flash: return flash
-
-        # 2. Tenta achar o Pro 1.5
-        pro15 = next((n for n in names if 'pro' in n and '1.5' in n), None)
-        if pro15: return pro15
-        
-        # 3. Tenta o Pro 1.0 (Gemini Pro clássico)
-        pro10 = next((n for n in names if 'gemini-pro' in n), None)
-        if pro10: return pro10
-
-        # 4. Se nada específico for achado, pega o primeiro da lista que seja Gemini
-        any_gemini = next((n for n in names if 'gemini' in n), None)
-        if any_gemini: return any_gemini
-
-        # Fallback final se a listagem falhar
-        return "models/gemini-1.5-flash"
-    except:
-        return "models/gemini-1.5-flash"
-
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
     try:
@@ -234,120 +203,118 @@ else:
         
     if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
         if f1 and f2 and api_configured:
-            # Seleciona o modelo exato disponível na conta
-            model_name = get_real_model_name()
-            # st.caption(f"Usando modelo: {model_name}") # Pode descomentar para debug
+            # FIXAMOS O MODELO 1.5 FLASH (Melhor Cota e Contexto Gigante)
+            model_name = "models/gemini-1.5-flash" 
             
-            with st.spinner("Processando documentos..."):
+            with st.spinner("Lendo documentos..."):
                 d1 = process_uploaded_file(f1)
                 d2 = process_uploaded_file(f2)
                 gc.collect()
 
             if d1 and d2:
+                # Instância do modelo com retry nativo do python client se disponível, senão manual
                 model_instance = genai.GenerativeModel(model_name)
                 
-                # Divisão em partes (Chunks)
-                chunk_size = 4
-                chunks = [lista_secoes[i:i + chunk_size] for i in range(0, len(lista_secoes), chunk_size)]
+                # MODO ÚNICO: Enviamos TUDO de uma vez.
+                # O Gemini 1.5 Flash suporta 1 milhão de tokens, bulas têm ~50k.
+                # Isso evita o erro de múltiplas requisições (429).
                 
                 final_sections = []
                 final_dates = []
-                bar = st.progress(0)
                 
-                payload_base = ["CONTEXTO: Comparação de Bulas Farmacêuticas."]
-                if d1['type'] == 'text': payload_base.append(f"--- DOC REFERÊNCIA ---\n{d1['data']}")
-                else: payload_base.extend(["--- DOC REFERÊNCIA (IMAGENS) ---"] + d1['data'])
+                payload = ["CONTEXTO: Auditoria de Bulas Farmacêuticas (Completa)."]
+                if d1['type'] == 'text': payload.append(f"--- DOC REFERÊNCIA ---\n{d1['data']}")
+                else: payload.extend(["--- DOC REFERÊNCIA (IMAGENS) ---"] + d1['data'])
                 
-                if d2['type'] == 'text': payload_base.append(f"--- DOC CANDIDATO ---\n{d2['data']}")
-                else: payload_base.extend(["--- DOC CANDIDATO (IMAGENS) ---"] + d2['data'])
+                if d2['type'] == 'text': payload.append(f"--- DOC CANDIDATO ---\n{d2['data']}")
+                else: payload.extend(["--- DOC CANDIDATO (IMAGENS) ---"] + d2['data'])
 
-                for i, chunk in enumerate(chunks):
-                    # Delay inicial para evitar sobrecarga
-                    if i > 0: time.sleep(2)
+                secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
+                
+                prompt = f"""
+                Você é um Auditor Farmacêutico Sênior. Sua tarefa é AUDITAR a bula completa de uma única vez.
+                
+                SEÇÕES PARA ANÁLISE (Extraia e Compare TODAS):
+                {secoes_str}
+                
+                REGRAS OBRIGATÓRIAS:
+                1. Extraia o texto do Doc Referência e compare com o Doc Candidato.
+                2. Use tags HTML no texto do 'bel' (Candidato) para apontar erros:
+                   - Palavras diferentes/extras/faltantes: <mark class='diff'>TEXTO AQUI</mark>
+                   - Erros de ortografia/gramática: <mark class='ort'>ERRO AQUI</mark>
+                3. Procure a Data de Aprovação da Anvisa (rodapé ou cabeçalho) e extraia no campo 'datas'.
+                
+                SAÍDA JSON (Mantenha a estrutura estrita):
+                {{
+                    "METADADOS": {{ "datas": ["dd/mm/aaaa"] }},
+                    "SECOES": [
+                        {{ "titulo": "NOME DA SEÇÃO", "ref": "Texto completo...", "bel": "Texto com <mark>...", "status": "OK" ou "DIVERGENTE" }}
+                    ]
+                }}
+                """
+                
+                st.toast("Enviando para análise (pode levar uns segundos)...", icon="🚀")
+                
+                # --- TENTATIVA ÚNICA COM RETRY PARA O BLOCO GRANDE ---
+                max_retries = 3
+                success = False
+                
+                for attempt in range(max_retries):
+                    try:
+                        # Timeout maior para processar texto grande
+                        response = model_instance.generate_content(
+                            [prompt] + payload,
+                            generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192},
+                            safety_settings=SAFETY_SETTINGS,
+                            request_options={"timeout": 600} 
+                        )
+                        full_data = extract_json(response.text)
                         
-                    st.toast(f"Analisando parte {i+1}/{len(chunks)}...", icon="⏳")
-                    secoes_str = "\n".join([f"- {s}" for s in chunk])
-                    
-                    prompt = f"""
-                    Você é um Auditor Farmacêutico. Compare APENAS as seções listadas abaixo.
-                    
-                    SEÇÕES ALVO DESTA ETAPA:
-                    {secoes_str}
-                    
-                    REGRAS:
-                    1. Compare Doc Referência vs Doc Candidato.
-                    2. Diferenças de texto (palavras extras/faltantes/trocadas): Envolva no 'bel' com <mark class='diff'>TEXTO AQUI</mark>.
-                    3. Erros de português/ortografia: Envolva no 'bel' com <mark class='ort'>ERRO AQUI</mark>.
-                    4. Se encontrar datas de aprovação (Anvisa) no rodapé, extraia.
-                    
-                    SAÍDA JSON:
-                    {{
-                        "METADADOS": {{ "datas": [] }},
-                        "SECOES": [
-                            {{ "titulo": "TITULO", "ref": "Texto Ref", "bel": "Texto Cand com <mark>...", "status": "OK" ou "DIVERGENTE" }}
-                        ]
-                    }}
-                    """
-                    
-                    # --- LOOP DE RETENTATIVA PARA ERRO 429 ---
-                    max_retries = 3
-                    retry_delay = 30 # Segundos de espera
-                    
-                    for attempt in range(max_retries):
-                        try:
-                            response = model_instance.generate_content(
-                                [prompt] + payload_base,
-                                generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192},
-                                safety_settings=SAFETY_SETTINGS
-                            )
-                            part_data = extract_json(response.text)
-                            if part_data:
-                                norm = normalize_sections(part_data, chunk)
-                                final_sections.extend(norm.get("SECOES", []))
-                                if part_data.get("METADADOS", {}).get("datas"):
-                                    final_dates.extend(part_data["METADADOS"]["datas"])
-                            break # Sucesso
-                            
-                        except Exception as e:
-                            # Se for erro de cota (429) ou erro temporário (503)
-                            if "429" in str(e) or "quota" in str(e).lower() or "503" in str(e):
-                                if attempt < max_retries - 1:
-                                    st.toast(f"Aguardando API ({retry_delay}s)...", icon="⏳")
-                                    time.sleep(retry_delay)
-                                    continue
-                            
-                            # Se for outro erro ou acabou as tentativas
-                            st.error(f"Erro na parte {i+1}: {str(e)}")
+                        if full_data:
+                            # Normaliza e exibe
+                            norm = normalize_sections(full_data, lista_secoes)
+                            final_sections = norm.get("SECOES", [])
+                            final_dates = full_data.get("METADADOS", {}).get("datas", [])
+                            success = True
                             break
+                    except Exception as e:
+                        if "429" in str(e) or "quota" in str(e).lower():
+                            st.toast(f"Servidor ocupado. Tentando novamente em 30s... ({attempt+1}/{max_retries})", icon="⏳")
+                            time.sleep(30)
+                            continue
+                        else:
+                            st.error(f"Erro na análise: {str(e)}")
+                            break
+                
+                if success:
+                    st.divider()
                     
-                    bar.progress((i + 1) / len(chunks))
-                
-                bar.empty()
-                st.divider()
-                
-                # --- EXIBIÇÃO FINAL ---
-                cM1, cM2, cM3 = st.columns(3)
-                divs = sum(1 for s in final_sections if "DIVERGENTE" in s['status'])
-                total = len(final_sections)
-                score = 100 - int((divs/max(1, total))*100) if total > 0 else 0
-                
-                cM1.metric("Score Aprovação", f"{score}%")
-                cM2.metric("Seções Analisadas", f"{total}/{len(lista_secoes)}")
-                data_anvisa = next((d for d in final_dates if d), "Não identificada")
-                cM3.metric("Data Anvisa", str(data_anvisa))
-                
-                st.markdown("---")
-                
-                if not final_sections:
-                    st.warning("Não foi possível extrair nenhuma seção. Verifique se o arquivo é legível.")
-                
-                for sec in final_sections:
-                    status = sec.get('status', 'OK')
-                    icon = "✅"
-                    if "DIVERGENTE" in status: icon = "❌"
-                    elif "FALTANTE" in status: icon = "🚨"
+                    # --- EXIBIÇÃO FINAL ---
+                    cM1, cM2, cM3 = st.columns(3)
+                    divs = sum(1 for s in final_sections if "DIVERGENTE" in s['status'])
+                    total = len(final_sections)
+                    score = 100 - int((divs/max(1, total))*100) if total > 0 else 0
                     
-                    with st.expander(f"{icon} {sec['titulo']} - {status}"):
-                        cA, cB = st.columns(2)
-                        cA.markdown(f"**Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                        cB.markdown(f"**Candidato (Auditoria)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                    cM1.metric("Score Aprovação", f"{score}%")
+                    cM2.metric("Seções Analisadas", f"{total}/{len(lista_secoes)}")
+                    data_anvisa = next((d for d in final_dates if d), "Não identificada")
+                    cM3.metric("Data Anvisa", str(data_anvisa))
+                    
+                    st.markdown("---")
+                    
+                    if not final_sections:
+                        st.warning("A IA processou o documento mas não retornou seções no formato esperado. Verifique a qualidade do PDF.")
+                    
+                    for sec in final_sections:
+                        status = sec.get('status', 'OK')
+                        icon = "✅"
+                        if "DIVERGENTE" in status: icon = "❌"
+                        elif "FALTANTE" in status: icon = "🚨"
+                        
+                        with st.expander(f"{icon} {sec['titulo']} - {status}"):
+                            cA, cB = st.columns(2)
+                            cA.markdown(f"**Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                            cB.markdown(f"**Candidato (Auditoria)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                else:
+                    if not final_sections:
+                        st.error("Falha ao processar o documento após 3 tentativas.")
