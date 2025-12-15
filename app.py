@@ -27,7 +27,6 @@ st.markdown("""
     .main { background-color: #f4f6f8; }
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    /* CARTÕES PRINCIPAIS */
     .stCard {
         background-color: white; padding: 25px; border-radius: 15px;
         box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px;
@@ -35,15 +34,14 @@ st.markdown("""
     }
     .stCard:hover { transform: translateY(-5px); border-color: #55a68e; }
     
-    /* MARCADORES DE TEXTO (Destaques) */
+    /* MARCADORES DE TEXTO */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; text-decoration: none; }
     mark.ort { background-color: #ffc9c9; color: #9c0000; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; font-weight: bold; }
     
-    /* BOTÃO */
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
     .stButton>button:hover { background-color: #448c75; }
 
-    /* --- MENU LATERAL OTIMIZADO --- */
+    /* MENU LATERAL */
     section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eee; }
     section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] { gap: 10px; }
     section[data-testid="stSidebar"] .stRadio label {
@@ -94,14 +92,27 @@ SAFETY_SETTINGS = {
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
 def configure_gemini():
-    """Apenas configura a API Key."""
+    """Configura API e retorna lista de modelos disponíveis."""
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
     except: api_key = os.environ.get("GEMINI_API_KEY")
     
-    if not api_key: return False
+    if not api_key: return None, []
     genai.configure(api_key=api_key)
-    return True
+    
+    # Lista modelos reais da conta do usuário para evitar erro 404
+    try:
+        model_list = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                model_list.append(m.name)
+        
+        # Ordena para mostrar os melhores primeiro (Pro > Flash)
+        model_list.sort(key=lambda x: "flash" in x, reverse=False) 
+        return True, model_list
+    except:
+        # Lista de fallback se a API falhar em listar
+        return True, ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-1.0-pro"]
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -128,8 +139,8 @@ def process_uploaded_file(uploaded_file):
             images = []
             limit = min(8, len(doc))
             for i in range(limit):
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                pix = doc[i].get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) # Alta resolução para leitura
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             doc.close(); gc.collect()
@@ -178,9 +189,22 @@ with st.sidebar:
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"], label_visibility="collapsed")
     st.divider()
     
-    api_configured = configure_gemini()
-    if api_configured:
-        st.markdown(f"<div style='text-align:center;padding:10px;background:#e8f5e9;border-radius:8px;color:#2e7d32;font-size:0.8em'>✅ API Conectada</div>", unsafe_allow_html=True)
+    # --- SELETOR DE MODELO (SOLUÇÃO PARA O ERRO 404) ---
+    is_connected, available_models = configure_gemini()
+    
+    selected_model = None
+    if is_connected:
+        st.success("✅ API Conectada")
+        if available_models:
+            # Permite o usuário escolher o modelo (incluindo Gemini 3/2.0 se disponível)
+            selected_model = st.selectbox(
+                "Escolha o Cérebro da IA:", 
+                available_models, 
+                index=0,
+                help="Se der erro, tente trocar para um modelo 'Flash' ou 'Pro'."
+            )
+        else:
+            st.error("Nenhum modelo encontrado na conta.")
     else:
         st.error("❌ Verifique a Chave API")
 
@@ -201,109 +225,114 @@ else:
     f1 = c1.file_uploader("Referência", type=["pdf", "docx"], key="f1")
     f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
         
-    if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
-        if f1 and f2 and api_configured:
-            # FIXAMOS O MODELO 1.5 FLASH (Melhor Cota e Contexto Gigante)
-            model_name = "models/gemini-1.5-flash" 
-            
-            with st.spinner("Lendo documentos..."):
+    if st.button("🚀 INICIAR AUDITORIA"):
+        if f1 and f2 and selected_model:
+            with st.spinner(f"Lendo arquivos com {selected_model}..."):
                 d1 = process_uploaded_file(f1)
                 d2 = process_uploaded_file(f2)
                 gc.collect()
 
             if d1 and d2:
-                # Instância do modelo com retry nativo do python client se disponível, senão manual
-                model_instance = genai.GenerativeModel(model_name)
-                
-                # MODO ÚNICO: Enviamos TUDO de uma vez.
-                # O Gemini 1.5 Flash suporta 1 milhão de tokens, bulas têm ~50k.
-                # Isso evita o erro de múltiplas requisições (429).
+                model_instance = genai.GenerativeModel(selected_model)
                 
                 final_sections = []
                 final_dates = []
                 
-                payload = ["CONTEXTO: Auditoria de Bulas Farmacêuticas (Completa)."]
-                if d1['type'] == 'text': payload.append(f"--- DOC REFERÊNCIA ---\n{d1['data']}")
-                else: payload.extend(["--- DOC REFERÊNCIA (IMAGENS) ---"] + d1['data'])
+                # Payload único para evitar bloqueio de taxa (429)
+                payload = ["CONTEXTO: Comparação Estrita de Textos (Auditoria)."]
+                if d1['type'] == 'text': payload.append(f"--- TEXTO ORIGINAL (REFERÊNCIA) ---\n{d1['data']}")
+                else: payload.extend(["--- IMAGEM ORIGINAL (REFERÊNCIA) ---"] + d1['data'])
                 
-                if d2['type'] == 'text': payload.append(f"--- DOC CANDIDATO ---\n{d2['data']}")
-                else: payload.extend(["--- DOC CANDIDATO (IMAGENS) ---"] + d2['data'])
+                if d2['type'] == 'text': payload.append(f"--- TEXTO CANDIDATO (BELFAR) ---\n{d2['data']}")
+                else: payload.extend(["--- IMAGEM CANDIDATO (BELFAR) ---"] + d2['data'])
 
                 secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                 
+                # --- PROMPT ANTIALUCINAÇÃO ---
                 prompt = f"""
-                Você é um Auditor Farmacêutico Sênior. Sua tarefa é AUDITAR a bula completa de uma única vez.
+                ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO DE TEXTO (SEM CRIATIVIDADE).
                 
-                SEÇÕES PARA ANÁLISE (Extraia e Compare TODAS):
+                SUA MISSÃO:
+                1. Ler o texto da IMAGEM ORIGINAL e da IMAGEM CANDIDATO.
+                2. Extrair o texto EXATAMENTE como está escrito (IPSIS LITTERIS).
+                3. NÃO corrija erros de português. NÃO complete frases. NÃO invente palavras.
+                4. Se a palavra na imagem for "caza", escreva "caza". Se for "casa", escreva "casa".
+                
+                TAREFA DE COMPARAÇÃO:
+                Compare o texto extraído das seções abaixo.
+                Se houver QUALQUER diferença (letra, palavra, número):
+                - Envolva a diferença no texto do Candidato com <mark class='diff'>TEXTO ERRADO</mark>.
+                - Se parecer erro ortográfico, envolva com <mark class='ort'>ERRO</mark>.
+                
+                SEÇÕES ALVO:
                 {secoes_str}
                 
-                REGRAS OBRIGATÓRIAS:
-                1. Extraia o texto do Doc Referência e compare com o Doc Candidato.
-                2. Use tags HTML no texto do 'bel' (Candidato) para apontar erros:
-                   - Palavras diferentes/extras/faltantes: <mark class='diff'>TEXTO AQUI</mark>
-                   - Erros de ortografia/gramática: <mark class='ort'>ERRO AQUI</mark>
-                3. Procure a Data de Aprovação da Anvisa (rodapé ou cabeçalho) e extraia no campo 'datas'.
-                
-                SAÍDA JSON (Mantenha a estrutura estrita):
+                SAÍDA JSON ESTRITA:
                 {{
                     "METADADOS": {{ "datas": ["dd/mm/aaaa"] }},
                     "SECOES": [
-                        {{ "titulo": "NOME DA SEÇÃO", "ref": "Texto completo...", "bel": "Texto com <mark>...", "status": "OK" ou "DIVERGENTE" }}
+                        {{ 
+                           "titulo": "TITULO EXATO", 
+                           "ref": "Texto copiado fielmente da Referência...", 
+                           "bel": "Texto copiado fielmente do Candidato com <mark>...", 
+                           "status": "OK" ou "DIVERGENTE" 
+                        }}
                     ]
                 }}
                 """
                 
-                st.toast("Enviando para análise (pode levar uns segundos)...", icon="🚀")
+                st.toast("Processando... Por favor aguarde.", icon="🤖")
                 
-                # --- TENTATIVA ÚNICA COM RETRY PARA O BLOCO GRANDE ---
+                # Loop de tentativa para erros de conexão
                 max_retries = 3
                 success = False
                 
                 for attempt in range(max_retries):
                     try:
-                        # Timeout maior para processar texto grande
                         response = model_instance.generate_content(
                             [prompt] + payload,
-                            generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192},
+                            generation_config={
+                                "response_mime_type": "application/json", 
+                                "max_output_tokens": 8192,
+                                "temperature": 0.0  # ZERO CRIATIVIDADE (IMPORTANTE!)
+                            },
                             safety_settings=SAFETY_SETTINGS,
-                            request_options={"timeout": 600} 
+                            request_options={"timeout": 600}
                         )
                         full_data = extract_json(response.text)
                         
                         if full_data:
-                            # Normaliza e exibe
                             norm = normalize_sections(full_data, lista_secoes)
                             final_sections = norm.get("SECOES", [])
                             final_dates = full_data.get("METADADOS", {}).get("datas", [])
                             success = True
                             break
                     except Exception as e:
-                        if "429" in str(e) or "quota" in str(e).lower():
-                            st.toast(f"Servidor ocupado. Tentando novamente em 30s... ({attempt+1}/{max_retries})", icon="⏳")
+                        if "429" in str(e):
+                            st.toast(f"Aguardando servidor... ({attempt+1}/{max_retries})", icon="⏳")
                             time.sleep(30)
                             continue
                         else:
-                            st.error(f"Erro na análise: {str(e)}")
+                            st.error(f"Erro no modelo {selected_model}: {str(e)}")
+                            st.info("Dica: Tente selecionar outro modelo no menu lateral.")
                             break
                 
                 if success:
                     st.divider()
-                    
-                    # --- EXIBIÇÃO FINAL ---
                     cM1, cM2, cM3 = st.columns(3)
                     divs = sum(1 for s in final_sections if "DIVERGENTE" in s['status'])
                     total = len(final_sections)
                     score = 100 - int((divs/max(1, total))*100) if total > 0 else 0
                     
                     cM1.metric("Score Aprovação", f"{score}%")
-                    cM2.metric("Seções Analisadas", f"{total}/{len(lista_secoes)}")
-                    data_anvisa = next((d for d in final_dates if d), "Não identificada")
+                    cM2.metric("Seções", f"{total}/{len(lista_secoes)}")
+                    data_anvisa = next((d for d in final_dates if d), "N/A")
                     cM3.metric("Data Anvisa", str(data_anvisa))
                     
                     st.markdown("---")
                     
                     if not final_sections:
-                        st.warning("A IA processou o documento mas não retornou seções no formato esperado. Verifique a qualidade do PDF.")
+                        st.warning("O documento foi lido, mas nenhuma seção padrão foi encontrada. Verifique se o PDF é legível.")
                     
                     for sec in final_sections:
                         status = sec.get('status', 'OK')
@@ -313,8 +342,5 @@ else:
                         
                         with st.expander(f"{icon} {sec['titulo']} - {status}"):
                             cA, cB = st.columns(2)
-                            cA.markdown(f"**Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                            cB.markdown(f"**Candidato (Auditoria)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
-                else:
-                    if not final_sections:
-                        st.error("Falha ao processar o documento após 3 tentativas.")
+                            cA.markdown(f"**Referência (Original)**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                            cB.markdown(f"**Candidato (Auditado)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
