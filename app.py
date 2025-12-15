@@ -91,13 +91,38 @@ SAFETY_SETTINGS = {
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
 def configure_gemini():
+    """Conecta e BUSCA A LISTA REAL DE MODELOS DA SUA CONTA."""
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
     except: api_key = os.environ.get("GEMINI_API_KEY")
     
-    if not api_key: return False
+    if not api_key: return False, []
     genai.configure(api_key=api_key)
-    return True
+    
+    try:
+        # Pede para o Google: "Quais modelos eu tenho acesso?"
+        all_models = list(genai.list_models())
+        valid_models = []
+        for m in all_models:
+            # Filtra apenas os que geram texto
+            if 'generateContent' in m.supported_generation_methods:
+                # Remove o prefixo 'models/' para ficar limpo no menu
+                name = m.name.replace("models/", "")
+                valid_models.append(name)
+        
+        # ORDENAÇÃO INTELIGENTE (Prioriza o que você pediu)
+        # Tenta jogar Experimental, 8b (Lite) para o topo
+        valid_models.sort(key=lambda x: (
+            "gemini-2" in x,     # Tenta achar Gemini 2.0 (futuro 2.5/3)
+            "exp" in x,          # Tenta achar Experimental
+            "8b" in x,           # Tenta achar o Lite (8b)
+            "flash" in x         # Flash depois
+        ), reverse=True)
+        
+        return True, valid_models
+    except Exception as e:
+        # Se falhar a listagem, usa lista de segurança
+        return True, ["gemini-1.5-flash-8b", "gemini-1.5-flash", "gemini-pro"]
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -174,19 +199,24 @@ with st.sidebar:
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"], label_visibility="collapsed")
     st.divider()
     
-    is_connected = configure_gemini()
+    is_connected, available_models = configure_gemini()
     
-    selected_model = None
+    selected_model_name = None
     if is_connected:
         st.success("✅ API Conectada")
-        # LISTA LIMPA (SEM 'models/') para evitar erro 404
-        model_options = [
-            "gemini-1.5-flash", 
-            "gemini-1.5-pro",
-            "gemini-1.5-flash-latest",
-            "gemini-1.5-pro-latest"
-        ]
-        selected_model = st.selectbox("Escolha o Cérebro da IA:", model_options, index=0)
+        if available_models:
+            # Menu dinâmico: Mostra apenas o que sua conta suporta
+            selected_model_name = st.selectbox("Escolha a IA (Lista Real):", available_models, index=0)
+            
+            # Legenda para ajudar você a achar o "Lite" e o "Experimental"
+            if "8b" in selected_model_name:
+                st.caption("ℹ️ Este é o Gemini 'Lite' (8B).")
+            elif "exp" in selected_model_name:
+                st.caption("ℹ️ Esta é uma versão Experimental (Mais nova).")
+            elif "flash" in selected_model_name:
+                st.caption("ℹ️ Versão Flash (Padrão rápido).")
+        else:
+            st.error("Nenhum modelo encontrado. Verifique se sua chave API tem acesso.")
     else:
         st.error("❌ Verifique a Chave API")
 
@@ -208,18 +238,15 @@ else:
     f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
         
     if st.button("🚀 INICIAR AUDITORIA"):
-        if f1 and f2 and selected_model:
-            with st.spinner(f"Processando arquivos..."):
+        if f1 and f2 and selected_model_name:
+            with st.spinner(f"Processando com {selected_model_name}..."):
                 d1 = process_uploaded_file(f1)
                 d2 = process_uploaded_file(f2)
                 gc.collect()
 
             if d1 and d2:
-                # LISTA DE TENTATIVAS (Se o escolhido falhar, tenta os outros)
-                backup_models = [selected_model, "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
-                # Remove duplicatas mantendo ordem
-                model_queue = []
-                [model_queue.append(x) for x in backup_models if x not in model_queue]
+                # Usa exatamente o nome que veio da lista (adiciona models/ de volta se precisar, a lib geralmente aceita ambos)
+                model_instance = genai.GenerativeModel(selected_model_name)
                 
                 final_sections = []
                 final_dates = []
@@ -269,12 +296,9 @@ else:
                 
                 st.toast("Iniciando auditoria inteligente...", icon="🤖")
                 
-                # TENTA CADA MODELO DA FILA ATÉ FUNCIONAR
-                for model_name in model_queue:
+                max_retries = 3
+                for attempt in range(max_retries):
                     try:
-                        # st.write(f"Tentando com modelo: {model_name}") # Debug
-                        model_instance = genai.GenerativeModel(model_name)
-                        
                         response = model_instance.generate_content(
                             [prompt] + payload,
                             generation_config={
@@ -292,18 +316,16 @@ else:
                             final_sections = norm.get("SECOES", [])
                             final_dates = full_data.get("METADADOS", {}).get("datas", [])
                             success = True
-                            st.success(f"Sucesso usando o modelo: {model_name}")
-                            break # Conseguiu, sai do loop
+                            break 
                             
                     except Exception as e:
                         last_error = str(e)
-                        # Se for erro de cota (429), espera um pouco antes de tentar o próximo
                         if "429" in last_error:
-                            st.toast(f"Cota excedida no modelo {model_name}. Tentando próximo...", icon="⏳")
-                            time.sleep(5)
+                            st.toast(f"Cota cheia. Aguardando 10s... ({attempt+1}/{max_retries})", icon="⏳")
+                            time.sleep(10)
                         else:
-                            # Se for 404 ou outro erro, tenta o próximo imediatamente
-                            continue
+                            # Se for outro erro (404, 500), mostra e para
+                            break
                 
                 if success:
                     st.divider()
@@ -333,5 +355,5 @@ else:
                             cA.markdown(f"**Referência (Original)**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                             cB.markdown(f"**Candidato (Auditado)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
-                     st.error(f"Falha em todos os modelos. Último erro: {last_error}")
-                     st.info("Tente usar arquivos menores ou aguarde 1 minuto para liberar sua cota da API.")
+                     st.error(f"Erro na execução: {last_error}")
+                     st.warning("Dica: Se o erro for '404', escolha outro modelo na lista. Se for '429', aguarde 1 minuto.")
