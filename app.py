@@ -40,9 +40,9 @@ st.markdown("""
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
     .stButton>button:hover { background-color: #448c75; }
     
-    /* MARCADORES DE TEXTO */
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
-    mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
+    /* MARCADORES DE TEXTO (Isso será usado pela IA) */
+    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; text-decoration: none; }
+    mark.ort { background-color: #ffc9c9; color: #9c0000; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; font-weight: bold; }
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
 
     /* --- MENU LATERAL (SIDEBAR) --- */
@@ -191,27 +191,21 @@ def extract_json(text):
     """
     cleaned = clean_json_response(text)
     
-    # 1. Tenta parse direto (Ideal)
     try:
         return json.loads(cleaned, strict=False)
     except:
         pass
 
-    # 2. Tenta Recuperação de Truncamento (Salva-vidas)
-    # Se o texto foi cortado (erro comum em bulas longas), tentamos fechar o JSON 
-    # no último objeto válido encontrado na lista de seções.
+    # Salva-vidas para corte abrupto (tenta fechar o JSON na marra)
     try:
         if '"SECOES":' in cleaned:
-            # Encontra o último divisor de objeto válido "},"
             last_valid_comma = cleaned.rfind("},")
             if last_valid_comma != -1:
-                # Corta o lixo final e fecha a estrutura manualmente
                 fixed_json_str = cleaned[:last_valid_comma+1] + "]}"
                 return json.loads(fixed_json_str, strict=False)
     except:
         pass
 
-    # 3. Fallback: Tenta encontrar o maior bloco {...} fechado possível
     try:
         start = cleaned.find('{')
         end = cleaned.rfind('}') + 1
@@ -224,19 +218,14 @@ def extract_json(text):
     return None
 
 def normalize_sections(data_json, allowed_titles):
-    """
-    Remove seções inventadas pela IA que não estão na lista permitida.
-    """
     if not data_json or "SECOES" not in data_json:
         return data_json
     
     clean_sections = []
-    # Normaliza a lista permitida para comparação (upper case e strip)
     allowed_set = {t.strip().upper() for t in allowed_titles}
     
     for sec in data_json["SECOES"]:
         titulo_ia = sec.get("titulo", "").strip().upper()
-        
         if titulo_ia in allowed_set:
             clean_sections.append(sec)
         else:
@@ -245,7 +234,7 @@ def normalize_sections(data_json, allowed_titles):
     data_json["SECOES"] = clean_sections
     return data_json
 
-# ----------------- UI LATERAL (MENU OTIMIZADO) -----------------
+# ----------------- UI LATERAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.markdown("<h2 style='text-align: center; color: #55a68e; margin-bottom: 20px;'>Validador de Bulas</h2>", unsafe_allow_html=True)
@@ -304,52 +293,60 @@ else:
                         
                         payload = ["CONTEXTO: Auditoria Farmacêutica (Layout Complexo em Colunas)."]
                         
-                        if d1['type'] == 'text': payload.append(f"--- DOC 1 (TEXTO) ---\n{d1['data']}")
-                        else: payload.append("--- DOC 1 (IMAGENS) ---"); payload.extend(d1['data'])
+                        if d1['type'] == 'text': payload.append(f"--- DOC 1 (REFERÊNCIA) ---\n{d1['data']}")
+                        else: payload.append("--- DOC 1 (REFERÊNCIA/IMAGEM) ---"); payload.extend(d1['data'])
                         
-                        if d2['type'] == 'text': payload.append(f"--- DOC 2 (TEXTO) ---\n{d2['data']}")
-                        else: payload.append("--- DOC 2 (IMAGENS) ---"); payload.extend(d2['data'])
+                        if d2['type'] == 'text': payload.append(f"--- DOC 2 (CANDIDATO/BELFAR) ---\n{d2['data']}")
+                        else: payload.append("--- DOC 2 (CANDIDATO/IMAGEM) ---"); payload.extend(d2['data'])
 
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
                         # ==========================================================
-                        # PROMPT BLINDADO
+                        # PROMPT BLINDADO E COM DESTAQUES (AMARELO/VERMELHO)
                         # ==========================================================
                         prompt = f"""
-                        Você é um Auditor de Qualidade. Sua tarefa é extrair e comparar o texto de bulas.
+                        Você é um Auditor de Qualidade Farmacêutica Sênior. Sua tarefa é extrair e comparar minuciosamente as bulas.
                         
-                        ⚠️ REGRA DE OURO - ZERO ALUCINAÇÃO:
-                        - NÃO ADIVINHE PALAVRAS que estejam borradas ou cortadas.
-                        - Extraia o texto EXATAMENTE como está na imagem/texto (ipsis litteris).
-                        - Se houver erro de digitação no original, MANTENHA O ERRO. Não corrija.
+                        OBJETIVOS:
+                        1. Extrair TODO o conteúdo de TODAS as seções listadas abaixo. NÃO PARE NO MEIO.
+                        2. Comparar o texto do Doc 1 (Ref) com o Doc 2 (Candidato).
+                        3. Extrair a Data de Aprovação da Anvisa (geralmente no rodapé).
                         
-                        SEÇÕES PERMITIDAS (Ignorar qualquer outra):
+                        SEÇÕES OBRIGATÓRIAS (Extrair todas):
                         {secoes_str}
                         
-                        ⚠️ INSTRUÇÕES CRÍTICAS DE LEITURA:
-                        1. **COLUNAS:** O texto está em colunas. Se uma frase termina abruptamente no fim de uma coluna (ex: "ou", "para"), ela continua no topo da próxima. Não quebre o parágrafo.
+                        REGRAS DE COMPARAÇÃO E DESTAQUE:
+                        - Ignore apenas diferenças de espaçamento (quebras de linha, espaços duplos).
+                        - Se houver qualquer palavra diferente, palavra a mais ou palavra faltando no Candidato:
+                          > STATUS: "DIVERGENTE"
+                          > AÇÃO: No texto do 'bel' (Candidato), envolva a parte divergente ou extra com a tag HTML: <mark class='diff'>TEXTO DIVERGENTE AQUI</mark>.
+                        - Se houver erro de português (ortografia) no Candidato:
+                          > STATUS: "DIVERGENTE"
+                          > AÇÃO: Envolva o erro com a tag: <mark class='ort'>ERRO AQUI</mark>.
                         
-                        2. **ATENÇÃO / LACTOSE:** Blocos de aviso ("Atenção: Contém lactose", "Atenção: Contém açúcar") que aparecem soltos no meio ou fim da coluna PERTENCEM à seção de texto imediatamente acima deles. Junte-os.
-                        
-                        3. **SEM ALUCINAÇÃO:** - NÃO crie títulos novos (ex: "Composição Adulto"). Use apenas os da lista.
-                           - NÃO repita o título dentro do conteúdo.
+                        DATA DA ANVISA:
+                        - Procure por "Aprovado em", "Data da aprovação", ou datas no rodapé (Ex: 31/07/2025). Coloque no campo 'datas'.
 
-                        SAÍDA JSON (Estrita): 
+                        SAÍDA JSON OBRIGATÓRIA (Use aspas duplas escapadas dentro do texto): 
                         {{ 
-                            "METADADOS": {{ "score": 0, "datas": [] }}, 
+                            "METADADOS": {{ "score": 100, "datas": ["dd/mm/aaaa"] }}, 
                             "SECOES": [ 
                                 {{ 
-                                    "titulo": "EXATAMENTE UM TÍTULO DA LISTA", 
-                                    "ref": "Texto completo...", 
-                                    "bel": "Texto completo...", 
-                                    "status": "OK" 
+                                    "titulo": "TÍTULO DA SEÇÃO", 
+                                    "ref": "Texto original completo...", 
+                                    "bel": "Texto candidato com <mark class='diff'>divergências em amarelo</mark> e <mark class='ort'>erros em vermelho</mark>...", 
+                                    "status": "OK" ou "DIVERGENTE" 
                                 }} 
                             ] 
                         }}
+                        
+                        IMPORTANTE:
+                        - Processe o documento ATÉ O FINAL (Dizeres Legais).
+                        - Não abrevie textos longos.
                         """
 
                         # ==============================================================
-                        # SELEÇÃO DE MODELOS (BLOQUEIO DE EXPERIMENTAL E LITE)
+                        # SELEÇÃO DE MODELOS (SEM LITE PARA NÃO CORTAR)
                         # ==============================================================
                         response = None
                         sucesso = False
@@ -360,11 +357,11 @@ else:
                             available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                             
                             def sort_priority(name):
-                                # Penaliza "lite" (tende a cortar texto) e "experimental"
-                                if "lite" in name: return 90 
+                                # BANIMENTO DE LITE E EXPERIMENTAL (Causadores de corte e alucinação)
+                                if "lite" in name: return 999 
                                 if "robotics" in name or "experimental" in name or "preview" in name: return 100 
 
-                                # Prioriza modelos Pro e Flash padrão
+                                # Prioriza modelos Robustos (Pro > Flash padrão)
                                 if "gemini-1.5-pro" in name and "002" in name: return 0
                                 if "gemini-1.5-pro" in name: return 1
                                 if "gemini-3" in name: return 2
@@ -372,34 +369,36 @@ else:
                                 return 50
                             
                             available_models.sort(key=sort_priority)
+                            # Remove duplicatas e purga os Lites da lista se possível
                             seen = set()
                             available_models = [x for x in available_models if not (x in seen or seen.add(x))]
+                            # Filtro final para remover Lite se tiver outras opções
+                            filtered = [x for x in available_models if "lite" not in x]
+                            if filtered: available_models = filtered
                             
                             if not available_models: available_models = ["models/gemini-1.5-flash"]
                         except:
                             available_models = ["models/gemini-1.5-flash"]
 
-                        st.caption(f"Processando com modelo estável...")
+                        st.caption(f"Processando auditoria completa (pode levar alguns segundos)...")
 
                         for model_name in available_models:
-                            # Pula modelos instáveis se houver opção melhor
-                            if ("robotics" in model_name or "preview" in model_name) and len(available_models) > 1 and not sucesso:
-                                if available_models.index(model_name) < len(available_models) - 1:
-                                    continue
+                            if ("lite" in model_name or "experimental" in model_name) and len(available_models) > 1 and not sucesso:
+                                continue
                                     
                             try:
                                 model_run = genai.GenerativeModel(model_name)
-                                # Token alto para tentar evitar corte
+                                # Token máximo 8192 para garantir que leia até os DIZERES LEGAIS
                                 response = model_run.generate_content(
                                     [prompt] + payload,
                                     generation_config={
                                         "response_mime_type": "application/json",
-                                        "max_output_tokens": 8192
+                                        "max_output_tokens": 8192 
                                     },
                                     safety_settings=SAFETY_SETTINGS
                                 )
                                 sucesso = True
-                                st.success(f"✅ Concluído via: {model_name}")
+                                st.success(f"✅ Análise concluída via: {model_name}")
                                 break 
                             except Exception as e:
                                 error_log.append(f"{model_name}: {str(e)}")
@@ -418,27 +417,29 @@ else:
                                     cM1, cM2, cM3 = st.columns(3)
                                     cM1.metric("Score", f"{meta.get('score',0)}%")
                                     cM2.metric("Seções", len(data.get("SECOES", [])))
-                                    cM3.metric("Datas", str(meta.get("datas", [])))
+                                    # Data da Anvisa
+                                    datas_anvisa = meta.get("datas", [])
+                                    display_date = datas_anvisa[0] if datas_anvisa else "Não encontrada"
+                                    cM3.metric("Data Anvisa", str(display_date))
                                     st.divider()
                                     
                                     if len(data.get("SECOES", [])) == 0:
-                                        st.warning("Nenhuma seção válida identificada.")
+                                        st.warning("Nenhuma seção válida identificada. O PDF pode estar como imagem de baixa qualidade.")
                                     
                                     for sec in data.get("SECOES", []):
                                         status = sec.get('status', 'N/A')
                                         icon = "✅"
                                         if "DIVERGENTE" in status: icon = "❌"
                                         elif "FALTANTE" in status: icon = "🚨"
-                                        elif "DIVERGRIFO" in status: icon = "❓"
                                         
                                         with st.expander(f"{icon} {sec['titulo']} - {status}"):
                                             cA, cB = st.columns(2)
-                                            cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                                            cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                                            # Aqui o unsafe_allow_html vai renderizar os <mark> amarelos e vermelhos que a IA gerou
+                                            cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                                            cB.markdown(f"**Candidato (Auditoria)**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
-                                    st.error("Erro ao estruturar dados.")
-                                    # Mostra o texto bruto se falhar mesmo com o fix
-                                    with st.expander("Ver Resposta Bruta (Debug)"): st.code(response.text)
+                                    st.error("Erro ao estruturar dados. Tente novamente.")
+                                    with st.expander("Ver Resposta Bruta"): st.code(response.text)
                         else:
                             st.error("❌ Todos os modelos falharam.")
                         
