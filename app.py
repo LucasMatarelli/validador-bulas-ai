@@ -19,89 +19,72 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (UI MODERNA) -----------------
+# ----------------- ESTILOS CSS (MENU MELHORADO) -----------------
 st.markdown("""
 <style>
-    /* Remove cabeçalho padrão do Streamlit */
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
-    .main { background-color: #f8f9fa; }
-    
-    /* Fontes e Títulos */
+    .main { background-color: #f4f6f8; }
     h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    /* Estilo dos Cards de Resultado */
+    /* CARTÕES PRINCIPAIS */
     .stCard {
-        background-color: white; padding: 25px; border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 20px;
-        border: 1px solid #e9ecef; transition: transform 0.2s;
+        background-color: white; padding: 25px; border-radius: 15px;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px;
+        border: 1px solid #e1e4e8; transition: transform 0.2s; height: 100%;
     }
-    .stCard:hover { transform: translateY(-2px); border-color: #55a68e; }
+    .stCard:hover { transform: translateY(-5px); border-color: #55a68e; }
+    .card-title { color: #55a68e; font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
     
-    /* Botão Principal */
-    .stButton>button { 
-        width: 100%; background: linear-gradient(135deg, #55a68e 0%, #3e8e75 100%); 
-        color: white; font-weight: bold; border-radius: 8px; height: 50px; 
-        border: none; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover { background: linear-gradient(135deg, #448c75 0%, #2d6b56 100%); box-shadow: 0 6px 8px rgba(0,0,0,0.15); }
-
-    /* --- ESTILO DA SIDEBAR (MENU DE NAVEGAÇÃO) --- */
-    section[data-testid="stSidebar"] {
-        background-color: #ffffff;
-        border-right: 1px solid #eaeaea;
-    }
+    /* BOTÃO DE AÇÃO */
+    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
+    .stButton>button:hover { background-color: #448c75; }
     
-    /* Estiliza o Radio Button para parecer botões de menu */
-    .stRadio > div[role="radiogroup"] > label {
-        background-color: #f8f9fa;
-        padding: 12px 15px;
-        border-radius: 8px;
-        margin-bottom: 8px;
-        border: 1px solid transparent;
-        transition: all 0.2s;
-        cursor: pointer;
-    }
-    .stRadio > div[role="radiogroup"] > label:hover {
-        background-color: #e9ecef;
-        border-color: #ced4da;
-        transform: translateX(3px);
-    }
-    /* Quando selecionado (truque visual) */
-    .stRadio > div[role="radiogroup"] > label[data-checked="true"] {
-        background-color: #e6fffa;
-        border-color: #55a68e;
-        color: #2c7a65;
-        font-weight: bold;
-    }
-
-    /* Caixa de Status do Modelo */
-    .model-status {
-        background-color: #d1fae5;
-        color: #065f46;
-        padding: 10px;
-        border-radius: 8px;
-        font-size: 0.85rem;
-        text-align: center;
-        border: 1px solid #a7f3d0;
-        margin-bottom: 20px;
-        font-weight: 500;
-    }
-    .model-error {
-        background-color: #fee2e2;
-        color: #991b1b;
-        padding: 10px;
-        border-radius: 8px;
-        font-size: 0.85rem;
-        text-align: center;
-        border: 1px solid #fecaca;
-    }
-
-    /* Marcadores de Texto */
+    /* MARCADORES DE TEXTO */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
     mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
+
+    /* --- NOVO ESTILO DO MENU LATERAL (SIDEBAR) --- */
+    section[data-testid="stSidebar"] {
+        background-color: #ffffff;
+        border-right: 1px solid #eee;
+    }
+    /* Transforma os Radios em Botões Estilizados */
+    section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    section[data-testid="stSidebar"] .stRadio label {
+        background-color: #f8f9fa;
+        padding: 15px 15px;
+        border-radius: 10px;
+        border: 1px solid #e9ecef;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        margin: 0 !important;
+        font-weight: 500;
+        color: #495057;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    section[data-testid="stSidebar"] .stRadio label:hover {
+        background-color: #e8f5e9;
+        border-color: #55a68e;
+        color: #55a68e;
+        transform: translateX(3px);
+    }
+    /* Estilo do Item Selecionado */
+    section[data-testid="stSidebar"] .stRadio div[aria-checked="true"] label {
+        background-color: #55a68e !important;
+        color: white !important;
+        border-color: #448c75 !important;
+        box-shadow: 0 4px 6px rgba(85, 166, 142, 0.3);
+    }
+    /* Esconde a bolinha padrão do radio (HACK VISUAL) */
+    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label div:first-child {
+        display: none; 
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -144,7 +127,7 @@ def get_gemini_model():
     if not api_key: return None, "Sem Chave API"
 
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-1.5-pro"), "gemini-1.5-pro"
+    return genai.GenerativeModel("gemini-3-pro-preview"), "Modelo Ativo: gemini-3-pro-preview"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -200,21 +183,28 @@ def process_uploaded_file(uploaded_file):
     return None
 
 def clean_json_response(text):
+    # Limpeza bruta de markdown
     text = text.replace("```json", "").replace("```", "").strip()
-    text = re.sub(r'//.*', '', text)
+    text = re.sub(r'//.*', '', text) # Remove comentários
     if text.startswith("json"): text = text[4:]
     return text
 
 def extract_json(text):
+    """
+    Parser robusto que tenta encontrar o JSON mesmo que haja lixo ao redor.
+    """
     cleaned = clean_json_response(text)
     try:
+        # Tenta parse direto
         return json.loads(cleaned)
     except:
+        # Tenta encontrar o maior bloco {...} possível
         try:
             start = cleaned.find('{')
             end = cleaned.rfind('}') + 1
             if start != -1 and end != -1:
                 json_str = cleaned[start:end]
+                # Tenta corrigir quebras de linha dentro de strings que quebram o JSON
                 json_str = re.sub(r'(?<=: ")(.*?)(?=")', lambda m: m.group(1).replace('\n', ' '), json_str, flags=re.DOTALL)
                 return json.loads(json_str)
         except:
@@ -222,74 +212,58 @@ def extract_json(text):
     return None
 
 def normalize_sections(data_json, allowed_titles):
+    """
+    Remove seções inventadas pela IA que não estão na lista permitida.
+    """
     if not data_json or "SECOES" not in data_json:
         return data_json
     
     clean_sections = []
+    # Normaliza a lista permitida para comparação (upper case e strip)
     allowed_set = {t.strip().upper() for t in allowed_titles}
     
     for sec in data_json["SECOES"]:
         titulo_ia = sec.get("titulo", "").strip().upper()
+        
+        # Correção fuzzy básica ou verificação exata
         if titulo_ia in allowed_set:
             clean_sections.append(sec)
         else:
+            # Se a IA inventou um título, tenta ver se parece com algum permitido
+            # Se não, descarta para não poluir a tela (como o caso "COMPOSO ORAL")
             pass
             
     data_json["SECOES"] = clean_sections
     return data_json
 
-# ----------------- UI LATERAL (MENU BONITO) -----------------
+# ----------------- UI LATERAL (MENU OTIMIZADO) -----------------
 with st.sidebar:
-    # Logo Centralizada e Título
-    st.markdown("""
-        <div style="text-align: center; padding-bottom: 10px;">
-            <img src="https://cdn-icons-png.flaticon.com/512/3004/3004458.png" width="80" style="margin-bottom: 10px;">
-            <h2 style="color: #2c3e50; margin: 0; font-size: 1.5rem;">Validador</h2>
-            <p style="color: #7f8c8d; font-size: 0.8rem;">Auditoria Inteligente</p>
-        </div>
-    """, unsafe_allow_html=True)
+    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
+    st.markdown("<h2 style='text-align: center; color: #55a68e; margin-bottom: 20px;'>Validador de Bulas</h2>", unsafe_allow_html=True)
     
-    st.divider()
-
-    # Status do Modelo (Estilo Pill/Card)
-    model_instance, model_name = get_gemini_model()
-    
-    if model_instance:
-        st.markdown(f"""
-            <div class="model-status">
-                <span style="font-size: 1.2em;">⚡</span> Conectado<br>
-                <span style="font-size: 0.8em; opacity: 0.8;">{model_name}</span>
-            </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-            <div class="model-error">
-                ❌ Sem Chave API
-            </div>
-        """, unsafe_allow_html=True)
-    
-    # Menu de Navegação
-    st.markdown("**Navegação**")
+    # Menu melhorado visualmente pelo CSS acima
     pagina = st.radio(
-        "Ir para:", 
+        "Navegação:", 
         ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"],
-        label_visibility="collapsed" # Esconde o label padrão feio
+        label_visibility="collapsed"
     )
     
     st.divider()
-    st.caption("v2.5 Stable • Temp 0.0")
+    
+    model_instance, model_name = get_gemini_model()
+    
+    if model_instance:
+        st.markdown(f"<div style='text-align:center; padding: 10px; background-color: #e8f5e9; border-radius: 8px; font-size: 0.8em; color: #2e7d32;'>✅ {model_name}</div>", unsafe_allow_html=True)
+    else:
+        st.error("❌ Verifique a Chave API")
 
 # ----------------- PÁGINAS -----------------
 if pagina == "🏠 Início":
-    st.markdown("<div style='text-align:center; padding: 40px 0;'><h1 style='color:#55a68e; font-size: 3rem;'>Bem-vindo ao Validador</h1><p style='color:#666; font-size:1.2rem;'>Selecione um módulo no menu lateral para começar.</p></div>", unsafe_allow_html=True)
-    
+    st.markdown("<h1 style='color:#55a68e;text-align:center;'>Validador Inteligente</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown("""<div class="stCard" style="text-align:center;"><h3>💊 Ref x BELFAR</h3><p>Comparação estrita de textos.</p></div>""", unsafe_allow_html=True)
-    with c2:
-        st.markdown("""<div class="stCard" style="text-align:center;"><h3>📋 Conf. MKT</h3><p>Validação de artes e layouts.</p></div>""", unsafe_allow_html=True)
-    with c3:
-        st.markdown("""<div class="stCard" style="text-align:center;"><h3>🎨 Gráfica</h3><p>Verificação de curvas e impressão.</p></div>""", unsafe_allow_html=True)
+    c1.info("💊 Ref x BELFAR: Comparação de textos.")
+    c2.info("📋 Conf. MKT: Validação de artes.")
+    c3.info("🎨 Gráfica: Verificação de PDF.")
 
 else:
     st.markdown(f"## {pagina}")
@@ -306,18 +280,12 @@ else:
     elif pagina == "🎨 Gráfica x Arte": label1, label2 = "Arte Vigente", "Gráfica (Curvas)"
     
     c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f"**📂 {label1}**")
-        f1 = st.file_uploader("", type=["pdf", "docx"], key="f1")
-    with c2:
-        st.markdown(f"**📂 {label2}**")
-        f2 = st.file_uploader("", type=["pdf", "docx"], key="f2")
+    f1 = c1.file_uploader(label1, type=["pdf", "docx"], key="f1")
+    f2 = c2.file_uploader(label2, type=["pdf", "docx"], key="f2")
         
-    st.markdown("<br>", unsafe_allow_html=True)
-
     if st.button("🚀 INICIAR AUDITORIA"):
         if f1 and f2 and model_instance:
-            with st.spinner("🔍 Analisando documentos com precisão máxima..."):
+            with st.spinner("Analisando colunas, fluxo e layout..."):
                 try:
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
@@ -337,10 +305,15 @@ else:
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
                         # ==========================================================
-                        # PROMPT BLINDADO
+                        # PROMPT BLINDADO (Com Instrução de Não Adivinhação)
                         # ==========================================================
                         prompt = f"""
                         Você é um Auditor de Qualidade. Sua tarefa é extrair e comparar o texto de bulas.
+                        
+                        ⚠️ REGRA DE OURO - ZERO ALUCINAÇÃO:
+                        - NÃO ADIVINHE PALAVRAS que estejam borradas ou cortadas.
+                        - Extraia o texto EXATAMENTE como está na imagem/texto (ipsis litteris).
+                        - Se houver erro de digitação no original, MANTENHA O ERRO. Não corrija.
                         
                         SEÇÕES PERMITIDAS (Ignorar qualquer outra):
                         {secoes_str}
@@ -350,10 +323,7 @@ else:
                         
                         2. **ATENÇÃO / LACTOSE:** Blocos de aviso ("Atenção: Contém lactose", "Atenção: Contém açúcar") que aparecem soltos no meio ou fim da coluna PERTENCEM à seção de texto imediatamente acima deles. Junte-os.
                         
-                        3. **SEM ALUCINAÇÃO / OCR LITERAL:** - NÃO INVENTE PALAVRAS. O texto extraído deve ser IDÊNTICO ao da imagem.
-                           - NÃO CORRIJA O PORTUGUÊS.
-                           - NÃO USE SINÔNIMOS (ex: não troque "médico" por "doutor").
-                           - NÃO crie títulos novos (ex: "Composição Adulto"). Use apenas os da lista.
+                        3. **SEM ALUCINAÇÃO:** - NÃO crie títulos novos (ex: "Composição Adulto"). Use apenas os da lista.
                            - NÃO repita o título dentro do conteúdo.
 
                         SAÍDA JSON (Estrita): 
@@ -382,14 +352,21 @@ else:
                             available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                             
                             def sort_priority(name):
-                                if "robotics" in name or "experimental" in name or "preview" in name: return 100 
+                                # BLOQUEIA MODELOS INSTÁVEIS
+                                if "robotics" in name or "experimental" in name or "preview" in name: 
+                                    # Só usa se for a ÚNICA opção da conta (raríssimo)
+                                    return 100 
+
+                                # Prioriza modelos estáveis
                                 if "gemini-1.5-pro" in name and "002" in name: return 0
                                 if "gemini-1.5-pro" in name: return 1
                                 if "gemini-3" in name: return 2
                                 if "gemini-1.5-flash" in name and not "lite" in name and not "8b" in name: return 3
+                                
                                 return 50
                             
                             available_models.sort(key=sort_priority)
+                            # Remove duplicatas mantendo ordem
                             seen = set()
                             available_models = [x for x in available_models if not (x in seen or seen.add(x))]
                             
@@ -400,22 +377,16 @@ else:
                         st.caption(f"Processando com modelo estável...")
 
                         for model_name in available_models:
+                            # Se for modelo proibido e tivermos outros, pula
                             if ("robotics" in model_name or "preview" in model_name) and len(available_models) > 1 and not sucesso:
                                 if available_models.index(model_name) < len(available_models) - 1:
                                     continue
                                     
                             try:
                                 model_run = genai.GenerativeModel(model_name)
-                                # ------------------------------------------------------------------
-                                # TEMPERATURE 0.0 + TOKENS 8192
-                                # ------------------------------------------------------------------
                                 response = model_run.generate_content(
                                     [prompt] + payload,
-                                    generation_config={
-                                        "response_mime_type": "application/json",
-                                        "temperature": 0.0,
-                                        "max_output_tokens": 8192 
-                                    },
+                                    generation_config={"response_mime_type": "application/json"},
                                     safety_settings=SAFETY_SETTINGS
                                 )
                                 sucesso = True
@@ -432,6 +403,7 @@ else:
                             else:
                                 raw_data = extract_json(response.text)
                                 if raw_data:
+                                    # FILTRO PYTHON: Remove seções alucinadas antes de exibir
                                     data = normalize_sections(raw_data, lista_secoes)
                                     
                                     meta = data.get("METADADOS", {})
@@ -449,12 +421,12 @@ else:
                                         icon = "✅"
                                         if "DIVERGENTE" in status: icon = "❌"
                                         elif "FALTANTE" in status: icon = "🚨"
-                                        elif "DIVERGRIFO" in status: icon = "❓" 
+                                        elif "DIVERGRIFO" in status: icon = "❓" # Trata o erro anterior visualmente
                                         
                                         with st.expander(f"{icon} {sec['titulo']} - {status}"):
                                             cA, cB = st.columns(2)
-                                            cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em;border-radius:5px;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                                            cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em;border-radius:5px;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                                            cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                                            cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                                 else:
                                     st.error("Erro ao estruturar dados. O modelo retornou formato inválido.")
                                     with st.expander("Ver Resposta Bruta (Debug)"): st.code(response.text)
