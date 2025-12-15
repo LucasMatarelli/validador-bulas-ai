@@ -91,7 +91,6 @@ SAFETY_SETTINGS = {
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
 def configure_gemini():
-    """Conecta e verifica API."""
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
     except: api_key = os.environ.get("GEMINI_API_KEY")
@@ -100,35 +99,31 @@ def configure_gemini():
     genai.configure(api_key=api_key)
     return True
 
-def get_smart_model_list():
-    """Gera lista de prioridade baseada no que existe na conta."""
+def get_best_available_model():
+    """
+    Busca automaticamente o modelo mais potente disponível na conta.
+    Prioridade: Experimental (Gemini 2.5/3 fake) > Pro > Flash
+    """
     try:
-        available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        # Lista modelos que suportam geração
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # Ordem de preferência: 
-        # 1. Gemini 1.5 Pro (Melhor raciocínio)
-        # 2. Gemini 1.5 Flash (Melhor velocidade/cota)
-        # 3. Gemini Pro (Fallback)
-        priority_queue = []
+        # 1. Tenta achar o Experimental (Muitas vezes é o Gemini 1.5 Pro Experimental ou Gemini 2.0 preview)
+        exp_model = next((m for m in models if "exp" in m), None)
+        if exp_model: return exp_model, "Gemini Experimental (Mais Potente)"
         
-        # Procura versões específicas
-        pro_15 = next((m for m in available if 'gemini-1.5-pro' in m and 'latest' in m), None)
-        if not pro_15: pro_15 = next((m for m in available if 'gemini-1.5-pro' in m), None)
+        # 2. Tenta o Pro 1.5 (Mais inteligente que o Flash)
+        pro_model = next((m for m in models if "gemini-1.5-pro" in m), None)
+        if pro_model: return pro_model, "Gemini 1.5 Pro"
         
-        flash_15 = next((m for m in available if 'gemini-1.5-flash' in m and 'latest' in m), None)
-        if not flash_15: flash_15 = next((m for m in available if 'gemini-1.5-flash' in m), None)
+        # 3. Tenta o Flash 1.5 (Mais rápido/estável)
+        flash_model = next((m for m in models if "gemini-1.5-flash" in m), None)
+        if flash_model: return flash_model, "Gemini 1.5 Flash"
         
-        if pro_15: priority_queue.append(pro_15)
-        if flash_15: priority_queue.append(flash_15)
-        
-        # Se não achou os principais, tenta qualquer 'gemini'
-        if not priority_queue:
-            priority_queue = [m for m in available if 'gemini' in m]
-            
-        return priority_queue
+        # 4. Fallback
+        return "models/gemini-1.5-flash", "Gemini Padrão"
     except:
-        # Lista de segurança absoluta se a API de listagem falhar
-        return ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
+        return "models/gemini-1.5-flash", "Gemini Backup"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -206,10 +201,11 @@ with st.sidebar:
     st.divider()
     
     is_connected = configure_gemini()
+    model_name_real, model_display = "Indefinido", "Aguardando"
     
     if is_connected:
-        st.markdown(f"<div style='text-align:center;padding:10px;background:#e8f5e9;border-radius:8px;color:#2e7d32;font-size:0.8em'>✅ IA Conectada (Auto)</div>", unsafe_allow_html=True)
-        st.caption("Modo Piloto Automático ativado.")
+        model_name_real, model_display = get_best_available_model()
+        st.markdown(f"<div style='text-align:center;padding:10px;background:#e8f5e9;border-radius:8px;color:#2e7d32;font-size:0.8em'>✅ IA Ativa: {model_display}</div>", unsafe_allow_html=True)
     else:
         st.error("❌ Verifique a Chave API")
 
@@ -230,102 +226,98 @@ else:
     f1 = c1.file_uploader("Referência", type=["pdf", "docx"], key="f1")
     f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
         
-    if st.button("🚀 INICIAR AUDITORIA (AUTO)"):
+    if st.button("🚀 INICIAR AUDITORIA AUTOMÁTICA"):
         if f1 and f2 and is_connected:
-            with st.spinner("Lendo arquivos..."):
+            with st.spinner(f"Preparando análise com {model_display}..."):
                 d1 = process_uploaded_file(f1)
                 d2 = process_uploaded_file(f2)
                 gc.collect()
 
             if d1 and d2:
-                # 1. OBTÉM LISTA DE MODELOS REAIS E ORDENADOS
-                model_queue = get_smart_model_list()
+                model_instance = genai.GenerativeModel(model_name_real)
                 
                 final_sections = []
                 final_dates = []
-                success = False
-                used_model = ""
+                
+                # --- ESTRATÉGIA DE 2 LOTES (Meio termo entre Cota e Completude) ---
+                # Divide as seções em 2 metades. 
+                # Metade 1 = Seções 0 a 6 (Geralmente até 'Como usar')
+                # Metade 2 = Seções 7 até o fim (Inclui Dizeres Legais que costumava cortar)
+                mid_point = len(lista_secoes) // 2
+                chunks = [lista_secoes[:mid_point], lista_secoes[mid_point:]]
+                
+                payload_base = ["CONTEXTO: Auditoria de Texto Farmacêutico (OCR Rigoroso)."]
+                if d1['type'] == 'text': payload_base.append(f"--- REF TEXTO ---\n{d1['data']}")
+                else: payload_base.extend(["--- REF IMAGENS ---"] + d1['data'])
+                
+                if d2['type'] == 'text': payload_base.append(f"--- CAND TEXTO ---\n{d2['data']}")
+                else: payload_base.extend(["--- CAND IMAGENS ---"] + d2['data'])
 
-                payload = ["CONTEXTO: Auditoria de Texto Farmacêutico (OCR e Comparação)."]
-                if d1['type'] == 'text': payload.append(f"--- TEXTO ORIGINAL (REFERÊNCIA) ---\n{d1['data']}")
-                else: payload.extend(["--- IMAGEM ORIGINAL (REFERÊNCIA) ---"] + d1['data'])
+                bar = st.progress(0)
                 
-                if d2['type'] == 'text': payload.append(f"--- TEXTO CANDIDATO (BELFAR) ---\n{d2['data']}")
-                else: payload.extend(["--- IMAGEM CANDIDATO (BELFAR) ---"] + d2['data'])
-
-                secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
+                for i, chunk in enumerate(chunks):
+                    # Pausa de segurança para evitar 429 na segunda parte
+                    if i > 0: 
+                        with st.spinner("Pausa de segurança da API (5s)..."):
+                            time.sleep(5)
+                    
+                    st.toast(f"Analisando parte {i+1}/2...", icon="🔍")
+                    secoes_str = "\n".join([f"- {s}" for s in chunk])
+                    
+                    prompt = f"""
+                    ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO DE TEXTO.
+                    
+                    MISSÃO: Ler as imagens/texto e extrair o conteúdo das SEÇÕES ALVO abaixo.
+                    
+                    SEÇÕES ALVO DESTA ETAPA (Extraia APENAS estas):
+                    {secoes_str}
+                    
+                    REGRAS RIGOROSAS:
+                    1. Extraia o texto EXATAMENTE como está (IPSIS LITTERIS). Não corrija nada.
+                    2. Compare Referência vs Candidato.
+                    3. Se houver diferença no Candidato, envolva com <mark class='diff'>TEXTO DIFERENTE</mark>.
+                    4. Se houver erro ortográfico no Candidato, envolva com <mark class='ort'>ERRO</mark>.
+                    5. Se encontrar DATA DA ANVISA (geralmente no fim), extraia.
+                    
+                    SAÍDA JSON:
+                    {{
+                        "METADADOS": {{ "datas": [] }},
+                        "SECOES": [
+                            {{ "titulo": "TITULO", "ref": "Texto Ref", "bel": "Texto Cand com marks", "status": "OK" ou "DIVERGENTE" }}
+                        ]
+                    }}
+                    """
+                    
+                    # Tentativa com retry
+                    for attempt in range(3):
+                        try:
+                            response = model_instance.generate_content(
+                                [prompt] + payload_base,
+                                generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192, "temperature": 0.0},
+                                safety_settings=SAFETY_SETTINGS
+                            )
+                            part_data = extract_json(response.text)
+                            if part_data:
+                                norm = normalize_sections(part_data, chunk)
+                                final_sections.extend(norm.get("SECOES", []))
+                                if part_data.get("METADADOS", {}).get("datas"):
+                                    final_dates.extend(part_data["METADADOS"]["datas"])
+                                break # Sucesso
+                        except Exception as e:
+                            if "429" in str(e) and attempt < 2:
+                                time.sleep(15) # Espera maior se der cota
+                                continue
+                            elif "404" in str(e):
+                                st.error("Erro fatal: Modelo não encontrado. API pode ter mudado.")
+                                break
+                            else:
+                                break
+                    
+                    bar.progress((i+1)/2)
                 
-                # PROMPT
-                prompt = f"""
-                ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO DE TEXTO.
+                bar.empty()
                 
-                SUA MISSÃO:
-                1. Ler o texto da IMAGEM ORIGINAL e da IMAGEM CANDIDATO.
-                2. Extrair o texto EXATAMENTE como está escrito (IPSIS LITTERIS).
-                3. NÃO corrija erros de português. NÃO complete frases. NÃO invente palavras.
-                
-                TAREFA DE COMPARAÇÃO:
-                Compare o texto extraído das seções abaixo.
-                Se houver QUALQUER diferença (letra, palavra, número):
-                - Envolva a diferença no texto do Candidato com <mark class='diff'>TEXTO ERRADO</mark>.
-                - Se parecer erro ortográfico, envolva com <mark class='ort'>ERRO</mark>.
-                
-                SEÇÕES ALVO:
-                {secoes_str}
-                
-                SAÍDA JSON ESTRITA:
-                {{
-                    "METADADOS": {{ "datas": ["dd/mm/aaaa"] }},
-                    "SECOES": [
-                        {{ 
-                           "titulo": "TITULO EXATO", 
-                           "ref": "Texto copiado fielmente da Referência...", 
-                           "bel": "Texto copiado fielmente do Candidato com <mark>...", 
-                           "status": "OK" ou "DIVERGENTE" 
-                        }}
-                    ]
-                }}
-                """
-                
-                st.toast("Iniciando auditoria automática...", icon="🤖")
-                
-                # 2. TENTA A LISTA DE MODELOS EM ORDEM
-                for model_name in model_queue:
-                    try:
-                        # st.caption(f"Tentando motor: {model_name}...") # Debug visual opcional
-                        model_instance = genai.GenerativeModel(model_name)
-                        
-                        response = model_instance.generate_content(
-                            [prompt] + payload,
-                            generation_config={
-                                "response_mime_type": "application/json", 
-                                "max_output_tokens": 8192,
-                                "temperature": 0.0
-                            },
-                            safety_settings=SAFETY_SETTINGS,
-                            request_options={"timeout": 600}
-                        )
-                        full_data = extract_json(response.text)
-                        
-                        if full_data:
-                            norm = normalize_sections(full_data, lista_secoes)
-                            final_sections = norm.get("SECOES", [])
-                            final_dates = full_data.get("METADADOS", {}).get("datas", [])
-                            success = True
-                            used_model = model_name
-                            break # SUCESSO! Sai do loop.
-                            
-                    except Exception as e:
-                        error_msg = str(e)
-                        # Se for 429 (Cota), continua tentando o próximo da lista
-                        if "429" in error_msg:
-                            continue 
-                        # Se for 404 (Não existe na região), continua
-                        if "404" in error_msg:
-                            continue
-                
-                if success:
-                    st.toast(f"Sucesso! Processado por {used_model}", icon="✅")
+                if final_sections:
                     st.divider()
                     cM1, cM2, cM3 = st.columns(3)
                     divs = sum(1 for s in final_sections if "DIVERGENTE" in s['status'])
@@ -334,13 +326,10 @@ else:
                     
                     cM1.metric("Score Aprovação", f"{score}%")
                     cM2.metric("Seções", f"{total}/{len(lista_secoes)}")
-                    data_anvisa = next((d for d in final_dates if d), "N/A")
+                    data_anvisa = next((d for d in final_dates if d), "Não encontrada")
                     cM3.metric("Data Anvisa", str(data_anvisa))
                     
                     st.markdown("---")
-                    
-                    if not final_sections:
-                        st.warning("O documento foi processado, mas nenhuma seção foi encontrada.")
                     
                     for sec in final_sections:
                         status = sec.get('status', 'OK')
@@ -350,8 +339,7 @@ else:
                         
                         with st.expander(f"{icon} {sec['titulo']} - {status}"):
                             cA, cB = st.columns(2)
-                            cA.markdown(f"**Referência (Original)**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                            cB.markdown(f"**Candidato (Auditado)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+                            cA.markdown(f"**Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                            cB.markdown(f"**Candidato**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
-                     st.error("Não foi possível processar com nenhum modelo de IA disponível no momento.")
-                     st.info("Pode ser um bloqueio temporário de cota (Erro 429). Aguarde 1 minuto e tente novamente.")
+                     st.error("Não foi possível extrair nenhuma seção. O arquivo pode estar ilegível para a IA.")
