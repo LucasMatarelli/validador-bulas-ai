@@ -14,8 +14,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador de Bulas (Blindado)",
-    page_icon="🛡️",
+    page_title="Validador de Bulas (Auto)",
+    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -80,10 +80,34 @@ def configure_gemini():
     genai.configure(api_key=api_key)
     return True
 
-def get_robust_model():
-    """Retorna o modelo mais estável e rápido para evitar cortes."""
-    # Prioriza o Flash 1.5 por ter limite maior de requisições na camada gratuita
-    return "models/gemini-1.5-flash"
+def get_dynamic_model():
+    """
+    PERGUNTA para a API quais modelos existem na conta e pega o melhor disponível.
+    Isso evita o erro 404 de modelo inexistente.
+    """
+    try:
+        # Pega todos os modelos que geram conteúdo
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Tenta achar o Flash 1.5 (Melhor custo/benefício)
+        flash = next((m for m in models if "flash" in m and "1.5" in m), None)
+        if flash: return flash, "Gemini Flash (Auto)"
+        
+        # Tenta o Pro 1.5
+        pro = next((m for m in models if "pro" in m and "1.5" in m), None)
+        if pro: return pro, "Gemini Pro (Auto)"
+        
+        # Tenta qualquer Gemini Pro antigo
+        old_pro = next((m for m in models if "gemini-pro" in m), None)
+        if old_pro: return old_pro, "Gemini Legacy"
+        
+        # Pega o primeiro que aparecer
+        if models: return models[0], models[0]
+        
+        return "models/gemini-1.5-flash", "Flash (Padrão)"
+    except:
+        # Fallback de emergência
+        return "gemini-1.5-flash", "Flash (Fallback)"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -101,15 +125,12 @@ def process_uploaded_file(uploaded_file):
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            # Se tiver texto selecionável suficiente, usa o texto (mais leve)
             if len(full_text.strip()) > 500:
                 doc.close(); return {"type": "text", "data": full_text}
             
-            # Se for imagem scanneada, extrai imagens
             images = []
             limit = min(12, len(doc)) 
             for i in range(limit):
-                # Matrix 2.0 é o equilíbrio ideal entre qualidade OCR e tamanho
                 pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
@@ -131,18 +152,15 @@ def extract_json(text):
     try: return json.loads(cleaned, strict=False)
     except: pass
     
-    # Recuperação de JSON cortado (Truncado)
+    # Recuperação de JSON cortado (Salva-vidas)
     try:
         if '"SECOES":' in cleaned:
-            # Tenta encontrar o último fechamento de objeto válido
             last_bracket = cleaned.rfind("}")
             if last_bracket != -1:
-                # Tenta fechar array e objeto principal se estiverem abertos
                 fixed = cleaned[:last_bracket+1]
                 if not fixed.endswith("]}"): fixed += "]}"
                 try: return json.loads(fixed, strict=False)
                 except: pass
-                # Tenta fechar só o array
                 if not fixed.endswith("]"): fixed += "]"
                 if not fixed.endswith("}"): fixed += "}"
                 return json.loads(fixed, strict=False)
@@ -160,7 +178,6 @@ def normalize_sections(data_json, allowed_titles):
         raw_title = sec.get("titulo", "")
         t_ia = normalize(raw_title)
         
-        # Match exato ou parcial
         match = allowed_norm.get(t_ia)
         if not match:
             for k, v in allowed_norm.items():
@@ -183,8 +200,12 @@ with st.sidebar:
     st.divider()
     
     is_connected = configure_gemini()
+    model_name, model_display = "Indefinido", "Aguardando"
+    
     if is_connected:
-        st.success("✅ Sistema Online")
+        # Busca o modelo real agora
+        model_name, model_display = get_dynamic_model()
+        st.markdown(f"<div style='text-align:center;padding:10px;background:#e8f5e9;border-radius:8px;color:#2e7d32;font-size:0.8em'>✅ IA Ativa: {model_display}</div>", unsafe_allow_html=True)
     else:
         st.error("❌ Verifique API Key")
 
@@ -205,7 +226,7 @@ else:
     f1 = c1.file_uploader("Referência", type=["pdf", "docx"], key="f1")
     f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
         
-    if st.button("🚀 INICIAR AUDITORIA (SEM ERROS)"):
+    if st.button("🚀 INICIAR AUDITORIA"):
         if f1 and f2 and is_connected:
             with st.spinner("Lendo arquivos..."):
                 d1 = process_uploaded_file(f1)
@@ -213,14 +234,13 @@ else:
                 gc.collect()
 
             if d1 and d2:
-                model_name = get_robust_model()
+                # Usa o modelo dinâmico encontrado
                 model = genai.GenerativeModel(model_name)
                 
                 final_sections = []
                 final_dates = []
                 
-                # --- ESTRATÉGIA DE CHUNKS SEGURA ---
-                # Dividir em 3 partes para garantir que leia tudo e não estoure memória
+                # Divisão em 3 partes (Equilíbrio ideal: não corta texto e evita erro de memória)
                 chunk_size = 4 
                 chunks = [lista_secoes[i:i + chunk_size] for i in range(0, len(lista_secoes), chunk_size)]
                 
@@ -234,9 +254,9 @@ else:
                 bar = st.progress(0)
                 
                 for i, chunk in enumerate(chunks):
-                    # PAUSA OBRIGATÓRIA PARA EVITAR ERRO 429
+                    # Pausa estratégica para evitar erro 429
                     if i > 0:
-                        with st.spinner(f"Aguardando liberação da API (10s)..."):
+                        with st.spinner(f"Aguardando segurança da API (10s)..."):
                             time.sleep(10)
                     
                     st.toast(f"Processando lote {i+1}/{len(chunks)}...", icon="⏳")
@@ -266,7 +286,7 @@ else:
                     }}
                     """
                     
-                    # LOOP DE RETENTATIVA INFINITA ATÉ CONSEGUIR (Para erro 429)
+                    # Retry Loop
                     success_part = False
                     wait_time = 20
                     
@@ -284,17 +304,23 @@ else:
                                 if part_data.get("METADADOS", {}).get("datas"):
                                     final_dates.extend(part_data["METADADOS"]["datas"])
                             
-                            success_part = True # Sai do loop
+                            success_part = True
                             
                         except Exception as e:
                             err_msg = str(e)
+                            # Se for 429 (Cota), espera
                             if "429" in err_msg or "Quota" in err_msg:
-                                st.warning(f"Limite de API atingido. Aguardando {wait_time}s para retomar...")
+                                st.warning(f"Limite atingido. Aguardando {wait_time}s...")
                                 time.sleep(wait_time)
-                                wait_time += 10 # Aumenta o tempo se falhar de novo
+                                wait_time += 10
+                            # Se for 404, significa que o modelo morreu no meio do caminho, tenta fallback manual
+                            elif "404" in err_msg:
+                                st.error("Modelo perdeu conexão. Tentando fallback...")
+                                model = genai.GenerativeModel("gemini-pro") # Último recurso
+                                time.sleep(5)
                             else:
-                                st.error(f"Erro irrecuperável na parte {i+1}: {err_msg}")
-                                success_part = True # Força saída para não travar eterno em erro 500
+                                st.error(f"Erro na parte {i+1}: {err_msg}")
+                                success_part = True # Sai para não travar
                     
                     bar.progress((i+1)/len(chunks))
                 
@@ -309,10 +335,7 @@ else:
                     
                     cM1.metric("Score", f"{score}%")
                     cM2.metric("Seções", f"{total}/{len(lista_secoes)}")
-                    # Pega a data mais frequente ou a primeira
-                    data_anvisa = "N/A"
-                    if final_dates:
-                        data_anvisa = max(set(final_dates), key=final_dates.count)
+                    data_anvisa = max(set(final_dates), key=final_dates.count) if final_dates else "N/A"
                     cM3.metric("Data Anvisa", str(data_anvisa))
                     
                     st.markdown("---")
