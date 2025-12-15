@@ -32,7 +32,6 @@ st.markdown("""
         box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px;
         border: 1px solid #e1e4e8; transition: transform 0.2s; height: 100%;
     }
-    .stCard:hover { transform: translateY(-5px); border-color: #55a68e; }
     
     /* MARCADORES DE TEXTO */
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; text-decoration: none; }
@@ -92,7 +91,6 @@ SAFETY_SETTINGS = {
 # ----------------- FUNÇÕES DE BACKEND -----------------
 
 def configure_gemini():
-    """Configura API e retorna STATUS."""
     api_key = None
     try: api_key = st.secrets["GEMINI_API_KEY"]
     except: api_key = os.environ.get("GEMINI_API_KEY")
@@ -181,16 +179,14 @@ with st.sidebar:
     selected_model = None
     if is_connected:
         st.success("✅ API Conectada")
-        # LISTA FIXA DE MODELOS REAIS (SEM ALUCINAÇÃO)
+        # LISTA LIMPA (SEM 'models/') para evitar erro 404
         model_options = [
-            "models/gemini-1.5-flash", # Mais rápido e estável
-            "models/gemini-1.5-pro",   # Mais inteligente, mas mais lento
+            "gemini-1.5-flash", 
+            "gemini-1.5-pro",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-pro-latest"
         ]
-        selected_model = st.selectbox(
-            "Escolha o Cérebro da IA:", 
-            model_options, 
-            index=0
-        )
+        selected_model = st.selectbox("Escolha o Cérebro da IA:", model_options, index=0)
     else:
         st.error("❌ Verifique a Chave API")
 
@@ -213,19 +209,24 @@ else:
         
     if st.button("🚀 INICIAR AUDITORIA"):
         if f1 and f2 and selected_model:
-            with st.spinner(f"Lendo arquivos com {selected_model}..."):
+            with st.spinner(f"Processando arquivos..."):
                 d1 = process_uploaded_file(f1)
                 d2 = process_uploaded_file(f2)
                 gc.collect()
 
             if d1 and d2:
-                # Inicializa o modelo REAL selecionado
-                model_instance = genai.GenerativeModel(selected_model)
+                # LISTA DE TENTATIVAS (Se o escolhido falhar, tenta os outros)
+                backup_models = [selected_model, "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+                # Remove duplicatas mantendo ordem
+                model_queue = []
+                [model_queue.append(x) for x in backup_models if x not in model_queue]
                 
                 final_sections = []
                 final_dates = []
-                
-                payload = ["CONTEXTO: Auditoria Farmacêutica."]
+                success = False
+                last_error = ""
+
+                payload = ["CONTEXTO: Auditoria de Texto Farmacêutico (OCR e Comparação)."]
                 if d1['type'] == 'text': payload.append(f"--- TEXTO ORIGINAL (REFERÊNCIA) ---\n{d1['data']}")
                 else: payload.extend(["--- IMAGEM ORIGINAL (REFERÊNCIA) ---"] + d1['data'])
                 
@@ -234,7 +235,7 @@ else:
 
                 secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                 
-                # PROMPT FIXO E SEGURO
+                # PROMPT BLINDADO
                 prompt = f"""
                 ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO DE TEXTO.
                 
@@ -266,20 +267,20 @@ else:
                 }}
                 """
                 
-                st.toast("Processando... Por favor aguarde.", icon="🤖")
+                st.toast("Iniciando auditoria inteligente...", icon="🤖")
                 
-                max_retries = 3
-                success = False
-                last_error = None
-                
-                for attempt in range(max_retries):
+                # TENTA CADA MODELO DA FILA ATÉ FUNCIONAR
+                for model_name in model_queue:
                     try:
+                        # st.write(f"Tentando com modelo: {model_name}") # Debug
+                        model_instance = genai.GenerativeModel(model_name)
+                        
                         response = model_instance.generate_content(
                             [prompt] + payload,
                             generation_config={
                                 "response_mime_type": "application/json", 
                                 "max_output_tokens": 8192,
-                                "temperature": 0.0 # Garante que não inventa nada
+                                "temperature": 0.0
                             },
                             safety_settings=SAFETY_SETTINGS,
                             request_options={"timeout": 600}
@@ -291,16 +292,18 @@ else:
                             final_sections = norm.get("SECOES", [])
                             final_dates = full_data.get("METADADOS", {}).get("datas", [])
                             success = True
-                            break
+                            st.success(f"Sucesso usando o modelo: {model_name}")
+                            break # Conseguiu, sai do loop
+                            
                     except Exception as e:
                         last_error = str(e)
+                        # Se for erro de cota (429), espera um pouco antes de tentar o próximo
                         if "429" in last_error:
-                            st.toast(f"Aguardando servidor... ({attempt+1}/{max_retries})", icon="⏳")
-                            time.sleep(30)
-                            continue
+                            st.toast(f"Cota excedida no modelo {model_name}. Tentando próximo...", icon="⏳")
+                            time.sleep(5)
                         else:
-                            # Se der erro 404 ou outro, para na hora e mostra
-                            break
+                            # Se for 404 ou outro erro, tenta o próximo imediatamente
+                            continue
                 
                 if success:
                     st.divider()
@@ -317,7 +320,7 @@ else:
                     st.markdown("---")
                     
                     if not final_sections:
-                        st.warning("O documento foi lido, mas nenhuma seção padrão foi encontrada.")
+                        st.warning("O documento foi processado, mas nenhuma seção foi encontrada. O PDF pode estar ilegível ou vazio.")
                     
                     for sec in final_sections:
                         status = sec.get('status', 'OK')
@@ -330,5 +333,5 @@ else:
                             cA.markdown(f"**Referência (Original)**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                             cB.markdown(f"**Candidato (Auditado)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;font-family:monospace;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
-                     st.error(f"Erro ao processar: {last_error}")
-                     st.info("Verifique se o modelo selecionado na barra lateral é 'gemini-1.5-flash'.")
+                     st.error(f"Falha em todos os modelos. Último erro: {last_error}")
+                     st.info("Tente usar arquivos menores ou aguarde 1 minuto para liberar sua cota da API.")
