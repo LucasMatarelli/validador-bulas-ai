@@ -8,6 +8,7 @@ import json
 import re
 import os
 import gc
+import time
 from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
@@ -106,17 +107,15 @@ def get_best_model_name():
     """Encontra o melhor modelo disponível dinamicamente."""
     try:
         all_models = genai.list_models()
-        # Filtra apenas modelos que geram texto
         valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
         
-        # Ordem de prioridade (Pro > Flash > resto)
-        # Exclui explicitamente LITE e EXPERIMENTAL para evitar erros
+        # Sistema de Pontuação para evitar modelos ruins
         def score_model(name):
             if "lite" in name: return -100 # Proibido (corta texto)
             if "experimental" in name or "preview" in name: return -50 # Instável
             
             if "gemini-1.5-pro" in name:
-                if "002" in name: return 100 # Melhor versão atual
+                if "002" in name: return 100 
                 return 90
             if "gemini-1.5-flash" in name:
                 if "002" in name: return 80
@@ -124,13 +123,9 @@ def get_best_model_name():
             return 0
             
         valid_models.sort(key=score_model, reverse=True)
-        
-        # Pega o melhor modelo que não tenha score negativo (ou o primeiro disponível se tudo falhar)
         best = next((m for m in valid_models if score_model(m) > 0), None)
         
-        if not best and valid_models:
-            best = valid_models[0] # Fallback
-            
+        # Fallback seguro se não achar Pro
         return best if best else "models/gemini-1.5-flash"
     except:
         return "models/gemini-1.5-flash"
@@ -180,7 +175,6 @@ def extract_json(text):
     cleaned = clean_json_response(text)
     try: return json.loads(cleaned, strict=False)
     except: pass
-    # Tentativa de recuperação se faltar fechar chave
     try:
         if '"SECOES":' in cleaned:
             last_comma = cleaned.rfind("},")
@@ -191,14 +185,11 @@ def extract_json(text):
 def normalize_sections(data_json, allowed_titles):
     if not data_json or "SECOES" not in data_json: return data_json
     clean = []
-    # Normalização robusta (remove espaços extras e pontuação simples)
     def clean_title(t): return re.sub(r'[^A-ZÃÕÁÉÍÓÚÇ ]', '', t.upper().strip())
-    
     allowed_set = {clean_title(t) for t in allowed_titles}
     
     for sec in data_json["SECOES"]:
         t_ia = clean_title(sec.get("titulo", ""))
-        # Verifica se o título da IA contém ou está contido no título esperado
         match = next((t for t in allowed_set if t_ia == t or (len(t_ia) > 5 and t_ia in t)), None)
         if match:
             clean.append(sec)
@@ -239,9 +230,8 @@ else:
         
     if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
         if f1 and f2 and api_configured:
-            # 1. Escolhe o melhor modelo ANTES de começar
             model_name = get_best_model_name()
-            st.caption(f"Utilizando motor de IA: {model_name}")
+            # st.caption(f"Utilizando motor de IA: {model_name}") 
             
             with st.spinner("Processando documentos..."):
                 d1 = process_uploaded_file(f1)
@@ -249,10 +239,9 @@ else:
                 gc.collect()
 
             if d1 and d2:
-                # 2. Inicializa o modelo selecionado
                 model_instance = genai.GenerativeModel(model_name)
                 
-                # 3. ESTRATÉGIA DE DIVISÃO (CHUNKING)
+                # --- CONFIGURAÇÃO DE RETENTATIVA E DELAY ---
                 chunk_size = 4
                 chunks = [lista_secoes[i:i + chunk_size] for i in range(0, len(lista_secoes), chunk_size)]
                 
@@ -268,6 +257,10 @@ else:
                 else: payload_base.extend(["--- DOC CANDIDATO (IMAGENS) ---"] + d2['data'])
 
                 for i, chunk in enumerate(chunks):
+                    # Delay automático entre partes para evitar erro 429
+                    if i > 0:
+                        time.sleep(2) # Pequena pausa padrão
+                        
                     st.toast(f"Analisando parte {i+1}/{len(chunks)}...", icon="⏳")
                     secoes_str = "\n".join([f"- {s}" for s in chunk])
                     
@@ -292,21 +285,37 @@ else:
                     }}
                     """
                     
-                    try:
-                        response = model_instance.generate_content(
-                            [prompt] + payload_base,
-                            generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192},
-                            safety_settings=SAFETY_SETTINGS
-                        )
-                        part_data = extract_json(response.text)
-                        if part_data:
-                            # Normaliza e acumula
-                            norm = normalize_sections(part_data, chunk)
-                            final_sections.extend(norm.get("SECOES", []))
-                            if part_data.get("METADADOS", {}).get("datas"):
-                                final_dates.extend(part_data["METADADOS"]["datas"])
-                    except Exception as e:
-                        st.error(f"Erro na parte {i+1}: {e}")
+                    # --- LOOP DE RETENTATIVA PARA ERRO 429 ---
+                    max_retries = 3
+                    retry_delay = 30 # Segundos de espera se der erro
+                    success_part = False
+                    
+                    for attempt in range(max_retries):
+                        try:
+                            response = model_instance.generate_content(
+                                [prompt] + payload_base,
+                                generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192},
+                                safety_settings=SAFETY_SETTINGS
+                            )
+                            part_data = extract_json(response.text)
+                            if part_data:
+                                norm = normalize_sections(part_data, chunk)
+                                final_sections.extend(norm.get("SECOES", []))
+                                if part_data.get("METADADOS", {}).get("datas"):
+                                    final_dates.extend(part_data["METADADOS"]["datas"])
+                            success_part = True
+                            break # Sucesso, sai do loop de tentativas
+                            
+                        except Exception as e:
+                            if "429" in str(e) or "quota" in str(e).lower():
+                                if attempt < max_retries - 1:
+                                    st.toast(f"Muitos pedidos (429). Aguardando {retry_delay}s...", icon="✋")
+                                    time.sleep(retry_delay)
+                                    continue # Tenta de novo
+                            
+                            # Se não for 429 ou acabaram as tentativas
+                            st.error(f"Erro na parte {i+1}: {str(e)}")
+                            break
                     
                     bar.progress((i + 1) / len(chunks))
                 
@@ -315,15 +324,12 @@ else:
                 
                 # --- EXIBIÇÃO FINAL ---
                 cM1, cM2, cM3 = st.columns(3)
-                # Cálculo de Score simples baseado em divergências
                 divs = sum(1 for s in final_sections if "DIVERGENTE" in s['status'])
                 total = len(final_sections)
                 score = 100 - int((divs/max(1, total))*100) if total > 0 else 0
                 
                 cM1.metric("Score Aprovação", f"{score}%")
                 cM2.metric("Seções Analisadas", f"{total}/{len(lista_secoes)}")
-                
-                # Exibe Data Anvisa
                 data_anvisa = next((d for d in final_dates if d), "Não identificada")
                 cM3.metric("Data Anvisa", str(data_anvisa))
                 
@@ -340,6 +346,5 @@ else:
                     
                     with st.expander(f"{icon} {sec['titulo']} - {status}"):
                         cA, cB = st.columns(2)
-                        # Renderiza HTML para mostrar os <mark> coloridos
                         cA.markdown(f"**Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                         cB.markdown(f"**Candidato (Auditoria)**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
