@@ -15,8 +15,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Turbo",
-    page_icon="🚀",
+    page_title="Validador Híbrido (Blindado)",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -36,7 +36,6 @@ st.markdown("""
     .box-bel { background-color: #f1f8e9; border-left: 4px solid #55a68e; }
     .box-ref { border-left: 4px solid #6c757d; }
     
-    /* MARCADORES RIGOROSOS */
     mark.diff { background-color: #fff176; color: #000; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #fdd835; }
     mark.ort { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 3px; font-weight: bold; border-bottom: 2px solid #b71c1c; }
     mark.anvisa { background-color: #b3e5fc; color: #01579b; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #039be5; }
@@ -101,7 +100,6 @@ def process_uploaded_file(uploaded_file):
             
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
@@ -109,13 +107,12 @@ def process_uploaded_file(uploaded_file):
                 doc.close()
                 return {"type": "text", "data": full_text, "len": len(full_text)}
             
-            st.toast(f"📄 '{uploaded_file.name}': Ativando OCR Rápido...", icon="👁️")
+            st.toast(f"📄 '{uploaded_file.name}': Ativando OCR...", icon="👁️")
             
             images = []
-            limit = min(12, len(doc))
+            limit = min(15, len(doc))
             for i in range(limit):
-                # Reduzi Matrix para 1.5 para ser mais rápido
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                pix = doc[i].get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # Otimizado
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=80))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -135,13 +132,24 @@ def process_uploaded_file(uploaded_file):
     return None
 
 def extract_json(text):
-    text = re.sub(r'//.*', '', text.replace("```json", "").replace("```", "").strip())
-    try: return json.loads(text, strict=False)
+    """
+    Função Blindada: Procura o primeiro { e o último } para ignorar lixo antes/depois.
+    """
+    if not text: return None
+    
+    # 1. Tenta limpeza básica
+    clean_text = text.replace("```json", "").replace("```", "").strip()
+    
+    # 2. Tenta regex para encontrar o bloco JSON principal
+    match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+    if match:
+        clean_text = match.group(0)
+    
+    # 3. Tenta parsear
+    try: 
+        return json.loads(clean_text)
     except: 
-        try:
-            start = text.find('{'); end = text.rfind('}') + 1
-            return json.loads(text[start:end], strict=False)
-        except: return None
+        return None
 
 def normalize_sections(data, allowed):
     if not data or "SECOES" not in data: return data
@@ -164,7 +172,7 @@ def normalize_sections(data, allowed):
 # ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.title("Validador Turbo")
+    st.title("Validador Rígido")
     pag = st.radio("Menu", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
     st.divider()
     
@@ -184,51 +192,47 @@ f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 AUDITAR AGORA"):
     if f1 and f2:
-        with st.spinner("📖 Processando arquivos..."):
+        with st.spinner("📖 Preparando arquivos..."):
             d1 = process_uploaded_file(f1)
             d2 = process_uploaded_file(f2)
             gc.collect()
         
         if d1 and d2:
-            if d2.get('len', 0) < 50 and d2['type'] == 'text':
-                st.warning("⚠️ Atenção: O arquivo Candidato parece estar vazio.")
-
             final_res = None
             model_used = "N/A"
             success = False
             
             secoes_str = "\n".join([f"- {s}" for s in lista])
             
-            # --- PROMPT OTIMIZADO PARA DETECTAR ERROS ---
+            # --- PROMPT RIGOROSO ---
             prompt = f"""
-            ATUE COMO UM REVISOR RIGOROSO.
-            SEÇÕES ALVO: {secoes_str}
+            ATUE COMO UM AUDITOR FARMACÊUTICO RÍGIDO.
+            SEÇÕES: {secoes_str}
             
-            MISSÃO:
-            1. Compare REF vs CAND letra por letra.
-            2. ACENTOS E VÍRGULAS SÃO ERROS. (Ex: 'frequencia' != 'frequência').
+            INSTRUÇÕES:
+            1. Extraia o texto COMPLETO de REF e BEL (Candidato).
+            2. O campo 'bel' NÃO PODE SER VAZIO. Copie o texto do candidato.
+            3. Marque erros no 'bel' usando HTML:
+               - Diferenças (qualquer uma): <mark class='diff'>texto</mark>
+               - Erros de PT: <mark class='ort'>texto</mark>
+               - Data Anvisa: <mark class='anvisa'>DD/MM/AAAA</mark>
             
-            MARCAÇÃO HTML OBRIGATÓRIA NO CAMPO 'bel':
-            
-            🟡 <mark class='diff'>texto</mark> -> Para QUALQUER diferença (palavras trocadas, números, falta de texto).
-            🔴 <mark class='ort'>texto</mark> -> Para erros de português/digitação (falta de acento, letra errada).
-            🔵 <mark class='anvisa'>DD/MM/AAAA</mark> -> Apenas para data em DIZERES LEGAIS.
-            
-            JSON: {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"...", "bel":"...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
+            SAÍDA APENAS JSON (SEM COMENTÁRIOS):
+            {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"...", "bel":"...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
             """
 
-            # 🛑 ZONA MISTRAL (Texto/MKT) - USANDO MODELO NEMO (RÁPIDO)
+            # 🛑 MISTRAL
             if pag in ["Ref x BELFAR", "Conferência MKT"]:
                 if not mis_client: st.error("MISTRAL OFF"); st.stop()
                 if d1['type'] == 'images' or d2['type'] == 'images':
-                    st.error("Erro: Arquivo é imagem pura (OCR falhou)."); st.stop()
+                    st.error("Erro: OCR falhou (Imagem pura)."); st.stop()
 
                 try:
-                    with st.spinner("🌪️ Mistral Nemo (Rápido)..."):
+                    with st.spinner("🌪️ Mistral analisando..."):
                         chat = mis_client.chat.complete(
-                            model="open-mistral-nemo", # <--- MODELO MAIS RÁPIDO DA MISTRAL
+                            model="open-mistral-nemo", # Rápido e Eficiente
                             messages=[
-                                {"role":"system", "content":"Validador JSON estrito."},
+                                {"role":"system", "content":"Você retorna APENAS JSON."},
                                 {"role":"user", "content":f"{prompt}\n\n=== REF ===\n{d1['data']}\n\n=== CAND ===\n{d2['data']}"}
                             ],
                             response_format={"type": "json_object"},
@@ -240,11 +244,11 @@ if st.button("🚀 AUDITAR AGORA"):
                 except Exception as e:
                     st.error(f"Erro Mistral: {e}"); st.stop()
 
-            # 🛑 ZONA GEMINI (Gráfica)
+            # 🛑 GEMINI
             elif pag == "Gráfica x Arte":
                 if not gem_ok: st.error("GEMINI OFF"); st.stop()
                 try:
-                    with st.spinner("💎 Gemini Flash..."):
+                    with st.spinner("💎 Gemini analisando..."):
                         model = genai.GenerativeModel("models/gemini-1.5-flash")
                         payload = [prompt]
                         payload.append(f"REF:\n{d1['data']}" if d1['type']=='text' else d1['data'])
@@ -289,6 +293,8 @@ if st.button("🚀 AUDITAR AGORA"):
                             cR.markdown(f"<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
                             cB.markdown(f"<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
-                    st.error("Erro JSON.")
+                    st.error("❌ ERRO AO LER RESPOSTA DA IA (JSON QUEBRADO)")
+                    with st.expander("Ver Resposta Bruta (Para Debug)"):
+                        st.code(final_res) # AQUI ESTÁ O SEGREDO DO DEBUG
     else:
         st.warning("Envie os arquivos.")
