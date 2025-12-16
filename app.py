@@ -99,7 +99,9 @@ def configure_apis():
 
 def auto_select_best_gemini_model():
     """
-    SELECIONA O MELHOR GEMINI (COM PRIORIDADE PARA O 1.5 FLASH QUE TEM MAIS COTA)
+    SELECIONA O MELHOR GEMINI DISPONÍVEL.
+    SEM BANIMENTOS: Todos os modelos da conta são considerados.
+    ORDEM: Prioriza estabilidade (Flash/Pro) mas permite outros.
     """
     try:
         all_models = list(genai.list_models())
@@ -112,31 +114,19 @@ def auto_select_best_gemini_model():
         def priority_score(name):
             score = 0
             name_lower = name.lower()
-            # Prioriza 1.5 Flash (Estabilidade e Cota Alta)
-            if "1.5-flash" in name_lower and "8b" not in name_lower: score += 500
             
-            # Penaliza modelos 2.5 ou preview (Cota Baixa - Erro 429)
-            if "2.5" in name_lower: score -= 100
-            if "exp" in name_lower: score -= 50
-            if "preview" in name_lower: score -= 50
+            # Prioriza modelos estáveis para evitar erros, mas não bloqueia nada
+            if "gemini-1.5-flash" in name_lower and "8b" not in name_lower: return 1000
+            if "gemini-2.0-flash" in name_lower: return 900
+            if "gemini-1.5-pro" in name_lower: return 800
             
-            # Penaliza modelos que não leem imagem bem ou são muito caros
-            if "pro" in name_lower: score += 10 # Menos que o flash
-            
+            # Outros modelos (Gemma, Exp, Preview) ficam com score base 0
+            # Eles serão selecionados se forem os únicos disponíveis ou se o loop cair neles
             return score
         
         candidates.sort(key=priority_score, reverse=True)
         
-        # Teste rápido
-        test_prompt = '{"test": "ok"}'
-        for model_name in candidates:
-            try:
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(test_prompt, request_options={"timeout": 5})
-                if response: return model_name
-            except: continue
-        
-        return "models/gemini-1.5-flash"
+        return candidates[0] if candidates else "models/gemini-1.5-flash"
     except:
         return "models/gemini-1.5-flash"
 
@@ -156,11 +146,11 @@ def process_uploaded_file(uploaded_file):
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            # Tenta pegar texto mesmo se for pouco, para priorizar Groq
-            if len(full_text.strip()) > 300: # Reduzi para 300 para pegar mais PDFs como texto
+            # Tenta pegar texto para Groq (prioridade)
+            if len(full_text.strip()) > 300: 
                 doc.close(); return {"type": "text", "data": full_text}
             
-            # Se realmente não tiver texto, extrai imagens (aí só Gemini resolve)
+            # Se for imagem, extrai (Groq não lê, vai cair no Gemini)
             images = []
             limit = min(15, len(doc))
             for i in range(limit):
@@ -231,10 +221,10 @@ with st.sidebar:
     
     gemini_ok, groq_client = configure_apis()
     
-    if groq_client: st.success("⚡ Groq: Ativo (Prioridade)")
+    if groq_client: st.success("⚡ Groq: Ativo")
     else: st.warning("⚠️ Groq: Off")
 
-    if gemini_ok: st.success("💎 Gemini: Ativo (Backup/Imagens)")
+    if gemini_ok: st.success("💎 Gemini: Ativo")
     else: st.error("❌ Gemini: Off")
 
 # ----------------- LÓGICA PRINCIPAL -----------------
@@ -268,16 +258,17 @@ else:
                 # Padrão: Tentar Groq primeiro
                 use_groq = True
                 
-                # Exceção 1: Página Gráfica (Exige visual)
+                # Regra 1: Página "Gráfica x Arte" é 100% Gemini (Visual)
                 if pagina == "🎨 Gráfica x Arte":
                     use_groq = False
-                # Exceção 2: Arquivos são imagens (Groq não lê imagem)
-                elif d1['type'] == 'images' or d2['type'] == 'images':
-                    use_groq = False
-                # Exceção 3: Groq não configurado
+                    
+                # Regra 2: Se Groq não estiver configurado
                 elif not groq_client:
                     use_groq = False
-                
+                    
+                # Regra 3: Se os arquivos são Imagens, Groq não lê (Fallback técnico obrigatório)
+                elif d1['type'] == 'images' or d2['type'] == 'images':
+                    use_groq = False
                 
                 # Prepara o Prompt
                 secoes_str = "\n".join([f"   {i+1}. {s}" for i, s in enumerate(lista_secoes)])
@@ -307,7 +298,7 @@ else:
                 success = False
                 active_model_name = "Desconhecido"
                 
-                # --- TENTATIVA 1: GROQ (Se aplicável) ---
+                # --- TENTATIVA 1: GROQ (Prioridade para Ref/MKT Texto) ---
                 if use_groq:
                     try:
                         with st.spinner("⚡ Processando com GROQ (Llama 3)..."):
@@ -326,17 +317,17 @@ else:
                             active_model_name = "⚡ Groq (Llama 3.3)"
                             success = True
                     except Exception as e:
-                        st.warning(f"⚠️ Groq achou difícil ou falhou: {e}. Passando para Gemini...")
-                        use_groq = False # Falhou, força Gemini
-                        success = False
+                        st.warning(f"⚠️ Groq encontrou dificuldade ou falhou. Alternando para Gemini...")
+                        use_groq = False # Força Gemini
+                        success = False # Marca como falha para entrar no bloco abaixo
 
-                # --- TENTATIVA 2: GEMINI (Fallback ou Imagens) ---
+                # --- TENTATIVA 2: GEMINI (Fallback, Imagens ou Gráfica x Arte) ---
                 if not success:
                     if not gemini_ok:
                         st.error("❌ Groq não pôde ser usado e Gemini não está configurado.")
                     else:
                         try:
-                            # Seleciona modelo Gemini (Prioriza 1.5 Flash estável)
+                            # Seleção de Modelo Gemini
                             best_model_gemini = auto_select_best_gemini_model()
                             
                             with st.spinner(f"💎 Processando com GEMINI ({best_model_gemini})..."):
