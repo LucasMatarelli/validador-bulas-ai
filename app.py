@@ -82,7 +82,7 @@ def auto_select_best_gemini_model():
     """ SELECIONA 1.5 FLASH (O Mais seguro) """
     return "models/gemini-1.5-flash"
 
-def process_uploaded_file(uploaded_file, force_text=False):
+def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
@@ -91,20 +91,16 @@ def process_uploaded_file(uploaded_file, force_text=False):
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
-            return {"type": "text", "data": text, "count": len(text)}
+            return {"type": "text", "data": text}
             
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            char_count = len(full_text.strip())
-            
-            # --- NOVA LÓGICA DE DETECÇÃO ---
-            # Se tiver mais de 5 letras, ou se o usuário FORÇAR texto
-            if char_count > 5 or force_text: 
-                doc.close()
-                return {"type": "text", "data": full_text, "count": char_count}
+            # Se tem texto, usa TEXTO
+            if len(full_text.strip()) > 100: 
+                doc.close(); return {"type": "text", "data": full_text}
             
             # Se não tem texto, é IMAGEM
             images = []
@@ -115,7 +111,7 @@ def process_uploaded_file(uploaded_file, force_text=False):
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             doc.close(); gc.collect()
-            return {"type": "images", "data": images, "count": 0}
+            return {"type": "images", "data": images}
             
     except Exception as e:
         st.error(f"Erro arquivo: {e}")
@@ -165,10 +161,6 @@ with st.sidebar:
     
     if gem_ok: st.success("💎 Gemini: ON")
     else: st.error("❌ Gemini: OFF")
-    
-    st.divider()
-    # NOVA OPÇÃO DE SEGURANÇA
-    force_text_mode = st.checkbox("⚠️ Forçar Modo Texto", help="Marque se seu PDF tem texto mas o sistema diz que é imagem.")
 
 st.markdown(f"## {pag}")
 tipo = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True) if pag == "Ref x BELFAR" else "Paciente"
@@ -181,19 +173,11 @@ f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
 if st.button("🚀 AUDITAR AGORA"):
     if f1 and f2:
         with st.spinner("📖 Lendo arquivos..."):
-            # Passamos a opção de forçar texto
-            d1 = process_uploaded_file(f1, force_text_mode)
-            d2 = process_uploaded_file(f2, force_text_mode)
+            d1 = process_uploaded_file(f1)
+            d2 = process_uploaded_file(f2)
             gc.collect()
         
         if d1 and d2:
-            # MOSTRA O QUE FOI LIDO PARA VOCÊ ENTENDER O ERRO
-            if d1['type'] == 'text': st.caption(f"📄 Ref: Lido como TEXTO ({d1['count']} caracteres)")
-            else: st.caption(f"🖼️ Ref: Lido como IMAGEM (0 caracteres selecionáveis)")
-            
-            if d2['type'] == 'text': st.caption(f"📄 Cand: Lido como TEXTO ({d2['count']} caracteres)")
-            else: st.caption(f"🖼️ Cand: Lido como IMAGEM (0 caracteres selecionáveis)")
-
             final_res = None
             model_used = "N/A"
             success = False
@@ -223,9 +207,9 @@ if st.button("🚀 AUDITAR AGORA"):
                     st.error("🛑 ERRO: Você está na área do MISTRAL, mas a chave 'MISTRAL_API_KEY' não foi encontrada.")
                     st.stop()
                 
-                # Verifica se é imagem
+                # Verifica se é imagem (Mistral não lê imagem)
                 if d1['type'] == 'images' or d2['type'] == 'images':
-                    st.error("🛑 ERRO DE ARQUIVO: O Mistral lê apenas TEXTO. Seu arquivo foi identificado como imagem (0 letras). Marque '⚠️ Forçar Modo Texto' na barra lateral para tentar mesmo assim, ou use a aba 'Gráfica x Arte'.")
+                    st.error("🛑 ERRO DE ARQUIVO: O Mistral lê apenas TEXTO. Você enviou um PDF escaneado (imagem). Use a aba 'Gráfica x Arte' para imagens.")
                     st.stop()
 
                 try:
@@ -244,7 +228,7 @@ if st.button("🚀 AUDITAR AGORA"):
                         success = True
                 except Exception as e:
                     st.error(f"❌ Erro no MISTRAL: {e}")
-                    st.stop()
+                    st.stop() # PARA TUDO. NÃO TENTA GEMINI.
 
             elif pag == "Gráfica x Arte":
                 # >>>> ZONA EXCLUSIVA GEMINI <<<<
