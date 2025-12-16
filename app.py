@@ -8,40 +8,37 @@ import json
 import re
 import os
 import gc
-import time
 from PIL import Image
 from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Ultimate",
-    page_icon="🤖",
+    page_title="Validador Sniper",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS -----------------
+# ----------------- ESTILOS CSS (VISUAL LIMPO) -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
-    .main { background-color: #f4f6f8; }
-    h1, h2, h3 { color: #2c3e50; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     
-    .stCard {
-        background-color: white; padding: 25px; border-radius: 15px;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px;
-        border: 1px solid #e1e4e8; 
+    .stButton>button { 
+        width: 100%; background-color: #2e7d32; color: white; 
+        font-weight: bold; border-radius: 8px; height: 60px; font-size: 18px;
     }
+    .stButton>button:hover { background-color: #1b5e20; }
     
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; font-weight: 500; }
-    mark.ort { background-color: #ffcccc; color: #cc0000; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
-    mark.anvisa { background-color: #cce5ff; color: #004085; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
+    /* Cores de Marcação */
+    mark.diff { background-color: #fff9c4; color: #f57f17; padding: 2px 6px; border-radius: 4px; border: 1px solid #fbc02d; font-weight: bold; }
+    mark.ort { background-color: #ffcdd2; color: #c62828; padding: 2px 6px; border-radius: 4px; border-bottom: 2px solid #b71c1c; font-weight: bold; }
+    mark.anvisa { background-color: #e1f5fe; color: #0277bd; padding: 2px 6px; border-radius: 4px; border: 1px solid #4fc3f7; font-weight: bold; }
     
-    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
-    .stButton>button:hover { background-color: #448c75; }
-
-    section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eee; }
+    /* Caixas de Texto */
+    .box-ref { background-color: #f5f5f5; padding: 15px; border-radius: 8px; border-left: 5px solid #9e9e9e; white-space: pre-wrap; line-height: 1.6; }
+    .box-bel { background-color: #e8f5e9; padding: 15px; border-radius: 8px; border-left: 5px solid #2e7d32; white-space: pre-wrap; line-height: 1.6; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -64,14 +61,14 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-SAFETY_SETTINGS = {
+SAFETY = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# ----------------- FUNÇÕES DE BACKEND -----------------
+# ----------------- FUNÇÕES DO SISTEMA -----------------
 
 def configure_gemini():
     api_key = None
@@ -82,103 +79,7 @@ def configure_gemini():
     genai.configure(api_key=api_key)
     return True
 
-def auto_select_best_model():
-    """
-    SELEÇÃO INTELIGENTE:
-    1. Lista TUDO que existe na API.
-    2. Ordena por 'Maior Cota' (Flash) -> 'Maior Poder' (Pro/Exp).
-    3. Se der erro de cota, ESPERA (backoff) e tenta o próximo.
-    """
-    try:
-        # Pega a lista real da API (nada inventado)
-        all_models_obj = list(genai.list_models())
-        candidates = []
-        
-        for m in all_models_obj:
-            if 'generateContent' in m.supported_generation_methods:
-                candidates.append(m.name)
-        
-        if not candidates:
-            st.error("❌ A API não retornou nenhum modelo. Verifique sua Chave API.")
-            return None
-            
-        # Sistema de Pontuação para Priorizar Estabilidade (Flash)
-        def scoring_algo(name):
-            score = 0
-            n = name.lower()
-            
-            # --- MODELOS DE ALTA COTA (PRIORIDADE MÁXIMA) ---
-            if "gemini-1.5-flash" in n: 
-                score += 500  # O rei da estabilidade
-                if "8b" in n: score += 50 # Versão 8b é ainda mais leve
-                if "002" in n or "latest" in n: score += 20 # Versões mais novas
-                
-            elif "gemini-2.0-flash" in n:
-                score += 400  # Muito rápido, mas cota um pouco menor que o 1.5
-                if "lite" in n: score += 50
-            
-            # --- MODELOS POTENTES (COTA BAIXA - USAR SÓ SE FLASH FALHAR) ---
-            elif "gemini-1.5-pro" in n: score += 100
-            elif "gemini-2.0-pro" in n: score += 100
-            elif "exp" in n: score += 50  # Experimentais falham muito
-            
-            # --- PENALIDADES (NÃO USAR) ---
-            if "vision" in n: score -= 1000 # Modelos antigos só de visão
-            if "gemma" in n: score -= 2000 # Gemma não aceita imagens (dá erro 400)
-            if "tts" in n or "robotics" in n: score -= 5000 # Modelos de áudio/robô
-            
-            return score
-
-        # Ordena a lista
-        candidates.sort(key=scoring_algo, reverse=True)
-        
-        st.info(f"🔍 Encontrados {len(candidates)} modelos. Testando os mais estáveis primeiro...")
-        
-        test_prompt = '{"test": "ok"}'
-        
-        # Loop de teste
-        for i, model_name in enumerate(candidates):
-            # Se o score for muito baixo (modelo ruim), pula
-            if scoring_algo(model_name) < 0: continue
-            
-            try:
-                st.write(f"🧪 [{i+1}/{len(candidates)}] Testando: **{model_name}** ...")
-                
-                model = genai.GenerativeModel(model_name)
-                # Teste rápido e barato (1 token)
-                response = model.generate_content(
-                    test_prompt,
-                    generation_config={"max_output_tokens": 10},
-                    request_options={"timeout": 10}
-                )
-                
-                if response:
-                    st.success(f"✅ CONECTADO! Modelo escolhido: {model_name}")
-                    return model_name
-                    
-            except Exception as e:
-                err = str(e).lower()
-                if "429" in err or "quota" in err or "exhausted" in err:
-                    st.warning(f"⚠️ Cota cheia no {model_name}. Aguardando 2s...")
-                    time.sleep(2.0) # Espera para limpar a API
-                elif "404" in err:
-                    st.caption(f"⏭️ Modelo não encontrado/depreciado: {model_name}")
-                else:
-                    st.caption(f"⏭️ Erro no {model_name}: {err[:50]}...")
-                continue
-        
-        st.error("❌ Todos os modelos falharam.")
-        
-        # Tentativa de Resgate: Pega o primeiro 'Flash' que existir na lista, independente de teste
-        fallback = next((m for m in candidates if "flash" in m.lower()), candidates[0])
-        st.warning(f"⚠️ Forçando uso do modelo: {fallback} (Tentativa final)")
-        return fallback
-
-    except Exception as e:
-        st.error(f"Erro crítico na seleção: {e}")
-        return "models/gemini-1.5-flash"
-
-def process_uploaded_file(uploaded_file):
+def process_file(uploaded_file):
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
@@ -194,14 +95,16 @@ def process_uploaded_file(uploaded_file):
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            if len(full_text.strip()) > 800:
+            # Se tem muito texto, usa modo texto (mais rápido e preciso)
+            if len(full_text.strip()) > 500:
                 doc.close()
                 return {"type": "text", "data": full_text}
             
+            # Se for imagem scanneada, usa OCR via Visão
             images = []
-            limit = min(15, len(doc))
+            limit = min(12, len(doc))
             for i in range(limit):
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.5, 2.5), dpi=200)
+                pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -209,149 +112,194 @@ def process_uploaded_file(uploaded_file):
             gc.collect()
             return {"type": "images", "data": images}
     except Exception as e:
-        st.error(f"Erro arquivo: {e}")
+        st.error(f"Erro ao ler arquivo: {e}")
         return None
-    return None
-
-def clean_json_response(text):
-    text = text.replace("```json", "").replace("```", "").strip()
-    return re.sub(r'//.*', '', text)
 
 def extract_json(text):
-    cleaned = clean_json_response(text)
-    try: return json.loads(cleaned, strict=False)
+    text = text.replace("```json", "").replace("```", "").strip()
+    text = re.sub(r'//.*', '', text) # remove comentários
+    try: return json.loads(text, strict=False)
     except: pass
+    
+    # Tentativa de resgate do JSON
     try:
-        if '"SECOES":' in cleaned:
-            start = cleaned.find('{')
-            end = cleaned.rfind('}') + 1
+        if '"SECOES":' in text:
+            start = text.find('{')
+            end = text.rfind('}') + 1
             if start != -1 and end != -1:
-                return json.loads(cleaned[start:end], strict=False)
+                return json.loads(text[start:end], strict=False)
     except: pass
     return None
 
-def normalize_sections(data_json, allowed_titles):
-    if not data_json or "SECOES" not in data_json: return data_json
+def normalize_titles(data, allowed):
+    if not data or "SECOES" not in data: return data
     clean = []
-    def normalize(t): return re.sub(r'[^A-ZÃÕÁÉÍÓÚÇ]', '', t.upper())
-    allowed_norm = {normalize(t): t for t in allowed_titles}
-    for sec in data_json["SECOES"]:
-        raw_title = sec.get("titulo", "")
-        t_ia = normalize(raw_title)
-        match = allowed_norm.get(t_ia)
+    
+    # Cria mapa de normalização
+    def norm(t): return re.sub(r'[^A-ZÃÕÁÉÍÓÚÇ]', '', t.upper())
+    allowed_map = {norm(t): t for t in allowed}
+    
+    for sec in data["SECOES"]:
+        t_raw = sec.get("titulo", "")
+        t_norm = norm(t_raw)
+        
+        match = allowed_map.get(t_norm)
         if not match:
-            for k, v in allowed_norm.items():
-                if k in t_ia or t_ia in k or SequenceMatcher(None, k, t_ia).ratio() > 0.8:
+            # Fuzzy match simples
+            for k, v in allowed_map.items():
+                if k in t_norm or t_norm in k or SequenceMatcher(None, k, t_norm).ratio() > 0.8:
                     match = v
                     break
+        
         if match:
             sec["titulo"] = match
             clean.append(sec)
-    data_json["SECOES"] = clean
-    return data_json
+            
+    data["SECOES"] = clean
+    return data
 
-# ----------------- UI LATERAL -----------------
+# ----------------- INTERFACE -----------------
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.markdown("<h2 style='text-align: center; color: #55a68e;'>Validador Blindado</h2>", unsafe_allow_html=True)
-    pagina = st.radio("Nav:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conf. MKT", "🎨 Gráfica"], label_visibility="collapsed")
-    st.divider()
-    is_connected = configure_gemini()
-    if is_connected: st.success("✅ API Conectada")
-    else: st.error("❌ API Key Off")
+    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
+    st.markdown("### Validador Sniper 🎯")
+    st.info("Modelo fixo: **Gemini 1.5 Flash**\n(O mais seguro e estável)")
+    
+    status_api = configure_gemini()
+    if status_api: st.success("API Conectada")
+    else: st.error("Sem Chave API")
 
-# ----------------- LÓGICA PRINCIPAL -----------------
-if pagina == "🏠 Início":
-    st.markdown("<h1 style='color:#55a68e;text-align:center;'>Validador Farmacêutico</h1>", unsafe_allow_html=True)
-    st.info("💡 Algoritmo de seleção otimizado para evitar erros de Cota (429).")
+    st.divider()
+    pag = st.radio("Menu", ["Auditoria", "Ajuda"])
+
+if pag == "Ajuda":
+    st.markdown("### 💡 Dica Importante")
+    st.warning("Se der erro de 'Quota', troque a chave API imediatamente por uma nova.")
 
 else:
-    st.markdown(f"## {pagina}")
-    lista_secoes = SECOES_PACIENTE
-    if pagina == "💊 Ref x BELFAR":
-        if st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True) == "Profissional":
-            lista_secoes = SECOES_PROFISSIONAL
-            
+    st.markdown("<h1 style='color:#2e7d32;text-align:center;'>Validador Farmacêutico Blindado</h1>", unsafe_allow_html=True)
+    
+    # Seleção de tipo
+    tipo = st.radio("Tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
+    lista_secoes = SECOES_PROFISSIONAL if tipo == "Profissional" else SECOES_PACIENTE
+    
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Ref", type=["pdf", "docx"], key="f1")
-    f2 = c2.file_uploader("Cand", type=["pdf", "docx"], key="f2")
-        
-    if st.button("🚀 INICIAR AUDITORIA"):
-        if f1 and f2 and is_connected:
-            with st.spinner("🤖 Selecionando melhor IA disponível (Aguarde)..."):
-                best_model = auto_select_best_model()
-            
-            if best_model:
-                with st.spinner(f"📖 Lendo arquivos com {best_model}..."):
-                    d1 = process_uploaded_file(f1)
-                    d2 = process_uploaded_file(f2)
-                    gc.collect()
+    f1 = c1.file_uploader("📂 Referência (PDF/Word)", type=["pdf", "docx"])
+    f2 = c2.file_uploader("📂 Candidato (PDF/Word)", type=["pdf", "docx"])
+    
+    if st.button("🚀 INICIAR AUDITORIA (SEM ERROS)"):
+        if f1 and f2 and status_api:
+            # 1. Processamento
+            with st.spinner("📖 Lendo arquivos..."):
+                d1 = process_file(f1)
+                d2 = process_file(f2)
+                gc.collect()
 
-                if d1 and d2:
-                    model = genai.GenerativeModel(best_model)
-                    
-                    payload = ["CONTEXTO: Auditoria de Bulas."]
-                    if d1['type']=='text': payload.append(f"REF (TXT):\n{d1['data']}")
-                    else: payload.extend(["REF (IMG):"] + d1['data'])
-                    if d2['type']=='text': payload.append(f"CAND (TXT):\n{d2['data']}")
-                    else: payload.extend(["CAND (IMG):"] + d2['data'])
+            if d1 and d2:
+                # 2. Definição do Modelo (FIXO NO FLASH PARA EVITAR ERRO DE COTA)
+                # O "models/" antes do nome ajuda a evitar erros de versão
+                model = genai.GenerativeModel("models/gemini-1.5-flash")
+                
+                # 3. Montagem do Prompt
+                secoes_txt = "\n".join([f"- {s}" for s in lista_secoes])
+                
+                prompt = f"""
+                Você é um Auditor Farmacêutico Sênior da ANVISA.
+                Sua tarefa é comparar dois documentos (Referência vs Candidato) e validar as seções.
 
-                    secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
-                    prompt = f"""
-                    Você é um Auditor de Qualidade Farmacêutica.
-                    SEÇÕES ALVO:
-                    {secoes_str}
-                    
-                    REGRAS:
-                    1. Extraia o texto COMPLETO de cada seção encontrada.
-                    2. Compare REF vs CAND letra por letra.
-                    3. Use <mark class='diff'>DIFERENCA</mark> para divergências.
-                    4. Use <mark class='ort'>ERRO</mark> para erros de português.
-                    5. Use <mark class='anvisa'>DATA</mark> para datas na seção DIZERES LEGAIS.
-                    6. Status: "OK", "DIVERGENTE", "ERRO", "FALTANTE".
-                    
-                    SAIDA JSON:
-                    {{ "METADADOS": {{ "datas": [] }}, "SECOES": [ {{ "titulo": "...", "ref": "...", "bel": "...", "status": "..." }} ] }}
-                    """
-                    
-                    try:
-                        with st.spinner("🔍 Processando comparação..."):
-                            response = model.generate_content(
-                                [prompt] + payload,
-                                generation_config={"response_mime_type": "application/json", "max_output_tokens": 20000},
-                                safety_settings=SAFETY_SETTINGS,
-                                request_options={"timeout": 1000}
-                            )
-                            data = extract_json(response.text)
+                LISTA DE SEÇÕES OBRIGATÓRIAS:
+                {secoes_txt}
+
+                DIRETRIZES RIGOROSAS:
+                1. Extraia o texto INTEGRAL de cada seção (não resuma).
+                2. Se o texto quebrar colunas, junte corretamente.
+                3. Compare letra por letra (case insensitive para status, mas mostre a diferença).
+                4. Ignore números de página ou rodapés soltos.
+
+                FORMATAÇÃO HTML PARA O CAMPO 'bel' (Candidato):
+                - Se houver diferença de texto: use <mark class='diff'>palavra_candidato</mark>
+                - Se houver erro ortográfico óbvio: use <mark class='ort'>erro</mark>
+                - Para a data em 'DIZERES LEGAIS': use <mark class='anvisa'>DD/MM/AAAA</mark>
+
+                SAÍDA JSON EXATA:
+                {{
+                    "METADADOS": {{ "datas": ["..."] }},
+                    "SECOES": [
+                        {{
+                            "titulo": "TÍTULO EXATO DA LISTA",
+                            "ref": "Texto completo da referência...",
+                            "bel": "Texto do candidato com as marcações <mark>...",
+                            "status": "OK" | "DIVERGENTE" | "FALTANTE"
+                        }}
+                    ]
+                }}
+                """
+
+                payload = ["CONTEXTO: Auditoria de Bulas."]
+                if d1['type'] == 'text': payload.append(f"--- REFERÊNCIA (TEXTO) ---\n{d1['data']}")
+                else: payload.extend(["--- REFERÊNCIA (IMAGENS) ---"] + d1['data'])
+                
+                if d2['type'] == 'text': payload.append(f"--- CANDIDATO (TEXTO) ---\n{d2['data']}")
+                else: payload.extend(["--- CANDIDATO (IMAGENS) ---"] + d2['data'])
+
+                # 4. Chamada da API
+                try:
+                    with st.spinner("🤖 Analisando com Gemini 1.5 Flash..."):
+                        response = model.generate_content(
+                            [prompt] + payload,
+                            generation_config={"response_mime_type": "application/json", "max_output_tokens": 15000, "temperature": 0.0},
+                            safety_settings=SAFETY,
+                            request_options={"timeout": 600}
+                        )
+                        
+                        data = extract_json(response.text)
+                        
+                        if data and "SECOES" in data:
+                            # 5. Normalização e Exibição
+                            norm_data = normalize_titles(data, lista_secoes)
+                            secs = norm_data["SECOES"]
+                            datas = norm_data.get("METADADOS", {}).get("datas", [])
+
+                            st.success("✅ Auditoria Finalizada!")
+                            st.divider()
+
+                            # Placar
+                            col_a, col_b, col_c = st.columns(3)
+                            erros = sum(1 for s in secs if s['status'] != "OK")
+                            score = 100 - int((erros / max(1, len(secs))) * 100)
                             
-                            if data:
-                                norm = normalize_sections(data, lista_secoes)
-                                secs = norm.get("SECOES", [])
-                                dates = data.get("METADADOS", {}).get("datas", [])
+                            col_a.metric("Score de Aprovação", f"{score}%")
+                            col_b.metric("Seções Encontradas", f"{len(secs)}/{len(lista_secoes)}")
+                            
+                            data_display = datas[0] if datas else "N/A"
+                            col_c.markdown(f"**Data Anvisa**<br><span style='font-size:1.2em;font-weight:bold;color:#0277bd'>{data_display}</span>", unsafe_allow_html=True)
+
+                            st.markdown("---")
+
+                            # Renderização das Seções
+                            if not secs:
+                                st.warning("⚠️ Nenhuma seção padrão foi identificada. Verifique se o arquivo é uma bula válida.")
+                            
+                            for s in secs:
+                                icon = "✅"
+                                if s['status'] == "DIVERGENTE": icon = "❌"
+                                elif s['status'] == "FALTANTE": icon = "🚨"
                                 
-                                st.success("✅ Auditoria Concluída!")
-                                st.divider()
-                                
-                                cM1, cM2, cM3 = st.columns(3)
-                                errs = sum(1 for s in secs if "DIVERGENTE" in s['status'] or "ERRO" in s['status'])
-                                score = 100 - int((errs/max(1, len(secs)))*100) if secs else 0
-                                cM1.metric("Score", f"{score}%")
-                                cM2.metric("Seções", f"{len(secs)}/{len(lista_secoes)}")
-                                cM3.markdown(f"**Data**<br><mark class='anvisa'>{dates[0] if dates else 'N/A'}</mark>", unsafe_allow_html=True)
-                                
-                                st.markdown("---")
-                                for s in secs:
-                                    icon = "✅"
-                                    if "DIVERGENTE" in s['status']: icon = "❌"
-                                    elif "FALTANTE" in s['status']: icon = "🚨"
-                                    
-                                    with st.expander(f"{icon} {s['titulo']} - {s['status']}"):
-                                        cA, cB = st.columns(2)
-                                        cA.markdown(f"**Ref**\n<div style='background:#f9f9f9;padding:10px;'>{s.get('ref','')}</div>", unsafe_allow_html=True)
-                                        cB.markdown(f"**Cand**\n<div style='background:#eaffea;padding:10px;'>{s.get('bel','')}</div>", unsafe_allow_html=True)
-                            else:
-                                st.error("Falha ao estruturar JSON.")
-                    except Exception as e:
-                        st.error(f"Erro fatal: {e}")
+                                with st.expander(f"{icon} {s['titulo']} - {s['status']}"):
+                                    c_ref, c_bel = st.columns(2)
+                                    c_ref.markdown(f"**Referência**<div class='box-ref'>{s.get('ref','Vazio')}</div>", unsafe_allow_html=True)
+                                    c_bel.markdown(f"**Candidato**<div class='box-bel'>{s.get('bel','Vazio')}</div>", unsafe_allow_html=True)
+
+                        else:
+                            st.error("Erro: A IA não retornou o formato JSON correto. Tente novamente.")
+                            
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    if "429" in err_msg or "quota" in err_msg:
+                        st.error("🚨 LIMITE DE COTA ATINGIDO!")
+                        st.info("Solução: Crie uma nova API KEY no Google AI Studio e substitua no arquivo secrets/código.")
+                    elif "404" in err_msg:
+                         st.error("🚨 Modelo não encontrado. Erro de conexão com 'models/gemini-1.5-flash'.")
+                    else:
+                        st.error(f"Erro inesperado: {e}")
         else:
-            st.warning("Envie os arquivos e verifique a API.")
+            st.warning("⚠️ Preencha todos os campos e verifique a API.")
