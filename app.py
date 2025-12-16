@@ -34,9 +34,9 @@ st.markdown("""
         border: 1px solid #e1e4e8; 
     }
     
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; text-decoration: none; }
-    mark.ort { background-color: #ffcccc; color: #cc0000; padding: 2px 4px; border-radius: 4px; border: 1px solid #ff6666; font-weight: bold; }
-    mark.anvisa { background-color: #cce5ff; color: #004085; padding: 2px 4px; border-radius: 4px; border: 1px solid #66b3ff; font-weight: bold; }
+    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; font-weight: 500; }
+    mark.ort { background-color: #ffcccc; color: #cc0000; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
+    mark.anvisa { background-color: #cce5ff; color: #004085; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
     
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
     .stButton>button:hover { background-color: #448c75; }
@@ -84,7 +84,6 @@ def configure_gemini():
 def auto_select_best_model():
     """
     VARRE TODOS OS MODELOS E TESTA COM AUDITORIA REAL.
-    Retorna o primeiro que conseguir fazer a auditoria completa corretamente.
     """
     try:
         all_models = list(genai.list_models())
@@ -94,13 +93,12 @@ def auto_select_best_model():
             if 'generateContent' in m.supported_generation_methods:
                 candidates.append(m.name)
         
-        # Ordena por preferência (Experimental > Pro > Flash > Outros)
         def priority_score(name):
             score = 0
             name_lower = name.lower()
             if "gemini" in name_lower: score += 10
             if "exp" in name_lower: score += 60
-            if "2.0" in name_lower or "20" in name_lower: score += 100
+            if "2.0" in name_lower or "2-0" in name_lower: score += 100
             if "1206" in name_lower or "1217" in name_lower: score += 90
             if "pro" in name_lower: score += 40
             if "flash" in name_lower: score += 25
@@ -109,13 +107,12 @@ def auto_select_best_model():
         
         candidates.sort(key=priority_score, reverse=True)
         
-        # Teste real de auditoria com cada modelo
         test_prompt = """Você é um auditor. Teste rápido:
         REF: "COMPOSIÇÃO: Cada comprimido contém 500mg de paracetamol."
         CAND: "COMPOSIÇÃO: Cada comprimido contem 500mg de paracetamol."
         
-        Retorne JSON com seção, textos e status:
-        {"SECOES": [{"titulo": "COMPOSIÇÃO", "ref": "texto ref", "bel": "texto cand", "status": "DIVERGENTE"}]}
+        Retorne JSON:
+        {"SECOES": [{"titulo": "COMPOSIÇÃO", "ref": "Cada comprimido contém 500mg de paracetamol.", "bel": "Cada comprimido contem 500mg de paracetamol.", "status": "DIVERGENTE"}]}
         """
         
         for model_name in candidates:
@@ -132,12 +129,11 @@ def auto_select_best_model():
                     request_options={"timeout": 30}
                 )
                 
-                # Valida se retornou JSON válido com a estrutura correta
                 if response and response.text:
                     data = extract_json(response.text)
                     if data and "SECOES" in data and len(data["SECOES"]) > 0:
-                        return model_name # PASSOU NO TESTE!
-            except Exception as e:
+                        return model_name
+            except:
                 continue
         
         return None
@@ -160,15 +156,14 @@ def process_uploaded_file(uploaded_file):
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            # Prioridade Texto para velocidade
             if len(full_text.strip()) > 800:
                 doc.close(); return {"type": "text", "data": full_text}
             
             images = []
-            limit = min(12, len(doc)) 
+            limit = min(15, len(doc))
             for i in range(limit):
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=85))
+                pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.5, 2.5), dpi=200)
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             doc.close(); gc.collect()
@@ -260,17 +255,17 @@ else:
         if f1 and f2 and is_connected:
             
             # --- FASE 1: ESCOLHA DA IA ---
-            with st.spinner("🔍 Testando todas as IAs disponíveis com auditoria real..."):
+            with st.spinner("🔍 Testando todas as IAs disponíveis..."):
                 best_model = auto_select_best_model()
             
             if not best_model:
-                st.error("❌ Nenhuma IA conseguiu processar corretamente. Verifique sua cota ou tente novamente.")
+                st.error("❌ Nenhuma IA conseguiu processar. Verifique sua cota.")
             else:
                 st.success(f"✅ IA Selecionada: **{best_model}**", icon="🤖")
                 time.sleep(0.5)
                 
                 # --- FASE 2: LEITURA ---
-                with st.spinner("Lendo arquivos..."):
+                with st.spinner("📖 Lendo arquivos..."):
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
                     gc.collect()
@@ -282,101 +277,128 @@ else:
                     final_dates = []
                     success = False
                     
-                    # --- FASE 3: AUDITORIA ÚNICA (SEM CORTES) ---
-                    payload = ["CONTEXTO: Auditoria Farmacêutica Rigorosa (OCR)."]
+                    # --- PAYLOAD ---
+                    payload = ["🔬 AUDITORIA FARMACÊUTICA COMPLETA"]
                     
-                    if d1['type'] == 'text': payload.append(f"--- REF TEXTO ---\n{d1['data']}")
-                    else: payload.extend(["--- REF IMAGENS ---"] + d1['data'])
+                    if d1['type'] == 'text': payload.append(f"📄 REFERÊNCIA (TEXTO):\n{d1['data']}")
+                    else: payload.extend(["📄 REFERÊNCIA (IMAGENS):"] + d1['data'])
                     
-                    if d2['type'] == 'text': payload.append(f"--- CAND TEXTO ---\n{d2['data']}")
-                    else: payload.extend(["--- CAND IMAGENS ---"] + d2['data'])
+                    if d2['type'] == 'text': payload.append(f"📋 CANDIDATO (TEXTO):\n{d2['data']}")
+                    else: payload.extend(["📋 CANDIDATO (IMAGENS):"] + d2['data'])
 
-                    secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
+                    secoes_str = "\n".join([f"   {i+1}. {s}" for i, s in enumerate(lista_secoes)])
                     
                     prompt = f"""
-                    Você é um Auditor Farmacêutico de Alta Precisão especializado em validação de bulas.
-                    
-                    OBJETIVO: Extrair e comparar TODAS as seções completas, identificando divergências.
-                    
-                    SEÇÕES OBRIGATÓRIAS (Extraia TODAS):
-                    {secoes_str}
-                    
-                    INSTRUÇÕES CRÍTICAS:
-                    
-                    1. EXTRAÇÃO COMPLETA:
-                       - Extraia o texto COMPLETO de cada seção (início até o fim)
-                       - Comece EXATAMENTE após o título da seção
-                       - Termine EXATAMENTE antes do próximo título de seção
-                       - NÃO corte no meio, NÃO omita parágrafos
-                       - Preserve quebras de linha e formatação
-                    
-                    2. COMPARAÇÃO PRECISA:
-                       - Compare palavra por palavra entre REF e CAND
-                       - Identifique TODAS as diferenças, por menores que sejam
-                    
-                    3. MARCAÇÕES COLORIDAS (USE EXATAMENTE ASSIM):
-                       
-                       A) DIVERGÊNCIAS (Amarelo):
-                          - Qualquer diferença entre REF e CAND
-                          - Use: <mark class='diff'>TEXTO_DIFERENTE</mark>
-                          - Exemplo: "contém" vs "contem" → <mark class='diff'>contem</mark>
-                       
-                       B) ERROS DE PORTUGUÊS (Vermelho):
-                          - Erros ortográficos, acentuação, concordância
-                          - Use: <mark class='ort'>ERRO</mark>
-                          - Exemplo: "contem" (sem acento) → <mark class='ort'>contem</mark>
-                       
-                       C) DATA ANVISA (Azul):
-                          - Apenas em DIZERES LEGAIS
-                          - Formato: dd/mm/yyyy ou dd.mm.yyyy
-                          - Use: <mark class='anvisa'>DD/MM/YYYY</mark>
-                          - Se não houver data: retorne "N/A" em datas
-                    
-                    4. STATUS DA SEÇÃO:
-                       - "OK": Textos idênticos, sem erros
-                       - "DIVERGENTE": Há diferenças entre REF e CAND
-                       - "ERRO ORTOGRÁFICO": Tem erros de português
-                       - "FALTANTE": Seção não encontrada
-                    
-                    5. FORMATO DE SAÍDA (JSON):
-                    {{
-                        "METADADOS": {{
-                            "datas": ["DD/MM/YYYY"] ou ["N/A"]
-                        }},
-                        "SECOES": [
-                            {{
-                                "titulo": "NOME_EXATO_DA_SECAO",
-                                "ref": "Texto COMPLETO da referência com marcações",
-                                "bel": "Texto COMPLETO do candidato com marcações",
-                                "status": "OK" ou "DIVERGENTE" ou "ERRO ORTOGRÁFICO"
-                            }}
-                        ]
-                    }}
-                    
-                    EXEMPLOS DE MARCAÇÃO:
-                    
-                    Entrada REF: "Este medicamento contém paracetamol."
-                    Entrada CAND: "Este medicamento contem paracetamol."
-                    
-                    Saída:
-                    "ref": "Este medicamento contém paracetamol.",
-                    "bel": "Este medicamento <mark class='diff'><mark class='ort'>contem</mark></mark> paracetamol.",
-                    "status": "DIVERGENTE"
-                    
-                    REGRA DE OURO: Extraia TODO o conteúdo de cada seção, do início ao fim, sem omissões.
-                    """
+🎯 MISSÃO CRÍTICA: Auditor Farmacêutico de Máxima Precisão
+
+═══════════════════════════════════════════════════════════════════
+
+📋 SEÇÕES OBRIGATÓRIAS (EXTRAIR TODAS COMPLETAMENTE):
+{secoes_str}
+
+═══════════════════════════════════════════════════════════════════
+
+🔴 REGRAS ABSOLUTAS - LEIA COM ATENÇÃO:
+
+1️⃣ EXTRAÇÃO 100% COMPLETA:
+   ✓ Extraia TODO o texto de cada seção
+   ✓ Comece EXATAMENTE após o número/título da seção
+   ✓ Continue até encontrar o PRÓXIMO número/título de seção
+   ✓ NUNCA pare no meio de uma frase
+   ✓ NUNCA omita parágrafos
+   ✓ Se o texto continua em outra coluna/página, CONTINUE até o fim
+   ✓ Preserve TODAS as quebras de linha originais
+   ✓ NÃO invente palavras - copie EXATAMENTE como está escrito
+   ✓ Se não conseguir ler algo, marque como [ILEGÍVEL]
+
+2️⃣ EXEMPLO DE EXTRAÇÃO CORRETA:
+   
+   Documento diz:
+   "7. O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?
+   Caso você se esqueça de tomar Belcomplex B conforme as recomendações 
+   da bula ou orientação médica. Se você deixou de tomar uma dose, deverá 
+   tomar a dose seguinte do costume, isto é, na hora regular e sem dobrar a dose.
+   
+   Em caso de dúvidas, procure orientação do farmacêutico ou de seu médico, ou
+   cirurgião-dentista."
+   
+   Você DEVE extrair:
+   "Caso você se esqueça de tomar Belcomplex B conforme as recomendações da bula ou orientação médica. Se você deixou de tomar uma dose, deverá tomar a dose seguinte do costume, isto é, na hora regular e sem dobrar a dose.
+
+Em caso de dúvidas, procure orientação do farmacêutico ou de seu médico, ou cirurgião-dentista."
+
+3️⃣ COMPARAÇÃO PALAVRA POR PALAVRA:
+   ✓ Compare REF vs CAND letra por letra
+   ✓ Identifique até vírgulas e acentos diferentes
+   ✓ Marque TODAS as diferenças encontradas
+
+4️⃣ MARCAÇÕES COLORIDAS (OBRIGATÓRIO):
+
+   🟡 DIVERGÊNCIAS (use: <mark class='diff'>TEXTO</mark>):
+      - Qualquer diferença entre REF e CAND
+      - Palavras diferentes, acentos faltando, vírgulas a mais/menos
+      - Exemplo: REF tem "contém" e CAND tem "contem" 
+        → marque no CAND: <mark class='diff'>contem</mark>
+
+   🔴 ERROS DE PORTUGUÊS (use: <mark class='ort'>ERRO</mark>):
+      - Erros ortográficos evidentes
+      - Falta de acentuação obrigatória
+      - Exemplo: "contem" (sem acento) → <mark class='ort'>contem</mark>
+      
+   🔵 DATA ANVISA (use: <mark class='anvisa'>DD/MM/YYYY</mark>):
+      - Apenas na seção "DIZERES LEGAIS"
+      - Formatos aceitos: DD/MM/YYYY, DD.MM.YYYY, DD-MM-YYYY
+      - Se não houver data: retorne ["N/A"] em "datas"
+
+5️⃣ STATUS DA SEÇÃO:
+   - "OK" = Textos 100% idênticos
+   - "DIVERGENTE" = Tem diferenças entre REF e CAND
+   - "ERRO ORTOGRÁFICO" = Tem erros de português no CAND
+   - "FALTANTE" = Não encontrou a seção
+
+═══════════════════════════════════════════════════════════════════
+
+📤 FORMATO JSON DE SAÍDA (OBRIGATÓRIO):
+
+{{
+    "METADADOS": {{
+        "datas": ["DD/MM/YYYY"] ou ["N/A"]
+    }},
+    "SECOES": [
+        {{
+            "titulo": "NOME_EXATO_DA_SECAO",
+            "ref": "Texto COMPLETO da REF (pode ter marcações se for mostrar diferenças)",
+            "bel": "Texto COMPLETO do CAND com <mark class='diff'> e <mark class='ort'> onde tiver diferenças",
+            "status": "OK" ou "DIVERGENTE" ou "ERRO ORTOGRÁFICO"
+        }}
+    ]
+}}
+
+═══════════════════════════════════════════════════════════════════
+
+⚠️ ATENÇÃO MÁXIMA:
+- NÃO resuma
+- NÃO simplifique
+- NÃO corte frases
+- NÃO invente palavras
+- COPIE EXATAMENTE como está escrito
+- Se o texto tem 500 palavras, extraia as 500 palavras
+- LEIA ATÉ O FIM DE CADA SEÇÃO (mesmo que mude de coluna/página)
+
+═══════════════════════════════════════════════════════════════════
+"""
                     
                     try:
-                        with st.spinner(f"Auditando com {best_model}..."):
+                        with st.spinner(f"🔍 Auditando com {best_model}..."):
                             response = model.generate_content(
                                 [prompt] + payload,
                                 generation_config={
                                     "response_mime_type": "application/json", 
-                                    "max_output_tokens": 16384, # Aumentado para capturar textos longos
+                                    "max_output_tokens": 20000,
                                     "temperature": 0.0
                                 },
                                 safety_settings=SAFETY_SETTINGS,
-                                request_options={"timeout": 900}
+                                request_options={"timeout": 1200}
                             )
                             
                             data = extract_json(response.text)
@@ -388,24 +410,25 @@ else:
                                 
                     except Exception as e:
                         if "429" in str(e):
-                            st.error(f"Erro de Cota (429) no modelo {best_model}. Tente novamente em 1 min.")
+                            st.error(f"❌ Erro de Cota (429). Aguarde 1 minuto e tente novamente.")
+                        elif "quota" in str(e).lower():
+                            st.error(f"❌ Limite de requisições atingido. Aguarde alguns minutos.")
                         else:
-                            st.error(f"Erro na auditoria: {str(e)}")
+                            st.error(f"❌ Erro na auditoria: {str(e)}")
                     
                     # --- RESULTADOS ---
                     if success and final_sections:
-                        st.success(f"✅ Sucesso via {best_model}")
+                        st.success(f"✅ Auditoria Completa com {best_model}")
                         st.divider()
                         
                         secs = final_sections
                         cM1, cM2, cM3 = st.columns(3)
-                        divs = sum(1 for s in secs if "DIVERGENTE" in s.get('status', 'OK'))
+                        divs = sum(1 for s in secs if "DIVERGENTE" in s.get('status', 'OK') or "ERRO" in s.get('status', 'OK'))
                         score = 100 - int((divs/max(1, len(secs)))*100) if len(secs) > 0 else 0
                         
                         cM1.metric("Score", f"{score}%")
                         cM2.metric("Seções", f"{len(secs)}/{len(lista_secoes)}")
                         
-                        # Formata data com marcação azul se existir
                         if final_dates and final_dates[0] != "N/A":
                             data_formatted = f"<mark class='anvisa'>{final_dates[0]}</mark>"
                             cM3.markdown(f"**Data Anvisa**<br>{data_formatted}", unsafe_allow_html=True)
@@ -430,15 +453,16 @@ else:
                                 cA.markdown(f"**📄 Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;line-height:1.6;'>{ref_text}</div>", unsafe_allow_html=True)
                                 cB.markdown(f"**📋 Candidato**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;line-height:1.6;'>{bel_text}</div>", unsafe_allow_html=True)
                                 
-                                # Legenda de cores
                                 if "DIVERGENTE" in status or "ERRO" in status:
                                     st.markdown("""
                                     <div style='margin-top:10px;padding:10px;background:#f0f0f0;border-radius:5px;font-size:0.85em;'>
                                     📌 <b>Legenda:</b> 
-                                    <mark class='diff'>Amarelo = Divergência</mark> | 
-                                    <mark class='ort'>Vermelho = Erro Português</mark> | 
-                                    <mark class='anvisa'>Azul = Data Anvisa</mark>
+                                    <mark class='diff'>🟡 Amarelo = Divergência</mark> | 
+                                    <mark class='ort'>🔴 Vermelho = Erro Português</mark> | 
+                                    <mark class='anvisa'>🔵 Azul = Data Anvisa</mark>
                                     </div>
                                     """, unsafe_allow_html=True)
                     elif success:
-                        st.warning("IA processou mas não achou seções compatíveis.")
+                        st.warning("⚠️ IA processou mas não encontrou seções compatíveis.")
+                    else:
+                        st.error("❌ Falha na auditoria. Tente novamente.")
