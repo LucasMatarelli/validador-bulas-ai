@@ -120,7 +120,7 @@ def auto_select_best_model():
             if "pro" in name_lower: score += 50
             if "flash" in name_lower: score += 30
             if "1.5" in name_lower: score += 20
-            if "8b" in name_lower: score += 5
+            if "8b" in name_lower: score += 60 # Aumentado para priorizar modelos leves com cota
             
             # Penaliza/bloqueia modelos inadequados
             if "thinking" in name_lower: score -= 20
@@ -130,6 +130,7 @@ def auto_select_best_model():
             if "tts" in name_lower: score -= 50  # Text-to-speech
             if "nano-banana" in name_lower: score -= 100  # Modelo experimental estranho
             if "deep-research" in name_lower: score -= 50  # Não é para texto geral
+            if "gemma" in name_lower: score -= 200 # CORREÇÃO: Gemma não aceita imagens (causa erro 400)
             
             return score
         
@@ -151,6 +152,11 @@ def auto_select_best_model():
         for model_name in candidates:
             tested_count += 1
             
+            # Pula gemma se tiver "imagens" no contexto (neste caso, sempre evitamos pelo score, mas se chegar aqui...)
+            if "gemma" in model_name.lower():
+                failed_other.append(f"{model_name} (Ignorado: Sem suporte a imagens)")
+                continue
+
             try:
                 st.caption(f"🧪 Testando [{tested_count}/{len(candidates)}]: {model_name}")
                 
