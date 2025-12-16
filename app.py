@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Híbrido (Rigoroso)",
+    page_title="Validador Híbrido (Rigoroso V2)",
     page_icon="🧐",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -36,10 +36,10 @@ st.markdown("""
     .box-bel { background-color: #f1f8e9; border-left: 4px solid #55a68e; }
     .box-ref { border-left: 4px solid #6c757d; }
     
-    /* MARCADORES RIGOROSOS */
-    mark.diff { background-color: #fff9c4; color: #f57f17; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #fbc02d; }
-    mark.ort { background-color: #ffcdd2; color: #c62828; padding: 2px 4px; border-radius: 3px; font-weight: bold; border-bottom: 2px solid #b71c1c; }
-    mark.anvisa { background-color: #e1f5fe; color: #004085; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #4fc3f7; }
+    /* CORES FORTES PARA OS MARCADORES */
+    mark.diff { background-color: #fff176; color: #000; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #fdd835; }
+    mark.ort { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 3px; font-weight: bold; border-bottom: 2px solid #b71c1c; }
+    mark.anvisa { background-color: #b3e5fc; color: #01579b; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #039be5; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -82,7 +82,7 @@ def ocr_with_gemini(images):
     try:
         model = genai.GenerativeModel("models/gemini-1.5-flash")
         response = model.generate_content(
-            ["Transcreva TODO o texto destas imagens exatamente como está escrito.", *images],
+            ["Transcreva TODO o texto destas imagens fielmente. Não adicione comentários.", *images],
             generation_config={"max_output_tokens": 40000}
         )
         return response.text
@@ -198,29 +198,31 @@ if st.button("🚀 AUDITAR AGORA"):
             
             secoes_str = "\n".join([f"- {s}" for s in lista])
             
-            # --- PROMPT RIGOROSO ---
+            # --- PROMPT ATUALIZADO (MODO PROFESSOR DE PORTUGUÊS) ---
             prompt = f"""
-            ATUE COMO UM AUDITOR FARMACÊUTICO EXTREMAMENTE RIGOROSO.
-            SEÇÕES ESPERADAS: {secoes_str}
+            ATUE COMO UM REVISOR ORTOGRÁFICO IMPLACÁVEL.
+            SEÇÕES ALVO: {secoes_str}
             
             SUA MISSÃO:
-            1. Extraia o texto COMPLETO da Referência (ref) e do Candidato (bel).
-            2. O CAMPO 'bel' NUNCA PODE FICAR VAZIO. Copie o texto do candidato fielmente.
+            1. Compare REF vs CAND letra por letra.
+            2. ACENTOS E VÍRGULAS CONTAM COMO ERRO. (Ex: 'frequencia' != 'frequência').
             
-            REGRAS DE MARCAÇÃO (OBRIGATÓRIO USAR HTML NO CAMPO 'bel'):
+            REGRAS OBRIGATÓRIAS DE MARCAÇÃO HTML NO CAMPO 'bel':
             
-            🟡 DIVERGÊNCIAS (<mark class='diff'>texto</mark>):
-               - Marque QUALQUER diferença: letras trocadas, acentos (é vs e), pontuação, espaços duplos.
-               - Marque palavras que estão no candidato mas não na referência (e vice-versa).
+            🟡 DIVERGÊNCIAS GERAIS: Use <mark class='diff'>palavra_candidato</mark>
+               - Use para: palavras trocadas, números diferentes, texto faltando ou sobrando.
+               - EXEMPLO: Se Ref="500mg" e Cand="500 mg", marque <mark class='diff'>500 mg</mark>.
             
-            🔴 ERROS DE PORTUGUÊS (<mark class='ort'>texto</mark>):
-               - Marque erros gramaticais ou ortográficos óbvios (ex: 'contem' sem acento).
+            🔴 ERROS ORTOGRÁFICOS: Use <mark class='ort'>erro</mark>
+               - Use para: falta de acento, erro de digitação, gramática errada.
+               - EXEMPLO: Se Cand="contem" (sem acento), marque <mark class='ort'>contem</mark>.
+               - EXEMPLO: Se Cand="farmaceutico", marque <mark class='ort'>farmaceutico</mark>.
             
-            🔵 DATA ANVISA (<mark class='anvisa'>DD/MM/AAAA</mark>):
-               - Encontre e marque a data de aprovação na seção DIZERES LEGAIS.
+            🔵 DATA ANVISA: Use <mark class='anvisa'>DD/MM/AAAA</mark>
+               - Apenas na seção DIZERES LEGAIS.
             
-            SAÍDA JSON ESTRITA:
-            {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"Texto...", "bel":"Texto com marcas...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
+            JSON ESTRITO:
+            {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"...", "bel":"...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
             """
 
             # 🛑 ZONA MISTRAL
@@ -230,11 +232,11 @@ if st.button("🚀 AUDITAR AGORA"):
                     st.error("Erro: Falha na extração de texto. Arquivo é imagem pura."); st.stop()
 
                 try:
-                    with st.spinner("🌪️ Processando com MISTRAL AI..."):
+                    with st.spinner("🌪️ Mistral analisando ortografia..."):
                         chat = mis_client.chat.complete(
                             model="mistral-small-latest",
                             messages=[
-                                {"role":"system", "content":"Você é um validador JSON rigoroso."},
+                                {"role":"system", "content":"Você é um validador JSON que não tolera erros ortográficos."},
                                 {"role":"user", "content":f"{prompt}\n\n=== REF ===\n{d1['data']}\n\n=== CAND ===\n{d2['data']}"}
                             ],
                             response_format={"type": "json_object"},
@@ -250,7 +252,7 @@ if st.button("🚀 AUDITAR AGORA"):
             elif pag == "Gráfica x Arte":
                 if not gem_ok: st.error("GEMINI OFF"); st.stop()
                 try:
-                    with st.spinner("💎 Processando com GEMINI..."):
+                    with st.spinner("💎 Gemini comparando visualmente..."):
                         model = genai.GenerativeModel("models/gemini-1.5-flash")
                         payload = [prompt]
                         payload.append(f"REF:\n{d1['data']}" if d1['type']=='text' else d1['data'])
