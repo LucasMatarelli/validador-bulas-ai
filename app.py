@@ -13,8 +13,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Sniper V2",
-    page_icon="🎯",
+    page_title="Validador V3 (Auto-Detect)",
+    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -76,28 +76,43 @@ def configure_gemini():
     genai.configure(api_key=api_key)
     return True
 
-def get_correct_flash_name():
+def get_best_available_model():
     """
-    Descobre qual é o nome CORRETO do modelo Flash disponível na conta do usuário.
-    Evita erro 404 por errar o nome (ex: gemini-1.5-flash vs gemini-1.5-flash-001).
+    LISTA o que a conta tem e pega o melhor, SEM ADIVINHAR NOME.
     """
     try:
-        models = genai.list_models()
-        # Procura qualquer coisa que tenha 'flash' e '1.5' e suporte geração
-        for m in models:
-            if 'generateContent' in m.supported_generation_methods:
-                if 'gemini-1.5-flash' in m.name:
-                    return m.name # Retorna o nome exato (ex: models/gemini-1.5-flash-001)
+        # Pega TODOS os modelos da conta
+        all_models = list(genai.list_models())
         
-        # Se não achar o 1.5, tenta o 2.0 Flash Lite (backup)
-        for m in models:
-            if 'generateContent' in m.supported_generation_methods:
-                if 'flash' in m.name and 'lite' in m.name:
-                    return m.name
+        # Filtra só os que geram texto/conteúdo
+        candidates = [m for m in all_models if 'generateContent' in m.supported_generation_methods]
+        
+        if not candidates:
+            return None, "Sua chave API não retornou nenhum modelo. Verifique se o Google AI Studio está ativo."
 
-        return "models/gemini-1.5-flash" # Tentativa padrão se a listagem falhar
-    except:
-        return "models/gemini-1.5-flash"
+        # Define pontuação para escolher o melhor
+        def score_model(m):
+            name = m.name.lower()
+            s = 0
+            if 'flash' in name: s += 100       # Prioridade máxima (rápido e barato)
+            if '1.5' in name: s += 50          # Versão estável
+            if '001' in name: s += 10          # Versões fixas costumam ser estáveis
+            if '8b' in name: s += 20           # Versões leves
+            
+            # Penalidades
+            if 'vision' in name: s -= 50       # Modelos antigos de visão
+            if 'gemma' in name: s -= 200       # Gemma não aceita imagens
+            return s
+
+        # Ordena pelo score
+        candidates.sort(key=score_model, reverse=True)
+        
+        # Pega o campeão
+        best_model = candidates[0]
+        return best_model.name, f"Modelo detectado: {best_model.name}"
+
+    except Exception as e:
+        return None, f"Erro ao listar modelos: {str(e)}"
 
 def process_file(uploaded_file):
     if not uploaded_file: return None
@@ -170,21 +185,26 @@ def normalize_titles(data, allowed):
 # ----------------- INTERFACE -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.markdown("### Validador Sniper V2")
+    st.markdown("### Validador V3")
     
     status_api = configure_gemini()
+    
+    model_name = None
     if status_api: 
         st.success("API Conectada")
-        # Identifica o modelo correto na inicialização
-        nome_modelo = get_correct_flash_name()
-        st.caption(f"Modelo Ativo: `{nome_modelo}`")
+        # DETECTA O MODELO AGORA
+        model_name, msg_model = get_best_available_model()
+        if model_name:
+            st.info(f"✅ {msg_model}")
+        else:
+            st.error(msg_model)
     else: 
         st.error("Sem Chave API")
 
     st.divider()
-    st.info("Este validador busca automaticamente o modelo Flash correto da sua conta.")
+    st.caption("Este sistema não chuta nomes de modelos. Ele usa o que sua conta disponibiliza.")
 
-st.markdown("<h1 style='color:#2e7d32;text-align:center;'>Validador Farmacêutico Blindado</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:#2e7d32;text-align:center;'>Validador Farmacêutico (Auto-Detect)</h1>", unsafe_allow_html=True)
 
 tipo = st.radio("Tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
 lista_secoes = SECOES_PROFISSIONAL if tipo == "Profissional" else SECOES_PACIENTE
@@ -194,15 +214,14 @@ f1 = c1.file_uploader("📂 Referência (PDF/Word)", type=["pdf", "docx"])
 f2 = c2.file_uploader("📂 Candidato (PDF/Word)", type=["pdf", "docx"])
 
 if st.button("🚀 INICIAR AUDITORIA"):
-    if f1 and f2 and status_api:
+    if f1 and f2 and status_api and model_name:
         with st.spinner("📖 Lendo arquivos..."):
             d1 = process_file(f1)
             d2 = process_file(f2)
             gc.collect()
 
         if d1 and d2:
-            # USA O NOME DESCOBERTO DINAMICAMENTE
-            model_name = get_correct_flash_name()
+            # USA O NOME EXATO RETORNADO PELA API
             model = genai.GenerativeModel(model_name)
             
             secoes_txt = "\n".join([f"- {s}" for s in lista_secoes])
@@ -289,13 +308,13 @@ if st.button("🚀 INICIAR AUDITORIA"):
 
                     else:
                         st.error("Erro: A IA não retornou o formato JSON correto. Tente novamente.")
+                        st.code(response.text) # Mostra o que veio errado
                         
             except Exception as e:
                 err_msg = str(e).lower()
                 if "429" in err_msg or "quota" in err_msg:
-                    st.error("🚨 LIMITE DE COTA ATINGIDO!")
-                    st.info("Solução: Crie uma nova API KEY no Google AI Studio.")
+                    st.error("🚨 LIMITE DE COTA ATINGIDO! Troque a chave API.")
                 else:
                     st.error(f"Erro inesperado: {e}")
     else:
-        st.warning("⚠️ Preencha todos os campos e verifique a API.")
+        st.warning("⚠️ Verifique: Arquivos enviados? API Key válida? Modelo detectado?")
