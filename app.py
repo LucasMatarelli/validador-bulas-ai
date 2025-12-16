@@ -299,7 +299,7 @@ else:
                 success = False
                 active_model_name = "Desconhecido"
                 
-                # --- TENTATIVA 1: MISTRAL (Oficial) ---
+                # --- TENTATIVA 1: MISTRAL (Prioridade) ---
                 if use_mistral:
                     try:
                         with st.spinner("🌪️ Processando com MISTRAL AI (Large)..."):
@@ -328,7 +328,7 @@ else:
                         use_mistral = False # Falhou, força Gemini
                         success = False
 
-                # --- TENTATIVA 2: GEMINI (Fallback ou Imagens) ---
+                # --- TENTATIVA 2: GEMINI (Fallback, Imagens ou Gráfica x Arte) ---
                 if not success:
                     if not gemini_ok:
                         st.error("❌ Mistral não pôde ser usado e Gemini não está configurado.")
