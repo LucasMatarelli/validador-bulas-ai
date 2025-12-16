@@ -122,10 +122,14 @@ def auto_select_best_model():
             if "1.5" in name_lower: score += 20
             if "8b" in name_lower: score += 5
             
-            # Penaliza modelos específicos que podem não funcionar bem
+            # Penaliza/bloqueia modelos inadequados
             if "thinking" in name_lower: score -= 20
             if "vision" in name_lower: score -= 10
             if "image-generation" in name_lower: score -= 30
+            if "robotics" in name_lower: score -= 100  # Modelo de robótica
+            if "tts" in name_lower: score -= 50  # Text-to-speech
+            if "nano-banana" in name_lower: score -= 100  # Modelo experimental estranho
+            if "deep-research" in name_lower: score -= 50  # Não é para texto geral
             
             return score
         
@@ -136,8 +140,8 @@ def auto_select_best_model():
             for i, model_name in enumerate(candidates[:20], 1):
                 st.caption(f"{i}. {model_name} (Score: {priority_score(model_name)})")
         
-        # Teste SUPER SIMPLES - só verifica se responde
-        test_prompt = "Responda apenas: OK"
+        # Teste REAL com JSON para validar que o modelo funciona
+        test_prompt = 'Responda em JSON: {"status": "ok", "modelo": "funcional"}'
         
         tested_count = 0
         failed_quota = []
@@ -155,17 +159,34 @@ def auto_select_best_model():
                 response = model.generate_content(
                     test_prompt,
                     generation_config={
-                        "max_output_tokens": 50,
+                        "max_output_tokens": 100,
                         "temperature": 0.0
                     },
                     safety_settings=SAFETY_SETTINGS,
                     request_options={"timeout": 30}
                 )
                 
-                # Se respondeu QUALQUER coisa, aceita!
+                # Validação COMPLETA: verifica se respondeu E se a resposta é válida
                 if response and hasattr(response, 'text') and response.text:
-                    st.success(f"✅ ENCONTRADO! Modelo funcional: {model_name}")
-                    return model_name
+                    # Verifica se não tem finish_reason problemático
+                    if hasattr(response, 'candidates') and response.candidates:
+                        finish_reason = response.candidates[0].finish_reason
+                        # finish_reason: 0=UNSPECIFIED, 1=STOP(ok), 2=MAX_TOKENS, 3=SAFETY, 4=RECITATION, 5=OTHER
+                        if finish_reason in [0, 1, 2]:  # Aceita apenas razões válidas
+                            # Tenta validar se é JSON
+                            try:
+                                json.loads(response.text.replace("```json", "").replace("```", "").strip())
+                                st.success(f"✅ ENCONTRADO! Modelo funcional: {model_name}")
+                                return model_name
+                            except:
+                                # Se não é JSON válido mas respondeu, ainda pode ser útil
+                                if len(response.text) > 10:
+                                    st.success(f"✅ ENCONTRADO! Modelo funcional: {model_name}")
+                                    return model_name
+                        else:
+                            st.warning(f"⚠️ Modelo inadequado: {model_name} (finish_reason={finish_reason})")
+                            failed_other.append(f"{model_name} (finish_reason={finish_reason})")
+                            continue
                     
             except Exception as e:
                 error_msg = str(e).lower()
@@ -174,11 +195,14 @@ def auto_select_best_model():
                 if "429" in error_msg or "quota" in error_msg or "resource_exhausted" in error_msg:
                     failed_quota.append(model_name)
                     st.warning(f"⏭️ Cota excedida: {model_name}")
+                elif "finish_reason" in error_msg or "valid part" in error_msg:
+                    st.warning(f"⚠️ Modelo inadequado: {model_name}")
+                    failed_other.append(f"{model_name} (resposta inválida)")
                 else:
-                    failed_other.append(model_name)
-                    st.warning(f"⚠️ Erro: {model_name} - {str(e)[:100]}")
+                    failed_other.append(f"{model_name} ({str(e)[:50]})")
+                    st.warning(f"⚠️ Erro: {model_name} - {str(e)[:80]}")
                 
-                time.sleep(0.5)  # Pequeno delay entre testes
+                time.sleep(0.3)  # Pequeno delay entre testes
                 continue
         
         # Se chegou aqui, nenhum funcionou
