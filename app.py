@@ -14,8 +14,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Seguro",
-    page_icon="🛡️",
+    page_title="Validador de Bulas (Final)",
+    page_icon="✅",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -96,11 +96,9 @@ def process_uploaded_file(uploaded_file):
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            # Se tiver texto, usa texto (mais rápido e seguro)
             if len(full_text.strip()) > 800:
                 doc.close(); return {"type": "text", "data": full_text}
             
-            # Se for imagem
             images = []
             limit = min(15, len(doc)) 
             for i in range(limit):
@@ -171,7 +169,7 @@ with st.sidebar:
     
     is_connected = configure_gemini()
     if is_connected:
-        st.success("✅ Conectado (Modo Seguro)")
+        st.success("✅ Conectado (Seguro)")
     else:
         st.error("❌ Verifique API Key")
 
@@ -200,33 +198,33 @@ else:
                 gc.collect()
 
             if d1 and d2:
-                # MODELO PADRÃO (O ÚNICO QUE NÃO DÁ 404 NA SUA CONTA)
-                model_name = "models/gemini-1.5-flash"
-                model = genai.GenerativeModel(model_name)
+                # MODELO SEGURO (Flash é o único garantido em todas as contas)
+                model = genai.GenerativeModel("models/gemini-1.5-flash")
                 
                 final_sections = []
                 final_dates = []
                 
-                # DIVISÃO EM 2 PARTES PARA NÃO CORTAR TEXTO
+                # DIVISÃO EM 2 PARTES (SEGURANÇA CONTRA ERRO DE LIMITE)
                 mid = len(lista_secoes) // 2
                 chunks = [lista_secoes[:mid], lista_secoes[mid:]]
                 
-                payload_base = ["CONTEXTO: Auditoria Farmacêutica Rigorosa (OCR)."]
-                if d1['type'] == 'text': payload_base.append(f"--- REF TEXTO ---\n{d1['data']}")
-                else: payload_base.extend(["--- REF IMAGENS ---"] + d1['data'])
+                # VARIÁVEL CORRIGIDA: 'payload'
+                payload = ["CONTEXTO: Auditoria Farmacêutica Rigorosa (OCR)."]
                 
-                if d2['type'] == 'text': payload_base.append(f"--- CAND TEXTO ---\n{d2['data']}")
+                if d1['type'] == 'text': payload.append(f"--- REF TEXTO ---\n{d1['data']}")
+                else: payload.extend(["--- REF IMAGENS ---"] + d1['data'])
+                
+                if d2['type'] == 'text': payload.append(f"--- CAND TEXTO ---\n{d2['data']}")
                 else: payload.extend(["--- CAND IMAGENS ---"] + d2['data'])
 
                 bar = st.progress(0)
                 
                 for i, chunk in enumerate(chunks):
-                    # PAUSA DE SEGURANÇA OBRIGATÓRIA (30s)
-                    # Isso garante que a cota resete e não dê erro 429
+                    # PAUSA OBRIGATÓRIA
                     if i > 0:
                         placeholder = st.empty()
                         for s in range(30, 0, -1):
-                            placeholder.warning(f"⏳ Pausa de segurança para não travar a API: {s}s restantes...")
+                            placeholder.warning(f"⏳ Pausa de segurança da API: {s}s restantes...")
                             time.sleep(1)
                         placeholder.empty()
                     
@@ -258,8 +256,9 @@ else:
                     # Tentativa com Retry
                     for attempt in range(3):
                         try:
+                            # Agora usa 'payload' corretamente
                             response = model.generate_content(
-                                [prompt] + payload_base,
+                                [prompt] + payload,
                                 generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192, "temperature": 0.0},
                                 safety_settings=SAFETY_SETTINGS,
                                 request_options={"timeout": 600}
@@ -273,11 +272,12 @@ else:
                                 break 
                         except Exception as e:
                             if "429" in str(e):
-                                time.sleep(10) # Espera extra se der erro
+                                time.sleep(15)
                                 continue
                             elif "404" in str(e):
-                                st.error("Erro fatal de conexão com a IA.")
+                                st.error("Erro fatal de conexão.")
                                 break
+                            time.sleep(2)
                     
                     bar.progress((i+1)/2)
                 
@@ -287,7 +287,7 @@ else:
                     st.success(f"✅ Análise concluída com sucesso!")
                     st.divider()
                     
-                    secs = final_data.get("SECOES", final_sections) # fallback
+                    secs = final_sections
                     cM1, cM2, cM3 = st.columns(3)
                     
                     divs = sum(1 for s in secs if "DIVERGENTE" in s.get('status', 'OK'))
