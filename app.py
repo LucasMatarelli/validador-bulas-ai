@@ -13,15 +13,15 @@ import time
 from PIL import Image
 from difflib import SequenceMatcher
 
-# ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
+# ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Turbo",
-    page_icon="🚀",
+    page_title="Validador Híbrido (Correção)",
+    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS -----------------
+# ----------------- ESTILOS -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -32,10 +32,11 @@ st.markdown("""
     .mistral-badge { background-color: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
     .gemini-badge { background-color: #e1f5fe; color: #01579b; border: 1px solid #b3e5fc; }
     
-    .box-ref { background-color: #f8f9fa; padding: 15px; border-radius: 5px; font-size: 0.9em; white-space: pre-wrap; }
-    .box-bel { background-color: #f1f8e9; padding: 15px; border-radius: 5px; font-size: 0.9em; white-space: pre-wrap; }
+    .box-content { background-color: #f8f9fa; padding: 15px; border-radius: 5px; font-size: 0.9em; white-space: pre-wrap; line-height: 1.5; }
+    .box-bel { background-color: #f1f8e9; border-left: 4px solid #55a68e; }
+    .box-ref { border-left: 4px solid #6c757d; }
     
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; }
+    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
     mark.ort { background-color: #ffcccc; color: #cc0000; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
     mark.anvisa { background-color: #cce5ff; color: #004085; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
 </style>
@@ -68,15 +69,24 @@ SAFETY = {
 # ----------------- FUNÇÕES BACKEND -----------------
 
 def configure_apis():
-    # Gemini
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if gem_key: genai.configure(api_key=gem_key)
     
-    # Mistral
     mis_key = st.secrets.get("MISTRAL_API_KEY") or os.environ.get("MISTRAL_API_KEY")
     mistral_client = Mistral(api_key=mis_key) if mis_key else None
     
     return (gem_key is not None), mistral_client
+
+def ocr_with_gemini(images):
+    """ Usa Gemini Flash para extrair texto de imagens (OCR) """
+    try:
+        model = genai.GenerativeModel("models/gemini-1.5-flash")
+        response = model.generate_content(
+            ["Transcreva TODO o texto destas imagens exatamente como está escrito. Não pule nada.", *images],
+            generation_config={"max_output_tokens": 40000}
+        )
+        return response.text
+    except: return ""
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -86,45 +96,54 @@ def process_uploaded_file(uploaded_file):
         
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
-            text = "\n".join([p.text for p in doc.paragraphs])
-            return {"type": "text", "data": text}
+            txt = "\n".join([p.text for p in doc.paragraphs])
+            return {"type": "text", "data": txt, "len": len(txt)}
             
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
+            
+            # 1. Tentativa Texto Direto
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            # Se tem texto, usa TEXTO
+            # Se tiver texto suficiente, usa. Se for muito curto (<100 chars), suspeita de imagem.
             if len(full_text.strip()) > 100: 
-                doc.close(); return {"type": "text", "data": full_text}
+                doc.close()
+                return {"type": "text", "data": full_text, "len": len(full_text)}
             
-            # Se não tem texto, é IMAGEM
+            # 2. Fallback: OCR (PDF Escaneado ou Vazio)
+            msg_ocr = st.toast(f"📄 '{uploaded_file.name}': Texto não detectado. Ativando OCR...", icon="👁️")
+            
             images = []
             limit = min(15, len(doc))
             for i in range(limit):
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
+                pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
-            doc.close(); gc.collect()
-            return {"type": "images", "data": images}
+            doc.close()
+            gc.collect()
+            
+            extracted = ocr_with_gemini(images)
+            
+            if extracted and len(extracted) > 50:
+                return {"type": "text", "data": extracted, "len": len(extracted)}
+            else:
+                return {"type": "images", "data": images, "len": 0} # Se falhar tudo
             
     except Exception as e:
-        st.error(f"Erro arquivo: {e}")
+        st.error(f"Erro: {e}")
         return None
     return None
 
 def extract_json(text):
     text = re.sub(r'//.*', '', text.replace("```json", "").replace("```", "").strip())
     try: return json.loads(text, strict=False)
-    except: pass
-    try:
-        if '"SECOES":' in text:
-            start = text.find('{')
-            end = text.rfind('}') + 1
+    except: 
+        try:
+            start = text.find('{'); end = text.rfind('}') + 1
             return json.loads(text[start:end], strict=False)
-    except: pass
-    return None
+        except: return None
 
 def normalize_sections(data, allowed):
     if not data or "SECOES" not in data: return data
@@ -147,14 +166,13 @@ def normalize_sections(data, allowed):
 # ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.title("Validador Rápido")
+    st.title("Validador Rígido")
     pag = st.radio("Menu", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
     st.divider()
     
     gem_ok, mis_client = configure_apis()
     if mis_client: st.success("🌪️ Mistral: ON")
-    else: st.warning("⚠️ Mistral: OFF")
-    
+    else: st.error("⚠️ Mistral: OFF")
     if gem_ok: st.success("💎 Gemini: ON")
     else: st.error("❌ Gemini: OFF")
 
@@ -168,51 +186,46 @@ f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 AUDITAR AGORA"):
     if f1 and f2:
-        with st.spinner("📖 Lendo arquivos..."):
+        with st.spinner("📖 Lendo arquivos e verificando conteúdo..."):
             d1 = process_uploaded_file(f1)
             d2 = process_uploaded_file(f2)
             gc.collect()
         
         if d1 and d2:
+            # Debug invisível para garantir que leu
+            if d2.get('len', 0) < 50 and d2['type'] == 'text':
+                st.warning("⚠️ Atenção: O arquivo Candidato parece estar vazio ou ilegível.")
+
             final_res = None
             model_used = "N/A"
             success = False
             
-            # --- PROMPT ---
             secoes_str = "\n".join([f"- {s}" for s in lista])
             prompt = f"""
             ATUE COMO AUDITOR FARMACÊUTICO.
             SEÇÕES ESPERADAS: {secoes_str}
             
-            REGRAS:
-            1. Extraia o texto COMPLETO.
-            2. Compare letra por letra.
+            REGRAS RÍGIDAS:
+            1. Extraia o texto COMPLETO da Referência (ref) e do Candidato (bel).
+            2. OBRIGATÓRIO: O campo 'bel' NÃO PODE SER VAZIO. Copie o texto do candidato mesmo que seja idêntico.
             3. Marque erros no 'bel': <mark class='diff'>diferença</mark>, <mark class='ort'>erro_pt</mark>.
-            4. Extraia data em DIZERES LEGAIS: <mark class='anvisa'>DD/MM/AAAA</mark>.
             
-            JSON: {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"", "bel":"", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
+            JSON: {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"Texto Completo...", "bel":"Texto Completo...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
             """
 
-            # ==========================================================
-            # 🛑 DECISÃO RÍGIDA
-            # ==========================================================
-            
-            if pag == "Ref x BELFAR" or pag == "Conferência MKT":
-                if not mis_client:
-                    st.error("🛑 ERRO: Chave 'MISTRAL_API_KEY' não encontrada.")
-                    st.stop()
-                
+            # 🛑 ZONA MISTRAL (Ref x BELFAR / MKT)
+            if pag in ["Ref x BELFAR", "Conferência MKT"]:
+                if not mis_client: st.error("MISTRAL OFF"); st.stop()
                 if d1['type'] == 'images' or d2['type'] == 'images':
-                    st.error("🛑 ERRO: Mistral não lê imagens (PDF escaneado). Use a aba 'Gráfica x Arte'.")
-                    st.stop()
+                    st.error("Erro: Falha na extração de texto. Arquivo é imagem pura."); st.stop()
 
                 try:
-                    with st.spinner("🌪️ Mistral Small (Rápido)..."):
+                    with st.spinner("🌪️ Processando com MISTRAL AI..."):
                         chat = mis_client.chat.complete(
-                            model="mistral-small-latest", # <--- TROQUEI AQUI PARA O RÁPIDO
+                            model="mistral-small-latest",
                             messages=[
-                                {"role":"system", "content":"Retorne APENAS JSON válido."},
-                                {"role":"user", "content":f"{prompt}\n\nREF:\n{d1['data']}\n\nCAND:\n{d2['data']}"}
+                                {"role":"system", "content":"Você é um robô JSON estrito."},
+                                {"role":"user", "content":f"{prompt}\n\n=== REF ===\n{d1['data']}\n\n=== CAND ===\n{d2['data']}"}
                             ],
                             response_format={"type": "json_object"},
                             temperature=0.0
@@ -221,39 +234,26 @@ if st.button("🚀 AUDITAR AGORA"):
                         model_used = "🌪️ Mistral Small"
                         success = True
                 except Exception as e:
-                    st.error(f"❌ Erro Mistral: {e}")
-                    st.stop()
+                    st.error(f"Erro Mistral: {e}"); st.stop()
 
+            # 🛑 ZONA GEMINI (Gráfica)
             elif pag == "Gráfica x Arte":
-                if not gem_ok:
-                    st.error("🛑 ERRO: Chave 'GEMINI_API_KEY' não encontrada.")
-                    st.stop()
-
+                if not gem_ok: st.error("GEMINI OFF"); st.stop()
                 try:
-                    best_gem = "models/gemini-1.5-flash"
-                    with st.spinner(f"💎 Gemini Flash..."):
-                        model = genai.GenerativeModel(best_gem)
-                        payload = ["Auditoria."]
+                    with st.spinner("💎 Processando com GEMINI..."):
+                        model = genai.GenerativeModel("models/gemini-1.5-flash")
+                        payload = [prompt]
+                        payload.append(f"REF:\n{d1['data']}" if d1['type']=='text' else d1['data'])
+                        payload.append(f"CAND:\n{d2['data']}" if d2['type']=='text' else d2['data'])
                         
-                        if d1['type']=='text': payload.append(f"REF:\n{d1['data']}")
-                        else: payload.extend(["REF IMG:"] + d1['data'])
-                        
-                        if d2['type']=='text': payload.append(f"CAND:\n{d2['data']}")
-                        else: payload.extend(["CAND IMG:"] + d2['data'])
-                        
-                        res = model.generate_content(
-                            [prompt] + payload,
-                            generation_config={"response_mime_type": "application/json"},
-                            safety_settings=SAFETY
-                        )
+                        res = model.generate_content(payload, generation_config={"response_mime_type": "application/json"})
                         final_res = res.text
-                        model_used = f"💎 Gemini Flash"
+                        model_used = "💎 Gemini Flash"
                         success = True
                 except Exception as e:
-                    st.error(f"❌ Erro Gemini: {e}")
-                    st.stop()
+                    st.error(f"Erro Gemini: {e}"); st.stop()
 
-            # --- RENDER ---
+            # RENDERIZAÇÃO
             if success and final_res:
                 cls = 'mistral-badge' if 'Mistral' in model_used else 'gemini-badge'
                 st.markdown(f"<div class='ia-badge {cls}'>Processado por: {model_used}</div>", unsafe_allow_html=True)
@@ -267,12 +267,12 @@ if st.button("🚀 AUDITAR AGORA"):
                     st.success("✅ Concluído!")
                     st.divider()
                     
-                    cM1, cM2, cM3 = st.columns(3)
-                    errs = sum(1 for s in secs if "DIVERGENTE" in s['status'] or "ERRO" in s['status'])
+                    c1, c2, c3 = st.columns(3)
+                    errs = sum(1 for s in secs if s['status'] != "OK")
                     score = 100 - int((errs/max(1,len(secs)))*100) if secs else 0
-                    cM1.metric("Score", f"{score}%")
-                    cM2.metric("Seções", f"{len(secs)}/{len(lista)}")
-                    cM3.markdown(f"**Data:** <mark class='anvisa'>{dates[0] if dates else 'N/A'}</mark>", unsafe_allow_html=True)
+                    c1.metric("Score", f"{score}%")
+                    c2.metric("Seções", f"{len(secs)}/{len(lista)}")
+                    c3.markdown(f"**Data:** <mark class='anvisa'>{dates[0] if dates else 'N/A'}</mark>", unsafe_allow_html=True)
                     
                     st.markdown("---")
                     for s in secs:
@@ -282,8 +282,8 @@ if st.button("🚀 AUDITAR AGORA"):
                         
                         with st.expander(f"{icon} {s['titulo']} - {s['status']}"):
                             cR, cB = st.columns(2)
-                            cR.markdown(f"<div class='box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
-                            cB.markdown(f"<div class='box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
+                            cR.markdown(f"**Referência**<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
+                            cB.markdown(f"**Candidato**<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
                     st.error("Erro JSON.")
     else:
