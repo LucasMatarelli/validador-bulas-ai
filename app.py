@@ -88,7 +88,7 @@ def configure_gemini():
 
 def auto_select_best_model():
     """
-    VERSÃO CORRIGIDA: Testa modelos com critérios mais flexíveis
+    VERSÃO AGRESSIVA: Testa TODOS os modelos disponíveis até encontrar um que funcione
     """
     try:
         all_models = list(genai.list_models())
@@ -100,71 +100,114 @@ def auto_select_best_model():
                 candidates.append(m.name)
         
         if not candidates:
-            st.warning("⚠️ Nenhum modelo encontrado. Usando padrão.")
-            return "models/gemini-1.5-flash"
+            st.error("❌ Nenhum modelo encontrado na API")
+            return None
         
-        # Sistema de prioridade melhorado
+        st.info(f"🔍 Encontrados {len(candidates)} modelos. Testando todos...")
+        
+        # Sistema de prioridade COMPLETO
         def priority_score(name):
             score = 0
             name_lower = name.lower()
             
-            # Prioriza modelos experimentais e mais recentes
+            # Prioriza modelos mais poderosos
             if "gemini" in name_lower: score += 10
-            if "exp" in name_lower: score += 80  # Aumentado
+            if "exp" in name_lower: score += 70
             if "2.0" in name_lower or "2-0" in name_lower: score += 100
-            if "1217" in name_lower: score += 95  # Versão mais recente
+            if "1217" in name_lower: score += 95
             if "1206" in name_lower: score += 90
-            if "pro" in name_lower: score += 50  # Aumentado
+            if "1121" in name_lower: score += 85
+            if "pro" in name_lower: score += 50
             if "flash" in name_lower: score += 30
             if "1.5" in name_lower: score += 20
             if "8b" in name_lower: score += 5
+            
+            # Penaliza modelos específicos que podem não funcionar bem
+            if "thinking" in name_lower: score -= 20
+            if "vision" in name_lower: score -= 10
+            if "image-generation" in name_lower: score -= 30
             
             return score
         
         candidates.sort(key=priority_score, reverse=True)
         
-        # Teste SIMPLIFICADO - apenas verifica se responde
-        test_prompt = """Responda em JSON simples: {"status": "ok", "teste": "funcionando"}"""
+        # Mostra os modelos ordenados
+        with st.expander("📋 Modelos Ordenados por Prioridade"):
+            for i, model_name in enumerate(candidates[:20], 1):
+                st.caption(f"{i}. {model_name} (Score: {priority_score(model_name)})")
         
-        # Testa os 5 melhores modelos
-        for model_name in candidates[:5]:
+        # Teste SUPER SIMPLES - só verifica se responde
+        test_prompt = "Responda apenas: OK"
+        
+        tested_count = 0
+        failed_quota = []
+        failed_other = []
+        
+        # TESTA TODOS OS MODELOS ATÉ ENCONTRAR UM QUE FUNCIONE
+        for model_name in candidates:
+            tested_count += 1
+            
             try:
+                st.caption(f"🧪 Testando [{tested_count}/{len(candidates)}]: {model_name}")
+                
                 model = genai.GenerativeModel(model_name)
                 
                 response = model.generate_content(
                     test_prompt,
                     generation_config={
-                        "max_output_tokens": 100,
+                        "max_output_tokens": 50,
                         "temperature": 0.0
                     },
                     safety_settings=SAFETY_SETTINGS,
-                    request_options={"timeout": 45}  # Timeout aumentado
+                    request_options={"timeout": 30}
                 )
                 
-                # Critério FLEXÍVEL: se respondeu algo, aceita
-                if response and response.text and len(response.text) > 5:
-                    st.info(f"🎯 Modelo testado com sucesso: {model_name}")
+                # Se respondeu QUALQUER coisa, aceita!
+                if response and hasattr(response, 'text') and response.text:
+                    st.success(f"✅ ENCONTRADO! Modelo funcional: {model_name}")
                     return model_name
                     
             except Exception as e:
                 error_msg = str(e).lower()
                 
-                # Se erro 429 (cota), pula e tenta próximo
+                # Classifica os erros
                 if "429" in error_msg or "quota" in error_msg or "resource_exhausted" in error_msg:
-                    st.warning(f"⏭️ Modelo {model_name}: cota excedida, testando próximo...")
-                    time.sleep(1)
-                    continue
+                    failed_quota.append(model_name)
+                    st.warning(f"⏭️ Cota excedida: {model_name}")
+                else:
+                    failed_other.append(model_name)
+                    st.warning(f"⚠️ Erro: {model_name} - {str(e)[:100]}")
                 
-                # Outros erros, continua testando
+                time.sleep(0.5)  # Pequeno delay entre testes
                 continue
         
-        # Se nenhum passou nos testes, retorna o melhor ranqueado
-        st.warning(f"⚠️ Nenhum modelo passou no teste. Usando: {candidates[0]}")
+        # Se chegou aqui, nenhum funcionou
+        st.error(f"""
+        ❌ NENHUM MODELO FUNCIONOU!
+        
+        📊 Estatísticas:
+        - Total testado: {tested_count}
+        - Falhas por cota: {len(failed_quota)}
+        - Outras falhas: {len(failed_other)}
+        """)
+        
+        # Mostra detalhes dos erros
+        with st.expander("🔍 Detalhes dos Erros"):
+            st.write("**Modelos com cota excedida:**")
+            for m in failed_quota[:10]:
+                st.caption(f"- {m}")
+            
+            st.write("**Modelos com outros erros:**")
+            for m in failed_other[:10]:
+                st.caption(f"- {m}")
+        
+        # Última tentativa: usar o mais priorizado mesmo sem testar
+        st.warning(f"⚠️ Tentando forçar o uso de: {candidates[0]}")
         return candidates[0]
         
     except Exception as e:
-        st.error(f"❌ Erro ao selecionar modelo: {e}")
-        return "models/gemini-1.5-flash"  # Fallback seguro
+        st.error(f"❌ Erro fatal ao selecionar modelo: {e}")
+        return None
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: 
@@ -281,7 +324,7 @@ with st.sidebar:
     is_connected = configure_gemini()
     if is_connected:
         st.success("✅ Conectado à API")
-        st.caption("Seleção automática de IA")
+        st.caption("Testagem de TODOS os modelos")
     else:
         st.error("❌ API Key não encontrada")
         st.caption("Configure GEMINI_API_KEY")
@@ -289,6 +332,7 @@ with st.sidebar:
 # ----------------- LÓGICA PRINCIPAL -----------------
 if pagina == "🏠 Início":
     st.markdown("<h1 style='color:#55a68e;text-align:center;'>Validador Inteligente</h1>", unsafe_allow_html=True)
+    st.info("💡 Este sistema testa TODOS os modelos disponíveis do Google Generative AI automaticamente")
     c1, c2, c3 = st.columns(3)
     c1.info("💊 Ref x BELFAR")
     c2.info("📋 Conf. MKT")
@@ -313,12 +357,13 @@ else:
         elif not is_connected:
             st.error("❌ API não configurada. Verifique GEMINI_API_KEY")
         else:
-            # --- FASE 1: ESCOLHA DA IA ---
-            with st.spinner("🔍 Selecionando melhor IA disponível..."):
+            # --- FASE 1: ESCOLHA DA IA (TESTA TODAS) ---
+            with st.spinner("🔍 Testando TODOS os modelos disponíveis..."):
                 best_model = auto_select_best_model()
             
             if not best_model:
-                st.error("❌ Erro crítico na seleção de modelo")
+                st.error("❌ Nenhum modelo disponível. Verifique sua conta Google AI.")
+                st.info("💡 Dica: Acesse https://aistudio.google.com para verificar sua cota")
             else:
                 st.success(f"✅ IA Selecionada: **{best_model}**", icon="🤖")
                 time.sleep(0.5)
@@ -454,9 +499,10 @@ else:
                     except Exception as e:
                         error_str = str(e).lower()
                         if "429" in error_str or "quota" in error_str:
-                            st.error(f"❌ Limite de cota atingido. Aguarde 60 segundos e tente novamente.")
+                            st.error(f"❌ Limite de cota atingido. Aguarde 60 segundos.")
+                            st.info("💡 Acesse https://aistudio.google.com para verificar sua cota")
                         elif "resource_exhausted" in error_str:
-                            st.error(f"❌ Recursos esgotados. Tente novamente em alguns minutos.")
+                            st.error(f"❌ Recursos esgotados. Aguarde alguns minutos.")
                         else:
                             st.error(f"❌ Erro na auditoria: {str(e)}")
                     
