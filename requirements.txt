@@ -3,3 +3,4 @@ google-generativeai
 pymupdf
 python-docx
 Pillow
+groq
