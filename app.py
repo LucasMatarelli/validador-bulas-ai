@@ -15,8 +15,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Rígido",
-    page_icon="🚧",
+    page_title="Validador Turbo",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -29,7 +29,7 @@ st.markdown("""
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; font-size: 16px; }
     
     .ia-badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.8em; margin-bottom: 10px; display: inline-block; }
-    .mistral-badge { background-color: #fff3e0; color: #ef6c00; border: 1px solid #ffe0b2; }
+    .mistral-badge { background-color: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
     .gemini-badge { background-color: #e1f5fe; color: #01579b; border: 1px solid #b3e5fc; }
     
     .box-ref { background-color: #f8f9fa; padding: 15px; border-radius: 5px; font-size: 0.9em; white-space: pre-wrap; }
@@ -77,10 +77,6 @@ def configure_apis():
     mistral_client = Mistral(api_key=mis_key) if mis_key else None
     
     return (gem_key is not None), mistral_client
-
-def auto_select_best_gemini_model():
-    """ SELECIONA 1.5 FLASH (O Mais seguro) """
-    return "models/gemini-1.5-flash"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -151,13 +147,13 @@ def normalize_sections(data, allowed):
 # ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.title("Validador Rígido")
+    st.title("Validador Rápido")
     pag = st.radio("Menu", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
     st.divider()
     
     gem_ok, mis_client = configure_apis()
     if mis_client: st.success("🌪️ Mistral: ON")
-    else: st.warning("⚠️ Mistral: OFF (Verifique MISTRAL_API_KEY)")
+    else: st.warning("⚠️ Mistral: OFF")
     
     if gem_ok: st.success("💎 Gemini: ON")
     else: st.error("❌ Gemini: OFF")
@@ -182,7 +178,7 @@ if st.button("🚀 AUDITAR AGORA"):
             model_used = "N/A"
             success = False
             
-            # --- PROMPT PADRÃO ---
+            # --- PROMPT ---
             secoes_str = "\n".join([f"- {s}" for s in lista])
             prompt = f"""
             ATUE COMO AUDITOR FARMACÊUTICO.
@@ -198,47 +194,44 @@ if st.button("🚀 AUDITAR AGORA"):
             """
 
             # ==========================================================
-            # 🛑 LÓGICA RÍGIDA DE SEPARAÇÃO (SEM FALLBACK CRUZADO)
+            # 🛑 DECISÃO RÍGIDA
             # ==========================================================
             
             if pag == "Ref x BELFAR" or pag == "Conferência MKT":
-                # >>>> ZONA EXCLUSIVA MISTRAL <<<<
                 if not mis_client:
-                    st.error("🛑 ERRO: Você está na área do MISTRAL, mas a chave 'MISTRAL_API_KEY' não foi encontrada.")
+                    st.error("🛑 ERRO: Chave 'MISTRAL_API_KEY' não encontrada.")
                     st.stop()
                 
-                # Verifica se é imagem (Mistral não lê imagem)
                 if d1['type'] == 'images' or d2['type'] == 'images':
-                    st.error("🛑 ERRO DE ARQUIVO: O Mistral lê apenas TEXTO. Você enviou um PDF escaneado (imagem). Use a aba 'Gráfica x Arte' para imagens.")
+                    st.error("🛑 ERRO: Mistral não lê imagens (PDF escaneado). Use a aba 'Gráfica x Arte'.")
                     st.stop()
 
                 try:
-                    with st.spinner("🌪️ Processando EXCLUSIVAMENTE com MISTRAL AI..."):
+                    with st.spinner("🌪️ Mistral Small (Rápido)..."):
                         chat = mis_client.chat.complete(
-                            model="mistral-large-latest",
+                            model="mistral-small-latest", # <--- TROQUEI AQUI PARA O RÁPIDO
                             messages=[
-                                {"role":"system", "content":"Você retorna APENAS JSON válido."},
+                                {"role":"system", "content":"Retorne APENAS JSON válido."},
                                 {"role":"user", "content":f"{prompt}\n\nREF:\n{d1['data']}\n\nCAND:\n{d2['data']}"}
                             ],
                             response_format={"type": "json_object"},
                             temperature=0.0
                         )
                         final_res = chat.choices[0].message.content
-                        model_used = "🌪️ Mistral Large"
+                        model_used = "🌪️ Mistral Small"
                         success = True
                 except Exception as e:
-                    st.error(f"❌ Erro no MISTRAL: {e}")
-                    st.stop() # PARA TUDO. NÃO TENTA GEMINI.
+                    st.error(f"❌ Erro Mistral: {e}")
+                    st.stop()
 
             elif pag == "Gráfica x Arte":
-                # >>>> ZONA EXCLUSIVA GEMINI <<<<
                 if not gem_ok:
-                    st.error("🛑 ERRO: Você está na área GRÁFICA, mas a chave 'GEMINI_API_KEY' não foi encontrada.")
+                    st.error("🛑 ERRO: Chave 'GEMINI_API_KEY' não encontrada.")
                     st.stop()
 
                 try:
                     best_gem = "models/gemini-1.5-flash"
-                    with st.spinner(f"💎 Processando EXCLUSIVAMENTE com GEMINI ({best_gem})..."):
+                    with st.spinner(f"💎 Gemini Flash..."):
                         model = genai.GenerativeModel(best_gem)
                         payload = ["Auditoria."]
                         
@@ -257,10 +250,10 @@ if st.button("🚀 AUDITAR AGORA"):
                         model_used = f"💎 Gemini Flash"
                         success = True
                 except Exception as e:
-                    st.error(f"❌ Erro no GEMINI: {e}")
+                    st.error(f"❌ Erro Gemini: {e}")
                     st.stop()
 
-            # --- RENDERIZAÇÃO ---
+            # --- RENDER ---
             if success and final_res:
                 cls = 'mistral-badge' if 'Mistral' in model_used else 'gemini-badge'
                 st.markdown(f"<div class='ia-badge {cls}'>Processado por: {model_used}</div>", unsafe_allow_html=True)
@@ -271,7 +264,7 @@ if st.button("🚀 AUDITAR AGORA"):
                     secs = norm.get("SECOES", [])
                     dates = data.get("METADADOS", {}).get("datas", [])
                     
-                    st.success("✅ Auditoria Concluída!")
+                    st.success("✅ Concluído!")
                     st.divider()
                     
                     cM1, cM2, cM3 = st.columns(3)
