@@ -15,8 +15,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Híbrido (Correção)",
-    page_icon="🧬",
+    page_title="Validador Híbrido (Rigoroso)",
+    page_icon="🧐",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -36,9 +36,10 @@ st.markdown("""
     .box-bel { background-color: #f1f8e9; border-left: 4px solid #55a68e; }
     .box-ref { border-left: 4px solid #6c757d; }
     
-    mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
-    mark.ort { background-color: #ffcccc; color: #cc0000; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
-    mark.anvisa { background-color: #cce5ff; color: #004085; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
+    /* MARCADORES RIGOROSOS */
+    mark.diff { background-color: #fff9c4; color: #f57f17; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #fbc02d; }
+    mark.ort { background-color: #ffcdd2; color: #c62828; padding: 2px 4px; border-radius: 3px; font-weight: bold; border-bottom: 2px solid #b71c1c; }
+    mark.anvisa { background-color: #e1f5fe; color: #004085; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #4fc3f7; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -78,11 +79,10 @@ def configure_apis():
     return (gem_key is not None), mistral_client
 
 def ocr_with_gemini(images):
-    """ Usa Gemini Flash para extrair texto de imagens (OCR) """
     try:
         model = genai.GenerativeModel("models/gemini-1.5-flash")
         response = model.generate_content(
-            ["Transcreva TODO o texto destas imagens exatamente como está escrito. Não pule nada.", *images],
+            ["Transcreva TODO o texto destas imagens exatamente como está escrito.", *images],
             generation_config={"max_output_tokens": 40000}
         )
         return response.text
@@ -102,17 +102,14 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # 1. Tentativa Texto Direto
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            # Se tiver texto suficiente, usa. Se for muito curto (<100 chars), suspeita de imagem.
             if len(full_text.strip()) > 100: 
                 doc.close()
                 return {"type": "text", "data": full_text, "len": len(full_text)}
             
-            # 2. Fallback: OCR (PDF Escaneado ou Vazio)
-            msg_ocr = st.toast(f"📄 '{uploaded_file.name}': Texto não detectado. Ativando OCR...", icon="👁️")
+            st.toast(f"📄 '{uploaded_file.name}': Ativando OCR...", icon="👁️")
             
             images = []
             limit = min(15, len(doc))
@@ -129,7 +126,7 @@ def process_uploaded_file(uploaded_file):
             if extracted and len(extracted) > 50:
                 return {"type": "text", "data": extracted, "len": len(extracted)}
             else:
-                return {"type": "images", "data": images, "len": 0} # Se falhar tudo
+                return {"type": "images", "data": images, "len": 0}
             
     except Exception as e:
         st.error(f"Erro: {e}")
@@ -192,28 +189,41 @@ if st.button("🚀 AUDITAR AGORA"):
             gc.collect()
         
         if d1 and d2:
-            # Debug invisível para garantir que leu
             if d2.get('len', 0) < 50 and d2['type'] == 'text':
-                st.warning("⚠️ Atenção: O arquivo Candidato parece estar vazio ou ilegível.")
+                st.warning("⚠️ Atenção: O arquivo Candidato parece estar vazio.")
 
             final_res = None
             model_used = "N/A"
             success = False
             
             secoes_str = "\n".join([f"- {s}" for s in lista])
+            
+            # --- PROMPT RIGOROSO ---
             prompt = f"""
-            ATUE COMO AUDITOR FARMACÊUTICO.
+            ATUE COMO UM AUDITOR FARMACÊUTICO EXTREMAMENTE RIGOROSO.
             SEÇÕES ESPERADAS: {secoes_str}
             
-            REGRAS RÍGIDAS:
+            SUA MISSÃO:
             1. Extraia o texto COMPLETO da Referência (ref) e do Candidato (bel).
-            2. OBRIGATÓRIO: O campo 'bel' NÃO PODE SER VAZIO. Copie o texto do candidato mesmo que seja idêntico.
-            3. Marque erros no 'bel': <mark class='diff'>diferença</mark>, <mark class='ort'>erro_pt</mark>.
+            2. O CAMPO 'bel' NUNCA PODE FICAR VAZIO. Copie o texto do candidato fielmente.
             
-            JSON: {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"Texto Completo...", "bel":"Texto Completo...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
+            REGRAS DE MARCAÇÃO (OBRIGATÓRIO USAR HTML NO CAMPO 'bel'):
+            
+            🟡 DIVERGÊNCIAS (<mark class='diff'>texto</mark>):
+               - Marque QUALQUER diferença: letras trocadas, acentos (é vs e), pontuação, espaços duplos.
+               - Marque palavras que estão no candidato mas não na referência (e vice-versa).
+            
+            🔴 ERROS DE PORTUGUÊS (<mark class='ort'>texto</mark>):
+               - Marque erros gramaticais ou ortográficos óbvios (ex: 'contem' sem acento).
+            
+            🔵 DATA ANVISA (<mark class='anvisa'>DD/MM/AAAA</mark>):
+               - Encontre e marque a data de aprovação na seção DIZERES LEGAIS.
+            
+            SAÍDA JSON ESTRITA:
+            {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"Texto...", "bel":"Texto com marcas...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
             """
 
-            # 🛑 ZONA MISTRAL (Ref x BELFAR / MKT)
+            # 🛑 ZONA MISTRAL
             if pag in ["Ref x BELFAR", "Conferência MKT"]:
                 if not mis_client: st.error("MISTRAL OFF"); st.stop()
                 if d1['type'] == 'images' or d2['type'] == 'images':
@@ -224,7 +234,7 @@ if st.button("🚀 AUDITAR AGORA"):
                         chat = mis_client.chat.complete(
                             model="mistral-small-latest",
                             messages=[
-                                {"role":"system", "content":"Você é um robô JSON estrito."},
+                                {"role":"system", "content":"Você é um validador JSON rigoroso."},
                                 {"role":"user", "content":f"{prompt}\n\n=== REF ===\n{d1['data']}\n\n=== CAND ===\n{d2['data']}"}
                             ],
                             response_format={"type": "json_object"},
@@ -236,7 +246,7 @@ if st.button("🚀 AUDITAR AGORA"):
                 except Exception as e:
                     st.error(f"Erro Mistral: {e}"); st.stop()
 
-            # 🛑 ZONA GEMINI (Gráfica)
+            # 🛑 ZONA GEMINI
             elif pag == "Gráfica x Arte":
                 if not gem_ok: st.error("GEMINI OFF"); st.stop()
                 try:
@@ -268,7 +278,7 @@ if st.button("🚀 AUDITAR AGORA"):
                     st.divider()
                     
                     c1, c2, c3 = st.columns(3)
-                    errs = sum(1 for s in secs if s['status'] != "OK")
+                    errs = sum(1 for s in secs if "DIVERGENTE" in s['status'] or "ERRO" in s['status'])
                     score = 100 - int((errs/max(1,len(secs)))*100) if secs else 0
                     c1.metric("Score", f"{score}%")
                     c2.metric("Seções", f"{len(secs)}/{len(lista)}")
@@ -282,8 +292,8 @@ if st.button("🚀 AUDITAR AGORA"):
                         
                         with st.expander(f"{icon} {s['titulo']} - {s['status']}"):
                             cR, cB = st.columns(2)
-                            cR.markdown(f"**Referência**<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
-                            cB.markdown(f"**Candidato**<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
+                            cR.markdown(f"<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
+                            cB.markdown(f"<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
                     st.error("Erro JSON.")
     else:
