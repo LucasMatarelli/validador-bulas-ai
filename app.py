@@ -14,8 +14,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador de Bulas",
-    page_icon="🛡️",
+    page_title="Validador Auto-Select",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -35,7 +35,8 @@ st.markdown("""
     }
     
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; text-decoration: none; }
-    mark.ort { background-color: #ffc9c9; color: #9c0000; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; font-weight: bold; }
+    mark.ort { background-color: #ffcccc; color: #cc0000; padding: 2px 4px; border-radius: 4px; border: 1px solid #ff6666; font-weight: bold; }
+    mark.anvisa { background-color: #cce5ff; color: #004085; padding: 2px 4px; border-radius: 4px; border: 1px solid #66b3ff; font-weight: bold; }
     
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
     .stButton>button:hover { background-color: #448c75; }
@@ -63,7 +64,6 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-# --- BLOQUEIO ZERO (IMPORTANTE PARA NÃO TRAVAR EM BULAS) ---
 SAFETY_SETTINGS = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -81,15 +81,74 @@ def configure_gemini():
     genai.configure(api_key=api_key)
     return True
 
+def auto_select_best_model():
+    """
+    VARRE TODOS OS MODELOS E TESTA COM AUDITORIA REAL.
+    Retorna o primeiro que conseguir fazer a auditoria completa corretamente.
+    """
+    try:
+        all_models = list(genai.list_models())
+        candidates = []
+        
+        for m in all_models:
+            if 'generateContent' in m.supported_generation_methods:
+                candidates.append(m.name)
+        
+        # Ordena por preferência (Experimental > Pro > Flash > Outros)
+        def priority_score(name):
+            score = 0
+            name_lower = name.lower()
+            if "gemini" in name_lower: score += 10
+            if "exp" in name_lower: score += 60
+            if "2.0" in name_lower or "20" in name_lower: score += 100
+            if "1206" in name_lower or "1217" in name_lower: score += 90
+            if "pro" in name_lower: score += 40
+            if "flash" in name_lower: score += 25
+            if "8b" in name_lower: score += 5
+            return score
+        
+        candidates.sort(key=priority_score, reverse=True)
+        
+        # Teste real de auditoria com cada modelo
+        test_prompt = """Você é um auditor. Teste rápido:
+        REF: "COMPOSIÇÃO: Cada comprimido contém 500mg de paracetamol."
+        CAND: "COMPOSIÇÃO: Cada comprimido contem 500mg de paracetamol."
+        
+        Retorne JSON com seção, textos e status:
+        {"SECOES": [{"titulo": "COMPOSIÇÃO", "ref": "texto ref", "bel": "texto cand", "status": "DIVERGENTE"}]}
+        """
+        
+        for model_name in candidates:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(
+                    test_prompt,
+                    generation_config={
+                        "response_mime_type": "application/json",
+                        "max_output_tokens": 500,
+                        "temperature": 0.0
+                    },
+                    safety_settings=SAFETY_SETTINGS,
+                    request_options={"timeout": 30}
+                )
+                
+                # Valida se retornou JSON válido com a estrutura correta
+                if response and response.text:
+                    data = extract_json(response.text)
+                    if data and "SECOES" in data and len(data["SECOES"]) > 0:
+                        return model_name # PASSOU NO TESTE!
+            except Exception as e:
+                continue
+        
+        return None
+    except:
+        return "models/gemini-1.5-flash"
+
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
-        
-        # Palavras-chave para forçar modo imagem (OCR)
-        keywords_curva = ["curva", "traço", "outline", "convertido", "vetor"]
-        is_curva = any(k in filename for k in keywords_curva)
         
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -99,19 +158,17 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
-            if not is_curva:
-                for page in doc: full_text += page.get_text() + "\n"
+            for page in doc: full_text += page.get_text() + "\n"
             
-            # Se tem bastante texto e não é curva, usa texto (mais rápido)
-            if len(full_text.strip()) > 500 and not is_curva:
+            # Prioridade Texto para velocidade
+            if len(full_text.strip()) > 800:
                 doc.close(); return {"type": "text", "data": full_text}
             
-            # Se for imagem ou pouco texto, converte para imagem
             images = []
             limit = min(12, len(doc)) 
             for i in range(limit):
                 pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=85))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             doc.close(); gc.collect()
@@ -130,6 +187,7 @@ def extract_json(text):
     cleaned = clean_json_response(text)
     try: return json.loads(cleaned, strict=False)
     except: pass
+    
     try:
         if '"SECOES":' in cleaned:
             last_bracket = cleaned.rfind("}")
@@ -169,7 +227,7 @@ def normalize_sections(data_json, allowed_titles):
 # ----------------- UI LATERAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.markdown("<h2 style='text-align: center; color: #55a68e;'>Validador de Bulas</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #55a68e;'>Validador Auto</h2>", unsafe_allow_html=True)
     
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"], label_visibility="collapsed")
     st.divider()
@@ -177,6 +235,7 @@ with st.sidebar:
     is_connected = configure_gemini()
     if is_connected:
         st.success("✅ Conectado")
+        st.caption("Seleção de IA: Automática")
     else:
         st.error("❌ Verifique API Key")
 
@@ -188,11 +247,6 @@ if pagina == "🏠 Início":
 
 else:
     st.markdown(f"## {pagina}")
-    
-    # Inicializa Session State para não perder os dados se a tela piscar
-    if 'resultado_auditoria' not in st.session_state:
-        st.session_state['resultado_auditoria'] = None
-        
     lista_secoes = SECOES_PACIENTE
     if pagina == "💊 Ref x BELFAR":
         if st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True) == "Profissional":
@@ -203,136 +257,188 @@ else:
     f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
         
     if st.button("🚀 INICIAR AUDITORIA"):
-        # Limpa resultado anterior
-        st.session_state['resultado_auditoria'] = None
-        
         if f1 and f2 and is_connected:
-            with st.spinner("Processando arquivos..."):
-                d1 = process_uploaded_file(f1)
-                d2 = process_uploaded_file(f2)
-                gc.collect()
-
-            if d1 and d2:
-                # LISTA DE MODELOS NA FORÇA BRUTA (Tenta um por um)
-                models_to_try = [
-                    "gemini-1.5-flash",       # Padrão Rápido
-                    "gemini-1.5-flash-8b",    # Lite
-                    "gemini-1.5-pro"          # Inteligente
-                ]
-                
-                payload = ["CONTEXTO: Auditoria Farmacêutica Rigorosa (OCR)."]
-                if d1['type'] == 'text': payload.append(f"--- REF TEXTO ---\n{d1['data']}")
-                else: payload.extend(["--- REF IMAGENS ---"] + d1['data'])
-                
-                if d2['type'] == 'text': payload.append(f"--- CAND TEXTO ---\n{d2['data']}")
-                else: payload.extend(["--- CAND IMAGENS ---"] + d2['data'])
-
-                secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
-                
-                prompt = f"""
-                ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO DE TEXTO.
-                
-                TAREFA: Extrair TODAS as seções presentes e comparar.
-                
-                SEÇÕES ALVO (Procure por todas elas):
-                {secoes_str}
-                
-                REGRAS:
-                1. Extraia o texto EXATAMENTE como está na imagem (IPSIS LITTERIS).
-                2. Compare Referência vs Candidato.
-                3. Diferenças: marque com <mark class='diff'>TEXTO DIFERENTE</mark>.
-                4. Erros ortográficos: marque com <mark class='ort'>ERRO</mark>.
-                5. Data Anvisa: extraia se houver.
-                
-                IMPORTANTE: Não pare no meio. Gere o JSON completo.
-                
-                SAÍDA JSON:
-                {{
-                    "METADADOS": {{ "datas": [] }},
-                    "SECOES": [
-                        {{ "titulo": "TITULO", "ref": "Texto original...", "bel": "Texto candidato...", "status": "OK" or "DIVERGENTE" }}
-                    ]
-                }}
-                """
-                
-                success = False
-                final_data = None
-                
-                progress = st.progress(0)
-                
-                for idx, model_name in enumerate(models_to_try):
-                    try:
-                        st.toast(f"Tentando IA: {model_name}...", icon="🤖")
-                        model = genai.GenerativeModel(model_name)
-                        
-                        # Timeout alto para não cortar
-                        response = model.generate_content(
-                            [prompt] + payload,
-                            generation_config={
-                                "response_mime_type": "application/json", 
-                                "max_output_tokens": 8192, 
-                                "temperature": 0.0
-                            },
-                            safety_settings=SAFETY_SETTINGS,
-                            request_options={"timeout": 600}
-                        )
-                        
-                        # Verifica se houve bloqueio de segurança
-                        if response.prompt_feedback and response.prompt_feedback.block_reason:
-                            st.warning(f"Modelo {model_name} bloqueou o conteúdo. Tentando próximo...")
-                            continue
-                            
-                        data = extract_json(response.text)
-                        
-                        if data and "SECOES" in data and len(data["SECOES"]) > 0:
-                            final_data = normalize_sections(data, lista_secoes)
-                            success = True
-                            st.success(f"Sucesso via {model_name}")
-                            break # SUCESSO!
-                            
-                    except Exception as e:
-                        if "429" in str(e): # Se for Cota, tenta o próximo rápido
-                            time.sleep(2)
-                            continue
-                        elif "404" in str(e): # Modelo não existe, tenta o próximo
-                            continue
-                        else:
-                            st.write(f"Erro no {model_name}: {e}") # Debug silencioso
-                    
-                    progress.progress((idx+1)/len(models_to_try))
-                
-                progress.empty()
-                
-                if success and final_data:
-                    # SALVA NO SESSION STATE PARA NÃO SUMIR
-                    st.session_state['resultado_auditoria'] = final_data
-                else:
-                    st.error("Não foi possível processar o arquivo. Tente novamente em 1 minuto.")
-
-    # --- EXIBIÇÃO DO RESULTADO (FORA DO BOTÃO PARA PERSISTIR) ---
-    if st.session_state['resultado_auditoria']:
-        final_data = st.session_state['resultado_auditoria']
-        secs = final_data.get("SECOES", [])
-        
-        st.divider()
-        cM1, cM2, cM3 = st.columns(3)
-        divs = sum(1 for s in secs if "DIVERGENTE" in s.get('status', 'OK'))
-        score = 100 - int((divs/max(1, len(secs)))*100) if len(secs) > 0 else 0
-        
-        cM1.metric("Score", f"{score}%")
-        cM2.metric("Seções", f"{len(secs)}/{len(lista_secoes)}")
-        datas = final_data.get("METADADOS", {}).get("datas", [])
-        cM3.metric("Data Anvisa", datas[0] if datas else "N/A")
-        
-        st.markdown("---")
-        
-        for sec in secs:
-            status = sec.get('status', 'OK')
-            icon = "✅"
-            if "DIVERGENTE" in status: icon = "❌"
-            elif "FALTANTE" in status: icon = "🚨"
             
-            with st.expander(f"{icon} {sec['titulo']} - {status}"):
-                cA, cB = st.columns(2)
-                cA.markdown(f"**Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                cB.markdown(f"**Candidato**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
+            # --- FASE 1: ESCOLHA DA IA ---
+            with st.spinner("🔍 Testando todas as IAs disponíveis com auditoria real..."):
+                best_model = auto_select_best_model()
+            
+            if not best_model:
+                st.error("❌ Nenhuma IA conseguiu processar corretamente. Verifique sua cota ou tente novamente.")
+            else:
+                st.success(f"✅ IA Selecionada: **{best_model}**", icon="🤖")
+                time.sleep(0.5)
+                
+                # --- FASE 2: LEITURA ---
+                with st.spinner("Lendo arquivos..."):
+                    d1 = process_uploaded_file(f1)
+                    d2 = process_uploaded_file(f2)
+                    gc.collect()
+
+                if d1 and d2:
+                    model = genai.GenerativeModel(best_model)
+                    
+                    final_sections = []
+                    final_dates = []
+                    success = False
+                    
+                    # --- FASE 3: AUDITORIA ÚNICA (SEM CORTES) ---
+                    payload = ["CONTEXTO: Auditoria Farmacêutica Rigorosa (OCR)."]
+                    
+                    if d1['type'] == 'text': payload.append(f"--- REF TEXTO ---\n{d1['data']}")
+                    else: payload.extend(["--- REF IMAGENS ---"] + d1['data'])
+                    
+                    if d2['type'] == 'text': payload.append(f"--- CAND TEXTO ---\n{d2['data']}")
+                    else: payload.extend(["--- CAND IMAGENS ---"] + d2['data'])
+
+                    secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
+                    
+                    prompt = f"""
+                    Você é um Auditor Farmacêutico de Alta Precisão especializado em validação de bulas.
+                    
+                    OBJETIVO: Extrair e comparar TODAS as seções completas, identificando divergências.
+                    
+                    SEÇÕES OBRIGATÓRIAS (Extraia TODAS):
+                    {secoes_str}
+                    
+                    INSTRUÇÕES CRÍTICAS:
+                    
+                    1. EXTRAÇÃO COMPLETA:
+                       - Extraia o texto COMPLETO de cada seção (início até o fim)
+                       - Comece EXATAMENTE após o título da seção
+                       - Termine EXATAMENTE antes do próximo título de seção
+                       - NÃO corte no meio, NÃO omita parágrafos
+                       - Preserve quebras de linha e formatação
+                    
+                    2. COMPARAÇÃO PRECISA:
+                       - Compare palavra por palavra entre REF e CAND
+                       - Identifique TODAS as diferenças, por menores que sejam
+                    
+                    3. MARCAÇÕES COLORIDAS (USE EXATAMENTE ASSIM):
+                       
+                       A) DIVERGÊNCIAS (Amarelo):
+                          - Qualquer diferença entre REF e CAND
+                          - Use: <mark class='diff'>TEXTO_DIFERENTE</mark>
+                          - Exemplo: "contém" vs "contem" → <mark class='diff'>contem</mark>
+                       
+                       B) ERROS DE PORTUGUÊS (Vermelho):
+                          - Erros ortográficos, acentuação, concordância
+                          - Use: <mark class='ort'>ERRO</mark>
+                          - Exemplo: "contem" (sem acento) → <mark class='ort'>contem</mark>
+                       
+                       C) DATA ANVISA (Azul):
+                          - Apenas em DIZERES LEGAIS
+                          - Formato: dd/mm/yyyy ou dd.mm.yyyy
+                          - Use: <mark class='anvisa'>DD/MM/YYYY</mark>
+                          - Se não houver data: retorne "N/A" em datas
+                    
+                    4. STATUS DA SEÇÃO:
+                       - "OK": Textos idênticos, sem erros
+                       - "DIVERGENTE": Há diferenças entre REF e CAND
+                       - "ERRO ORTOGRÁFICO": Tem erros de português
+                       - "FALTANTE": Seção não encontrada
+                    
+                    5. FORMATO DE SAÍDA (JSON):
+                    {{
+                        "METADADOS": {{
+                            "datas": ["DD/MM/YYYY"] ou ["N/A"]
+                        }},
+                        "SECOES": [
+                            {{
+                                "titulo": "NOME_EXATO_DA_SECAO",
+                                "ref": "Texto COMPLETO da referência com marcações",
+                                "bel": "Texto COMPLETO do candidato com marcações",
+                                "status": "OK" ou "DIVERGENTE" ou "ERRO ORTOGRÁFICO"
+                            }}
+                        ]
+                    }}
+                    
+                    EXEMPLOS DE MARCAÇÃO:
+                    
+                    Entrada REF: "Este medicamento contém paracetamol."
+                    Entrada CAND: "Este medicamento contem paracetamol."
+                    
+                    Saída:
+                    "ref": "Este medicamento contém paracetamol.",
+                    "bel": "Este medicamento <mark class='diff'><mark class='ort'>contem</mark></mark> paracetamol.",
+                    "status": "DIVERGENTE"
+                    
+                    REGRA DE OURO: Extraia TODO o conteúdo de cada seção, do início ao fim, sem omissões.
+                    """
+                    
+                    try:
+                        with st.spinner(f"Auditando com {best_model}..."):
+                            response = model.generate_content(
+                                [prompt] + payload,
+                                generation_config={
+                                    "response_mime_type": "application/json", 
+                                    "max_output_tokens": 16384, # Aumentado para capturar textos longos
+                                    "temperature": 0.0
+                                },
+                                safety_settings=SAFETY_SETTINGS,
+                                request_options={"timeout": 900}
+                            )
+                            
+                            data = extract_json(response.text)
+                            if data and "SECOES" in data:
+                                norm = normalize_sections(data, lista_secoes)
+                                final_sections = norm.get("SECOES", [])
+                                final_dates = data.get("METADADOS", {}).get("datas", [])
+                                success = True
+                                
+                    except Exception as e:
+                        if "429" in str(e):
+                            st.error(f"Erro de Cota (429) no modelo {best_model}. Tente novamente em 1 min.")
+                        else:
+                            st.error(f"Erro na auditoria: {str(e)}")
+                    
+                    # --- RESULTADOS ---
+                    if success and final_sections:
+                        st.success(f"✅ Sucesso via {best_model}")
+                        st.divider()
+                        
+                        secs = final_sections
+                        cM1, cM2, cM3 = st.columns(3)
+                        divs = sum(1 for s in secs if "DIVERGENTE" in s.get('status', 'OK'))
+                        score = 100 - int((divs/max(1, len(secs)))*100) if len(secs) > 0 else 0
+                        
+                        cM1.metric("Score", f"{score}%")
+                        cM2.metric("Seções", f"{len(secs)}/{len(lista_secoes)}")
+                        
+                        # Formata data com marcação azul se existir
+                        if final_dates and final_dates[0] != "N/A":
+                            data_formatted = f"<mark class='anvisa'>{final_dates[0]}</mark>"
+                            cM3.markdown(f"**Data Anvisa**<br>{data_formatted}", unsafe_allow_html=True)
+                        else:
+                            cM3.metric("Data Anvisa", "N/A")
+                        
+                        st.markdown("---")
+                        
+                        for sec in secs:
+                            status = sec.get('status', 'OK')
+                            icon = "✅"
+                            if "DIVERGENTE" in status or "ERRO" in status: 
+                                icon = "❌"
+                            elif "FALTANTE" in status: 
+                                icon = "🚨"
+                            
+                            with st.expander(f"{icon} {sec['titulo']} - {status}"):
+                                cA, cB = st.columns(2)
+                                ref_text = sec.get('ref', 'Não encontrado')
+                                bel_text = sec.get('bel', 'Não encontrado')
+                                
+                                cA.markdown(f"**📄 Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;line-height:1.6;'>{ref_text}</div>", unsafe_allow_html=True)
+                                cB.markdown(f"**📋 Candidato**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;line-height:1.6;'>{bel_text}</div>", unsafe_allow_html=True)
+                                
+                                # Legenda de cores
+                                if "DIVERGENTE" in status or "ERRO" in status:
+                                    st.markdown("""
+                                    <div style='margin-top:10px;padding:10px;background:#f0f0f0;border-radius:5px;font-size:0.85em;'>
+                                    📌 <b>Legenda:</b> 
+                                    <mark class='diff'>Amarelo = Divergência</mark> | 
+                                    <mark class='ort'>Vermelho = Erro Português</mark> | 
+                                    <mark class='anvisa'>Azul = Data Anvisa</mark>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                    elif success:
+                        st.warning("IA processou mas não achou seções compatíveis.")
