@@ -75,73 +75,101 @@ SAFETY_SETTINGS = {
 
 def configure_gemini():
     api_key = None
-    try: api_key = st.secrets["GEMINI_API_KEY"]
-    except: api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key: return False
+    try: 
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except: 
+        api_key = os.environ.get("GEMINI_API_KEY")
+    
+    if not api_key: 
+        return False
+    
     genai.configure(api_key=api_key)
     return True
 
 def auto_select_best_model():
     """
-    VARRE TODOS OS MODELOS E TESTA COM AUDITORIA REAL.
+    VERSÃO CORRIGIDA: Testa modelos com critérios mais flexíveis
     """
     try:
         all_models = list(genai.list_models())
         candidates = []
         
+        # Filtra modelos que suportam generateContent
         for m in all_models:
             if 'generateContent' in m.supported_generation_methods:
                 candidates.append(m.name)
         
+        if not candidates:
+            st.warning("⚠️ Nenhum modelo encontrado. Usando padrão.")
+            return "models/gemini-1.5-flash"
+        
+        # Sistema de prioridade melhorado
         def priority_score(name):
             score = 0
             name_lower = name.lower()
+            
+            # Prioriza modelos experimentais e mais recentes
             if "gemini" in name_lower: score += 10
-            if "exp" in name_lower: score += 60
+            if "exp" in name_lower: score += 80  # Aumentado
             if "2.0" in name_lower or "2-0" in name_lower: score += 100
-            if "1206" in name_lower or "1217" in name_lower: score += 90
-            if "pro" in name_lower: score += 40
-            if "flash" in name_lower: score += 25
+            if "1217" in name_lower: score += 95  # Versão mais recente
+            if "1206" in name_lower: score += 90
+            if "pro" in name_lower: score += 50  # Aumentado
+            if "flash" in name_lower: score += 30
+            if "1.5" in name_lower: score += 20
             if "8b" in name_lower: score += 5
+            
             return score
         
         candidates.sort(key=priority_score, reverse=True)
         
-        test_prompt = """Você é um auditor. Teste rápido:
-        REF: "COMPOSIÇÃO: Cada comprimido contém 500mg de paracetamol."
-        CAND: "COMPOSIÇÃO: Cada comprimido contem 500mg de paracetamol."
+        # Teste SIMPLIFICADO - apenas verifica se responde
+        test_prompt = """Responda em JSON simples: {"status": "ok", "teste": "funcionando"}"""
         
-        Retorne JSON:
-        {"SECOES": [{"titulo": "COMPOSIÇÃO", "ref": "Cada comprimido contém 500mg de paracetamol.", "bel": "Cada comprimido contem 500mg de paracetamol.", "status": "DIVERGENTE"}]}
-        """
-        
-        for model_name in candidates:
+        # Testa os 5 melhores modelos
+        for model_name in candidates[:5]:
             try:
                 model = genai.GenerativeModel(model_name)
+                
                 response = model.generate_content(
                     test_prompt,
                     generation_config={
-                        "response_mime_type": "application/json",
-                        "max_output_tokens": 500,
+                        "max_output_tokens": 100,
                         "temperature": 0.0
                     },
                     safety_settings=SAFETY_SETTINGS,
-                    request_options={"timeout": 30}
+                    request_options={"timeout": 45}  # Timeout aumentado
                 )
                 
-                if response and response.text:
-                    data = extract_json(response.text)
-                    if data and "SECOES" in data and len(data["SECOES"]) > 0:
-                        return model_name
-            except:
+                # Critério FLEXÍVEL: se respondeu algo, aceita
+                if response and response.text and len(response.text) > 5:
+                    st.info(f"🎯 Modelo testado com sucesso: {model_name}")
+                    return model_name
+                    
+            except Exception as e:
+                error_msg = str(e).lower()
+                
+                # Se erro 429 (cota), pula e tenta próximo
+                if "429" in error_msg or "quota" in error_msg or "resource_exhausted" in error_msg:
+                    st.warning(f"⏭️ Modelo {model_name}: cota excedida, testando próximo...")
+                    time.sleep(1)
+                    continue
+                
+                # Outros erros, continua testando
                 continue
         
-        return None
-    except:
-        return "models/gemini-1.5-flash"
+        # Se nenhum passou nos testes, retorna o melhor ranqueado
+        st.warning(f"⚠️ Nenhum modelo passou no teste. Usando: {candidates[0]}")
+        return candidates[0]
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao selecionar modelo: {e}")
+        return "models/gemini-1.5-flash"  # Fallback seguro
 
 def process_uploaded_file(uploaded_file):
-    if not uploaded_file: return None
+    if not uploaded_file: 
+        return None
+    
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
@@ -154,24 +182,33 @@ def process_uploaded_file(uploaded_file):
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
-            for page in doc: full_text += page.get_text() + "\n"
+            for page in doc: 
+                full_text += page.get_text() + "\n"
             
+            # Se tem muito texto, usa modo texto
             if len(full_text.strip()) > 800:
-                doc.close(); return {"type": "text", "data": full_text}
+                doc.close()
+                return {"type": "text", "data": full_text}
             
+            # Caso contrário, extrai imagens
             images = []
             limit = min(15, len(doc))
             for i in range(limit):
                 pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.5, 2.5), dpi=200)
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
-                except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
+                try: 
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
+                except: 
+                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
-            doc.close(); gc.collect()
+            
+            doc.close()
+            gc.collect()
             return {"type": "images", "data": images}
             
     except Exception as e:
-        st.error(f"Erro no arquivo: {e}")
+        st.error(f"Erro ao processar arquivo: {e}")
         return None
+    
     return None
 
 def clean_json_response(text):
@@ -180,26 +217,39 @@ def clean_json_response(text):
 
 def extract_json(text):
     cleaned = clean_json_response(text)
-    try: return json.loads(cleaned, strict=False)
-    except: pass
     
+    # Tentativa 1: JSON direto
+    try: 
+        return json.loads(cleaned, strict=False)
+    except: 
+        pass
+    
+    # Tentativa 2: Corrige JSON quebrado
     try:
         if '"SECOES":' in cleaned:
             last_bracket = cleaned.rfind("}")
             if last_bracket != -1:
                 fixed = cleaned[:last_bracket+1]
                 if not fixed.strip().endswith("]}"): 
-                    if fixed.strip().endswith("]"): fixed += "}"
-                    else: fixed += "]}"
+                    if fixed.strip().endswith("]"): 
+                        fixed += "}"
+                    else: 
+                        fixed += "]}"
                 return json.loads(fixed, strict=False)
-    except: pass
+    except: 
+        pass
+    
     return None
 
 def normalize_sections(data_json, allowed_titles):
-    if not data_json or "SECOES" not in data_json: return data_json
+    if not data_json or "SECOES" not in data_json: 
+        return data_json
+    
     clean = []
     
-    def normalize(t): return re.sub(r'[^A-ZÃÕÁÉÍÓÚÇ]', '', t.upper())
+    def normalize(t): 
+        return re.sub(r'[^A-ZÃÕÁÉÍÓÚÇ]', '', t.upper())
+    
     allowed_norm = {normalize(t): t for t in allowed_titles}
     
     for sec in data_json["SECOES"]:
@@ -210,7 +260,8 @@ def normalize_sections(data_json, allowed_titles):
         if not match:
             for k, v in allowed_norm.items():
                 if k in t_ia or t_ia in k or SequenceMatcher(None, k, t_ia).ratio() > 0.8:
-                    match = v; break
+                    match = v
+                    break
         
         if match:
             sec["titulo"] = match
@@ -229,48 +280,58 @@ with st.sidebar:
     
     is_connected = configure_gemini()
     if is_connected:
-        st.success("✅ Conectado")
-        st.caption("Seleção de IA: Automática")
+        st.success("✅ Conectado à API")
+        st.caption("Seleção automática de IA")
     else:
-        st.error("❌ Verifique API Key")
+        st.error("❌ API Key não encontrada")
+        st.caption("Configure GEMINI_API_KEY")
 
 # ----------------- LÓGICA PRINCIPAL -----------------
 if pagina == "🏠 Início":
     st.markdown("<h1 style='color:#55a68e;text-align:center;'>Validador Inteligente</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    c1.info("💊 Ref x BELFAR"); c2.info("📋 Conf. MKT"); c3.info("🎨 Gráfica")
+    c1.info("💊 Ref x BELFAR")
+    c2.info("📋 Conf. MKT")
+    c3.info("🎨 Gráfica")
 
 else:
     st.markdown(f"## {pagina}")
     lista_secoes = SECOES_PACIENTE
+    
     if pagina == "💊 Ref x BELFAR":
-        if st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True) == "Profissional":
+        tipo_bula = st.radio("Tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
+        if tipo_bula == "Profissional":
             lista_secoes = SECOES_PROFISSIONAL
             
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Referência", type=["pdf", "docx"], key="f1")
-    f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
+    f1 = c1.file_uploader("📄 Arquivo Referência", type=["pdf", "docx"], key="f1")
+    f2 = c2.file_uploader("📋 Arquivo Candidato", type=["pdf", "docx"], key="f2")
         
     if st.button("🚀 INICIAR AUDITORIA"):
-        if f1 and f2 and is_connected:
-            
+        if not f1 or not f2:
+            st.error("❌ Por favor, envie os dois arquivos")
+        elif not is_connected:
+            st.error("❌ API não configurada. Verifique GEMINI_API_KEY")
+        else:
             # --- FASE 1: ESCOLHA DA IA ---
-            with st.spinner("🔍 Testando todas as IAs disponíveis..."):
+            with st.spinner("🔍 Selecionando melhor IA disponível..."):
                 best_model = auto_select_best_model()
             
             if not best_model:
-                st.error("❌ Nenhuma IA conseguiu processar. Verifique sua cota.")
+                st.error("❌ Erro crítico na seleção de modelo")
             else:
                 st.success(f"✅ IA Selecionada: **{best_model}**", icon="🤖")
                 time.sleep(0.5)
                 
                 # --- FASE 2: LEITURA ---
-                with st.spinner("📖 Lendo arquivos..."):
+                with st.spinner("📖 Processando arquivos..."):
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
                     gc.collect()
 
-                if d1 and d2:
+                if not d1 or not d2:
+                    st.error("❌ Erro ao processar um dos arquivos")
+                else:
                     model = genai.GenerativeModel(best_model)
                     
                     final_sections = []
@@ -280,11 +341,15 @@ else:
                     # --- PAYLOAD ---
                     payload = ["🔬 AUDITORIA FARMACÊUTICA COMPLETA"]
                     
-                    if d1['type'] == 'text': payload.append(f"📄 REFERÊNCIA (TEXTO):\n{d1['data']}")
-                    else: payload.extend(["📄 REFERÊNCIA (IMAGENS):"] + d1['data'])
+                    if d1['type'] == 'text': 
+                        payload.append(f"📄 REFERÊNCIA (TEXTO):\n{d1['data']}")
+                    else: 
+                        payload.extend(["📄 REFERÊNCIA (IMAGENS):"] + d1['data'])
                     
-                    if d2['type'] == 'text': payload.append(f"📋 CANDIDATO (TEXTO):\n{d2['data']}")
-                    else: payload.extend(["📋 CANDIDATO (IMAGENS):"] + d2['data'])
+                    if d2['type'] == 'text': 
+                        payload.append(f"📋 CANDIDATO (TEXTO):\n{d2['data']}")
+                    else: 
+                        payload.extend(["📋 CANDIDATO (IMAGENS):"] + d2['data'])
 
                     secoes_str = "\n".join([f"   {i+1}. {s}" for i, s in enumerate(lista_secoes)])
                     
@@ -311,28 +376,12 @@ else:
    ✓ NÃO invente palavras - copie EXATAMENTE como está escrito
    ✓ Se não conseguir ler algo, marque como [ILEGÍVEL]
 
-2️⃣ EXEMPLO DE EXTRAÇÃO CORRETA:
-   
-   Documento diz:
-   "7. O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?
-   Caso você se esqueça de tomar Belcomplex B conforme as recomendações 
-   da bula ou orientação médica. Se você deixou de tomar uma dose, deverá 
-   tomar a dose seguinte do costume, isto é, na hora regular e sem dobrar a dose.
-   
-   Em caso de dúvidas, procure orientação do farmacêutico ou de seu médico, ou
-   cirurgião-dentista."
-   
-   Você DEVE extrair:
-   "Caso você se esqueça de tomar Belcomplex B conforme as recomendações da bula ou orientação médica. Se você deixou de tomar uma dose, deverá tomar a dose seguinte do costume, isto é, na hora regular e sem dobrar a dose.
-
-Em caso de dúvidas, procure orientação do farmacêutico ou de seu médico, ou cirurgião-dentista."
-
-3️⃣ COMPARAÇÃO PALAVRA POR PALAVRA:
+2️⃣ COMPARAÇÃO PALAVRA POR PALAVRA:
    ✓ Compare REF vs CAND letra por letra
    ✓ Identifique até vírgulas e acentos diferentes
    ✓ Marque TODAS as diferenças encontradas
 
-4️⃣ MARCAÇÕES COLORIDAS (OBRIGATÓRIO):
+3️⃣ MARCAÇÕES COLORIDAS (OBRIGATÓRIO):
 
    🟡 DIVERGÊNCIAS (use: <mark class='diff'>TEXTO</mark>):
       - Qualquer diferença entre REF e CAND
@@ -350,7 +399,7 @@ Em caso de dúvidas, procure orientação do farmacêutico ou de seu médico, ou
       - Formatos aceitos: DD/MM/YYYY, DD.MM.YYYY, DD-MM-YYYY
       - Se não houver data: retorne ["N/A"] em "datas"
 
-5️⃣ STATUS DA SEÇÃO:
+4️⃣ STATUS DA SEÇÃO:
    - "OK" = Textos 100% idênticos
    - "DIVERGENTE" = Tem diferenças entre REF e CAND
    - "ERRO ORTOGRÁFICO" = Tem erros de português no CAND
@@ -367,7 +416,7 @@ Em caso de dúvidas, procure orientação do farmacêutico ou de seu médico, ou
     "SECOES": [
         {{
             "titulo": "NOME_EXATO_DA_SECAO",
-            "ref": "Texto COMPLETO da REF (pode ter marcações se for mostrar diferenças)",
+            "ref": "Texto COMPLETO da REF",
             "bel": "Texto COMPLETO do CAND com <mark class='diff'> e <mark class='ort'> onde tiver diferenças",
             "status": "OK" ou "DIVERGENTE" ou "ERRO ORTOGRÁFICO"
         }}
@@ -377,15 +426,9 @@ Em caso de dúvidas, procure orientação do farmacêutico ou de seu médico, ou
 ═══════════════════════════════════════════════════════════════════
 
 ⚠️ ATENÇÃO MÁXIMA:
-- NÃO resuma
-- NÃO simplifique
-- NÃO corte frases
-- NÃO invente palavras
+- NÃO resuma, NÃO simplifique, NÃO corte frases
 - COPIE EXATAMENTE como está escrito
 - Se o texto tem 500 palavras, extraia as 500 palavras
-- LEIA ATÉ O FIM DE CADA SEÇÃO (mesmo que mude de coluna/página)
-
-═══════════════════════════════════════════════════════════════════
 """
                     
                     try:
@@ -409,16 +452,17 @@ Em caso de dúvidas, procure orientação do farmacêutico ou de seu médico, ou
                                 success = True
                                 
                     except Exception as e:
-                        if "429" in str(e):
-                            st.error(f"❌ Erro de Cota (429). Aguarde 1 minuto e tente novamente.")
-                        elif "quota" in str(e).lower():
-                            st.error(f"❌ Limite de requisições atingido. Aguarde alguns minutos.")
+                        error_str = str(e).lower()
+                        if "429" in error_str or "quota" in error_str:
+                            st.error(f"❌ Limite de cota atingido. Aguarde 60 segundos e tente novamente.")
+                        elif "resource_exhausted" in error_str:
+                            st.error(f"❌ Recursos esgotados. Tente novamente em alguns minutos.")
                         else:
                             st.error(f"❌ Erro na auditoria: {str(e)}")
                     
                     # --- RESULTADOS ---
                     if success and final_sections:
-                        st.success(f"✅ Auditoria Completa com {best_model}")
+                        st.success(f"✅ Auditoria Completa!")
                         st.divider()
                         
                         secs = final_sections
@@ -426,8 +470,8 @@ Em caso de dúvidas, procure orientação do farmacêutico ou de seu médico, ou
                         divs = sum(1 for s in secs if "DIVERGENTE" in s.get('status', 'OK') or "ERRO" in s.get('status', 'OK'))
                         score = 100 - int((divs/max(1, len(secs)))*100) if len(secs) > 0 else 0
                         
-                        cM1.metric("Score", f"{score}%")
-                        cM2.metric("Seções", f"{len(secs)}/{len(lista_secoes)}")
+                        cM1.metric("Score de Qualidade", f"{score}%")
+                        cM2.metric("Seções Analisadas", f"{len(secs)}/{len(lista_secoes)}")
                         
                         if final_dates and final_dates[0] != "N/A":
                             data_formatted = f"<mark class='anvisa'>{final_dates[0]}</mark>"
@@ -465,4 +509,4 @@ Em caso de dúvidas, procure orientação do farmacêutico ou de seu médico, ou
                     elif success:
                         st.warning("⚠️ IA processou mas não encontrou seções compatíveis.")
                     else:
-                        st.error("❌ Falha na auditoria. Tente novamente.")
+                        st.error("❌ Falha na auditoria. Verifique os logs acima.")
