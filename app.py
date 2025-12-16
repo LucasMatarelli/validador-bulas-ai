@@ -35,8 +35,7 @@ st.markdown("""
     }
     
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; text-decoration: none; }
-    mark.ort { background-color: #ffcccc; color: #cc0000; padding: 2px 4px; border-radius: 4px; border: 1px solid #ff6666; font-weight: bold; }
-    mark.anvisa { background-color: #cce5ff; color: #004085; padding: 2px 4px; border-radius: 4px; border: 1px solid #66b3ff; font-weight: bold; }
+    mark.ort { background-color: #ffc9c9; color: #9c0000; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; font-weight: bold; }
     
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
     .stButton>button:hover { background-color: #448c75; }
@@ -83,10 +82,11 @@ def configure_gemini():
 
 def auto_select_best_model():
     """
-    VARRE TODOS OS MODELOS E TESTA COM AUDITORIA REAL.
-    Retorna o primeiro que conseguir fazer a auditoria completa corretamente.
+    VARRE TODOS OS MODELOS DA CONTA E TESTA QUAL FUNCIONA.
+    Prioriza: Experimental > Pro > Flash > Outros
     """
     try:
+        # 1. Pega a lista real da conta
         all_models = list(genai.list_models())
         candidates = []
         
@@ -94,55 +94,34 @@ def auto_select_best_model():
             if 'generateContent' in m.supported_generation_methods:
                 candidates.append(m.name)
         
-        # Ordena por preferência (Experimental > Pro > Flash > Outros)
+        # 2. Ordena por preferência (Experimentais e Pro primeiro)
+        # A lógica aqui coloca no topo da lista os modelos mais "poderosos"
         def priority_score(name):
             score = 0
-            name_lower = name.lower()
-            if "gemini" in name_lower: score += 10
-            if "exp" in name_lower: score += 60
-            if "2.0" in name_lower or "20" in name_lower: score += 100
-            if "1206" in name_lower or "1217" in name_lower: score += 90
-            if "pro" in name_lower: score += 40
-            if "flash" in name_lower: score += 25
-            if "8b" in name_lower: score += 5
+            if "gemini" in name: score += 10
+            if "exp" in name: score += 50       # Experimental (Futuro)
+            if "1206" in name: score += 100     # Versão específica Dezembro (Top)
+            if "pro" in name: score += 30       # Pro
+            if "flash" in name: score += 20     # Flash
+            if "8b" in name: score += 5         # Lite
             return score
-        
+            
         candidates.sort(key=priority_score, reverse=True)
         
-        # Teste real de auditoria com cada modelo
-        test_prompt = """Você é um auditor. Teste rápido:
-        REF: "COMPOSIÇÃO: Cada comprimido contém 500mg de paracetamol."
-        CAND: "COMPOSIÇÃO: Cada comprimido contem 500mg de paracetamol."
-        
-        Retorne JSON com seção, textos e status:
-        {"SECOES": [{"titulo": "COMPOSIÇÃO", "ref": "texto ref", "bel": "texto cand", "status": "DIVERGENTE"}]}
-        """
-        
+        # 3. Testa um por um (Ping)
         for model_name in candidates:
             try:
+                # Teste rápido com 1 token
                 model = genai.GenerativeModel(model_name)
-                response = model.generate_content(
-                    test_prompt,
-                    generation_config={
-                        "response_mime_type": "application/json",
-                        "max_output_tokens": 500,
-                        "temperature": 0.0
-                    },
-                    safety_settings=SAFETY_SETTINGS,
-                    request_options={"timeout": 30}
-                )
-                
-                # Valida se retornou JSON válido com a estrutura correta
-                if response and response.text:
-                    data = extract_json(response.text)
-                    if data and "SECOES" in data and len(data["SECOES"]) > 0:
-                        return model_name # PASSOU NO TESTE!
-            except Exception as e:
-                continue
+                response = model.generate_content("Oi", generation_config={"max_output_tokens": 1})
+                if response:
+                    return model_name # ACHOU UM QUE FUNCIONA!
+            except:
+                continue # Se deu erro, próximo da lista
         
-        return None
+        return None # Nenhum funcionou
     except:
-        return "models/gemini-1.5-flash"
+        return "models/gemini-1.5-flash" # Fallback de segurança
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -260,14 +239,13 @@ else:
         if f1 and f2 and is_connected:
             
             # --- FASE 1: ESCOLHA DA IA ---
-            with st.spinner("🔍 Testando todas as IAs disponíveis com auditoria real..."):
+            with st.spinner("Testando todas as IAs disponíveis na conta..."):
                 best_model = auto_select_best_model()
             
             if not best_model:
-                st.error("❌ Nenhuma IA conseguiu processar corretamente. Verifique sua cota ou tente novamente.")
+                st.error("Nenhuma IA disponível respondeu. Verifique sua cota.")
             else:
-                st.success(f"✅ IA Selecionada: **{best_model}**", icon="🤖")
-                time.sleep(0.5)
+                st.toast(f"Melhor IA encontrada: {best_model}", icon="👑")
                 
                 # --- FASE 2: LEITURA ---
                 with st.spinner("Lendo arquivos..."):
@@ -294,76 +272,27 @@ else:
                     secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                     
                     prompt = f"""
-                    Você é um Auditor Farmacêutico de Alta Precisão especializado em validação de bulas.
+                    Você é um Auditor de Qualidade.
                     
-                    OBJETIVO: Extrair e comparar TODAS as seções completas, identificando divergências.
+                    TAREFA: Extrair TODAS as seções presentes e comparar.
                     
-                    SEÇÕES OBRIGATÓRIAS (Extraia TODAS):
+                    SEÇÕES ALVO (Procure por todas elas):
                     {secoes_str}
                     
-                    INSTRUÇÕES CRÍTICAS:
+                    REGRAS:
+                    1. Extraia o texto EXATAMENTE como está (IPSIS LITTERIS).
+                    2. Compare Referência vs Candidato.
+                    3. Diferenças: marque com <mark class='diff'>DIFERENÇA</mark>.
+                    4. Erros ortográficos: marque com <mark class='ort'>ERRO</mark>.
+                    5. Data Anvisa: extraia se houver.
                     
-                    1. EXTRAÇÃO COMPLETA:
-                       - Extraia o texto COMPLETO de cada seção (início até o fim)
-                       - Comece EXATAMENTE após o título da seção
-                       - Termine EXATAMENTE antes do próximo título de seção
-                       - NÃO corte no meio, NÃO omita parágrafos
-                       - Preserve quebras de linha e formatação
-                    
-                    2. COMPARAÇÃO PRECISA:
-                       - Compare palavra por palavra entre REF e CAND
-                       - Identifique TODAS as diferenças, por menores que sejam
-                    
-                    3. MARCAÇÕES COLORIDAS (USE EXATAMENTE ASSIM):
-                       
-                       A) DIVERGÊNCIAS (Amarelo):
-                          - Qualquer diferença entre REF e CAND
-                          - Use: <mark class='diff'>TEXTO_DIFERENTE</mark>
-                          - Exemplo: "contém" vs "contem" → <mark class='diff'>contem</mark>
-                       
-                       B) ERROS DE PORTUGUÊS (Vermelho):
-                          - Erros ortográficos, acentuação, concordância
-                          - Use: <mark class='ort'>ERRO</mark>
-                          - Exemplo: "contem" (sem acento) → <mark class='ort'>contem</mark>
-                       
-                       C) DATA ANVISA (Azul):
-                          - Apenas em DIZERES LEGAIS
-                          - Formato: dd/mm/yyyy ou dd.mm.yyyy
-                          - Use: <mark class='anvisa'>DD/MM/YYYY</mark>
-                          - Se não houver data: retorne "N/A" em datas
-                    
-                    4. STATUS DA SEÇÃO:
-                       - "OK": Textos idênticos, sem erros
-                       - "DIVERGENTE": Há diferenças entre REF e CAND
-                       - "ERRO ORTOGRÁFICO": Tem erros de português
-                       - "FALTANTE": Seção não encontrada
-                    
-                    5. FORMATO DE SAÍDA (JSON):
+                    SAÍDA JSON:
                     {{
-                        "METADADOS": {{
-                            "datas": ["DD/MM/YYYY"] ou ["N/A"]
-                        }},
+                        "METADADOS": {{ "datas": [] }},
                         "SECOES": [
-                            {{
-                                "titulo": "NOME_EXATO_DA_SECAO",
-                                "ref": "Texto COMPLETO da referência com marcações",
-                                "bel": "Texto COMPLETO do candidato com marcações",
-                                "status": "OK" ou "DIVERGENTE" ou "ERRO ORTOGRÁFICO"
-                            }}
+                            {{ "titulo": "TITULO", "ref": "Texto original...", "bel": "Texto candidato...", "status": "OK" or "DIVERGENTE" }}
                         ]
                     }}
-                    
-                    EXEMPLOS DE MARCAÇÃO:
-                    
-                    Entrada REF: "Este medicamento contém paracetamol."
-                    Entrada CAND: "Este medicamento contem paracetamol."
-                    
-                    Saída:
-                    "ref": "Este medicamento contém paracetamol.",
-                    "bel": "Este medicamento <mark class='diff'><mark class='ort'>contem</mark></mark> paracetamol.",
-                    "status": "DIVERGENTE"
-                    
-                    REGRA DE OURO: Extraia TODO o conteúdo de cada seção, do início ao fim, sem omissões.
                     """
                     
                     try:
@@ -372,11 +301,11 @@ else:
                                 [prompt] + payload,
                                 generation_config={
                                     "response_mime_type": "application/json", 
-                                    "max_output_tokens": 16384, # Aumentado para capturar textos longos
+                                    "max_output_tokens": 8192, # TOKEN MAXIMO
                                     "temperature": 0.0
                                 },
                                 safety_settings=SAFETY_SETTINGS,
-                                request_options={"timeout": 900}
+                                request_options={"timeout": 600}
                             )
                             
                             data = extract_json(response.text)
@@ -404,41 +333,19 @@ else:
                         
                         cM1.metric("Score", f"{score}%")
                         cM2.metric("Seções", f"{len(secs)}/{len(lista_secoes)}")
-                        
-                        # Formata data com marcação azul se existir
-                        if final_dates and final_dates[0] != "N/A":
-                            data_formatted = f"<mark class='anvisa'>{final_dates[0]}</mark>"
-                            cM3.markdown(f"**Data Anvisa**<br>{data_formatted}", unsafe_allow_html=True)
-                        else:
-                            cM3.metric("Data Anvisa", "N/A")
+                        cM3.metric("Data Anvisa", final_dates[0] if final_dates else "N/A")
                         
                         st.markdown("---")
                         
                         for sec in secs:
                             status = sec.get('status', 'OK')
                             icon = "✅"
-                            if "DIVERGENTE" in status or "ERRO" in status: 
-                                icon = "❌"
-                            elif "FALTANTE" in status: 
-                                icon = "🚨"
+                            if "DIVERGENTE" in status: icon = "❌"
+                            elif "FALTANTE" in status: icon = "🚨"
                             
                             with st.expander(f"{icon} {sec['titulo']} - {status}"):
                                 cA, cB = st.columns(2)
-                                ref_text = sec.get('ref', 'Não encontrado')
-                                bel_text = sec.get('bel', 'Não encontrado')
-                                
-                                cA.markdown(f"**📄 Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;line-height:1.6;'>{ref_text}</div>", unsafe_allow_html=True)
-                                cB.markdown(f"**📋 Candidato**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;line-height:1.6;'>{bel_text}</div>", unsafe_allow_html=True)
-                                
-                                # Legenda de cores
-                                if "DIVERGENTE" in status or "ERRO" in status:
-                                    st.markdown("""
-                                    <div style='margin-top:10px;padding:10px;background:#f0f0f0;border-radius:5px;font-size:0.85em;'>
-                                    📌 <b>Legenda:</b> 
-                                    <mark class='diff'>Amarelo = Divergência</mark> | 
-                                    <mark class='ort'>Vermelho = Erro Português</mark> | 
-                                    <mark class='anvisa'>Azul = Data Anvisa</mark>
-                                    </div>
-                                    """, unsafe_allow_html=True)
+                                cA.markdown(f"**Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                                cB.markdown(f"**Candidato**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                     elif success:
                         st.warning("IA processou mas não achou seções compatíveis.")
