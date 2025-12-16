@@ -14,8 +14,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador de Bulas (Lite & NextGen)",
-    page_icon="🚀",
+    page_title="Validador Lite & Exp",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -80,18 +80,15 @@ def configure_gemini():
     genai.configure(api_key=api_key)
     return True
 
-def get_strict_model_queue():
+def get_special_models():
     """
-    Retorna APENAS os modelos solicitados (2.5+ e Lite).
-    Mapeia nomes técnicos para nomes amigáveis.
+    Retorna apenas os modelos ESPECIAIS (Lite e Experimentais).
     """
     return [
-        # Tentativas Futuras (Se sua API tiver acesso)
-        {"id": "gemini-3.0-pro", "name": "Gemini 3.0 (NextGen)"},
-        {"id": "gemini-2.5-pro", "name": "Gemini 2.5 (NextGen)"},
-        
-        # O "Lite" oficial (Flash 8B - Rápido e Eficiente)
-        {"id": "gemini-1.5-flash-8b", "name": "Gemini Lite (8B)"}
+        "gemini-1.5-flash-8b",  # O Verdadeiro Gemini Lite
+        "gemini-exp-1206",      # Gemini 2.0 Experimental (Dezembro)
+        "gemini-2.0-flash-exp", # Outra variação do 2.0
+        "gemini-1.5-flash"      # Fallback Otimizado (Caso os exp falhem)
     ]
 
 def process_uploaded_file(uploaded_file):
@@ -110,11 +107,12 @@ def process_uploaded_file(uploaded_file):
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            if len(full_text.strip()) > 800:
+            # Prioriza texto se houver muito (mais rápido no Lite)
+            if len(full_text.strip()) > 1000:
                 doc.close(); return {"type": "text", "data": full_text}
             
             images = []
-            limit = min(12, len(doc)) 
+            limit = min(15, len(doc)) 
             for i in range(limit):
                 pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=85))
@@ -176,14 +174,14 @@ def normalize_sections(data_json, allowed_titles):
 # ----------------- UI LATERAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.markdown("<h2 style='text-align: center; color: #55a68e;'>Validador de Bulas</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #55a68e;'>Validador Lite</h2>", unsafe_allow_html=True)
     
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"], label_visibility="collapsed")
     st.divider()
     
     is_connected = configure_gemini()
     if is_connected:
-        st.success("✅ API Conectada")
+        st.success("✅ Conectado")
     else:
         st.error("❌ Verifique API Key")
 
@@ -204,17 +202,18 @@ else:
     f1 = c1.file_uploader("Referência", type=["pdf", "docx"], key="f1")
     f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
         
-    if st.button("🚀 INICIAR AUDITORIA (LITE & 2.5+)"):
+    if st.button("🚀 INICIAR AUDITORIA"):
         if f1 and f2 and is_connected:
-            with st.spinner("Carregando arquivos..."):
+            with st.spinner("Processando..."):
                 d1 = process_uploaded_file(f1)
                 d2 = process_uploaded_file(f2)
                 gc.collect()
 
             if d1 and d2:
-                model_queue = get_strict_model_queue()
+                # LISTA DE ALVOS (LITE E EXPERIMENTAL)
+                targets = get_special_models()
                 
-                payload = ["CONTEXTO: Auditoria Farmacêutica Rigorosa (OCR)."]
+                payload = ["CONTEXTO: Comparação Estrita de Textos (OCR)."]
                 if d1['type'] == 'text': payload.append(f"--- REF TEXTO ---\n{d1['data']}")
                 else: payload.extend(["--- REF IMAGENS ---"] + d1['data'])
                 
@@ -224,11 +223,9 @@ else:
                 secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                 
                 prompt = f"""
-                Você é um Auditor de Qualidade Farmacêutica.
+                ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO DE TEXTO.
                 
-                OBJETIVO: Extrair e comparar as seções da bula.
-                
-                SEÇÕES OBRIGATÓRIAS (Extraia o conteúdo de TODAS que encontrar):
+                SEÇÕES ALVO (Extraia TODAS que encontrar):
                 {secoes_str}
                 
                 REGRAS:
@@ -249,18 +246,18 @@ else:
                 
                 success = False
                 final_data = None
-                used_model_display = ""
+                used_model = ""
                 
-                progress_bar = st.progress(0)
+                bar = st.progress(0)
                 
-                # LOOP DE ROTAÇÃO ESTRITA
-                for idx, model_info in enumerate(model_queue):
+                # TENTA CADA MODELO DA LISTA
+                for i, model_name in enumerate(targets):
                     try:
-                        # st.toast(f"Testando: {model_info['name']}...", icon="🤖") # Opcional: Debug
+                        # st.toast(f"Tentando motor: {model_name}...", icon="🤖")
                         
-                        model = genai.GenerativeModel(model_info['id'])
+                        model = genai.GenerativeModel(model_name)
                         
-                        # Timeout alto para arquivos grandes
+                        # Timeout alto e temperatura 0 para precisão
                         response = model.generate_content(
                             [prompt] + payload,
                             generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192, "temperature": 0.0},
@@ -272,20 +269,25 @@ else:
                         
                         if data and "SECOES" in data and len(data["SECOES"]) > 0:
                             final_data = normalize_sections(data, lista_secoes)
-                            used_model_display = model_info['name']
+                            used_model = model_name
                             success = True
                             break 
                             
                     except Exception as e:
-                        # Silencia erros de modelos inexistentes (404) ou cota (429) e tenta o próximo
+                        # Se falhar (404 ou 429), apenas pula pro próximo da lista silenciosamente
+                        time.sleep(2) 
                         continue
                     
-                    progress_bar.progress((idx + 1) / len(model_queue))
+                    bar.progress((i+1)/len(targets))
                 
-                progress_bar.empty()
+                bar.empty()
                 
                 if success and final_data:
-                    st.success(f"✅ Processado com sucesso via: {used_model_display}")
+                    # Renomeia para exibição amigável
+                    display_name = "Gemini Lite" if "8b" in used_model else "Gemini NextGen"
+                    if "flash" in used_model and "8b" not in used_model: display_name = "Gemini Otimizado"
+                    
+                    st.success(f"✅ Análise concluída via: {display_name}")
                     st.divider()
                     
                     secs = final_data.get("SECOES", [])
@@ -312,5 +314,5 @@ else:
                             cA.markdown(f"**Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                             cB.markdown(f"**Candidato**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
-                    st.error("Não foi possível processar. O Gemini Lite (8B) pode estar ocupado.")
-                    st.info("Aguarde alguns segundos e tente novamente.")
+                    st.error("Não foi possível processar com Gemini Lite ou Experimental.")
+                    st.info("Todos os modelos estão ocupados ou indisponíveis no momento.")
