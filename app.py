@@ -14,8 +14,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Auto-Select",
-    page_icon="🤖",
+    page_title="Validador de Bulas (Auto + HQ)",
+    page_icon="🦅",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -36,6 +36,7 @@ st.markdown("""
     
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; text-decoration: none; }
     mark.ort { background-color: #ffc9c9; color: #9c0000; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; font-weight: bold; }
+    mark.anvisa { background-color: #cff4fc; color: #055160; padding: 2px 4px; border-radius: 4px; border: 1px solid #b6effb; font-weight: bold; }
     
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
     .stButton>button:hover { background-color: #448c75; }
@@ -83,75 +84,89 @@ def configure_gemini():
 def auto_select_best_model():
     """
     VARRE TODOS OS MODELOS DA CONTA E TESTA QUAL FUNCIONA.
-    Prioriza: Experimental > Pro > Flash > Outros
     """
     try:
-        # 1. Pega a lista real da conta
         all_models = list(genai.list_models())
         candidates = []
-        
         for m in all_models:
             if 'generateContent' in m.supported_generation_methods:
                 candidates.append(m.name)
         
-        # 2. Ordena por preferência (Experimentais e Pro primeiro)
-        # A lógica aqui coloca no topo da lista os modelos mais "poderosos"
         def priority_score(name):
             score = 0
             if "gemini" in name: score += 10
-            if "exp" in name: score += 50       # Experimental (Futuro)
-            if "1206" in name: score += 100     # Versão específica Dezembro (Top)
-            if "pro" in name: score += 30       # Pro
-            if "flash" in name: score += 20     # Flash
-            if "8b" in name: score += 5         # Lite
+            if "exp" in name: score += 50
+            if "1206" in name: score += 100
+            if "pro" in name: score += 30
+            if "flash" in name: score += 20
             return score
             
         candidates.sort(key=priority_score, reverse=True)
         
-        # 3. Testa um por um (Ping)
         for model_name in candidates:
             try:
-                # Teste rápido com 1 token
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content("Oi", generation_config={"max_output_tokens": 1})
-                if response:
-                    return model_name # ACHOU UM QUE FUNCIONA!
-            except:
-                continue # Se deu erro, próximo da lista
+                if response: return model_name
+            except: continue
         
-        return None # Nenhum funcionou
+        return None
     except:
-        return "models/gemini-1.5-flash" # Fallback de segurança
+        return "models/gemini-1.5-flash"
 
 def process_uploaded_file(uploaded_file):
+    """
+    LÓGICA DE ALTA RESOLUÇÃO (DO SEU CÓDIGO ANTERIOR).
+    Detecta 'curvas' e usa Zoom 3.0 para qualidade máxima.
+    """
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
         
+        # Palavras-chave para forçar modo imagem (OCR)
+        keywords_curva = ["curva", "traço", "outline", "convertido", "vetor"]
+        is_curva = any(k in filename for k in keywords_curva)
+        
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
-            return {"type": "text", "data": text}
+            return {"type": "text", "data": text, "is_image": False}
             
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
+            
             full_text = ""
-            for page in doc: full_text += page.get_text() + "\n"
+            if not is_curva:
+                for page in doc:
+                    full_text += page.get_text() + "\n"
             
-            # Prioridade Texto para velocidade
-            if len(full_text.strip()) > 800:
-                doc.close(); return {"type": "text", "data": full_text}
+            # Se tem texto e NÃO é curva, usa o texto (mais rápido)
+            if len(full_text.strip()) > 100 and not is_curva:
+                doc.close()
+                return {"type": "text", "data": full_text, "is_image": False}
             
+            # MODO IMAGEM (ALTA RESOLUÇÃO - ZOOM 3.0)
             images = []
-            limit = min(12, len(doc)) 
-            for i in range(limit):
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=85))
-                except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
+            limit_pages = min(8, len(doc)) # Limite de segurança
+            
+            for i in range(limit_pages):
+                page = doc[i]
+                # Zoom 3.0 para ler letras pequenas/curvas
+                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
+                try:
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                except:
+                    img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
-            doc.close(); gc.collect()
-            return {"type": "images", "data": images}
+            
+            doc.close()
+            gc.collect()
+            
+            if is_curva:
+                st.toast(f"👁️ '{filename}': Modo Visual (Curvas) Ativado.", icon="📂")
+                
+            return {"type": "images", "data": images, "is_image": True}
             
     except Exception as e:
         st.error(f"Erro no arquivo: {e}")
@@ -166,7 +181,6 @@ def extract_json(text):
     cleaned = clean_json_response(text)
     try: return json.loads(cleaned, strict=False)
     except: pass
-    
     try:
         if '"SECOES":' in cleaned:
             last_bracket = cleaned.rfind("}")
@@ -206,7 +220,7 @@ def normalize_sections(data_json, allowed_titles):
 # ----------------- UI LATERAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-    st.markdown("<h2 style='text-align: center; color: #55a68e;'>Validador Auto</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #55a68e;'>Validador de Bulas</h2>", unsafe_allow_html=True)
     
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"], label_visibility="collapsed")
     st.divider()
@@ -238,17 +252,17 @@ else:
     if st.button("🚀 INICIAR AUDITORIA"):
         if f1 and f2 and is_connected:
             
-            # --- FASE 1: ESCOLHA DA IA ---
-            with st.spinner("Testando todas as IAs disponíveis na conta..."):
+            # 1. ESCOLHE A IA AUTOMATICAMENTE (Seu desejo de não escolher manual)
+            with st.spinner("Conectando ao melhor cérebro disponível..."):
                 best_model = auto_select_best_model()
             
             if not best_model:
-                st.error("Nenhuma IA disponível respondeu. Verifique sua cota.")
+                st.error("Nenhuma IA respondeu. Verifique sua cota.")
             else:
-                st.toast(f"Melhor IA encontrada: {best_model}", icon="👑")
+                st.toast(f"Analisando com: {best_model}", icon="🧠")
                 
-                # --- FASE 2: LEITURA ---
-                with st.spinner("Lendo arquivos..."):
+                # 2. USA O PROCESSAMENTO DE ARQUIVO ROBUSTO (Seu desejo de 'puxar conteúdo como o outro')
+                with st.spinner("Lendo arquivos (Modo Alta Definição)..."):
                     d1 = process_uploaded_file(f1)
                     d2 = process_uploaded_file(f2)
                     gc.collect()
@@ -256,11 +270,6 @@ else:
                 if d1 and d2:
                     model = genai.GenerativeModel(best_model)
                     
-                    final_sections = []
-                    final_dates = []
-                    success = False
-                    
-                    # --- FASE 3: AUDITORIA ÚNICA (SEM CORTES) ---
                     payload = ["CONTEXTO: Auditoria Farmacêutica Rigorosa (OCR)."]
                     
                     if d1['type'] == 'text': payload.append(f"--- REF TEXTO ---\n{d1['data']}")
@@ -280,7 +289,7 @@ else:
                     {secoes_str}
                     
                     REGRAS:
-                    1. Extraia o texto EXATAMENTE como está (IPSIS LITTERIS).
+                    1. Extraia o texto EXATAMENTE como está na imagem (IPSIS LITTERIS).
                     2. Compare Referência vs Candidato.
                     3. Diferenças: marque com <mark class='diff'>DIFERENÇA</mark>.
                     4. Erros ortográficos: marque com <mark class='ort'>ERRO</mark>.
@@ -295,13 +304,17 @@ else:
                     }}
                     """
                     
+                    success = False
+                    final_sections = []
+                    final_dates = []
+
                     try:
-                        with st.spinner(f"Auditando com {best_model}..."):
+                        with st.spinner(f"Auditando documento completo..."):
                             response = model.generate_content(
                                 [prompt] + payload,
                                 generation_config={
                                     "response_mime_type": "application/json", 
-                                    "max_output_tokens": 8192, # TOKEN MAXIMO
+                                    "max_output_tokens": 8192, 
                                     "temperature": 0.0
                                 },
                                 safety_settings=SAFETY_SETTINGS,
@@ -317,11 +330,10 @@ else:
                                 
                     except Exception as e:
                         if "429" in str(e):
-                            st.error(f"Erro de Cota (429) no modelo {best_model}. Tente novamente em 1 min.")
+                            st.error(f"Erro de Cota (429). Tente novamente em 1 min.")
                         else:
                             st.error(f"Erro na auditoria: {str(e)}")
                     
-                    # --- RESULTADOS ---
                     if success and final_sections:
                         st.success(f"✅ Sucesso via {best_model}")
                         st.divider()
