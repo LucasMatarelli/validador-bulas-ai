@@ -1,6 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
-from groq import Groq
+from mistralai import Mistral  # <--- NOVA BIBLIOTECA OFICIAL
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import fitz  # PyMuPDF
 import docx
@@ -15,8 +15,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Híbrido",
-    page_icon="⚡",
+    page_title="Validador Híbrido (Mistral Oficial)",
+    page_icon="🌪️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -45,7 +45,7 @@ st.markdown("""
     section[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eee; }
     
     .ia-badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.8em; margin-bottom: 10px; display: inline-block; }
-    .groq-badge { background-color: #ffe0b2; color: #e65100; border: 1px solid #ffcc80; }
+    .mistral-badge { background-color: #fff3e0; color: #ef6c00; border: 1px solid #ffe0b2; }
     .gemini-badge { background-color: #e1f5fe; color: #01579b; border: 1px solid #b3e5fc; }
 </style>
 """, unsafe_allow_html=True)
@@ -86,22 +86,20 @@ def configure_apis():
     
     if gemini_key: genai.configure(api_key=gemini_key)
     
-    # Configura Groq
-    groq_client = None
+    # Configura Mistral AI (Oficial)
+    mistral_client = None
     try: 
-        groq_key = st.secrets["GROQ_API_KEY"]
-        groq_client = Groq(api_key=groq_key)
+        mistral_key = st.secrets["MISTRAL_API_KEY"]
+        mistral_client = Mistral(api_key=mistral_key)
     except: 
-        groq_key = os.environ.get("GROQ_API_KEY")
-        if groq_key: groq_client = Groq(api_key=groq_key)
+        mistral_key = os.environ.get("MISTRAL_API_KEY")
+        if mistral_key: mistral_client = Mistral(api_key=mistral_key)
         
-    return (gemini_key is not None), groq_client
+    return (gemini_key is not None), mistral_client
 
 def auto_select_best_gemini_model():
     """
-    SELECIONA O MELHOR GEMINI DISPONÍVEL.
-    SEM BANIMENTOS: Todos os modelos da conta são considerados.
-    ORDEM: Prioriza estabilidade (Flash/Pro) mas permite outros.
+    SELECIONA O MELHOR GEMINI DISPONÍVEL (BLINDADO).
     """
     try:
         all_models = list(genai.list_models())
@@ -115,18 +113,24 @@ def auto_select_best_gemini_model():
             score = 0
             name_lower = name.lower()
             
-            # Prioriza modelos estáveis para evitar erros, mas não bloqueia nada
+            # Prioriza 1.5 Flash (Estável)
             if "gemini-1.5-flash" in name_lower and "8b" not in name_lower: return 1000
-            if "gemini-2.0-flash" in name_lower: return 900
-            if "gemini-1.5-pro" in name_lower: return 800
+            if "gemini-1.5-pro" in name_lower: return 500
             
-            # Outros modelos (Gemma, Exp, Preview) ficam com score base 0
-            # Eles serão selecionados se forem os únicos disponíveis ou se o loop cair neles
+            # Penaliza instáveis
+            if "exp" in name_lower: return -100
+            if "2.0" in name_lower: return -100 
+            if "preview" in name_lower: return -100
+            
             return score
         
         candidates.sort(key=priority_score, reverse=True)
         
-        return candidates[0] if candidates else "models/gemini-1.5-flash"
+        best = candidates[0]
+        if priority_score(best) < 0:
+            return "models/gemini-1.5-flash"
+            
+        return best
     except:
         return "models/gemini-1.5-flash"
 
@@ -146,11 +150,11 @@ def process_uploaded_file(uploaded_file):
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            # Tenta pegar texto para Groq (prioridade)
+            # Se tem texto suficiente, usa Texto (Mistral adora texto)
             if len(full_text.strip()) > 300: 
                 doc.close(); return {"type": "text", "data": full_text}
             
-            # Se for imagem, extrai (Groq não lê, vai cair no Gemini)
+            # Se for imagem, extrai (Mistral não lê imagem nativamente, vai pro Gemini)
             images = []
             limit = min(15, len(doc))
             for i in range(limit):
@@ -219,10 +223,10 @@ with st.sidebar:
     pagina = st.radio("Navegação:", ["🏠 Início", "💊 Ref x BELFAR", "📋 Conferência MKT", "🎨 Gráfica x Arte"], label_visibility="collapsed")
     st.divider()
     
-    gemini_ok, groq_client = configure_apis()
+    gemini_ok, mistral_client = configure_apis()
     
-    if groq_client: st.success("⚡ Groq: Ativo")
-    else: st.warning("⚠️ Groq: Off")
+    if mistral_client: st.success("🌪️ Mistral AI: Ativo")
+    else: st.warning("⚠️ Mistral: Off")
 
     if gemini_ok: st.success("💎 Gemini: Ativo")
     else: st.error("❌ Gemini: Off")
@@ -255,20 +259,17 @@ else:
 
             if d1 and d2:
                 # --- DECISOR DE IA ---
-                # Padrão: Tentar Groq primeiro
-                use_groq = True
+                use_mistral = True
                 
-                # Regra 1: Página "Gráfica x Arte" é 100% Gemini (Visual)
+                # Regra 1: Gráfica x Arte exige Visual (Gemini)
                 if pagina == "🎨 Gráfica x Arte":
-                    use_groq = False
-                    
-                # Regra 2: Se Groq não estiver configurado
-                elif not groq_client:
-                    use_groq = False
-                    
-                # Regra 3: Se os arquivos são Imagens, Groq não lê (Fallback técnico obrigatório)
+                    use_mistral = False
+                # Regra 2: Arquivos de Imagem exigem Visual (Gemini)
                 elif d1['type'] == 'images' or d2['type'] == 'images':
-                    use_groq = False
+                    use_mistral = False
+                # Regra 3: Mistral não configurado
+                elif not mistral_client:
+                    use_mistral = False
                 
                 # Prepara o Prompt
                 secoes_str = "\n".join([f"   {i+1}. {s}" for i, s in enumerate(lista_secoes)])
@@ -298,36 +299,42 @@ else:
                 success = False
                 active_model_name = "Desconhecido"
                 
-                # --- TENTATIVA 1: GROQ (Prioridade para Ref/MKT Texto) ---
-                if use_groq:
+                # --- TENTATIVA 1: MISTRAL (Oficial) ---
+                if use_mistral:
                     try:
-                        with st.spinner("⚡ Processando com GROQ (Llama 3)..."):
-                            full_groq_prompt = f"{prompt}\n\nCONTEXTO:\n\n--- REF ---\n{d1['data']}\n\n--- CAND ---\n{d2['data']}"
+                        with st.spinner("🌪️ Processando com MISTRAL AI (Large)..."):
+                            full_mistral_prompt = f"{prompt}\n\nCONTEXTO:\n\n--- REF ---\n{d1['data']}\n\n--- CAND ---\n{d2['data']}"
                             
-                            chat_completion = groq_client.chat.completions.create(
+                            chat_response = mistral_client.chat.complete(
+                                model="mistral-large-latest", # Modelo mais capaz da Mistral
                                 messages=[
-                                    {"role": "system", "content": "Você é um validador de bulas que retorna APENAS JSON. Não inclua comentários."},
-                                    {"role": "user", "content": full_groq_prompt}
+                                    {
+                                        "role": "system", 
+                                        "content": "Você é um validador de bulas que retorna APENAS JSON. Não inclua comentários."
+                                    },
+                                    {
+                                        "role": "user", 
+                                        "content": full_mistral_prompt
+                                    },
                                 ],
-                                model="llama-3.3-70b-versatile",
-                                temperature=0.0,
-                                response_format={"type": "json_object"}
+                                response_format={"type": "json_object"},
+                                temperature=0.0
                             )
-                            final_response_text = chat_completion.choices[0].message.content
-                            active_model_name = "⚡ Groq (Llama 3.3)"
+                            final_response_text = chat_response.choices[0].message.content
+                            active_model_name = "🌪️ Mistral (Large)"
                             success = True
                     except Exception as e:
-                        st.warning(f"⚠️ Groq encontrou dificuldade ou falhou. Alternando para Gemini...")
-                        use_groq = False # Força Gemini
-                        success = False # Marca como falha para entrar no bloco abaixo
+                        st.warning(f"⚠️ Mistral encontrou dificuldade: {e}. Alternando para Gemini...")
+                        use_mistral = False # Falhou, força Gemini
+                        success = False
 
-                # --- TENTATIVA 2: GEMINI (Fallback, Imagens ou Gráfica x Arte) ---
+                # --- TENTATIVA 2: GEMINI (Fallback ou Imagens) ---
                 if not success:
                     if not gemini_ok:
-                        st.error("❌ Groq não pôde ser usado e Gemini não está configurado.")
+                        st.error("❌ Mistral não pôde ser usado e Gemini não está configurado.")
                     else:
                         try:
-                            # Seleção de Modelo Gemini
+                            # Seleção de Modelo Gemini Blindada
                             best_model_gemini = auto_select_best_gemini_model()
                             
                             with st.spinner(f"💎 Processando com GEMINI ({best_model_gemini})..."):
@@ -354,7 +361,9 @@ else:
                 # --- PROCESSAMENTO DO RESULTADO ---
                 if success and final_response_text:
                     st.toast(f"Processado via: {active_model_name}", icon="✅")
-                    st.markdown(f"<div class='ia-badge {'groq-badge' if 'Groq' in active_model_name else 'gemini-badge'}'>Processado por: {active_model_name}</div>", unsafe_allow_html=True)
+                    
+                    badge_class = 'mistral-badge' if 'Mistral' in active_model_name else 'gemini-badge'
+                    st.markdown(f"<div class='ia-badge {badge_class}'>Processado por: {active_model_name}</div>", unsafe_allow_html=True)
                     
                     data = extract_json(final_response_text)
                     if data and "SECOES" in data:
