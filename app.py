@@ -1,5 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
+from groq import Groq
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import fitz  # PyMuPDF
 import docx
@@ -13,40 +14,37 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador V3 (Auto-Detect)",
-    page_icon="🧬",
+    page_title="Validador Híbrido (Gemini + Groq)",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS -----------------
+# ----------------- CSS -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
-    .main .block-container { padding-top: 20px !important; }
+    .stButton>button { width: 100%; font-weight: bold; border-radius: 8px; height: 60px; font-size: 18px; }
     
-    .stButton>button { 
-        width: 100%; background-color: #2e7d32; color: white; 
-        font-weight: bold; border-radius: 8px; height: 60px; font-size: 18px;
-    }
-    .stButton>button:hover { background-color: #1b5e20; }
-    
+    /* Cores das IAs */
+    .gemini-tag { background-color: #e1f5fe; color: #0277bd; padding: 2px 6px; border-radius: 4px; border: 1px solid #4fc3f7; font-size: 0.8em; font-weight: bold; }
+    .groq-tag { background-color: #fbe9e7; color: #d84315; padding: 2px 6px; border-radius: 4px; border: 1px solid #ffab91; font-size: 0.8em; font-weight: bold; }
+
     mark.diff { background-color: #fff9c4; color: #f57f17; padding: 2px 6px; border-radius: 4px; border: 1px solid #fbc02d; font-weight: bold; }
     mark.ort { background-color: #ffcdd2; color: #c62828; padding: 2px 6px; border-radius: 4px; border-bottom: 2px solid #b71c1c; font-weight: bold; }
-    mark.anvisa { background-color: #e1f5fe; color: #0277bd; padding: 2px 6px; border-radius: 4px; border: 1px solid #4fc3f7; font-weight: bold; }
     
-    .box-ref { background-color: #f5f5f5; padding: 15px; border-radius: 8px; border-left: 5px solid #9e9e9e; white-space: pre-wrap; line-height: 1.6; }
-    .box-bel { background-color: #e8f5e9; padding: 15px; border-radius: 8px; border-left: 5px solid #2e7d32; white-space: pre-wrap; line-height: 1.6; }
+    .box-content { background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #ccc; font-size: 0.9rem; line-height: 1.6; white-space: pre-wrap; }
+    .box-bel { border-left-color: #2e7d32; background-color: #e8f5e9; }
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------- CONSTANTES -----------------
 SECOES_PACIENTE = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
-    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
-    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", 
+    "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", 
+    "COMO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
     "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
     "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
     "DIZERES LEGAIS"
@@ -59,61 +57,30 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-SAFETY = {
-    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-}
+# ----------------- API MANAGERS -----------------
 
-# ----------------- FUNÇÕES DO SISTEMA -----------------
+def get_api_keys():
+    """Tenta pegar as chaves do secrets ou environment"""
+    gemini_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    groq_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+    return gemini_key, groq_key
 
-def configure_gemini():
-    api_key = None
-    try: api_key = st.secrets["GEMINI_API_KEY"]
-    except: api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key: return False
+def setup_gemini(api_key):
+    if not api_key: return None
     genai.configure(api_key=api_key)
-    return True
-
-def get_best_available_model():
-    """
-    LISTA o que a conta tem e pega o melhor, SEM ADIVINHAR NOME.
-    """
+    # Tenta achar o modelo Flash correto
     try:
-        # Pega TODOS os modelos da conta
-        all_models = list(genai.list_models())
-        
-        # Filtra só os que geram texto/conteúdo
-        candidates = [m for m in all_models if 'generateContent' in m.supported_generation_methods]
-        
-        if not candidates:
-            return None, "Sua chave API não retornou nenhum modelo. Verifique se o Google AI Studio está ativo."
+        for m in genai.list_models():
+            if 'gemini-1.5-flash' in m.name and 'generateContent' in m.supported_generation_methods:
+                return m.name
+        return "models/gemini-1.5-flash"
+    except: return None
 
-        # Define pontuação para escolher o melhor
-        def score_model(m):
-            name = m.name.lower()
-            s = 0
-            if 'flash' in name: s += 100       # Prioridade máxima (rápido e barato)
-            if '1.5' in name: s += 50          # Versão estável
-            if '001' in name: s += 10          # Versões fixas costumam ser estáveis
-            if '8b' in name: s += 20           # Versões leves
-            
-            # Penalidades
-            if 'vision' in name: s -= 50       # Modelos antigos de visão
-            if 'gemma' in name: s -= 200       # Gemma não aceita imagens
-            return s
+def get_groq_client(api_key):
+    if not api_key: return None
+    return Groq(api_key=api_key)
 
-        # Ordena pelo score
-        candidates.sort(key=score_model, reverse=True)
-        
-        # Pega o campeão
-        best_model = candidates[0]
-        return best_model.name, f"Modelo detectado: {best_model.name}"
-
-    except Exception as e:
-        return None, f"Erro ao listar modelos: {str(e)}"
-
+# ----------------- PROCESSAMENTO ARQUIVO -----------------
 def process_file(uploaded_file):
     if not uploaded_file: return None
     try:
@@ -130,191 +97,217 @@ def process_file(uploaded_file):
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
+            # Se tem texto suficiente, é TEXTO (Vai pra Groq)
             if len(full_text.strip()) > 500:
                 doc.close()
                 return {"type": "text", "data": full_text}
             
+            # Se for imagem, é IMAGEM (Vai pro Gemini)
             images = []
-            limit = min(12, len(doc))
+            limit = min(10, len(doc))
             for i in range(limit):
                 pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             doc.close()
             gc.collect()
             return {"type": "images", "data": images}
-    except Exception as e:
-        st.error(f"Erro ao ler arquivo: {e}")
-        return None
+    except: return None
 
 def extract_json(text):
-    text = text.replace("```json", "").replace("```", "").strip()
-    text = re.sub(r'//.*', '', text)
+    text = re.sub(r'//.*', '', text.replace("```json", "").replace("```", "").strip())
     try: return json.loads(text, strict=False)
-    except: pass
-    try:
-        if '"SECOES":' in text:
+    except: 
+        try:
             start = text.find('{')
             end = text.rfind('}') + 1
-            if start != -1 and end != -1:
-                return json.loads(text[start:end], strict=False)
-    except: pass
-    return None
+            return json.loads(text[start:end], strict=False)
+        except: return None
 
-def normalize_titles(data, allowed):
+def normalize_sections(data, allowed_titles):
     if not data or "SECOES" not in data: return data
     clean = []
     def norm(t): return re.sub(r'[^A-ZÃÕÁÉÍÓÚÇ]', '', t.upper())
-    allowed_map = {norm(t): t for t in allowed}
+    allowed_map = {norm(t): t for t in allowed_titles}
+    
     for sec in data["SECOES"]:
-        t_raw = sec.get("titulo", "")
-        t_norm = norm(t_raw)
-        match = allowed_map.get(t_norm)
+        t_ia = norm(sec.get("titulo", ""))
+        match = allowed_map.get(t_ia)
         if not match:
             for k, v in allowed_map.items():
-                if k in t_norm or t_norm in k or SequenceMatcher(None, k, t_norm).ratio() > 0.8:
-                    match = v
-                    break
+                if k in t_ia or t_ia in k or SequenceMatcher(None, k, t_ia).ratio() > 0.8:
+                    match = v; break
         if match:
             sec["titulo"] = match
             clean.append(sec)
     data["SECOES"] = clean
     return data
 
-# ----------------- INTERFACE -----------------
+# ----------------- PROMPT PADRÃO -----------------
+def get_prompt(lista_secoes):
+    secoes_txt = "\n".join([f"- {s}" for s in lista_secoes])
+    return f"""
+    Você é um Auditor Farmacêutico da ANVISA.
+    Sua tarefa é comparar dois textos (REFERÊNCIA vs CANDIDATO).
+    
+    LISTA DE SEÇÕES PARA EXTRAIR:
+    {secoes_txt}
+
+    REGRAS DE OURO:
+    1. Extraia o conteúdo COMPLETO. Não resuma.
+    2. No campo 'bel' (Candidato), marque as diferenças com HTML:
+       - <mark class='diff'>palavra_diferente</mark>
+       - <mark class='ort'>erro_ortografico</mark>
+    3. Retorne APENAS JSON válido.
+
+    FORMATO JSON:
+    {{
+        "METADADOS": {{ "datas": ["DD/MM/AAAA"] }},
+        "SECOES": [
+            {{
+                "titulo": "TÍTULO EXATO DA LISTA",
+                "ref": "Texto referência...",
+                "bel": "Texto candidato com marcas...",
+                "status": "OK" | "DIVERGENTE" | "FALTANTE"
+            }}
+        ]
+    }}
+    """
+
+# ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.markdown("### Validador V3")
+    st.title("Validador Híbrido")
     
-    status_api = configure_gemini()
+    k_gem, k_groq = get_api_keys()
     
-    model_name = None
-    if status_api: 
-        st.success("API Conectada")
-        # DETECTA O MODELO AGORA
-        model_name, msg_model = get_best_available_model()
-        if model_name:
-            st.info(f"✅ {msg_model}")
-        else:
-            st.error(msg_model)
-    else: 
-        st.error("Sem Chave API")
+    # Status Gemini
+    if k_gem:
+        gem_model = setup_gemini(k_gem)
+        if gem_model: st.success(f"💎 Gemini Ativo ({gem_model})")
+        else: st.error("💎 Gemini: Erro Modelo")
+    else: st.error("💎 Gemini: Sem Chave")
+    
+    # Status Groq
+    if k_groq:
+        groq_client = get_groq_client(k_groq)
+        if groq_client: st.success("⚡ Groq Ativo (Llama 3)")
+    else: st.warning("⚡ Groq: Sem Chave (Usará Gemini)")
 
     st.divider()
-    st.caption("Este sistema não chuta nomes de modelos. Ele usa o que sua conta disponibiliza.")
+    st.info("Estratégia:\n⚡ Groq para Texto (Rápido/Grátis)\n💎 Gemini para Imagens")
 
-st.markdown("<h1 style='color:#2e7d32;text-align:center;'>Validador Farmacêutico (Auto-Detect)</h1>", unsafe_allow_html=True)
+st.markdown("<h2 style='color:#2e7d32;text-align:center'>Validador Farmacêutico (Híbrido)</h2>", unsafe_allow_html=True)
 
-tipo = st.radio("Tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
-lista_secoes = SECOES_PROFISSIONAL if tipo == "Profissional" else SECOES_PACIENTE
+tipo = st.radio("Modelo:", ["Paciente", "Profissional"], horizontal=True)
+lista_alvo = SECOES_PROFISSIONAL if tipo == "Profissional" else SECOES_PACIENTE
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Referência (PDF/Word)", type=["pdf", "docx"])
-f2 = c2.file_uploader("📂 Candidato (PDF/Word)", type=["pdf", "docx"])
+f1 = c1.file_uploader("📂 Referência", type=["pdf", "docx"])
+f2 = c2.file_uploader("📂 Candidato", type=["pdf", "docx"])
 
 if st.button("🚀 INICIAR AUDITORIA"):
-    if f1 and f2 and status_api and model_name:
-        with st.spinner("📖 Lendo arquivos..."):
+    if f1 and f2:
+        with st.spinner("⏳ Processando arquivos..."):
             d1 = process_file(f1)
             d2 = process_file(f2)
             gc.collect()
-
+        
         if d1 and d2:
-            # USA O NOME EXATO RETORNADO PELA API
-            model = genai.GenerativeModel(model_name)
-            
-            secoes_txt = "\n".join([f"- {s}" for s in lista_secoes])
-            
-            prompt = f"""
-            Você é um Auditor Farmacêutico Sênior da ANVISA.
-            Sua tarefa é comparar dois documentos (Referência vs Candidato) e validar as seções.
+            prompt_base = get_prompt(lista_alvo)
+            response_text = None
+            used_ai = ""
 
-            LISTA DE SEÇÕES OBRIGATÓRIAS:
-            {secoes_txt}
+            # LÓGICA DE ROTEAMENTO (O CÉREBRO DO SISTEMA)
+            # Se tiver imagens, OBRIGATÓRIO usar Gemini
+            if d1['type'] == 'images' or d2['type'] == 'images':
+                if not k_gem:
+                    st.error("⚠️ Arquivos são imagens, mas Gemini não está configurado.")
+                    st.stop()
+                
+                used_ai = "💎 Gemini Vision (Necessário para Imagens)"
+                model = genai.GenerativeModel(gem_model)
+                
+                payload = ["CONTEXTO: Comparação Visual de Bulas."]
+                if d1['type']=='text': payload.append(f"REF (TXT):\n{d1['data']}")
+                else: payload.extend(["REF (IMG):"] + d1['data'])
+                if d2['type']=='text': payload.append(f"CAND (TXT):\n{d2['data']}")
+                else: payload.extend(["CAND (IMG):"] + d2['data'])
+                
+                with st.spinner(f"Processando com {used_ai}..."):
+                    try:
+                        res = model.generate_content(
+                            [prompt_base] + payload,
+                            generation_config={"response_mime_type": "application/json", "max_output_tokens": 15000},
+                            request_options={"timeout": 600}
+                        )
+                        response_text = res.text
+                    except Exception as e:
+                        st.error(f"Erro Gemini: {e}")
 
-            DIRETRIZES RIGOROSAS:
-            1. Extraia o texto INTEGRAL de cada seção (não resuma).
-            2. Se o texto quebrar colunas, junte corretamente.
-            3. Compare letra por letra (case insensitive para status, mas mostre a diferença).
-            4. Ignore números de página ou rodapés soltos.
-
-            FORMATAÇÃO HTML PARA O CAMPO 'bel' (Candidato):
-            - Se houver diferença de texto: use <mark class='diff'>palavra_candidato</mark>
-            - Se houver erro ortográfico óbvio: use <mark class='ort'>erro</mark>
-            - Para a data em 'DIZERES LEGAIS': use <mark class='anvisa'>DD/MM/AAAA</mark>
-
-            SAÍDA JSON EXATA:
-            {{
-                "METADADOS": {{ "datas": ["..."] }},
-                "SECOES": [
-                    {{
-                        "titulo": "TÍTULO EXATO DA LISTA",
-                        "ref": "Texto completo da referência...",
-                        "bel": "Texto do candidato com as marcações <mark>...",
-                        "status": "OK" | "DIVERGENTE" | "FALTANTE"
-                    }}
-                ]
-            }}
-            """
-
-            payload = ["CONTEXTO: Auditoria de Bulas."]
-            if d1['type'] == 'text': payload.append(f"--- REFERÊNCIA (TEXTO) ---\n{d1['data']}")
-            else: payload.extend(["--- REFERÊNCIA (IMAGENS) ---"] + d1['data'])
-            
-            if d2['type'] == 'text': payload.append(f"--- CANDIDATO (TEXTO) ---\n{d2['data']}")
-            else: payload.extend(["--- CANDIDATO (IMAGENS) ---"] + d2['data'])
-
-            try:
-                with st.spinner(f"🤖 Analisando com {model_name}..."):
-                    response = model.generate_content(
-                        [prompt] + payload,
-                        generation_config={"response_mime_type": "application/json", "max_output_tokens": 15000, "temperature": 0.0},
-                        safety_settings=SAFETY,
-                        request_options={"timeout": 600}
-                    )
+            # Se for SÓ TEXTO, preferência para GROQ (Economiza Gemini)
+            else:
+                if k_groq:
+                    used_ai = "⚡ Groq (Llama 3.3 - Rápido & Grátis)"
+                    full_prompt = f"{prompt_base}\n\n--- REF ---\n{d1['data']}\n\n--- CAND ---\n{d2['data']}"
                     
-                    data = extract_json(response.text)
-                    
-                    if data and "SECOES" in data:
-                        norm_data = normalize_titles(data, lista_secoes)
-                        secs = norm_data["SECOES"]
-                        datas = norm_data.get("METADADOS", {}).get("datas", [])
-
-                        st.success("✅ Auditoria Finalizada!")
-                        st.divider()
-
-                        col_a, col_b, col_c = st.columns(3)
-                        erros = sum(1 for s in secs if s['status'] != "OK")
-                        score = 100 - int((erros / max(1, len(secs))) * 100)
-                        
-                        col_a.metric("Score de Aprovação", f"{score}%")
-                        col_b.metric("Seções Encontradas", f"{len(secs)}/{len(lista_secoes)}")
-                        
-                        data_display = datas[0] if datas else "N/A"
-                        col_c.markdown(f"**Data Anvisa**<br><span style='font-size:1.2em;font-weight:bold;color:#0277bd'>{data_display}</span>", unsafe_allow_html=True)
-
-                        st.markdown("---")
-                        
-                        for s in secs:
-                            icon = "✅"
-                            if s['status'] == "DIVERGENTE": icon = "❌"
-                            elif s['status'] == "FALTANTE": icon = "🚨"
-                            
-                            with st.expander(f"{icon} {s['titulo']} - {s['status']}"):
-                                c_ref, c_bel = st.columns(2)
-                                c_ref.markdown(f"**Referência**<div class='box-ref'>{s.get('ref','Vazio')}</div>", unsafe_allow_html=True)
-                                c_bel.markdown(f"**Candidato**<div class='box-bel'>{s.get('bel','Vazio')}</div>", unsafe_allow_html=True)
-
-                    else:
-                        st.error("Erro: A IA não retornou o formato JSON correto. Tente novamente.")
-                        st.code(response.text) # Mostra o que veio errado
-                        
-            except Exception as e:
-                err_msg = str(e).lower()
-                if "429" in err_msg or "quota" in err_msg:
-                    st.error("🚨 LIMITE DE COTA ATINGIDO! Troque a chave API.")
+                    with st.spinner(f"Processando com {used_ai}..."):
+                        try:
+                            chat_completion = groq_client.chat.completions.create(
+                                messages=[{"role": "user", "content": full_prompt}],
+                                model="llama-3.3-70b-versatile", # Modelo excelente e grátis
+                                temperature=0.0,
+                                response_format={"type": "json_object"} # Garante JSON
+                            )
+                            response_text = chat_completion.choices[0].message.content
+                        except Exception as e:
+                            st.warning(f"Groq falhou ({e}). Tentando Gemini...")
+                            # Fallback para Gemini se Groq falhar
+                            used_ai = "💎 Gemini (Fallback)"
+                            model = genai.GenerativeModel(gem_model)
+                            res = model.generate_content([prompt_base, f"REF:\n{d1['data']}", f"CAND:\n{d2['data']}"])
+                            response_text = res.text
                 else:
-                    st.error(f"Erro inesperado: {e}")
+                    used_ai = "💎 Gemini (Groq não configurada)"
+                    model = genai.GenerativeModel(gem_model)
+                    res = model.generate_content([prompt_base, f"REF:\n{d1['data']}", f"CAND:\n{d2['data']}"])
+                    response_text = res.text
+
+            # --- RESULTADOS ---
+            if response_text:
+                data = extract_json(response_text)
+                if data:
+                    norm = normalize_sections(data, lista_alvo)
+                    secs = norm.get("SECOES", [])
+                    
+                    st.success(f"✅ Análise Concluída via {used_ai}")
+                    st.divider()
+                    
+                    cA, cB = st.columns(2)
+                    errs = sum(1 for s in secs if s['status'] != "OK")
+                    score = 100 - int((errs/max(1, len(secs)))*100)
+                    cA.metric("Aprovação", f"{score}%")
+                    cB.metric("Seções", f"{len(secs)}/{len(lista_alvo)}")
+                    
+                    dates = norm.get("METADADOS", {}).get("datas", [])
+                    if dates: st.markdown(f"**Data Anvisa:** <mark class='anvisa'>{dates[0]}</mark>", unsafe_allow_html=True)
+                    
+                    st.markdown("---")
+                    
+                    for s in secs:
+                        icon = "✅"
+                        if "DIVERGENTE" in s['status']: icon = "❌"
+                        elif "FALTANTE" in s['status']: icon = "🚨"
+                        
+                        with st.expander(f"{icon} {s['titulo']} - {s['status']}"):
+                            cRef, cBel = st.columns(2)
+                            cRef.markdown(f"**Referência**<div class='box-content'>{s.get('ref','')}</div>", unsafe_allow_html=True)
+                            cBel.markdown(f"**Candidato**<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
+                else:
+                    st.error("Erro na leitura da IA (JSON inválido).")
+                    st.expander("Debug").code(response_text)
+            else:
+                st.error("Nenhuma resposta da IA.")
     else:
-        st.warning("⚠️ Verifique: Arquivos enviados? API Key válida? Modelo detectado?")
+        st.warning("Envie os arquivos.")
