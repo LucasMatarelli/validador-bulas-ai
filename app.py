@@ -14,8 +14,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador de Bulas (Auto)",
-    page_icon="🧬",
+    page_title="Validador de Bulas (Lite & NextGen)",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -80,34 +80,19 @@ def configure_gemini():
     genai.configure(api_key=api_key)
     return True
 
-def get_dynamic_model():
+def get_strict_model_queue():
     """
-    PERGUNTA para a API quais modelos existem na conta e pega o melhor disponível.
-    Isso evita o erro 404 de modelo inexistente.
+    Retorna APENAS os modelos solicitados (2.5+ e Lite).
+    Mapeia nomes técnicos para nomes amigáveis.
     """
-    try:
-        # Pega todos os modelos que geram conteúdo
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    return [
+        # Tentativas Futuras (Se sua API tiver acesso)
+        {"id": "gemini-3.0-pro", "name": "Gemini 3.0 (NextGen)"},
+        {"id": "gemini-2.5-pro", "name": "Gemini 2.5 (NextGen)"},
         
-        # Tenta achar o Flash 1.5 (Melhor custo/benefício)
-        flash = next((m for m in models if "flash" in m and "1.5" in m), None)
-        if flash: return flash, "Gemini Flash (Auto)"
-        
-        # Tenta o Pro 1.5
-        pro = next((m for m in models if "pro" in m and "1.5" in m), None)
-        if pro: return pro, "Gemini Pro (Auto)"
-        
-        # Tenta qualquer Gemini Pro antigo
-        old_pro = next((m for m in models if "gemini-pro" in m), None)
-        if old_pro: return old_pro, "Gemini Legacy"
-        
-        # Pega o primeiro que aparecer
-        if models: return models[0], models[0]
-        
-        return "models/gemini-1.5-flash", "Flash (Padrão)"
-    except:
-        # Fallback de emergência
-        return "gemini-1.5-flash", "Flash (Fallback)"
+        # O "Lite" oficial (Flash 8B - Rápido e Eficiente)
+        {"id": "gemini-1.5-flash-8b", "name": "Gemini Lite (8B)"}
+    ]
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -125,14 +110,14 @@ def process_uploaded_file(uploaded_file):
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
-            if len(full_text.strip()) > 500:
+            if len(full_text.strip()) > 800:
                 doc.close(); return {"type": "text", "data": full_text}
             
             images = []
             limit = min(12, len(doc)) 
             for i in range(limit):
                 pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=85))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             doc.close(); gc.collect()
@@ -152,17 +137,14 @@ def extract_json(text):
     try: return json.loads(cleaned, strict=False)
     except: pass
     
-    # Recuperação de JSON cortado (Salva-vidas)
     try:
         if '"SECOES":' in cleaned:
             last_bracket = cleaned.rfind("}")
             if last_bracket != -1:
                 fixed = cleaned[:last_bracket+1]
-                if not fixed.endswith("]}"): fixed += "]}"
-                try: return json.loads(fixed, strict=False)
-                except: pass
-                if not fixed.endswith("]"): fixed += "]"
-                if not fixed.endswith("}"): fixed += "}"
+                if not fixed.strip().endswith("]}"): 
+                    if fixed.strip().endswith("]"): fixed += "}"
+                    else: fixed += "]}"
                 return json.loads(fixed, strict=False)
     except: pass
     return None
@@ -200,12 +182,8 @@ with st.sidebar:
     st.divider()
     
     is_connected = configure_gemini()
-    model_name, model_display = "Indefinido", "Aguardando"
-    
     if is_connected:
-        # Busca o modelo real agora
-        model_name, model_display = get_dynamic_model()
-        st.markdown(f"<div style='text-align:center;padding:10px;background:#e8f5e9;border-radius:8px;color:#2e7d32;font-size:0.8em'>✅ IA Ativa: {model_display}</div>", unsafe_allow_html=True)
+        st.success("✅ API Conectada")
     else:
         st.error("❌ Verifique API Key")
 
@@ -226,121 +204,104 @@ else:
     f1 = c1.file_uploader("Referência", type=["pdf", "docx"], key="f1")
     f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
         
-    if st.button("🚀 INICIAR AUDITORIA"):
+    if st.button("🚀 INICIAR AUDITORIA (LITE & 2.5+)"):
         if f1 and f2 and is_connected:
-            with st.spinner("Lendo arquivos..."):
+            with st.spinner("Carregando arquivos..."):
                 d1 = process_uploaded_file(f1)
                 d2 = process_uploaded_file(f2)
                 gc.collect()
 
             if d1 and d2:
-                # Usa o modelo dinâmico encontrado
-                model = genai.GenerativeModel(model_name)
+                model_queue = get_strict_model_queue()
                 
-                final_sections = []
-                final_dates = []
+                payload = ["CONTEXTO: Auditoria Farmacêutica Rigorosa (OCR)."]
+                if d1['type'] == 'text': payload.append(f"--- REF TEXTO ---\n{d1['data']}")
+                else: payload.extend(["--- REF IMAGENS ---"] + d1['data'])
                 
-                # Divisão em 3 partes (Equilíbrio ideal: não corta texto e evita erro de memória)
-                chunk_size = 4 
-                chunks = [lista_secoes[i:i + chunk_size] for i in range(0, len(lista_secoes), chunk_size)]
-                
-                payload_base = ["CONTEXTO: Auditoria Farmacêutica Rigorosa."]
-                if d1['type'] == 'text': payload_base.append(f"--- REF TEXTO ---\n{d1['data']}")
-                else: payload_base.extend(["--- REF IMAGENS ---"] + d1['data'])
-                
-                if d2['type'] == 'text': payload_base.append(f"--- CAND TEXTO ---\n{d2['data']}")
-                else: payload_base.extend(["--- CAND IMAGENS ---"] + d2['data'])
+                if d2['type'] == 'text': payload.append(f"--- CAND TEXTO ---\n{d2['data']}")
+                else: payload.extend(["--- CAND IMAGENS ---"] + d2['data'])
 
-                bar = st.progress(0)
+                secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                 
-                for i, chunk in enumerate(chunks):
-                    # Pausa estratégica para evitar erro 429
-                    if i > 0:
-                        with st.spinner(f"Aguardando segurança da API (10s)..."):
-                            time.sleep(10)
-                    
-                    st.toast(f"Processando lote {i+1}/{len(chunks)}...", icon="⏳")
-                    secoes_str = "\n".join([f"- {s}" for s in chunk])
-                    
-                    prompt = f"""
-                    Você é um Auditor de Qualidade.
-                    
-                    MISSÃO: Extrair o texto das SEÇÕES ALVO abaixo.
-                    
-                    SEÇÕES ALVO DESTA ETAPA:
-                    {secoes_str}
-                    
-                    REGRAS:
-                    1. Extraia o texto EXATAMENTE como está (IPSIS LITTERIS).
-                    2. Compare Referência vs Candidato.
-                    3. No texto do 'bel' (Candidato), marque diferenças com <mark class='diff'>DIFERENÇA</mark>.
-                    4. Marque erros ortográficos com <mark class='ort'>ERRO</mark>.
-                    5. Se encontrar Data de Aprovação (rodapé), extraia.
-                    
-                    SAÍDA JSON:
-                    {{
-                        "METADADOS": {{ "datas": [] }},
-                        "SECOES": [
-                            {{ "titulo": "TITULO DA LISTA", "ref": "Texto Ref", "bel": "Texto Cand...", "status": "OK" or "DIVERGENTE" }}
-                        ]
-                    }}
-                    """
-                    
-                    # Retry Loop
-                    success_part = False
-                    wait_time = 20
-                    
-                    while not success_part:
-                        try:
-                            response = model.generate_content(
-                                [prompt] + payload_base,
-                                generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192, "temperature": 0.0},
-                                safety_settings=SAFETY_SETTINGS
-                            )
-                            part_data = extract_json(response.text)
-                            if part_data:
-                                norm = normalize_sections(part_data, chunk)
-                                final_sections.extend(norm.get("SECOES", []))
-                                if part_data.get("METADADOS", {}).get("datas"):
-                                    final_dates.extend(part_data["METADADOS"]["datas"])
+                prompt = f"""
+                Você é um Auditor de Qualidade Farmacêutica.
+                
+                OBJETIVO: Extrair e comparar as seções da bula.
+                
+                SEÇÕES OBRIGATÓRIAS (Extraia o conteúdo de TODAS que encontrar):
+                {secoes_str}
+                
+                REGRAS:
+                1. Extraia o texto EXATAMENTE como está na imagem (IPSIS LITTERIS).
+                2. Compare o texto da Referência com o Candidato.
+                3. No Candidato: envolva diferenças com <mark class='diff'>TEXTO DIFERENTE</mark>.
+                4. No Candidato: envolva erros ortográficos com <mark class='ort'>ERRO</mark>.
+                5. Extraia a Data de Aprovação da Anvisa se houver.
+                
+                SAÍDA JSON ESTRITA:
+                {{
+                    "METADADOS": {{ "datas": [] }},
+                    "SECOES": [
+                        {{ "titulo": "TITULO DA SEÇÃO", "ref": "Texto original...", "bel": "Texto candidato...", "status": "OK" or "DIVERGENTE" }}
+                    ]
+                }}
+                """
+                
+                success = False
+                final_data = None
+                used_model_display = ""
+                
+                progress_bar = st.progress(0)
+                
+                # LOOP DE ROTAÇÃO ESTRITA
+                for idx, model_info in enumerate(model_queue):
+                    try:
+                        # st.toast(f"Testando: {model_info['name']}...", icon="🤖") # Opcional: Debug
+                        
+                        model = genai.GenerativeModel(model_info['id'])
+                        
+                        # Timeout alto para arquivos grandes
+                        response = model.generate_content(
+                            [prompt] + payload,
+                            generation_config={"response_mime_type": "application/json", "max_output_tokens": 8192, "temperature": 0.0},
+                            safety_settings=SAFETY_SETTINGS,
+                            request_options={"timeout": 600}
+                        )
+                        
+                        data = extract_json(response.text)
+                        
+                        if data and "SECOES" in data and len(data["SECOES"]) > 0:
+                            final_data = normalize_sections(data, lista_secoes)
+                            used_model_display = model_info['name']
+                            success = True
+                            break 
                             
-                            success_part = True
-                            
-                        except Exception as e:
-                            err_msg = str(e)
-                            # Se for 429 (Cota), espera
-                            if "429" in err_msg or "Quota" in err_msg:
-                                st.warning(f"Limite atingido. Aguardando {wait_time}s...")
-                                time.sleep(wait_time)
-                                wait_time += 10
-                            # Se for 404, significa que o modelo morreu no meio do caminho, tenta fallback manual
-                            elif "404" in err_msg:
-                                st.error("Modelo perdeu conexão. Tentando fallback...")
-                                model = genai.GenerativeModel("gemini-pro") # Último recurso
-                                time.sleep(5)
-                            else:
-                                st.error(f"Erro na parte {i+1}: {err_msg}")
-                                success_part = True # Sai para não travar
+                    except Exception as e:
+                        # Silencia erros de modelos inexistentes (404) ou cota (429) e tenta o próximo
+                        continue
                     
-                    bar.progress((i+1)/len(chunks))
+                    progress_bar.progress((idx + 1) / len(model_queue))
                 
-                bar.empty()
+                progress_bar.empty()
                 
-                if final_sections:
+                if success and final_data:
+                    st.success(f"✅ Processado com sucesso via: {used_model_display}")
                     st.divider()
+                    
+                    secs = final_data.get("SECOES", [])
                     cM1, cM2, cM3 = st.columns(3)
-                    divs = sum(1 for s in final_sections if "DIVERGENTE" in s['status'])
-                    total = len(final_sections)
-                    score = 100 - int((divs/max(1, total))*100) if total > 0 else 0
+                    
+                    divs = sum(1 for s in secs if "DIVERGENTE" in s.get('status', 'OK'))
+                    score = 100 - int((divs/max(1, len(secs)))*100) if len(secs) > 0 else 0
                     
                     cM1.metric("Score", f"{score}%")
-                    cM2.metric("Seções", f"{total}/{len(lista_secoes)}")
-                    data_anvisa = max(set(final_dates), key=final_dates.count) if final_dates else "N/A"
-                    cM3.metric("Data Anvisa", str(data_anvisa))
+                    cM2.metric("Seções", f"{len(secs)}/{len(lista_secoes)}")
+                    datas = final_data.get("METADADOS", {}).get("datas", [])
+                    cM3.metric("Data Anvisa", datas[0] if datas else "N/A")
                     
                     st.markdown("---")
                     
-                    for sec in final_sections:
+                    for sec in secs:
                         status = sec.get('status', 'OK')
                         icon = "✅"
                         if "DIVERGENTE" in status: icon = "❌"
@@ -351,4 +312,5 @@ else:
                             cA.markdown(f"**Referência**\n<div style='background:#f8f9fa;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                             cB.markdown(f"**Candidato**\n<div style='background:#f1f8e9;padding:15px;border-radius:5px;font-size:0.9em;white-space: pre-wrap;'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
-                    st.error("Nenhuma seção foi identificada. Verifique se o PDF contém texto legível.")
+                    st.error("Não foi possível processar. O Gemini Lite (8B) pode estar ocupado.")
+                    st.info("Aguarde alguns segundos e tente novamente.")
