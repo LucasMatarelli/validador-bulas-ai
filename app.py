@@ -82,7 +82,7 @@ def get_gemini_model():
     if not api_key: return None, "Sem Chave API"
 
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-3-pro-preview"), "Modelo Ativo: gemini-3-pro-preview"
+    return genai.GenerativeModel("gemini-1.5-pro"), "Modelo Ativo: gemini-1.5-pro"
 
 def process_uploaded_file(uploaded_file):
     if not uploaded_file: return None
@@ -255,10 +255,10 @@ else:
                         secoes_str = "\n".join([f"- {s}" for s in lista_secoes])
                         
                         # ==========================================================
-                        # PROMPT BLINDADO - AQUI ESTÁ A MUDANÇA
+                        # PROMPT BLINDADO (CORRIGIDO PARA NÃO INVENTAR PALAVRAS)
                         # ==========================================================
                         prompt = f"""
-                        Você é um Auditor de Qualidade. Sua tarefa é extrair e comparar o texto de bulas.
+                        Você é um Auditor de Qualidade e especialista em OCR. Sua tarefa é extrair o texto EXATO das imagens/arquivos.
                         
                         SEÇÕES PERMITIDAS (Ignorar qualquer outra):
                         {secoes_str}
@@ -268,11 +268,15 @@ else:
                         
                         2. **ATENÇÃO / LACTOSE:** Blocos de aviso ("Atenção: Contém lactose", "Atenção: Contém açúcar") que aparecem soltos no meio ou fim da coluna PERTENCEM à seção de texto imediatamente acima deles. Junte-os.
                         
-                        3. **SEM ALUCINAÇÃO / OCR LITERAL:** - NÃO INVENTE PALAVRAS. O texto extraído deve ser IDÊNTICO ao da imagem.
-                           - NÃO CORRIJA O PORTUGUÊS.
-                           - NÃO USE SINÔNIMOS (ex: não troque "médico" por "doutor").
-                           - NÃO crie títulos novos (ex: "Composição Adulto"). Use apenas os da lista.
+                        3. **SEM ALUCINAÇÃO:** - NÃO crie títulos novos (ex: "Composição Adulto"). Use apenas os da lista.
                            - NÃO repita o título dentro do conteúdo.
+
+                        4. **TRANSCRIÇÃO LITERAL (MUITO IMPORTANTE):**
+                           - O texto extraído deve ser IDÊNTICO ao da imagem, palavra por palavra.
+                           - NÃO corrija erros de português do original.
+                           - NÃO substitua palavras por sinônimos (Ex: Se está escrito "médico", NÃO troque por "doutor").
+                           - NÃO invente palavras para completar frases. Apenas extraia o que está visível.
+                           - Respeite a pontuação exata do arquivo original.
 
                         SAÍDA JSON (Estrita): 
                         {{ 
@@ -332,7 +336,7 @@ else:
                                     
                             try:
                                 model_run = genai.GenerativeModel(model_name)
-                                # AQUI ESTÁ A SEGUNDA MUDANÇA: temperature=0.0
+                                # ADICIONADO: TEMPERATURE 0.0 PARA PRECISÃO MÁXIMA
                                 response = model_run.generate_content(
                                     [prompt] + payload,
                                     generation_config={
