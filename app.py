@@ -15,8 +15,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Híbrido (Rigoroso V2)",
-    page_icon="🧐",
+    page_title="Validador Turbo",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -36,7 +36,7 @@ st.markdown("""
     .box-bel { background-color: #f1f8e9; border-left: 4px solid #55a68e; }
     .box-ref { border-left: 4px solid #6c757d; }
     
-    /* CORES FORTES PARA OS MARCADORES */
+    /* MARCADORES RIGOROSOS */
     mark.diff { background-color: #fff176; color: #000; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #fdd835; }
     mark.ort { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 3px; font-weight: bold; border-bottom: 2px solid #b71c1c; }
     mark.anvisa { background-color: #b3e5fc; color: #01579b; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #039be5; }
@@ -109,13 +109,14 @@ def process_uploaded_file(uploaded_file):
                 doc.close()
                 return {"type": "text", "data": full_text, "len": len(full_text)}
             
-            st.toast(f"📄 '{uploaded_file.name}': Ativando OCR...", icon="👁️")
+            st.toast(f"📄 '{uploaded_file.name}': Ativando OCR Rápido...", icon="👁️")
             
             images = []
-            limit = min(15, len(doc))
+            limit = min(12, len(doc))
             for i in range(limit):
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                # Reduzi Matrix para 1.5 para ser mais rápido
+                pix = doc[i].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=80))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
             doc.close()
@@ -163,7 +164,7 @@ def normalize_sections(data, allowed):
 # ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.title("Validador Rígido")
+    st.title("Validador Turbo")
     pag = st.radio("Menu", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
     st.divider()
     
@@ -183,7 +184,7 @@ f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 AUDITAR AGORA"):
     if f1 and f2:
-        with st.spinner("📖 Lendo arquivos e verificando conteúdo..."):
+        with st.spinner("📖 Processando arquivos..."):
             d1 = process_uploaded_file(f1)
             d2 = process_uploaded_file(f2)
             gc.collect()
@@ -198,61 +199,52 @@ if st.button("🚀 AUDITAR AGORA"):
             
             secoes_str = "\n".join([f"- {s}" for s in lista])
             
-            # --- PROMPT ATUALIZADO (MODO PROFESSOR DE PORTUGUÊS) ---
+            # --- PROMPT OTIMIZADO PARA DETECTAR ERROS ---
             prompt = f"""
-            ATUE COMO UM REVISOR ORTOGRÁFICO IMPLACÁVEL.
+            ATUE COMO UM REVISOR RIGOROSO.
             SEÇÕES ALVO: {secoes_str}
             
-            SUA MISSÃO:
+            MISSÃO:
             1. Compare REF vs CAND letra por letra.
-            2. ACENTOS E VÍRGULAS CONTAM COMO ERRO. (Ex: 'frequencia' != 'frequência').
+            2. ACENTOS E VÍRGULAS SÃO ERROS. (Ex: 'frequencia' != 'frequência').
             
-            REGRAS OBRIGATÓRIAS DE MARCAÇÃO HTML NO CAMPO 'bel':
+            MARCAÇÃO HTML OBRIGATÓRIA NO CAMPO 'bel':
             
-            🟡 DIVERGÊNCIAS GERAIS: Use <mark class='diff'>palavra_candidato</mark>
-               - Use para: palavras trocadas, números diferentes, texto faltando ou sobrando.
-               - EXEMPLO: Se Ref="500mg" e Cand="500 mg", marque <mark class='diff'>500 mg</mark>.
+            🟡 <mark class='diff'>texto</mark> -> Para QUALQUER diferença (palavras trocadas, números, falta de texto).
+            🔴 <mark class='ort'>texto</mark> -> Para erros de português/digitação (falta de acento, letra errada).
+            🔵 <mark class='anvisa'>DD/MM/AAAA</mark> -> Apenas para data em DIZERES LEGAIS.
             
-            🔴 ERROS ORTOGRÁFICOS: Use <mark class='ort'>erro</mark>
-               - Use para: falta de acento, erro de digitação, gramática errada.
-               - EXEMPLO: Se Cand="contem" (sem acento), marque <mark class='ort'>contem</mark>.
-               - EXEMPLO: Se Cand="farmaceutico", marque <mark class='ort'>farmaceutico</mark>.
-            
-            🔵 DATA ANVISA: Use <mark class='anvisa'>DD/MM/AAAA</mark>
-               - Apenas na seção DIZERES LEGAIS.
-            
-            JSON ESTRITO:
-            {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"...", "bel":"...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
+            JSON: {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"...", "bel":"...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
             """
 
-            # 🛑 ZONA MISTRAL
+            # 🛑 ZONA MISTRAL (Texto/MKT) - USANDO MODELO NEMO (RÁPIDO)
             if pag in ["Ref x BELFAR", "Conferência MKT"]:
                 if not mis_client: st.error("MISTRAL OFF"); st.stop()
                 if d1['type'] == 'images' or d2['type'] == 'images':
-                    st.error("Erro: Falha na extração de texto. Arquivo é imagem pura."); st.stop()
+                    st.error("Erro: Arquivo é imagem pura (OCR falhou)."); st.stop()
 
                 try:
-                    with st.spinner("🌪️ Mistral analisando ortografia..."):
+                    with st.spinner("🌪️ Mistral Nemo (Rápido)..."):
                         chat = mis_client.chat.complete(
-                            model="mistral-small-latest",
+                            model="open-mistral-nemo", # <--- MODELO MAIS RÁPIDO DA MISTRAL
                             messages=[
-                                {"role":"system", "content":"Você é um validador JSON que não tolera erros ortográficos."},
+                                {"role":"system", "content":"Validador JSON estrito."},
                                 {"role":"user", "content":f"{prompt}\n\n=== REF ===\n{d1['data']}\n\n=== CAND ===\n{d2['data']}"}
                             ],
                             response_format={"type": "json_object"},
                             temperature=0.0
                         )
                         final_res = chat.choices[0].message.content
-                        model_used = "🌪️ Mistral Small"
+                        model_used = "🌪️ Mistral Nemo"
                         success = True
                 except Exception as e:
                     st.error(f"Erro Mistral: {e}"); st.stop()
 
-            # 🛑 ZONA GEMINI
+            # 🛑 ZONA GEMINI (Gráfica)
             elif pag == "Gráfica x Arte":
                 if not gem_ok: st.error("GEMINI OFF"); st.stop()
                 try:
-                    with st.spinner("💎 Gemini comparando visualmente..."):
+                    with st.spinner("💎 Gemini Flash..."):
                         model = genai.GenerativeModel("models/gemini-1.5-flash")
                         payload = [prompt]
                         payload.append(f"REF:\n{d1['data']}" if d1['type']=='text' else d1['data'])
@@ -280,7 +272,7 @@ if st.button("🚀 AUDITAR AGORA"):
                     st.divider()
                     
                     c1, c2, c3 = st.columns(3)
-                    errs = sum(1 for s in secs if "DIVERGENTE" in s['status'] or "ERRO" in s['status'])
+                    errs = sum(1 for s in secs if s['status'] != "OK")
                     score = 100 - int((errs/max(1,len(secs)))*100) if secs else 0
                     c1.metric("Score", f"{score}%")
                     c2.metric("Seções", f"{len(secs)}/{len(lista)}")
