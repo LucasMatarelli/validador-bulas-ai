@@ -5,13 +5,14 @@ import fitz  # PyMuPDF
 import io
 import time
 
-st.set_page_config(page_title="Visual (Auto-Hunter)", layout="wide")
+st.set_page_config(page_title="Visual (High Quota)", layout="wide")
 
-# ----------------- CAÇADOR DE MODELOS (A LÓGICA DE OURO) -----------------
-def hunt_for_flash_model():
+# ----------------- CAÇADOR COM PRIORIDADE DE COTA -----------------
+def hunt_for_stable_flash_model():
     """
-    Conecta na API, baixa a lista de 54 modelos e pega o PRIMEIRO
-    que for da família Flash e suporte visão.
+    Baixa a lista de modelos da conta e escolhe o melhor para VISÃO.
+    PRIORIDADE ABSOLUTA: Família 1.5 Flash (Cota Alta).
+    EVITA: Família 2.0/2.5 (Cota Baixa).
     """
     keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
     valid_keys = [k for k in keys if k]
@@ -26,41 +27,50 @@ def hunt_for_flash_model():
             # Pede a lista REAL para o Google
             all_models = list(genai.list_models())
             
-            # Filtra apenas os que geram conteúdo
-            candidates = []
-            for m in all_models:
-                if 'generateContent' in m.supported_generation_methods:
-                    candidates.append(m.name)
+            # Filtra apenas modelos que geram conteúdo
+            candidates = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
             
-            # ESTRATÉGIA DE CAÇA:
-            # Procura qualquer coisa que pareça com Flash 1.5
-            for name in candidates:
-                if "flash" in name.lower() and "1.5" in name and "8b" not in name:
-                    return api_key, name, None # ACHAMOS O NOME CORRETO!
+            # --- LÓGICA DE FILTRAGEM INTELIGENTE ---
             
-            # Se não achar Flash, tenta o Pro 1.5
+            # 1. Tenta achar o 1.5 Flash ESPECÍFICO (O rei da cota)
+            # Procura por variações: gemini-1.5-flash-001, gemini-1.5-flash-002, etc.
             for name in candidates:
-                if "pro" in name.lower() and "1.5" in name:
+                if "gemini-1.5-flash" in name and "8b" not in name and "exp" not in name:
+                    return api_key, name, None
+
+            # 2. Se não achar, tenta o 1.5 Pro (Mais lento, mas boa cota)
+            for name in candidates:
+                if "gemini-1.5-pro" in name and "exp" not in name:
                     return api_key, name, None
             
-            # Se não achar nada, pega o primeiro da lista
+            # 3. Só em último caso pega os modelos novos (2.0/2.5) que têm pouca cota
+            for name in candidates:
+                if "flash" in name and ("2.0" in name or "2.5" in name):
+                    return api_key, name, None
+            
+            # 4. Desespero: Pega o primeiro da lista
             if candidates:
                 return api_key, candidates[0], None
                 
         except Exception as e:
             continue
 
-    return None, None, "Não foi possível encontrar um modelo compatível na lista."
+    return None, None, "Não foi possível encontrar nenhum modelo compatível."
 
 # ----------------- UI -----------------
-st.title("🎨 Gráfica x Arte (Auto-Hunter)")
+st.title("🎨 Gráfica x Arte (Cota Otimizada)")
 
-# Executa a caça imediatamente
-with st.spinner("🔍 Analisando os 54 modelos da sua conta..."):
-    found_key, found_model_name, err = hunt_for_flash_model()
+# Executa a caça focada no 1.5
+with st.spinner("🔍 Buscando modelo Gemini 1.5 (Alta Cota)..."):
+    found_key, found_model_name, err = hunt_for_stable_flash_model()
 
 if found_key and found_model_name:
-    st.success(f"🎯 Modelo Encontrado e Ativado: **{found_model_name}**")
+    # Mostra qual modelo foi escolhido para você conferir
+    if "1.5" in found_model_name:
+        st.success(f"✅ Conectado ao modelo estável: **{found_model_name}**")
+    else:
+        st.warning(f"⚠️ Atenção: Apenas modelos novos encontrados (**{found_model_name}**). Cota pode ser baixa.")
+        
     genai.configure(api_key=found_key)
     model = genai.GenerativeModel(found_model_name)
 else:
@@ -96,15 +106,17 @@ if st.button("🚀 Comparar Visualmente"):
                 colA.image(imgs1[i], use_container_width=True)
                 colB.image(imgs2[i], use_container_width=True)
                 
+                prompt = """
+                Atue como auditor gráfico. Compare as duas imagens.
+                Se idêntico: '✅ Aprovado'. Se erro: Liste.
+                """
+                
                 try:
-                    resp = model.generate_content([
-                        "Atue como auditor gráfico. Compare as duas imagens. Se idêntico: '✅ Aprovado'. Se erro: Liste.",
-                        imgs1[i], imgs2[i]
-                    ])
-                    
+                    resp = model.generate_content([prompt, imgs1[i], imgs2[i]])
                     if "✅" in resp.text: st.success(resp.text)
                     else: st.error(resp.text)
                     
+                    # Pausa de 4s é suficiente para o modelo 1.5
                     time.sleep(4)
                 except Exception as e:
                     st.error(f"Erro: {e}")
