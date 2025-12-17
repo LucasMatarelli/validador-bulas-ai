@@ -86,7 +86,7 @@ SECOES_PROFISSIONAL = [
 
 SECOES_IGNORAR_DIFF = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# Configurações de Segurança
+# Configurações de Segurança para evitar bloqueios
 SAFETY_SETTINGS = {
     genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
     genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
@@ -144,7 +144,7 @@ def mark_sections_hardcoded(text, section_list):
             
     return "\n".join(enhanced_text)
 
-# ----------------- EXTRAÇÃO -----------------
+# ----------------- EXTRAÇÃO & MODELOS -----------------
 
 def try_generate_content(model_name, contents, config=None):
     """Tenta gerar conteúdo tratando erro 404 de modelos"""
@@ -152,7 +152,7 @@ def try_generate_content(model_name, contents, config=None):
         model = genai.GenerativeModel(model_name, generation_config=config)
         return model.generate_content(contents, safety_settings=SAFETY_SETTINGS), model_name
     except Exception as e:
-        # Se der erro 404 ou similar, retorna None para tentar o próximo
+        # Se der erro 404, retorna None para tentar o próximo
         if "404" in str(e) or "not found" in str(e).lower():
             return None, None
         raise e
@@ -162,7 +162,7 @@ def get_robust_response(contents, prefer_flash=True, config=None):
     
     # Lista de tentativas por prioridade
     if prefer_flash:
-        candidates = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-001", "gemini-pro"]
+        candidates = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-001", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
     else:
         candidates = ["gemini-1.5-pro", "gemini-1.5-pro-latest", "gemini-1.5-pro-001"]
 
@@ -176,9 +176,7 @@ def get_robust_response(contents, prefer_flash=True, config=None):
             last_error = e
             continue
             
-    # Se todos falharem, lança o último erro
-    if last_error: raise last_error
-    return None, "Error"
+    return None, "Nenhum modelo disponível"
 
 def get_ocr_gemini(images):
     try:
@@ -215,7 +213,6 @@ def extract_text(file, section_list):
                 doc.close()
                 text = get_ocr_gemini(imgs)
 
-        # Limpeza e Marcação
         text = clean_text(text)
         text = mark_sections_hardcoded(text, section_list)
         return text
@@ -301,8 +298,7 @@ if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
     start_t = time.time()
     
     try:
-        # AQUI A MÁGICA: Tenta vários modelos até um funcionar
-        bar.progress(70, "⚡ IA Analisando...")
+        bar.progress(70, "⚡ IA Analisando (Auto-Seleção de Modelo)...")
         
         prefer_flash = True
         if page == "Gráfica x Arte":
@@ -313,10 +309,15 @@ if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
             prefer_flash=prefer_flash,
             config={"response_mime_type": "application/json"}
         )
-        json_res = resp.text
+        
+        if resp:
+            json_res = resp.text
+        else:
+            st.error("Nenhum modelo IA conseguiu processar. Verifique sua Chave API.")
+            st.stop()
             
     except Exception as e:
-        st.error(f"Erro IA: {e}")
+        st.error(f"Erro Crítico na IA: {e}")
         st.stop()
         
     bar.progress(100, "Concluído!")
@@ -325,12 +326,14 @@ if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
     
     # 3. RESULTADOS
     if json_res:
+        # Limpeza bruta caso venha markdown
         json_res = json_res.replace("```json", "").replace("```", "").strip()
         try:
             data = json.loads(json_res)
         except:
             st.error("Erro no JSON da IA. Tente novamente.")
-            st.code(json_res)
+            with st.expander("Ver JSON Bruto"):
+                st.code(json_res)
             st.stop()
             
         secs = []
@@ -387,4 +390,5 @@ if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
             with st.expander(f"{icon} {tit} - {stat}", expanded=aberto):
                 cR, cB = st.columns(2)
                 cR.markdown(f"<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
+                # O highlight funciona graças ao allow_html=True e o style inline
                 cB.markdown(f"<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
