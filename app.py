@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Híbrido (Preciso)",
+    page_title="Validador Híbrido (Final)",
     page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -36,30 +36,32 @@ st.markdown("""
     .box-bel { background-color: #f9fbe7; border-left: 5px solid #827717; }
     .box-ref { background-color: #f5f5f5; border-left: 5px solid #757575; }
     
-    /* CORES CORRETAS */
+    /* MARCADORES EXTREMOS */
     mark.diff { 
-        background-color: #ffea00 !important; /* AMARELO FORTE */
-        color: #000 !important;
-        padding: 2px 5px; 
+        background-color: #ffea00 !important; /* Amarelo Neon */
+        color: #000000 !important;
+        padding: 3px 6px; 
         border-radius: 4px; 
-        font-weight: bold; 
+        font-weight: 900; 
         border: 2px solid #ffd600;
+        box-shadow: 0 0 5px rgba(255, 214, 0, 0.5);
     }
     mark.ort { 
-        background-color: #ffcdd2 !important; /* VERMELHO CLARO Fundo */
-        color: #b71c1c !important; /* VERMELHO ESCURO Texto */
-        padding: 2px 5px; 
+        background-color: #ff5252 !important; /* Vermelho Neon */
+        color: #ffffff !important; 
+        padding: 3px 6px; 
         border-radius: 4px; 
-        font-weight: bold; 
-        border-bottom: 3px solid #b71c1c; 
+        font-weight: 900; 
+        border: 2px solid #d50000;
         text-decoration: underline;
     }
     mark.anvisa { 
-        background-color: #b3e5fc !important; /* AZUL */
-        color: #01579b !important; 
+        background-color: #40c4ff !important; 
+        color: #000; 
         padding: 2px 5px; 
         border-radius: 4px; 
         font-weight: bold; 
+        border: 2px solid #00b0ff; 
     }
 </style>
 """, unsafe_allow_html=True)
@@ -183,7 +185,7 @@ def normalize_sections(data, allowed):
 # ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.title("Validador Preciso")
+    st.title("Validador Final")
     pag = st.radio("Menu", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
     st.divider()
     
@@ -203,7 +205,7 @@ f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 AUDITAR AGORA"):
     if f1 and f2:
-        with st.spinner("📖 Processando..."):
+        with st.spinner("📖 Lendo arquivos..."):
             d1 = process_uploaded_file(f1)
             d2 = process_uploaded_file(f2)
             gc.collect()
@@ -218,46 +220,51 @@ if st.button("🚀 AUDITAR AGORA"):
             
             secoes_str = "\n".join([f"- {s}" for s in lista])
             
-            # --- PROMPT ANTI-ALUCINAÇÃO ---
+            # --- PROMPT AGRESSIVO PARA DIFF ---
             prompt = f"""
-            ATUE COMO UM ALGORITMO DE COMPARAÇÃO DE TEXTO.
+            VOCÊ É UM ALGORITMO DE COMPARAÇÃO DE TEXTO (DIFF ENGINE).
+            
             SEÇÕES ALVO: {secoes_str}
             
-            INSTRUÇÕES CRÍTICAS (LEIA COM ATENÇÃO):
-            1. Extraia o texto COMPLETO.
-            2. Ignore pontilhados (.....).
-            3. O campo 'bel' NÃO PODE SER VAZIO.
+            TAREFA:
+            1. Compare o texto REF e o texto BEL (Candidato) palavra por palavra.
+            2. Gere o JSON com o campo 'bel' contendo o texto do candidato.
             
-            REGRAS DE MARCAÇÃO (EVITE FALSOS POSITIVOS):
+            REGRAS DE FORMATAÇÃO HTML OBRIGATÓRIAS (NÃO IGNORE):
             
-            1. SE A PALAVRA FOR IDÊNTICA (mesmas letras, mesmos acentos), NÃO USE NENHUMA TAG. Apenas copie o texto.
-               Exemplo: Ref="próstata" Cand="próstata" -> Saída: "próstata" (SEM MARCAÇÃO).
+            >>> USE <mark class='diff'>... </mark> <<<
+            Sempre que uma palavra, número ou pontuação no BEL for diferente do REF.
+            Exemplo: Ref="500mg" Bel="<mark class='diff'>500 mg</mark>"
+            Exemplo: Ref="Frequência" Bel="<mark class='diff'>Frequencia</mark>"
             
-            2. 🟡 USE <mark class='diff'>APENAS SE HOUVER DIFERENÇA REAL</mark> (letras, acentos ou palavras diferentes).
-               Exemplo: Ref="próstata" Cand="prostata" -> Saída: "<mark class='diff'>prostata</mark>" (Falta acento).
-               Exemplo: Ref="500mg" Cand="400mg" -> Saída: "<mark class='diff'>400mg</mark>".
+            >>> USE <mark class='ort'>... </mark> <<<
+            Apenas para erros grotescos de português.
             
-            3. 🔴 USE <mark class='ort'> PARA ERROS DE PORTUGUÊS GRAVES.
-               Exemplo: "Farmacia" (sem acento) -> "<mark class='ort'>Farmacia</mark>".
+            >>> USE <mark class='anvisa'>... </mark> <<<
+            Apenas para a data na seção Dizeres Legais.
             
-            4. 🔵 USE <mark class='anvisa'> PARA DATAS NOS DIZERES LEGAIS.
+            IMPORTANTE:
+            - NÃO corrija o texto. Mostre o erro destacado.
+            - Se o texto for igual, não use tags.
+            - IGNORE pontilhados longos (............).
             
-            JSON ESTRITO:
+            JSON OUTPUT:
             {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"...", "bel":"...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
             """
 
-            # 🛑 MISTRAL
+            # 🛑 ZONA MISTRAL (Texto/MKT)
             if pag in ["Ref x BELFAR", "Conferência MKT"]:
                 if not mis_client: st.error("MISTRAL OFF"); st.stop()
                 if d1['type'] == 'images' or d2['type'] == 'images':
-                    st.error("Erro: OCR falhou."); st.stop()
+                    st.error("Erro: Arquivo imagem pura."); st.stop()
 
                 try:
-                    with st.spinner("🌪️ Mistral Comparando..."):
+                    with st.spinner("🌪️ Mistral Large (Analisando Diffs)..."):
+                        # USANDO LARGE PARA GARANTIR QUE ELE COLOQUE OS MARKERS
                         chat = mis_client.chat.complete(
-                            model="mistral-large-latest", # USANDO LARGE PARA OBEDECER A REGRA "NÃO MARQUE SE FOR IGUAL"
+                            model="mistral-large-latest", 
                             messages=[
-                                {"role":"system", "content":"Você é um validador preciso. NÃO MARQUE palavras idênticas."},
+                                {"role":"system", "content":"Você é um motor de comparação de texto rigoroso. Você SEMPRE usa as tags HTML solicitadas para qualquer diferença."},
                                 {"role":"user", "content":f"{prompt}\n\n=== REF ===\n{d1['data']}\n\n=== CAND ===\n{d2['data']}"}
                             ],
                             response_format={"type": "json_object"},
@@ -269,11 +276,11 @@ if st.button("🚀 AUDITAR AGORA"):
                 except Exception as e:
                     st.error(f"Erro Mistral: {e}"); st.stop()
 
-            # 🛑 GEMINI
+            # 🛑 ZONA GEMINI (Gráfica)
             elif pag == "Gráfica x Arte":
                 if not gem_ok: st.error("GEMINI OFF"); st.stop()
                 try:
-                    with st.spinner("💎 Gemini Comparando..."):
+                    with st.spinner("💎 Gemini Flash..."):
                         model = genai.GenerativeModel("models/gemini-1.5-flash")
                         payload = [prompt]
                         payload.append(f"REF:\n{d1['data']}" if d1['type']=='text' else d1['data'])
