@@ -3,4 +3,4 @@ google-generativeai
 pymupdf
 python-docx
 Pillow
-mistralai
+spacy
