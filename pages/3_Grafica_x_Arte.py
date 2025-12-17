@@ -53,7 +53,6 @@ if api_key:
     genai.configure(api_key=api_key)
 
 # ----------------- CONSTANTES -----------------
-# Lista padrão para validação visual/textual de bulas
 SECOES_PADRAO = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -100,13 +99,12 @@ def process_uploaded_file(uploaded_file):
                 doc.close()
                 return {"type": "text", "data": full_text, "is_image": False}
             
-            # MODO IMAGEM (ALTA RESOLUÇÃO) - Essencial para "Gráfica x Arte"
+            # MODO IMAGEM (ALTA RESOLUÇÃO)
             images = []
             limit_pages = min(8, len(doc)) 
             
             for i in range(limit_pages):
                 page = doc[i]
-                # Zoom 3.0 para ler colunas pequenas em artes gráficas
                 pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
                 try:
                     img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
@@ -154,17 +152,26 @@ def normalize_sections(data_json, allowed_titles):
         return data_json
     
     clean_sections = []
-    allowed_set = {t.strip().upper() for t in allowed_titles}
+    # Cria um dicionário para busca fuzzy
+    allowed_map = {t.strip().upper(): t for t in allowed_titles}
     
     for sec in data_json["SECOES"]:
         titulo_ia = sec.get("titulo", "").strip().upper()
-        if titulo_ia in allowed_set:
+        # Se o título está na lista, adiciona
+        if titulo_ia in allowed_map:
             clean_sections.append(sec)
+        else:
+            # Tenta encontrar similaridade (ex: IA esqueceu a interrogação)
+            for k in allowed_map:
+                if k in titulo_ia or titulo_ia in k:
+                    sec["titulo"] = allowed_map[k]
+                    clean_sections.append(sec)
+                    break
             
     data_json["SECOES"] = clean_sections
     return data_json
 
-# ----------------- UI LATERAL (SIMPLIFICADA PARA PAG 3) -----------------
+# ----------------- UI LATERAL -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
     st.title("Validador de Bulas")
@@ -186,7 +193,7 @@ c1, c2 = st.columns(2)
 f1 = c1.file_uploader(label1, type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader(label2, type=["pdf", "docx"], key="f2")
     
-if st.button("🚀 INICIAR AUDITORIA"):
+if st.button("🚀 INICIAR AUDITORIA (BUSCA PROFUNDA)"):
     if f1 and f2 and api_key:
         with st.spinner("Analisando colunas, fluxo e layout..."):
             try:
@@ -195,8 +202,6 @@ if st.button("🚀 INICIAR AUDITORIA"):
                 gc.collect()
 
                 if d1 and d2:
-                    risco_copyright = d1['is_image'] or d2['is_image']
-                    
                     payload = ["CONTEXTO: Auditoria Farmacêutica (Layout Complexo em Colunas)."]
                     
                     if d1['type'] == 'text': payload.append(f"--- DOC 1 (TEXTO) ---\n{d1['data']}")
@@ -205,29 +210,30 @@ if st.button("🚀 INICIAR AUDITORIA"):
                     if d2['type'] == 'text': payload.append(f"--- DOC 2 (TEXTO) ---\n{d2['data']}")
                     else: payload.append("--- DOC 2 (IMAGENS) ---"); payload.extend(d2['data'])
 
-                    secoes_str = "\n".join([f"- {s}" for s in SECOES_PADRAO])
+                    # Lista numerada para ajudar a IA
+                    secoes_str = "\n".join([f"{i+1}. {s}" for i, s in enumerate(SECOES_PADRAO)])
                     
-                    # PROMPT DO SEU CÓDIGO ORIGINAL
+                    # PROMPT DE BUSCA PROFUNDA (O Segredo)
                     prompt = f"""
-                    Você é um Auditor de Qualidade. Sua tarefa é extrair e comparar o texto de bulas.
+                    Você é um Auditor de Qualidade Sênior.
                     
-                    SEÇÕES PERMITIDAS (Ignorar qualquer outra):
+                    SUA MISSÃO: Encontrar e extrair o texto de **TODAS AS 12 SEÇÕES OBRIGATÓRIAS** abaixo.
+                    
+                    LISTA DE VERIFICAÇÃO (Checklist):
                     {secoes_str}
                     
-                    ⚠️ INSTRUÇÕES CRÍTICAS DE LEITURA:
-                    1. **COLUNAS:** O texto está em colunas. Se uma frase termina abruptamente no fim de uma coluna (ex: "ou", "para"), ela continua no topo da próxima. Não quebre o parágrafo.
+                    ⚠️ REGRAS DE EXTRAÇÃO:
+                    1. **VARREDURA COMPLETA:** O documento TEM essas 12 seções. Se você achou apenas 8, VOCÊ FALHOU. Continue lendo até o final, inclusive rodapés e colunas laterais.
+                    2. **TEXTO EM COLUNAS:** O texto está em colunas jornalísticas. Leia a coluna 1 até o fim, depois a coluna 2, etc. Não misture.
+                    3. **PRESERVAÇÃO:** Extraia o texto EXATO. Não resuma.
+                    4. **SEÇÕES FALTANTES:** Se realmente não existir, marque o status como "FALTANTE". Mas procure muito bem antes.
                     
-                    2. **ATENÇÃO / LACTOSE:** Blocos de aviso ("Atenção: Contém lactose", "Atenção: Contém açúcar") que aparecem soltos no meio ou fim da coluna PERTENCEM à seção de texto imediatamente acima deles. Junte-os.
-                    
-                    3. **SEM ALUCINAÇÃO:** - NÃO crie títulos novos. Use apenas os da lista.
-                        - NÃO repita o título dentro do conteúdo.
-
-                    SAÍDA JSON (Estrita): 
+                    SAÍDA JSON OBRIGATÓRIA: 
                     {{ 
                         "METADADOS": {{ "score": 0, "datas": [] }}, 
                         "SECOES": [ 
                             {{ 
-                                "titulo": "EXATAMENTE UM TÍTULO DA LISTA", 
+                                "titulo": "TÍTULO EXATO DA LISTA ACIMA", 
                                 "ref": "Texto completo...", 
                                 "bel": "Texto completo...", 
                                 "status": "OK" 
@@ -236,9 +242,6 @@ if st.button("🚀 INICIAR AUDITORIA"):
                     }}
                     """
 
-                    # ==============================================================
-                    # SELEÇÃO DE MODELOS (DO SEU CÓDIGO: TENTA TODOS ATÉ CONSEGUIR)
-                    # ==============================================================
                     response = None
                     sucesso = False
                     error_log = []
@@ -248,17 +251,14 @@ if st.button("🚀 INICIAR AUDITORIA"):
                         available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                         
                         def sort_priority(name):
-                            # Lógica para priorizar modelos estáveis vs experimentais
-                            if "robotics" in name or "experimental" in name or "preview" in name: 
-                                return 100 
-                            if "gemini-1.5-pro" in name and "002" in name: return 0
+                            # Prioriza modelos FLASH e LITE pela velocidade, mas tenta outros se falhar
+                            if "flash" in name: return 0  # Tenta flash primeiro (incluindo lite)
                             if "gemini-1.5-pro" in name: return 1
-                            if "gemini-3" in name: return 2
-                            if "gemini-1.5-flash" in name: return 3
+                            if "gemini-2.0" in name: return 2
                             return 50
                         
                         available_models.sort(key=sort_priority)
-                        # Remove duplicatas mantendo ordem
+                        # Remove duplicatas
                         seen = set()
                         available_models = [x for x in available_models if not (x in seen or seen.add(x))]
                         
@@ -266,23 +266,25 @@ if st.button("🚀 INICIAR AUDITORIA"):
                     except:
                         available_models = ["models/gemini-1.5-flash"]
 
-                    st.caption(f"🔄 Tentando modelos de IA disponíveis...")
+                    st.caption(f"🔄 Buscando em profundidade...")
 
                     for model_name in available_models:
-                        # Pula modelos instáveis se houver outras opções
-                        if ("robotics" in model_name or "preview" in model_name) and len(available_models) > 1 and not sucesso:
-                            if available_models.index(model_name) < len(available_models) - 1:
-                                continue
+                        # Pula modelos instáveis/preview se não for o Flash Lite (que queremos testar)
+                        if "robotics" in model_name: continue
                                 
                         try:
                             model_run = genai.GenerativeModel(model_name)
+                            # Aumentei o output token limit para garantir que caiba as 12 seções
                             response = model_run.generate_content(
                                 [prompt] + payload,
-                                generation_config={"response_mime_type": "application/json"},
+                                generation_config={
+                                    "response_mime_type": "application/json",
+                                    "max_output_tokens": 60000  # Aumentado para caber texto longo
+                                },
                                 safety_settings=SAFETY_SETTINGS
                             )
                             sucesso = True
-                            st.success(f"✅ Concluído via: {model_name}")
+                            st.toast(f"✅ Concluído via: {model_name}", icon="🤖")
                             break 
                         except Exception as e:
                             error_log.append(f"{model_name}: {str(e)}")
@@ -290,37 +292,40 @@ if st.button("🚀 INICIAR AUDITORIA"):
 
                     # --- RENDERIZAÇÃO ---
                     if sucesso and response:
-                        if hasattr(response.candidates[0], 'finish_reason') and response.candidates[0].finish_reason == 4:
-                            st.error("⚠️ Bloqueio de Segurança")
+                        raw_data = extract_json(response.text)
+                        if raw_data:
+                            data = normalize_sections(raw_data, SECOES_PADRAO)
+                            
+                            meta = data.get("METADADOS", {})
+                            cM1, cM2, cM3 = st.columns(3)
+                            
+                            # Contagem de Seções
+                            qtd_secoes = len(data.get("SECOES", []))
+                            cor_secoes = "normal"
+                            if qtd_secoes < 12: cor_secoes = "off"
+                            
+                            cM1.metric("Score", f"{meta.get('score',0)}%")
+                            cM2.metric("Seções Encontradas", f"{qtd_secoes}/12", delta="Incompleto" if qtd_secoes < 12 else "Completo", delta_color=cor_secoes)
+                            cM3.metric("Datas", str(meta.get("datas", [])))
+                            st.divider()
+                            
+                            if qtd_secoes < 12:
+                                st.warning(f"⚠️ Atenção: A IA encontrou apenas {qtd_secoes} das 12 seções esperadas. Verifique se o arquivo está legível.")
+                            
+                            for sec in data.get("SECOES", []):
+                                status = sec.get('status', 'N/A')
+                                icon = "✅"
+                                if "DIVERGENTE" in status: icon = "❌"
+                                elif "FALTANTE" in status: icon = "🚨"
+                                elif "DIVERGRIFO" in status: icon = "❓"
+                                
+                                with st.expander(f"{icon} {sec['titulo']} - {status}"):
+                                    cA, cB = st.columns(2)
+                                    cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
+                                    cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
                         else:
-                            raw_data = extract_json(response.text)
-                            if raw_data:
-                                data = normalize_sections(raw_data, SECOES_PADRAO)
-                                
-                                meta = data.get("METADADOS", {})
-                                cM1, cM2, cM3 = st.columns(3)
-                                cM1.metric("Score", f"{meta.get('score',0)}%")
-                                cM2.metric("Seções", len(data.get("SECOES", [])))
-                                cM3.metric("Datas", str(meta.get("datas", [])))
-                                st.divider()
-                                
-                                if len(data.get("SECOES", [])) == 0:
-                                    st.warning("Nenhuma seção válida identificada. Tente melhorar a qualidade do PDF.")
-                                
-                                for sec in data.get("SECOES", []):
-                                    status = sec.get('status', 'N/A')
-                                    icon = "✅"
-                                    if "DIVERGENTE" in status: icon = "❌"
-                                    elif "FALTANTE" in status: icon = "🚨"
-                                    elif "DIVERGRIFO" in status: icon = "❓"
-                                    
-                                    with st.expander(f"{icon} {sec['titulo']} - {status}"):
-                                        cA, cB = st.columns(2)
-                                        cA.markdown(f"**Referência**\n<div style='background:#f9f9f9;padding:10px;font-size:0.9em'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                                        cB.markdown(f"**Candidato**\n<div style='background:#f0fff4;padding:10px;font-size:0.9em'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
-                            else:
-                                st.error("Erro ao estruturar dados. O modelo retornou formato inválido.")
-                                with st.expander("Ver Resposta Bruta (Debug)"): st.code(response.text)
+                            st.error("Erro ao estruturar dados. O modelo retornou formato inválido.")
+                            with st.expander("Ver Resposta Bruta (Debug)"): st.code(response.text)
                     else:
                         st.error("❌ Todos os modelos falharam.")
                         with st.expander("Logs de Erro"): st.write(error_log)
