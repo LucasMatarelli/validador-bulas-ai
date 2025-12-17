@@ -8,12 +8,12 @@ import os
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Visual (Estável)",
+    page_title="Validador Visual (Oficial)",
     page_icon="🎨",
     layout="wide"
 )
 
-# ----------------- ESTILOS CSS -----------------
+# ----------------- ESTILOS -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -28,12 +28,12 @@ def configure_api():
     try:
         api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
         if not api_key:
-            st.error("❌ Sem chave API configurada.")
+            st.error("❌ Sem chave API.")
             return False
         genai.configure(api_key=api_key)
         return True
     except Exception as e:
-        st.error(f"Erro na configuração: {e}")
+        st.error(f"Erro config: {e}")
         return False
 
 def pdf_to_images(uploaded_file):
@@ -42,28 +42,31 @@ def pdf_to_images(uploaded_file):
         file_bytes = uploaded_file.read()
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         for page in doc:
-            # Zoom 2.0 para boa resolução de leitura
+            # Zoom 2.0 = Qualidade suficiente para leitura sem travar
             pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
             img_data = pix.tobytes("jpeg", jpg_quality=85)
             images.append(Image.open(io.BytesIO(img_data)))
         return images
     except Exception as e:
-        st.error(f"Erro ao processar PDF: {e}")
+        st.error(f"Erro PDF: {e}")
         return []
 
 # ----------------- UI PRINCIPAL -----------------
-st.title("🎨 Gráfica x Arte (Visual Estável)")
+st.title("🎨 Gráfica x Arte (Visual)")
 
 if configure_api():
-    # FORÇANDO O MODELO ESTÁVEL 1.5 FLASH (Alto Limite de Cota)
-    model_name = "models/gemini-1.5-flash"
-    st.info(f"🤖 **Motor IA:** `{model_name}` (Modo Alta Disponibilidade)")
+    # DEFINIÇÃO DIRETA DO MODELO QUE NÃO DÁ 404
+    # Usamos o sufixo '-latest' que força o apontamento correto na API v1beta
+    MODEL_NAME = "models/gemini-1.5-flash-latest"
     
+    st.info(f"🤖 Motor Visual Ativo: `{MODEL_NAME}`")
+    
+    # Instancia o modelo uma única vez
     try:
-        model = genai.GenerativeModel(model_name)
+        model = genai.GenerativeModel(MODEL_NAME)
     except:
-        # Fallback de segurança para versão genérica
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        # Último recurso se o latest falhar: versionado fixo
+        model = genai.GenerativeModel("models/gemini-1.5-flash-001")
 
     c1, c2 = st.columns(2)
     f1 = c1.file_uploader("Arte Aprovada", type=["pdf", "jpg", "png"], key="f1")
@@ -80,7 +83,7 @@ if configure_api():
                     st.error("Erro ao carregar imagens.")
                     st.stop()
 
-                # Limita a 5 páginas para não demorar
+                # Limita a 5 páginas
                 max_p = min(len(imgs1), len(imgs2), 5)
                 
                 for i in range(max_p):
@@ -90,39 +93,40 @@ if configure_api():
                     col_b.image(imgs2[i], caption="Gráfica", use_container_width=True)
                     
                     prompt = """
-                    Atue como Especialista de Pré-Impressão Gráfica.
-                    Compare as duas imagens fornecidas.
+                    Atue como Auditor de Qualidade Gráfica.
+                    Compare as duas imagens.
                     
-                    Verifique RIGOROSAMENTE:
-                    1. Layout (elementos deslocados, margens).
-                    2. Fontes (mudança de estilo, corrompidas).
-                    3. Logotipos e Cores (mudanças visíveis).
-                    4. Blocos de texto sumidos ou corrompidos.
+                    VERIFIQUE:
+                    1. Layout e Diagramação (deslocamentos).
+                    2. Fontes (trocas ou corrupção).
+                    3. Logotipos e Cores.
+                    4. Textos (blocos faltando ou sobrando).
                     
-                    Se estiver idêntico, responda APENAS: "✅ Visualmente Aprovado".
-                    Se houver erro, descreva em tópicos curtos e diretos.
+                    RESULTADO:
+                    - Se idêntico: "✅ Visualmente Aprovado".
+                    - Se houver erro: Liste os erros com detalhes.
                     """
                     
                     try:
                         with st.spinner(f"Analisando Pág {i+1}..."):
-                            # O Gemini aceita [prompt, img1, img2]
+                            # Gera resposta
                             resp = model.generate_content([prompt, imgs1[i], imgs2[i]])
                             
                             if resp and resp.text:
                                 if "✅" in resp.text:
                                     st.success(resp.text)
                                 else:
-                                    st.error("Divergências Encontradas:")
+                                    st.error("Divergências:")
                                     st.write(resp.text)
                             
-                            # PAUSA OBRIGATÓRIA DE 4 SEGUNDOS PARA EVITAR O ERRO 429
+                            # Pausa vital para evitar erro 429 (Too Many Requests)
                             time.sleep(4)
                             
                     except Exception as e:
-                        st.error(f"Erro na análise (Pág {i+1}): {e}")
+                        st.error(f"Erro na análise: {e}")
                         if "429" in str(e):
-                            st.warning("⚠️ Limite de velocidade atingido. Aguardando 10 segundos...")
-                            time.sleep(10) # Pausa longa de recuperação
+                            st.warning("⚠️ Limite de velocidade. Aguardando 5s...")
+                            time.sleep(5)
                     
                     st.divider()
         else:
