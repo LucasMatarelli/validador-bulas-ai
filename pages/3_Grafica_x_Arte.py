@@ -1,125 +1,124 @@
 import streamlit as st
-from mistralai import Mistral
 import google.generativeai as genai
+from PIL import Image
 import fitz  # PyMuPDF
 import io
-import re
-from PIL import Image
+import time
+import os
 
-st.set_page_config(page_title="Ref x BELFAR", layout="wide")
+st.set_page_config(page_title="Validador Visual", page_icon="🎨", layout="wide")
 
-# --- CONFIGURAÇÃO BLINDADA ---
-def get_best_gemini():
+# --- ESTILOS ---
+st.markdown("""
+<style>
+    header[data-testid="stHeader"] { display: none !important; }
+    .main .block-container { padding-top: 20px !important; }
+    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- BACKEND BLINDADO ---
+def configure_api():
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            st.error("❌ Sem GEMINI_API_KEY.")
+            return False
+        genai.configure(api_key=api_key)
+        return True
+    except: return False
+
+def get_working_visual_model():
+    """
+    Retorna o melhor modelo visual disponível, testando um por um.
+    Evita erros 404 e 429 procurando o melhor candidato.
+    """
+    # Ordem de preferência: Lite (Rápido) -> Latest -> Stable -> Pro
     candidates = [
-        "models/gemini-1.5-flash-latest",
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-flash-001",
-        "models/gemini-2.0-flash-lite-preview-02-05"
+        "models/gemini-2.0-flash-lite-preview-02-05", # O mais rápido atual
+        "models/gemini-1.5-flash-latest",             # O mais atualizado
+        "models/gemini-1.5-flash-001",                # O mais compatível
+        "models/gemini-1.5-flash"                     # O padrão
     ]
-    for model_name in candidates:
-        try: return genai.GenerativeModel(model_name)
-        except: continue
-    return genai.GenerativeModel("gemini-1.5-flash")
-
-try:
-    if st.secrets.get("GEMINI_API_KEY"):
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    client = Mistral(api_key=st.secrets["MISTRAL_API_KEY"])
-except:
-    st.error("Configure as chaves API no secrets.toml")
-    st.stop()
-
-def get_text_from_pdf(file):
-    doc = fitz.open(stream=file.read(), filetype="pdf")
-    text = ""
-    for page in doc: 
-        # sort=True ORGANIZA COLUNAS (Vital para bulas)
-        text += page.get_text("text", sort=True) + "\n"
     
-    # Fallback para OCR se for imagem
-    if len(text) < 50:
-        file.seek(0)
-        images = []
-        for page in doc:
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-            img_data = pix.tobytes("jpeg")
-            images.append(Image.open(io.BytesIO(img_data)))
+    for model_name in candidates:
         try:
-            model = get_best_gemini()
-            resp = model.generate_content(["Transcreva TUDO o que está escrito nestas imagens, sem resumir:", *images])
-            return resp.text
-        except: return ""
-    return text
+            # Tenta instanciar para ver se não dá 404 na sua conta
+            model = genai.GenerativeModel(model_name)
+            return model, model_name
+        except:
+            continue
+            
+    # Se tudo falhar, retorna o Flash padrão
+    return genai.GenerativeModel("models/gemini-1.5-flash"), "gemini-1.5-flash"
+
+def pdf_to_images(uploaded_file):
+    images = []
+    try:
+        file_bytes = uploaded_file.read()
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        for page in doc:
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            img_data = pix.tobytes("jpeg", jpg_quality=85)
+            images.append(Image.open(io.BytesIO(img_data)))
+        return images
+    except: return []
 
 # --- UI ---
-st.title("💊 Ref x BELFAR (Texto Completo)")
+st.title("🎨 Gráfica x Arte (Auto-Detect)")
 
-c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Referência (PDF)", type="pdf", key="f1")
-f2 = c2.file_uploader("Belfar (PDF)", type="pdf", key="f2")
+if configure_api():
+    # Detecta o modelo que funciona NA SUA CONTA
+    model, model_name = get_working_visual_model()
+    st.info(f"🤖 Motor Visual Ativo: `{model_name}`")
 
-if st.button("🚀 Iniciar Auditoria Completa"):
-    if f1 and f2:
-        with st.spinner("Extraindo textos (lendo colunas)..."):
-            t1 = get_text_from_pdf(f1)
-            t2 = get_text_from_pdf(f2)
-        
-        with st.spinner("🌪️ Mistral analisando (Modo Detalhado)..."):
-            # PROMPT CORRIGIDO PARA EXTRAÇÃO TOTAL
-            prompt = f"""
-            ATUE COMO UM AUDITOR FARMACÊUTICO RÍGIDO (MODO VERBOSO).
-            
-            SEÇÕES OBRIGATÓRIAS:
-            - APRESENTAÇÕES
-            - COMPOSIÇÃO
-            - PARA QUE ESTE MEDICAMENTO É INDICADO?
-            - COMO ESTE MEDICAMENTO FUNCIONA?
-            - QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?
-            - O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?
-            - ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?
-            - COMO DEVO USAR ESTE MEDICAMENTO?
-            - O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?
-            - QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?
-            - O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?
-            - DIZERES LEGAIS
+    c1, c2 = st.columns(2)
+    f1 = c1.file_uploader("Arte Original", type=["pdf", "jpg", "png"], key="f1")
+    f2 = c2.file_uploader("Gráfica (Impressão)", type=["pdf", "jpg", "png"], key="f2")
 
-            REGRAS CRÍTICAS DE EXTRAÇÃO:
-            1. **PROIBIDO RESUMIR**: Copie o texto de cada seção da Referência (ref) e do Candidato (bel) NA ÍNTEGRA. Até o último ponto final.
-            2. Se a seção for longa, escreva TUDO. Não pare no meio.
-            3. Ignore pontilhados (....).
-            
-            REGRAS DE COMPARAÇÃO (HTML NO CAMPO 'bel'):
-            - Use <mark class='diff'>palavra</mark> para DIFERENÇAS (texto trocado, números).
-            - Use <mark class='ort'>palavra</mark> para ERROS DE PORTUGUÊS.
-            - Use <mark class='anvisa'>data</mark> para a Data Anvisa.
-            - Se o texto for igual, copie ele limpo (sem tags).
-
-            JSON DE SAÍDA:
-            {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"NOME DA SEÇÃO", "ref":"TEXTO COMPLETO REF...", "bel":"TEXTO COMPLETO BEL...", "status":"OK/DIVERGENTE"}} ] }}
-            """
-            
-            try:
-                # Usando Large para garantir que ele tenha "paciência" para escrever tudo
-                resp = client.chat.complete(
-                    model="mistral-large-latest",
-                    messages=[
-                        {"role":"system", "content":"Você é um extrator de texto fiel. Nunca resuma."},
-                        {"role":"user", "content":f"{prompt}\n\n=== REF ===\n{t1}\n\n=== CAND ===\n{t2}"}
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.0
-                )
+    if st.button("🚀 Comparar Visualmente"):
+        if f1 and f2:
+            with st.spinner("Processando imagens..."):
+                imgs1 = pdf_to_images(f1) if f1.name.lower().endswith(".pdf") else [Image.open(f1)]
+                imgs2 = pdf_to_images(f2) if f2.name.lower().endswith(".pdf") else [Image.open(f2)]
                 
-                content = resp.choices[0].message.content
+                max_p = min(len(imgs1), len(imgs2), 5)
                 
-                # Renderização
-                import json
-                data = json.loads(content)
-                
-                st.success("✅ Análise Completa")
-                
-                for s in data.get("SECOES", []):
-                    icon = "❌" if "DIVERGENTE" in s['status'] else "✅"
-                    with st.expander(f"{icon} {s['titulo']}"):
-                        cR, cB = st.columns(2)
-                        cR.markdown(f"**Referência**\n<div style='background:#f8f9fa;padding:10px;border-radius:5px;'>{s.get('ref')}</div>", unsafe_allow_html=
+                for i in range(max_p):
+                    st.markdown(f"### 📄 Página {i+1}")
+                    col_a, col_b = st.columns(2)
+                    col_a.image(imgs1[i], caption="Arte", use_container_width=True)
+                    col_b.image(imgs2[i], caption="Gráfica", use_container_width=True)
+                    
+                    prompt = """
+                    Atue como Especialista de Pré-Impressão. Compare as duas imagens.
+                    
+                    VERIFIQUE RIGOROSAMENTE:
+                    1. Layout (deslocamentos).
+                    2. Fontes (trocas/corrupção).
+                    3. Logotipos e Cores.
+                    4. Textos (faltando/sobrando).
+                    
+                    Se idêntico: "✅ Aprovado".
+                    Se erro: Liste com detalhes.
+                    """
+                    
+                    try:
+                        resp = model.generate_content([prompt, imgs1[i], imgs2[i]])
+                        
+                        if resp and resp.text:
+                            if "✅" in resp.text: st.success(resp.text)
+                            else: st.error(resp.text)
+                        
+                        # Pausa para evitar cota
+                        time.sleep(3)
+                        
+                    except Exception as e:
+                        st.error(f"Erro: {e}")
+                        if "429" in str(e): 
+                            st.warning("Aguardando cota...")
+                            time.sleep(5)
+                    
+                    st.divider()
+        else:
+            st.warning("Envie os arquivos.")
