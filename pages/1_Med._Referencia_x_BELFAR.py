@@ -1,131 +1,137 @@
 import streamlit as st
+import google.generativeai as genai
+import fitz  # PyMuPDF
+import json
+import re
 
-# ----------------- CONFIGURAÇÃO DA PÁGINA (HOME) -----------------
-st.set_page_config(
-    page_title="Central de Auditoria Belfar",
-    page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Ref x BELFAR (Gemini Lite)", layout="wide")
 
-# ----------------- ESTILOS CSS (VISUAL PREMIUM) -----------------
+# ----------------- CONFIGURAÇÃO API -----------------
+try:
+    api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("MISTRAL_API_KEY") # Tenta pegar qualquer uma configurada
+    if api_key:
+        genai.configure(api_key=api_key)
+    else:
+        st.error("Configure a GEMINI_API_KEY no secrets.toml")
+        st.stop()
+except:
+    st.error("Erro na configuração da API.")
+    st.stop()
+
+# ----------------- FUNÇÕES -----------------
+def get_text_from_pdf(file):
+    """Extrai texto digital (sem OCR)."""
+    try:
+        doc = fitz.open(stream=file.read(), filetype="pdf")
+        text = ""
+        for page in doc:
+            # sort=True organiza colunas (essencial para bula)
+            text += page.get_text("text", sort=True) + "\n"
+        return text
+    except Exception as e:
+        return ""
+
+def clean_json(text_response):
+    """Limpa o markdown ```json ... ``` para evitar erros."""
+    text = re.sub(r"```json", "", text_response)
+    text = re.sub(r"```", "", text)
+    return text.strip()
+
+# ----------------- UI -----------------
+st.title("💊 Ref x BELFAR (Gemini Lite)")
+st.markdown("Comparação de Texto via **Gemini 2.0 Flash Lite** (Sem OCR).")
+
+# Estilos CSS para os cards
 st.markdown("""
 <style>
-    /* Remove cabeçalho padrão chato */
-    header[data-testid="stHeader"] { display: none !important; }
-    
-    /* Fundo e tipografia */
-    .main { background-color: #f4f6f8; font-family: 'Segoe UI', sans-serif; }
-    
-    /* Títulos */
-    h1 { color: #2c3e50; font-weight: 700; }
-    h2, h3 { color: #34495e; }
-    
-    /* Cartões de Módulo */
-    .module-card {
-        background-color: white;
-        padding: 25px;
-        border-radius: 12px;
-        border: 1px solid #e1e4e8;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        transition: transform 0.2s, box-shadow 0.2s;
-        height: 100%;
-    }
-    .module-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 8px 15px rgba(0,0,0,0.1);
-        border-color: #55a68e;
-    }
-    
-    /* Badges de Status */
-    .badge {
-        display: inline-block;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 0.8em;
-        font-weight: bold;
-        margin-top: 10px;
-    }
-    .badge-stable { background-color: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; } /* Azul */
-    .badge-new { background-color: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; } /* Verde */
-    .badge-beta { background-color: #fff3e0; color: #ef6c00; border: 1px solid #ffe0b2; } /* Laranja */
-    
-    /* Ícones grandes */
-    .icon-large { font-size: 3rem; margin-bottom: 15px; display: block; text-align: center; }
-    
-    /* Sidebar */
-    [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eee; }
+    .box-ref { background-color: #f8f9fa; padding: 15px; border-left: 5px solid #6c757d; border-radius: 5px; }
+    .box-bel { background-color: #f1f8e9; padding: 15px; border-left: 5px solid #55a68e; border-radius: 5px; }
+    mark.diff { background-color: #fff176; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
+    mark.ort { background-color: #ffcdd2; padding: 2px 4px; border-radius: 3px; font-weight: bold; text-decoration: underline; }
+    mark.anvisa { background-color: #b3e5fc; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- UI PRINCIPAL -----------------
+c1, c2 = st.columns(2)
+f1 = c1.file_uploader("Referência (PDF Texto)", type="pdf", key="f1")
+f2 = c2.file_uploader("Belfar (PDF Texto)", type="pdf", key="f2")
 
-# Cabeçalho
-c_logo, c_title = st.columns([1, 5])
-with c_logo:
-    st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
-with c_title:
-    st.title("Sistema Central de Auditoria")
-    st.caption("Controle de Qualidade Farmacêutica Inteligente")
+if st.button("🚀 Iniciar Auditoria"):
+    if f1 and f2:
+        with st.spinner("Lendo arquivos (Modo Texto Digital)..."):
+            t1 = get_text_from_pdf(f1)
+            t2 = get_text_from_pdf(f2)
+        
+        if len(t1) < 50 or len(t2) < 50:
+            st.error("⚠️ Atenção: Um dos arquivos parece ser imagem ou está vazio. Este módulo não usa OCR.")
+        else:
+            with st.spinner("⚡ Gemini Lite analisando..."):
+                prompt = f"""
+                ATUE COMO UM AUDITOR FARMACÊUTICO.
+                
+                TAREFA:
+                Compare o texto REF (Referência) com o texto BEL (Candidato) seção por seção.
+                
+                REGRAS OBRIGATÓRIAS:
+                1. Extraia o texto COMPLETO de cada seção. NÃO RESUMA.
+                2. No campo 'bel', use tags HTML para destacar problemas:
+                   - <mark class='diff'>texto</mark> para divergências de conteúdo (números, palavras trocadas).
+                   - <mark class='ort'>texto</mark> para erros de português.
+                   - <mark class='anvisa'>data</mark> para datas nos Dizeres Legais.
+                3. Se o texto for igual, apenas copie ele sem tags.
+                
+                FORMATO JSON DE RESPOSTA:
+                {{
+                    "METADADOS": {{"datas": ["DD/MM/AAAA"]}},
+                    "SECOES": [
+                        {{"titulo": "NOME DA SEÇÃO", "ref": "Texto completo ref...", "bel": "Texto completo bel...", "status": "OK ou DIVERGENTE"}}
+                    ]
+                }}
 
-st.divider()
+                === TEXTO REF ===
+                {t1}
 
-# Grid de Módulos
-col1, col2, col3 = st.columns(3, gap="medium")
+                === TEXTO BEL ===
+                {t2}
+                """
+                
+                try:
+                    # Usando o modelo Lite Rápido
+                    model = genai.GenerativeModel("models/gemini-2.0-flash-lite-preview-02-05")
+                    
+                    # Força resposta JSON
+                    resp = model.generate_content(
+                        prompt, 
+                        generation_config={"response_mime_type": "application/json"}
+                    )
+                    
+                    data = json.loads(clean_json(resp.text))
+                    
+                    # Renderização
+                    secs = data.get("SECOES", [])
+                    dates = data.get("METADADOS", {}).get("datas", [])
+                    
+                    st.success("✅ Análise Finalizada")
+                    
+                    # Métricas
+                    col_m1, col_m2 = st.columns(2)
+                    errs = sum(1 for s in secs if "DIVERGENTE" in s['status'])
+                    col_m1.metric("Seções Analisadas", len(secs))
+                    col_m2.metric("Seções com Divergência", errs)
+                    
+                    if dates:
+                        st.caption(f"📅 Data Detectada: {dates[0]}")
+                    
+                    st.divider()
 
-with col1:
-    st.markdown("""
-    <div class="module-card">
-        <div class="icon-large">💊</div>
-        <h3>Med. Referência x BELFAR</h3>
-        <p>Comparação algorítmica de texto puro.</p>
-        <ul>
-            <li>Extração PDF/Word</li>
-            <li>Checagem de Seções</li>
-            <li>Conformidade ANVISA</li>
-        </ul>
-        <div class="badge badge-stable">v21.9 • Estável</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col2:
-    st.markdown("""
-    <div class="module-card">
-        <div class="icon-large">📋</div>
-        <h3>Conferência MKT</h3>
-        <p>Validação estrutural e ortográfica avançada.</p>
-        <ul>
-            <li>Motor Híbrido (Mistral AI)</li>
-            <li>Detecção de Erros PT-BR</li>
-            <li>Análise de Contexto</li>
-        </ul>
-        <div class="badge badge-new">v107 • IA Híbrida</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col3:
-    st.markdown("""
-    <div class="module-card">
-        <div class="icon-large">🎨</div>
-        <h3>Gráfica x Arte</h3>
-        <p>Conferência visual de pré-impressão.</p>
-        <ul>
-            <li>Visão Computacional (Gemini)</li>
-            <li>Layout, Fontes e Cores</li>
-            <li>OCR de Alta Resolução</li>
-        </ul>
-        <div class="badge badge-beta">IA Visual • Gemini Flash</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.divider()
-
-# Instrução de Uso
-st.info("👈 **Para começar, selecione um dos módulos no menu lateral à esquerda.**")
-
-# Rodapé Discreto
-st.markdown("""
-<div style="text-align: center; color: #999; font-size: 0.8em; margin-top: 50px;">
-    Sistema Interno de Qualidade • Desenvolvido para Segurança do Paciente
-</div>
-""", unsafe_allow_html=True)
+                    for s in secs:
+                        icon = "❌" if "DIVERGENTE" in s['status'] else "✅"
+                        with st.expander(f"{icon} {s.get('titulo', 'Seção')} - {s.get('status')}"):
+                            cR, cB = st.columns(2)
+                            cR.markdown(f"**Referência**<div class='box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
+                            cB.markdown(f"**Candidato**<div class='box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
+                            
+                except Exception as e:
+                    st.error(f"Erro na IA: {e}")
+    else:
+        st.warning("Envie os dois arquivos.")
