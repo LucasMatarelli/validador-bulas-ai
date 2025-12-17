@@ -12,8 +12,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Flash Pro",
-    page_icon="⚡",
+    page_title="Validador Pro (Auto-Fix)",
+    page_icon="🛠️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -94,7 +94,7 @@ SAFETY_SETTINGS = {
     genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
 }
 
-# ----------------- INTELIGÊNCIA PYTHON -----------------
+# ----------------- INTELIGÊNCIA PYTHON (PRÉ-PROCESSAMENTO) -----------------
 
 def clean_text(text):
     text = re.sub(r'([a-zà-ú])- \n([a-zà-ú])', r'\1\2', text)
@@ -139,45 +139,43 @@ def mark_sections_hardcoded(text, section_list):
 # ----------------- EXTRAÇÃO & MODELOS -----------------
 
 def try_generate_content(model_name, contents, config=None):
-    """Tenta gerar conteúdo tratando erro 404"""
     try:
         model = genai.GenerativeModel(model_name, generation_config=config)
         return model.generate_content(contents, safety_settings=SAFETY_SETTINGS), model_name
     except Exception as e:
-        # Erros de modelo não encontrado
-        if "404" in str(e) or "not found" in str(e).lower() or "400" in str(e):
+        # Se for erro de "Não encontrado", ignora e tenta o próximo
+        if "404" in str(e) or "not found" in str(e).lower():
             return None, None
-        raise e # Outros erros (ex: Auth) repassa para cima
+        raise e # Erro real (autenticação, cota)
 
 def get_robust_response(contents, prefer_flash=True, config=None):
-    """Tenta lista de modelos até um funcionar"""
-    
-    # Lista expandida de tentativas
+    # LISTA EXPANDIDA DE MODELOS (Tenta todos até funcionar)
     if prefer_flash:
         candidates = [
             "gemini-1.5-flash", 
+            "models/gemini-1.5-flash",
             "gemini-1.5-flash-latest", 
             "gemini-1.5-flash-001", 
             "gemini-1.5-flash-002",
-            "models/gemini-1.5-flash",
             "gemini-1.0-pro",
             "gemini-pro"
         ]
     else:
-        candidates = ["gemini-1.5-pro", "gemini-1.5-pro-latest", "gemini-1.5-pro-001", "models/gemini-1.5-pro"]
+        candidates = ["gemini-1.5-pro", "models/gemini-1.5-pro", "gemini-1.5-pro-latest"]
 
-    last_error = None
+    last_error_msg = "Nenhum modelo foi tentado."
+    
     for model_name in candidates:
         try:
             resp, used_model = try_generate_content(model_name, contents, config)
             if resp:
                 return resp, used_model
         except Exception as e:
-            last_error = e
+            last_error_msg = str(e)
             continue
             
-    # Se chegou aqui, nenhum funcionou. Retorna o erro real.
-    return None, str(last_error)
+    # Se falhar em todos, retorna o último erro real
+    return None, f"Todos falharam. Último erro: {last_error_msg}"
 
 def get_ocr_gemini(images):
     try:
@@ -219,22 +217,29 @@ def extract_text(file, section_list):
 
 # ----------------- UI & CONFIG -----------------
 def configure_api():
-    # Tenta pegar dos segredos ou ambiente
     api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if api_key:
         genai.configure(api_key=api_key)
-        return True, "Chave Encontrada"
-    return False, "Chave NÃO encontrada"
+        return True, "Chave Configurada"
+    return False, "Chave NÃO Encontrada"
 
-# Barra lateral de Diagnóstico
-st.sidebar.title("Validador Flash")
+st.sidebar.title("Validador Pro")
 key_status, key_msg = configure_api()
 
 if key_status:
     st.sidebar.success(f"🔑 {key_msg}")
+    # BOTÃO DE DIAGNÓSTICO
+    if st.sidebar.button("🔍 Testar Chave API"):
+        try:
+            with st.spinner("Verificando modelos disponíveis..."):
+                models = genai.list_models()
+                names = [m.name for m in models if 'generateContent' in m.supported_generation_methods]
+                st.sidebar.success("Modelos Ativos:")
+                st.sidebar.code("\n".join(names))
+        except Exception as e:
+            st.sidebar.error(f"Erro ao listar modelos: {e}")
 else:
-    st.sidebar.error(f"🚫 {key_msg}")
-    st.sidebar.info("Adicione 'GEMINI_API_KEY' no .streamlit/secrets.toml")
+    st.sidebar.error("🚫 Sem Chave API")
 
 page = st.sidebar.radio("Navegação", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
 
@@ -249,13 +254,13 @@ c1, c2 = st.columns(2)
 f1 = c1.file_uploader("Referência")
 f2 = c2.file_uploader("Candidato")
 
-if st.button("🚀 AUDITAR (MODO ROBUSTO)"):
+if st.button("🚀 AUDITAR AGORA"):
     if not f1 or not f2:
         st.warning("Arquivos faltando.")
         st.stop()
     
     if not key_status:
-        st.error("ERRO CRÍTICO: Configure a GEMINI_API_KEY para continuar.")
+        st.error("Configure a GEMINI_API_KEY para continuar.")
         st.stop()
         
     bar = st.progress(0, "Processando...")
@@ -266,35 +271,33 @@ if st.button("🚀 AUDITAR (MODO ROBUSTO)"):
     t2 = extract_text(f2, list_secs)
     bar.progress(60, "Candidato OK")
     
+    # 2. PROMPT
     secoes_ignorar_str = ", ".join(SECOES_IGNORAR_DIFF)
     
-    prompt = f"""Você é um Auditor Sênior de Bulas Rápido e Preciso.
+    prompt = f"""Você é um Auditor Sênior.
     
-    MISSÃO: Encontrar as seções marcadas com "👉👉👉 SEÇÃO IDENTIFICADA: ... 👈👈👈" e comparar os textos.
+    MISSÃO: Encontrar as seções marcadas com "👉👉👉 SEÇÃO IDENTIFICADA: ... 👈👈👈" e comparar.
     
-    LISTA DE SEÇÕES OBRIGATÓRIAS (Encontre TODAS no JSON):
+    LISTA OBRIGATÓRIA:
     {json.dumps(list_secs, ensure_ascii=False)}
 
-    REGRAS DE CONTEÚDO:
-    1. Traga o texto COMPLETO de cada seção.
-    2. Nas seções [{secoes_ignorar_str}], APENAS COPIE o texto. Status "OK".
+    REGRAS:
+    1. Traga o texto COMPLETO.
+    2. Nas seções [{secoes_ignorar_str}], APENAS COPIE. Status "OK".
     
-    REGRAS VISUAIS (MARCA-TEXTO OBRIGATÓRIO):
-    Nas divergências, USE O ATRIBUTO STYLE inline (não use classes).
-    
-    Use EXATAMENTE estes códigos HTML para marcar o texto do Candidato (Bel):
+    REGRAS VISUAIS (STYLE INLINE OBRIGATÓRIO):
     - Diferença: <span style="background-color: #ffeb3b; color: black; font-weight: bold; padding: 2px;">TEXTO ERRADO</span>
-    - Erro Ortográfico: <span style="background-color: #ff1744; color: white; font-weight: bold; padding: 2px;">ERRO</span>
-    - Data Anvisa: <span style="background-color: #00e5ff; color: black; font-weight: bold; padding: 2px;">DATA</span>
+    - Erro PT: <span style="background-color: #ff1744; color: white; font-weight: bold; padding: 2px;">ERRO</span>
+    - Data: <span style="background-color: #00e5ff; color: black; font-weight: bold; padding: 2px;">DATA</span>
 
     SAÍDA JSON:
     {{
         "METADADOS": {{ "datas": [], "produto": "" }},
         "SECOES": [
             {{
-                "titulo": "TITULO EXATO DA LISTA",
-                "ref": "Texto referência...",
-                "bel": "Texto candidato com tags <span>...",
+                "titulo": "TITULO DA LISTA",
+                "ref": "Texto...",
+                "bel": "Texto com tags...",
                 "status": "OK" ou "DIVERGENTE"
             }}
         ]
@@ -306,11 +309,10 @@ if st.button("🚀 AUDITAR (MODO ROBUSTO)"):
     start_t = time.time()
     
     try:
-        bar.progress(70, "⚡ IA Analisando...")
+        bar.progress(70, "⚡ IA Analisando (Tentando modelos)...")
         
         prefer_flash = True
-        if page == "Gráfica x Arte":
-            prefer_flash = False
+        if page == "Gráfica x Arte": prefer_flash = False
             
         resp, model_name = get_robust_response(
             [prompt, f"--- TEXTO REFERÊNCIA ---\n{t1}", f"--- TEXTO CANDIDATO ---\n{t2}"],
@@ -321,11 +323,11 @@ if st.button("🚀 AUDITAR (MODO ROBUSTO)"):
         if resp and hasattr(resp, 'text'):
             json_res = resp.text
         else:
-            st.error(f"Falha na IA. Detalhe do erro: {model_name}")
+            st.error(f"Falha Crítica: {model_name}") # Mostra o erro real capturado
             st.stop()
             
     except Exception as e:
-        st.error(f"Erro Crítico: {e}")
+        st.error(f"Erro Inesperado: {e}")
         st.stop()
         
     bar.progress(100, "Concluído!")
@@ -338,7 +340,7 @@ if st.button("🚀 AUDITAR (MODO ROBUSTO)"):
         try:
             data = json.loads(json_res)
         except:
-            st.error("Erro no JSON da IA. Tente novamente.")
+            st.error("Erro no JSON da IA.")
             st.code(json_res)
             st.stop()
             
@@ -354,8 +356,8 @@ if st.button("🚀 AUDITAR (MODO ROBUSTO)"):
             else:
                 secs.append({
                     "titulo": target,
-                    "ref": "Não encontrado / Não identificado.",
-                    "bel": "Não encontrado / Não identificado.",
+                    "ref": "Não encontrado.",
+                    "bel": "Não encontrado.",
                     "status": "FALTANTE"
                 })
 
