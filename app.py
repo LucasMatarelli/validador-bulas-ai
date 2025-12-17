@@ -15,8 +15,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Híbrido (Mistral Small)",
-    page_icon="🌪️",
+    page_title="Validador Híbrido (Highlighter Fix)",
+    page_icon="🖍️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -36,10 +36,10 @@ st.markdown("""
     .box-bel { background-color: #f1f8e9; border-left: 4px solid #55a68e; }
     .box-ref { border-left: 4px solid #6c757d; }
     
-    /* MARCADORES RIGOROSOS */
-    mark.diff { background-color: #fff176; color: #000; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #fdd835; }
-    mark.ort { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 3px; font-weight: bold; border-bottom: 2px solid #b71c1c; }
-    mark.anvisa { background-color: #b3e5fc; color: #01579b; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #039be5; }
+    /* CORES VIBRANTES PARA OS MARCADORES */
+    mark.diff { background-color: #ffd54f; color: #000; padding: 2px 4px; border-radius: 3px; font-weight: 800; border: 2px solid #ff6f00; }
+    mark.ort { background-color: #ef9a9a; color: #b71c1c; padding: 2px 4px; border-radius: 3px; font-weight: 800; border-bottom: 3px solid #b71c1c; text-decoration: underline; }
+    mark.anvisa { background-color: #81d4fa; color: #01579b; padding: 2px 4px; border-radius: 3px; font-weight: 800; border: 2px solid #0277bd; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -135,9 +135,14 @@ def process_uploaded_file(uploaded_file):
 
 def extract_json(text):
     if not text: return None
-    clean_text = text.replace("```json", "").replace("```", "").strip()
+    # Remove blocos markdown ```json ... ```
+    clean_text = re.sub(r'```json\s*', '', text)
+    clean_text = re.sub(r'\s*```', '', clean_text)
+    
+    # Tenta pegar apenas o objeto JSON {...}
     match = re.search(r'\{.*\}', clean_text, re.DOTALL)
     if match: clean_text = match.group(0)
+    
     try: return json.loads(clean_text)
     except: return None
 
@@ -197,22 +202,37 @@ if st.button("🚀 AUDITAR AGORA"):
             
             secoes_str = "\n".join([f"- {s}" for s in lista])
             
-            # --- PROMPT ANTI-QUEBRA ---
+            # --- PROMPT COM EXEMPLOS PRÁTICOS (FEW-SHOT) ---
             prompt = f"""
             ATUE COMO UM AUDITOR FARMACÊUTICO.
-            SEÇÕES ALVO: {secoes_str}
+            SEÇÕES: {secoes_str}
             
-            REGRAS CRÍTICAS DE LEITURA E JSON:
-            1. IGNORE completamente linhas de pontilhados longas (ex: "................"). NÃO AS COPIE para o JSON.
-            2. Extraia o texto COMPLETO, mas pule cabeçalhos de página repetitivos.
-            3. O campo 'bel' NÃO PODE SER VAZIO. Copie o texto do candidato.
+             REGRAS OBRIGATÓRIAS:
+            1. Extraia o texto COMPLETO.
+            2. Ignore linhas de pontilhados (................).
+            3. Use tags HTML no campo 'bel' para mostrar ERROS.
             
-            MARCAÇÃO HTML OBRIGATÓRIA NO CAMPO 'bel':
-            🟡 <mark class='diff'>texto</mark> -> Divergências (palavras trocadas, números, falta).
-            🔴 <mark class='ort'>texto</mark> -> Erros de português (acentos, vírgulas).
-            🔵 <mark class='anvisa'>DD/MM/AAAA</mark> -> Data na seção DIZERES LEGAIS.
+            EXEMPLOS DE COMO MARCAR (Siga este padrão):
             
-            JSON ESTRITO (Sem markdown, sem texto antes/depois):
+            CASO 1: Divergência de Texto (Use amarelo)
+            Ref: "Conservar em temperatura ambiente"
+            Cand: "Conservar em temperatura"
+            Saída 'bel': "Conservar em <mark class='diff'>temperatura</mark>"
+            
+            CASO 2: Acento Errado (Use amarelo)
+            Ref: "Frequência"
+            Cand: "Frequencia"
+            Saída 'bel': "<mark class='diff'>Frequencia</mark>"
+            
+            CASO 3: Erro de Português Grave (Use vermelho)
+            Ref: "Farmacêutico"
+            Cand: "Farmaceutico"
+            Saída 'bel': "<mark class='ort'>Farmaceutico</mark>"
+            
+            CASO 4: Data Anvisa (Use azul)
+            Saída 'bel': "...em <mark class='anvisa'>10/05/2024</mark>."
+            
+            SAÍDA JSON ESTRITA:
             {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"...", "bel":"...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
             """
 
@@ -223,11 +243,11 @@ if st.button("🚀 AUDITAR AGORA"):
                     st.error("Erro: OCR falhou. Arquivo é imagem pura."); st.stop()
 
                 try:
-                    with st.spinner("🌪️ Mistral Small (Rápido)..."):
+                    with st.spinner("🌪️ Mistral Auditing..."):
                         chat = mis_client.chat.complete(
-                            model="mistral-small-latest", # <--- VOLTAMOS AO CLASSICO RAPIDO
+                            model="mistral-small-latest",
                             messages=[
-                                {"role":"system", "content":"Você é um robô JSON. Não escreva pontilhados (....)."},
+                                {"role":"system", "content":"Você é um validador JSON. Use as tags <mark> conforme os exemplos."},
                                 {"role":"user", "content":f"{prompt}\n\n=== REF ===\n{d1['data']}\n\n=== CAND ===\n{d2['data']}"}
                             ],
                             response_format={"type": "json_object"},
@@ -243,7 +263,7 @@ if st.button("🚀 AUDITAR AGORA"):
             elif pag == "Gráfica x Arte":
                 if not gem_ok: st.error("GEMINI OFF"); st.stop()
                 try:
-                    with st.spinner("💎 Gemini Flash..."):
+                    with st.spinner("💎 Gemini Auditing..."):
                         model = genai.GenerativeModel("models/gemini-1.5-flash")
                         payload = [prompt]
                         payload.append(f"REF:\n{d1['data']}" if d1['type']=='text' else d1['data'])
@@ -288,7 +308,7 @@ if st.button("🚀 AUDITAR AGORA"):
                             cR.markdown(f"<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
                             cB.markdown(f"<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
-                    st.error("❌ Erro JSON (Possível corte de texto). Tente novamente.")
+                    st.error("❌ Erro JSON. Tente novamente.")
                     with st.expander("Ver Resposta Bruta"):
                         st.code(final_res)
     else:
