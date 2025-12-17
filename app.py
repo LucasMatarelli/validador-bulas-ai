@@ -10,15 +10,15 @@ import time
 from PIL import Image
 from difflib import SequenceMatcher
 
-# ----------------- CONFIGURAÇÃO -----------------
+# ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Flash ⚡",
+    page_title="Validador Flash Pro",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS (CSS) -----------------
+# ----------------- ESTILOS CSS -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -52,14 +52,14 @@ st.markdown("""
     
     .ia-badge {
         padding: 5px 12px;
-        background-color: #fff3e0;
-        color: #e65100;
+        background-color: #e3f2fd;
+        color: #1565c0;
         border-radius: 12px;
         font-weight: bold;
         font-size: 0.85em;
         margin-bottom: 10px;
         display: inline-block;
-        border: 1px solid #ffe0b2;
+        border: 1px solid #90caf9;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -86,29 +86,21 @@ SECOES_PROFISSIONAL = [
 
 SECOES_IGNORAR_DIFF = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-SAFETY = {
-    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-}
-
 # ----------------- INTELIGÊNCIA PYTHON (PRÉ-PROCESSAMENTO) -----------------
 
 def clean_text(text):
-    """Remove quebras de linha ruins de colunas"""
+    """Limpa quebras de linha ruins de colunas"""
     text = re.sub(r'([a-zà-ú])- \n([a-zà-ú])', r'\1\2', text)
     text = re.sub(r'([a-zà-ú,])\n([a-zà-ú])', r'\1 \2', text)
     return text
 
 def mark_sections_hardcoded(text, section_list):
     """
-    O Python acha os títulos e coloca marcadores para ajudar a IA Rápida.
+    O Python acha os títulos e coloca marcadores para ajudar a IA.
     """
     lines = text.split('\n')
     enhanced_text = []
     
-    # Mapa de palavras-chave para títulos longos
     keywords = {
         "QUANTIDADE MAIOR": "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?",
         "SUPERDOSE": "SUPERDOSE",
@@ -128,7 +120,7 @@ def mark_sections_hardcoded(text, section_list):
         if line_clean in clean_titles:
             found = clean_titles[line_clean]
         
-        # 2. Busca por Palavras-Chave (Salva-vidas)
+        # 2. Busca por Palavras-Chave
         if not found:
             for kw, full_t in keywords.items():
                 if kw in re.sub(r'[^A-Z ]', '', line.upper()):
@@ -136,18 +128,38 @@ def mark_sections_hardcoded(text, section_list):
                     break
         
         if found:
-            # INSERE MARCADOR DESTRUTIVO PARA A IA VER
             enhanced_text.append(f"\n\n👉👉👉 SEÇÃO IDENTIFICADA: {found} 👈👈👈\n")
         else:
             enhanced_text.append(line)
             
     return "\n".join(enhanced_text)
 
+# ----------------- CONFIGURAÇÃO API (CORRIGIDA) -----------------
+def configure_api():
+    api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if api_key:
+        genai.configure(api_key=api_key)
+        return True
+    return False
+
+gemini_ok = configure_api()
+
+# Configurações de Segurança para evitar bloqueios
+SAFETY_SETTINGS = {
+    genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+    genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
+    genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+    genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+}
+
 # ----------------- EXTRAÇÃO -----------------
 def get_ocr_gemini(images):
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash") # Flash é ótimo para OCR
-        resp = model.generate_content(["Transcreva TUDO. Não pule nada. Mantenha tabelas.", *images], safety_settings=SAFETY)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        resp = model.generate_content(
+            ["Transcreva TUDO. Não pule nada. Mantenha tabelas.", *images], 
+            safety_settings=SAFETY_SETTINGS
+        )
         return resp.text if resp.text else ""
     except: return ""
 
@@ -179,22 +191,14 @@ def extract_text(file, section_list):
                 doc.close()
                 text = get_ocr_gemini(imgs)
 
-        # Limpeza e Marcação
         text = clean_text(text)
         text = mark_sections_hardcoded(text, section_list)
         return text
     except: return ""
 
-# ----------------- UI & CONFIG -----------------
-def get_config():
-    # Apenas Gemini é necessário agora
-    k = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if k: genai.configure(api_key=k)
-    return (k is not None)
+# ----------------- UI -----------------
 
-gemini_ok = get_config()
-
-st.sidebar.title("Validador Flash")
+st.sidebar.title("Validador Pro")
 page = st.sidebar.radio("Navegação", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
 
 list_secs = SECOES_PACIENTE
@@ -208,13 +212,13 @@ c1, c2 = st.columns(2)
 f1 = c1.file_uploader("Referência")
 f2 = c2.file_uploader("Candidato")
 
-if st.button("🚀 AUDITAR COM GEMINI FLASH (ULTRA RÁPIDO)"):
+if st.button("🚀 AUDITAR AGORA"):
     if not f1 or not f2:
         st.warning("Arquivos faltando.")
         st.stop()
     
     if not gemini_ok:
-        st.error("Chave do Gemini (Google) não encontrada.")
+        st.error("Chave do Gemini não encontrada.")
         st.stop()
         
     bar = st.progress(0, "Processando...")
@@ -225,11 +229,13 @@ if st.button("🚀 AUDITAR COM GEMINI FLASH (ULTRA RÁPIDO)"):
     t2 = extract_text(f2, list_secs)
     bar.progress(60, "Candidato OK")
     
-    # 2. PROMPT BLINDADO + FLASH
+    # 2. SELEÇÃO DE MODELO (AQUI ESTÁ A MUDANÇA)
+    model_name = ""
+    prompt = ""
+    
     secoes_ignorar_str = ", ".join(SECOES_IGNORAR_DIFF)
     
-    prompt = f"""Você é um Auditor Sênior de Bulas Rápido e Preciso.
-    
+    base_prompt = f"""Você é um Auditor Sênior de Bulas.
     MISSÃO: Encontrar as seções marcadas com "👉👉👉 SEÇÃO IDENTIFICADA: ... 👈👈👈" e comparar os textos.
     
     LISTA DE SEÇÕES OBRIGATÓRIAS (Encontre TODAS no JSON):
@@ -239,7 +245,7 @@ if st.button("🚀 AUDITAR COM GEMINI FLASH (ULTRA RÁPIDO)"):
     1. Traga o texto COMPLETO de cada seção.
     2. Nas seções [{secoes_ignorar_str}], APENAS COPIE o texto. Status "OK".
     
-    REGRAS VISUAIS (MARCA-TEXTO OBRIGATÓRIO):
+    REGRAS VISUAIS (MARCA-TEXTO OBRIGATÓRIO - USE STYLE INLINE):
     Nas divergências, USE O ATRIBUTO STYLE inline (não use classes).
     
     Use EXATAMENTE estes códigos HTML para marcar o texto do Candidato (Bel):
@@ -262,23 +268,33 @@ if st.button("🚀 AUDITAR COM GEMINI FLASH (ULTRA RÁPIDO)"):
     """
     
     json_res = ""
-    model_name = "Gemini 1.5 Flash"
     start_t = time.time()
     
     try:
-        # AQUI ESTÁ A MUDANÇA: GEMINI 1.5 FLASH PARA TUDO
-        # Ele é 10x mais rápido que o Mistral Large e suporta muito contexto.
-        
-        bar.progress(70, "⚡ Gemini Flash Analisando (Segundos)...")
-        
-        # Configuração para resposta JSON garantida
-        model = genai.GenerativeModel("gemini-1.5-flash", generation_config={"response_mime_type": "application/json"})
-        
-        resp = model.generate_content(
-            [prompt, f"--- TEXTO REFERÊNCIA ---\n{t1}", f"--- TEXTO CANDIDATO ---\n{t2}"],
-            safety_settings=SAFETY
-        )
-        json_res = resp.text
+        # LÓGICA DE MODELOS
+        if page in ["Ref x BELFAR", "Conferência MKT"]:
+            # AQUI: Usamos GEMINI 1.5 FLASH (Rápido e Gratuito) ao invés do Mistral
+            model_name = "Gemini 1.5 Flash"
+            bar.progress(70, "⚡ Gemini Flash Analisando (Rápido)...")
+            
+            model = genai.GenerativeModel("gemini-1.5-flash", generation_config={"response_mime_type": "application/json"})
+            resp = model.generate_content(
+                [base_prompt, f"--- REF ---\n{t1}", f"--- CAND ---\n{t2}"],
+                safety_settings=SAFETY_SETTINGS
+            )
+            json_res = resp.text
+
+        else: 
+            # Gráfica x Arte: Mantemos o PRO para maior precisão visual/texto complexo
+            model_name = "Gemini 1.5 Pro"
+            bar.progress(70, "💎 Gemini Pro Analisando...")
+            
+            model = genai.GenerativeModel("gemini-1.5-pro", generation_config={"response_mime_type": "application/json"})
+            resp = model.generate_content(
+                [base_prompt, f"--- REF ---\n{t1}", f"--- CAND ---\n{t2}"],
+                safety_settings=SAFETY_SETTINGS
+            )
+            json_res = resp.text
             
     except Exception as e:
         st.error(f"Erro IA: {e}")
@@ -290,7 +306,6 @@ if st.button("🚀 AUDITAR COM GEMINI FLASH (ULTRA RÁPIDO)"):
     
     # 3. RESULTADOS
     if json_res:
-        # Limpeza bruta caso venha markdown
         json_res = json_res.replace("```json", "").replace("```", "").strip()
         try:
             data = json.loads(json_res)
@@ -322,7 +337,7 @@ if st.button("🚀 AUDITAR COM GEMINI FLASH (ULTRA RÁPIDO)"):
         
         st.markdown(f"<div class='ia-badge'>Motor: {model_name} ({time.time()-start_t:.1f}s)</div>", unsafe_allow_html=True)
         
-        # Legenda Manual
+        # Legenda
         st.markdown("### Legenda:")
         l1, l2, l3 = st.columns(3)
         l1.markdown("<span style='background-color: #ffeb3b; color: black; font-weight: bold; padding: 2px;'>Amarelo</span> = Diferença", unsafe_allow_html=True)
@@ -353,5 +368,4 @@ if st.button("🚀 AUDITAR COM GEMINI FLASH (ULTRA RÁPIDO)"):
             with st.expander(f"{icon} {tit} - {stat}", expanded=aberto):
                 cR, cB = st.columns(2)
                 cR.markdown(f"<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
-                # O highlight funciona graças ao allow_html=True e o style inline
                 cB.markdown(f"<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
