@@ -14,13 +14,13 @@ from PIL import Image
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
-    page_title="Validador Híbrido Pro",
-    page_icon="⚡",
+    page_title="Validador Turbo Pro",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (TABELA E HIGHLIGHT) -----------------
+# ----------------- ESTILOS CSS -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -48,10 +48,9 @@ st.markdown("""
         display: inline-block; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    .mistral-badge { background-color: #e3f2fd; color: #1565c0; border: 2px solid #90caf9; }
+    .mistral-badge { background-color: #e8f5e9; color: #2e7d32; border: 2px solid #a5d6a7; }
     .gemini-badge { background-color: #fff3e0; color: #e65100; border: 2px solid #ffb74d; }
     
-    /* ESTILO DAS CAIXAS DE TEXTO */
     .box-content { 
         background-color: #ffffff; 
         padding: 15px; 
@@ -68,32 +67,9 @@ st.markdown("""
     .box-ref { background-color: #f5f5f5; border-left: 5px solid #757575; }
     
     /* MARCADORES OBRIGATÓRIOS */
-    mark.diff { 
-        background-color: #ffeb3b !important; 
-        color: #000 !important;
-        padding: 2px 5px; 
-        border-radius: 4px; 
-        font-weight: 800; 
-        border: 1px solid #f9a825;
-        text-decoration: none;
-    }
-    mark.ort { 
-        background-color: #ff1744 !important; 
-        color: #fff !important; 
-        padding: 2px 5px; 
-        border-radius: 4px; 
-        font-weight: 800; 
-        border: 1px solid #b71c1c;
-        text-decoration: underline wavy #fff;
-    }
-    mark.anvisa { 
-        background-color: #00e5ff !important; 
-        color: #000 !important; 
-        padding: 2px 5px; 
-        border-radius: 4px; 
-        font-weight: bold; 
-        border: 1px solid #006064; 
-    }
+    mark.diff { background-color: #ffeb3b !important; color: #000 !important; padding: 2px 5px; border-radius: 4px; font-weight: 800; border: 1px solid #f9a825; text-decoration: none; }
+    mark.ort { background-color: #ff1744 !important; color: #fff !important; padding: 2px 5px; border-radius: 4px; font-weight: 800; border: 1px solid #b71c1c; text-decoration: underline wavy #fff; }
+    mark.anvisa { background-color: #00e5ff !important; color: #000 !important; padding: 2px 5px; border-radius: 4px; font-weight: bold; border: 1px solid #006064; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -126,7 +102,7 @@ SAFETY = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# ----------------- FUNÇÕES DO SISTEMA -----------------
+# ----------------- FUNÇÕES BACKEND -----------------
 
 def configure_apis():
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -137,34 +113,33 @@ def configure_apis():
 
 def enhance_titles(text, allowed_list):
     """
-    TRUQUE DE ENGENHARIA: Adiciona marcadores '###' antes de frases que parecem títulos da lista.
-    Isso ajuda a IA a 'achar' as seções mesmo que o layout esteja ruim.
+    BOOST DE SEÇÕES: Insere marcadores visuais fortes para o Mistral Small não se perder.
     """
     lines = text.split('\n')
     enhanced_lines = []
-    
-    # Normaliza lista para comparação
     clean_list = [re.sub(r'[^A-Z]', '', t).upper() for t in allowed_list]
     
     for line in lines:
         clean_line = re.sub(r'[^A-Z]', '', line).upper()
-        # Se a linha parece muito com um título da lista, destaca ela
         is_title = False
-        for ref_title in clean_list:
-            if ref_title in clean_line and len(clean_line) < len(ref_title) + 10:
-                enhanced_lines.append(f"\n### {line.strip()} ###\n") # Força destaque
-                is_title = True
-                break
+        # Verifica se a linha parece um título
+        if len(clean_line) > 3:
+            for ref_title in clean_list:
+                # Lógica fuzzy: se contém o título ou é muito parecido
+                if ref_title in clean_line and len(clean_line) < len(ref_title) + 20:
+                    enhanced_lines.append(f"\n >>> SEÇÃO IDENTIFICADA: {line.strip()} <<<\n")
+                    is_title = True
+                    break
+        
         if not is_title:
             enhanced_lines.append(line)
             
     return "\n".join(enhanced_lines)
 
 def ocr_with_gemini_flash(images):
-    """OCR Rápido"""
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
-        prompt = "Transcreva TODO o texto desta bula médica. Mantenha a ordem de leitura das colunas. Não pule nada."
+        prompt = "Transcreva TODO o texto desta bula médica. Mantenha tabelas."
         response = model.generate_content([prompt, *images], safety_settings=SAFETY)
         return response.text if response.text else ""
     except:
@@ -196,9 +171,9 @@ def extract_content(uploaded_file, section_list=None):
                 method = "PDF Texto"
                 doc.close()
             else:
-                st.toast(f"👁️ OCR IA Ativado para '{filename}'...", icon="⚡")
+                st.toast(f"👁️ OCR Rápido em '{filename}'...", icon="⚡")
                 images = []
-                limit = min(12, len(doc))
+                limit = min(10, len(doc))
                 for i in range(limit):
                     pix = doc[i].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                     images.append(Image.open(io.BytesIO(pix.tobytes("png"))))
@@ -206,7 +181,7 @@ def extract_content(uploaded_file, section_list=None):
                 text = ocr_with_gemini_flash(images)
                 method = "OCR IA"
 
-        # APLICA O TRUQUE DO MESTRE: MELHORAR TÍTULOS
+        # APLICA O BOOST NOS TÍTULOS
         if section_list:
             text = enhance_titles(text, section_list)
 
@@ -229,26 +204,21 @@ def clean_json_response(text):
 def normalize_sections(data, allowed_titles):
     if not data or "SECOES" not in data: return data
     normalized = []
-    
     def clean(s): return re.sub(r'[^A-Z0-9]', '', s.upper())
     mapa = {clean(t): t for t in allowed_titles}
     
     for sec in data["SECOES"]:
         tit = clean(sec.get("titulo", "").upper())
         match = mapa.get(tit)
-        
-        # Busca Fuzzy (Aproximada)
         if not match:
             for k, v in mapa.items():
                 if k in tit or tit in k:
                     match = v
                     break
-        
         if match:
             sec["titulo"] = match
             normalized.append(sec)
             
-    # Ordenação pela lista oficial
     normalized.sort(key=lambda x: allowed_titles.index(x["titulo"]) if x["titulo"] in allowed_titles else 999)
     data["SECOES"] = normalized
     return data
@@ -257,38 +227,37 @@ def get_audit_prompt(secoes_lista):
     secoes_txt = "\n".join([f"- {s}" for s in secoes_lista])
     secoes_ignorar = ", ".join(SECOES_IGNORAR_DIFF)
     
-    prompt = f"""Você é um Auditor Farmacêutico Meticuloso.
-TAREFA: Mapear seções e comparar REFERÊNCIA vs CANDIDATO ("bel").
+    # PROMPT ONE-SHOT (EXEMPLO PRÁTICO PARA O MISTRAL SMALL NÃO ERRAR)
+    prompt = f"""Você é um processador JSON estrito.
+TAREFA: Extrair e comparar textos de bulas.
 
-LISTA DE SEÇÕES (Você DEVE encontrar estas seções no texto. Procure por títulos similares marcados com ###):
+LISTA DE SEÇÕES (Você DEVE encontrar todas essas, marcadas como '>>> SEÇÃO IDENTIFICADA: ... <<<'):
 {secoes_txt}
 
-INSTRUÇÕES CRÍTICAS PARA O FORMATO DE SAÍDA:
-1. SEÇÕES ESPECIAIS [{secoes_ignorar}]:
-   - Copie o texto. Status: "OK". NÃO USE TAGS HTML.
+INSTRUÇÕES RIGOROSAS:
+1. **EXAUSTIVIDADE**: Percorra o texto até o fim. Se uma seção da lista acima existe no texto, ELA TEM QUE ESTAR NO JSON.
+2. **IGNORAR**: Nas seções [{secoes_ignorar}], apenas copie o texto sem tags HTML. Status "OK".
+3. **AUDITAR**: Nas outras, use tags HTML para diferenças.
 
-2. TODAS AS OUTRAS SEÇÕES (Auditoria Rigorosa):
-   - Você DEVE usar tags HTML EXATAS para marcar diferenças.
-   - NÃO USE MARCAÇÃO MARKDOWN (**bold**). USE HTML (<mark>).
-   
-   EXEMPLO DO QUE EU QUERO:
-   Ref: "Tomar 1 comprimido."
-   Bel: "Tomar <mark class='diff'>2 comprimidos</mark>."
+MODELO DE COMPARAÇÃO (Siga este exemplo EXATAMENTE):
+Texto Ref: "Tomar 5mg."
+Texto Bel: "Tomar 10mg."
+Resultado JSON Bel: "Tomar <mark class='diff'>10mg</mark>."
 
-   TIPOS DE TAG:
-   - Diferença de texto/número: <mark class='diff'>texto errado</mark>
-   - Erro de português: <mark class='ort'>erro</mark>
-   - Data Anvisa: <mark class='anvisa'>10/05/2024</mark>
+TAGS PERMITIDAS:
+- <mark class='diff'>erro</mark> (Diferenças gerais)
+- <mark class='ort'>erro</mark> (Ortografia)
+- <mark class='anvisa'>data</mark> (Datas)
 
-OUTPUT JSON:
+RETORNE APENAS O JSON NESTE FORMATO:
 {{
-    "METADADOS": {{ "datas": ["dd/mm/aaaa"], "produto": "Nome" }},
+    "METADADOS": {{ "datas": ["..."], "produto": "..." }},
     "SECOES": [
         {{
-            "titulo": "NOME DA LISTA",
+            "titulo": "NOME EXATO DA LISTA",
             "ref": "Texto original...",
-            "bel": "Texto com <mark class='diff'>tags</mark>...",
-            "status": "DIVERGENTE"
+            "bel": "Texto candidato com tags HTML...",
+            "status": "OK" ou "DIVERGENTE" ou "FALTANTE"
         }}
     ]
 }}
@@ -319,17 +288,17 @@ else:
 st.markdown("---")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Referência (Word/PDF)", type=["pdf", "docx"])
-f2 = c2.file_uploader("📂 Candidato (Word/PDF)", type=["pdf", "docx"])
+f1 = c1.file_uploader("📂 Referência", type=["pdf", "docx"])
+f2 = c2.file_uploader("📂 Candidato", type=["pdf", "docx"])
 
-if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
+if st.button("🚀 INICIAR AUDITORIA TURBO"):
     if not f1 or not f2:
         st.warning("⚠️ Faltam arquivos.")
         st.stop()
         
     bar = st.progress(0, "Lendo arquivos...")
     
-    # 1. Leitura (Com Boost de Títulos)
+    # 1. Leitura
     d1 = extract_content(f1, lista_alvo)
     bar.progress(30, "Ref OK...")
     d2 = extract_content(f2, lista_alvo)
@@ -356,20 +325,20 @@ if st.button("🚀 INICIAR AUDITORIA COMPLETA"):
                 st.error("Mistral API ausente.")
                 st.stop()
             
-            # --- FORÇANDO MISTRAL LARGE PARA GARANTIR MARCA-TEXTO ---
-            # O "Small" é rápido mas erra o HTML. O "Large" com Streaming é a solução.
-            model_name = "Mistral Large (Preciso)"
-            bar.progress(70, "🧠 Mistral Large Analisando (Streaming)...")
+            # --- MISTRAL SMALL (TURBO) ---
+            model_name = "Mistral Small (Turbo)"
+            bar.progress(70, "🌪️ Analisando em Alta Velocidade...")
             
+            # Streaming para garantir responsividade
             stream = mis_client.chat.stream(
-                model="mistral-large-latest",
+                model="mistral-small-latest",
                 messages=[
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.0,
-                timeout_ms=300000
+                timeout_ms=180000
             )
             
             chunks = []
