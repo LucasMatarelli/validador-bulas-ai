@@ -1,4 +1,4 @@
-import streamlit as st
+QFimport streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import fitz  # PyMuPDF
