@@ -1,98 +1,137 @@
 import streamlit as st
-from mistralai import Mistral
 import google.generativeai as genai
 import fitz  # PyMuPDF
-import io
-import os
-from PIL import Image
+import json
+import re
 
-st.set_page_config(page_title="Ref x BELFAR", layout="wide")
+st.set_page_config(page_title="Ref x BELFAR (Gemini Lite)", layout="wide")
 
-# --- FUNÇÃO BLINDADA: SELETOR DE MODELO ---
-def get_best_gemini():
-    """Testa qual modelo Gemini está funcionando na sua conta e retorna o primeiro válido."""
-    candidates = [
-        "models/gemini-1.5-flash-latest",       # Alias mais comum
-        "models/gemini-1.5-flash",              # Padrão
-        "models/gemini-1.5-flash-001",          # Versionado
-        "models/gemini-2.0-flash-lite-preview-02-05", # Lite (Rápido)
-        "models/gemini-pro"                     # Fallback antigo
-    ]
-    for model_name in candidates:
-        try:
-            return genai.GenerativeModel(model_name)
-        except: continue
-    return genai.GenerativeModel("gemini-1.5-flash") # Última tentativa
-
-# Configuração de APIs
+# ----------------- CONFIGURAÇÃO API -----------------
 try:
-    if st.secrets.get("GEMINI_API_KEY"):
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    client = Mistral(api_key=st.secrets["MISTRAL_API_KEY"])
+    api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("MISTRAL_API_KEY") # Tenta pegar qualquer uma configurada
+    if api_key:
+        genai.configure(api_key=api_key)
+    else:
+        st.error("Configure a GEMINI_API_KEY no secrets.toml")
+        st.stop()
 except:
-    st.error("Configure as chaves GEMINI_API_KEY e MISTRAL_API_KEY no secrets.toml")
+    st.error("Erro na configuração da API.")
     st.stop()
 
+# ----------------- FUNÇÕES -----------------
 def get_text_from_pdf(file):
-    doc = fitz.open(stream=file.read(), filetype="pdf")
-    text = ""
-    for page in doc: text += page.get_text() + "\n"
-    
-    # Se não tiver texto (escaneado), usa o Gemini Blindado
-    if len(text) < 50:
-        file.seek(0)
-        images = []
+    """Extrai texto digital (sem OCR)."""
+    try:
+        doc = fitz.open(stream=file.read(), filetype="pdf")
+        text = ""
         for page in doc:
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-            img_data = pix.tobytes("jpeg")
-            images.append(Image.open(io.BytesIO(img_data)))
-        
-        try:
-            model = get_best_gemini() # <--- USA A FUNÇÃO BLINDADA
-            resp = model.generate_content(["Transcreva o texto destas imagens fielmente:", *images])
-            return resp.text
-        except Exception as e:
-            return f"Erro no OCR: {e}"
-    return text
+            # sort=True organiza colunas (essencial para bula)
+            text += page.get_text("text", sort=True) + "\n"
+        return text
+    except Exception as e:
+        return ""
 
-st.title("💊 Med. Referência x BELFAR")
-st.caption("Comparação de Texto Puro via IA")
+def clean_json(text_response):
+    """Limpa o markdown ```json ... ``` para evitar erros."""
+    text = re.sub(r"```json", "", text_response)
+    text = re.sub(r"```", "", text)
+    return text.strip()
+
+# ----------------- UI -----------------
+st.title("💊 Ref x BELFAR (Gemini Lite)")
+st.markdown("Comparação de Texto via **Gemini 2.0 Flash Lite** (Sem OCR).")
+
+# Estilos CSS para os cards
+st.markdown("""
+<style>
+    .box-ref { background-color: #f8f9fa; padding: 15px; border-left: 5px solid #6c757d; border-radius: 5px; }
+    .box-bel { background-color: #f1f8e9; padding: 15px; border-left: 5px solid #55a68e; border-radius: 5px; }
+    mark.diff { background-color: #fff176; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
+    mark.ort { background-color: #ffcdd2; padding: 2px 4px; border-radius: 3px; font-weight: bold; text-decoration: underline; }
+    mark.anvisa { background-color: #b3e5fc; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Referência (PDF)", type="pdf", key="f1")
-f2 = c2.file_uploader("Belfar (PDF)", type="pdf", key="f2")
+f1 = c1.file_uploader("Referência (PDF Texto)", type="pdf", key="f1")
+f2 = c2.file_uploader("Belfar (PDF Texto)", type="pdf", key="f2")
 
-if st.button("🚀 Iniciar Comparação"):
+if st.button("🚀 Iniciar Auditoria"):
     if f1 and f2:
-        with st.spinner("Extraindo textos (pode usar OCR se necessário)..."):
+        with st.spinner("Lendo arquivos (Modo Texto Digital)..."):
             t1 = get_text_from_pdf(f1)
             t2 = get_text_from_pdf(f2)
         
-        with st.spinner("🌪️ Mistral analisando divergências..."):
-            prompt = f"""
-            Você é um Auditor Farmacêutico RÍGIDO.
-            Compare o texto REF com o texto CAND (Belfar).
-            
-            REGRAS:
-            1. Liste APENAS as divergências de conteúdo (palavras erradas, números trocados, frases faltantes).
-            2. Ignore formatação e quebras de linha.
-            3. Se houver erro, mostre: "Na Referência diz X, no Belfar diz Y".
-            
-            --- REF ---
-            {t1[:20000]}
-            
-            --- CAND ---
-            {t2[:20000]}
-            """
-            
-            try:
-                resp = client.chat.complete(
-                    model="mistral-small-latest",
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                st.success("Relatório de Divergências:")
-                st.markdown(resp.choices[0].message.content)
-            except Exception as e:
-                st.error(f"Erro na IA: {e}")
+        if len(t1) < 50 or len(t2) < 50:
+            st.error("⚠️ Atenção: Um dos arquivos parece ser imagem ou está vazio. Este módulo não usa OCR.")
+        else:
+            with st.spinner("⚡ Gemini Lite analisando..."):
+                prompt = f"""
+                ATUE COMO UM AUDITOR FARMACÊUTICO.
+                
+                TAREFA:
+                Compare o texto REF (Referência) com o texto BEL (Candidato) seção por seção.
+                
+                REGRAS OBRIGATÓRIAS:
+                1. Extraia o texto COMPLETO de cada seção. NÃO RESUMA.
+                2. No campo 'bel', use tags HTML para destacar problemas:
+                   - <mark class='diff'>texto</mark> para divergências de conteúdo (números, palavras trocadas).
+                   - <mark class='ort'>texto</mark> para erros de português.
+                   - <mark class='anvisa'>data</mark> para datas nos Dizeres Legais.
+                3. Se o texto for igual, apenas copie ele sem tags.
+                
+                FORMATO JSON DE RESPOSTA:
+                {{
+                    "METADADOS": {{"datas": ["DD/MM/AAAA"]}},
+                    "SECOES": [
+                        {{"titulo": "NOME DA SEÇÃO", "ref": "Texto completo ref...", "bel": "Texto completo bel...", "status": "OK ou DIVERGENTE"}}
+                    ]
+                }}
+
+                === TEXTO REF ===
+                {t1}
+
+                === TEXTO BEL ===
+                {t2}
+                """
+                
+                try:
+                    # Usando o modelo Lite Rápido
+                    model = genai.GenerativeModel("models/gemini-2.0-flash-lite-preview-02-05")
+                    
+                    # Força resposta JSON
+                    resp = model.generate_content(
+                        prompt, 
+                        generation_config={"response_mime_type": "application/json"}
+                    )
+                    
+                    data = json.loads(clean_json(resp.text))
+                    
+                    # Renderização
+                    secs = data.get("SECOES", [])
+                    dates = data.get("METADADOS", {}).get("datas", [])
+                    
+                    st.success("✅ Análise Finalizada")
+                    
+                    # Métricas
+                    col_m1, col_m2 = st.columns(2)
+                    errs = sum(1 for s in secs if "DIVERGENTE" in s['status'])
+                    col_m1.metric("Seções Analisadas", len(secs))
+                    col_m2.metric("Seções com Divergência", errs)
+                    
+                    if dates:
+                        st.caption(f"📅 Data Detectada: {dates[0]}")
+                    
+                    st.divider()
+
+                    for s in secs:
+                        icon = "❌" if "DIVERGENTE" in s['status'] else "✅"
+                        with st.expander(f"{icon} {s.get('titulo', 'Seção')} - {s.get('status')}"):
+                            cR, cB = st.columns(2)
+                            cR.markdown(f"**Referência**<div class='box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
+                            cB.markdown(f"**Candidato**<div class='box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
+                            
+                except Exception as e:
+                    st.error(f"Erro na IA: {e}")
     else:
         st.warning("Envie os dois arquivos.")
