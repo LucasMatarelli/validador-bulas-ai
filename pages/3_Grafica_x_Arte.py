@@ -6,41 +6,74 @@ import io
 import time
 import os
 
-st.set_page_config(page_title="Gráfica x Arte", layout="wide")
+# ----------------- CONFIGURAÇÃO -----------------
+st.set_page_config(
+    page_title="Validador Visual (Auto-Detect)",
+    page_icon="🎨",
+    layout="wide"
+)
 
-# Configuração Segura
-try:
-    api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if api_key:
+# ----------------- ESTILOS CSS -----------------
+st.markdown("""
+<style>
+    header[data-testid="stHeader"] { display: none !important; }
+    .main .block-container { padding-top: 20px !important; }
+    .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; font-size: 16px; }
+</style>
+""", unsafe_allow_html=True)
+
+# ----------------- FUNÇÕES DE BACKEND -----------------
+
+def configure_api():
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            st.error("❌ Sem chave API configurada.")
+            return False
         genai.configure(api_key=api_key)
-    else:
-        st.error("Sem chave API configurada.")
-        st.stop()
-except Exception as e:
-    st.error(f"Erro na configuração: {e}")
-    st.stop()
+        return True
+    except Exception as e:
+        st.error(f"Erro na configuração: {e}")
+        return False
 
-def get_working_model():
-    """Tenta encontrar o modelo Flash correto disponível na conta."""
-    # Lista de tentativas (do mais novo para o mais antigo)
-    candidates = [
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-flash-latest",
-        "models/gemini-1.5-flash-001",
-        "models/gemini-pro-vision"  # Último recurso (mais antigo)
-    ]
-    
-    for model_name in candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            # Teste rápido "dummy" para ver se o modelo responde sem erro 404
-            # Não gastamos tokens reais aqui, apenas instanciamos
-            return model, model_name
-        except:
-            continue
+def get_best_available_model():
+    """
+    Lista os modelos disponíveis na sua conta e escolhe o melhor para visão.
+    Prioridade: Flash > 1.5 Pro > Pro Vision (Antigo)
+    """
+    try:
+        # Pede a lista real para o Google
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Ordem de preferência
+        preferencias = [
+            "gemini-1.5-flash",          # O ideal (Rápido)
+            "gemini-1.5-flash-latest",   # Variação
+            "gemini-1.5-flash-001",      # Versão congelada
+            "gemini-1.5-pro",            # Mais potente (mas mais lento)
+            "gemini-pro-vision"          # Antigo (Legacy)
+        ]
+        
+        # 1. Tenta achar o nome exato na lista
+        for pref in preferencias:
+            for model in available_models:
+                if pref in model:
+                    return model # Retorna o nome oficial (ex: models/gemini-1.5-flash-001)
+        
+        # 2. Se não achar nenhum da lista, pega qualquer um que tenha 'vision' ou 'flash'
+        for model in available_models:
+            if "vision" in model or "flash" in model:
+                return model
+                
+        # 3. Último caso: o primeiro da lista
+        if available_models:
+            return available_models[0]
             
-    # Se falhar tudo, retorna o padrão e deixa o erro aparecer na tela
-    return genai.GenerativeModel("models/gemini-1.5-flash"), "gemini-1.5-flash"
+        return "models/gemini-1.5-flash" # Fallback cego
+        
+    except Exception as e:
+        # Se listar falhar (erro de permissão), tenta o Flash direto
+        return "models/gemini-1.5-flash"
 
 def pdf_to_images(uploaded_file):
     images = []
@@ -57,72 +90,79 @@ def pdf_to_images(uploaded_file):
         st.error(f"Erro ao processar PDF: {e}")
         return []
 
-# --- UI ---
+# ----------------- UI PRINCIPAL -----------------
 st.title("🎨 Gráfica x Arte (Visual)")
 
-# Seleciona o modelo automaticamente
-model, model_name = get_working_model()
-st.caption(f"🤖 Motor Visual Ativo: **{model_name}**")
+if configure_api():
+    # Detecta o modelo automaticamente
+    model_name = get_best_available_model()
+    st.info(f"🤖 **Motor IA Detectado:** `{model_name}`")
+    
+    try:
+        model = genai.GenerativeModel(model_name)
+    except:
+        st.warning("Falha ao carregar modelo detectado. Tentando 'gemini-1.5-flash' forçado.")
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
-c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Arte Aprovada", type=["pdf", "jpg", "png"])
-f2 = c2.file_uploader("Arquivo Gráfica", type=["pdf", "jpg", "png"])
+    c1, c2 = st.columns(2)
+    f1 = c1.file_uploader("Arte Aprovada", type=["pdf", "jpg", "png"], key="f1")
+    f2 = c2.file_uploader("Arquivo Gráfica", type=["pdf", "jpg", "png"], key="f2")
 
-if st.button("🚀 Comparar Visualmente"):
-    if f1 and f2:
-        with st.spinner("Processando imagens..."):
-            # Converte tudo
-            imgs1 = pdf_to_images(f1) if f1.name.endswith(".pdf") else [Image.open(f1)]
-            imgs2 = pdf_to_images(f2) if f2.name.endswith(".pdf") else [Image.open(f2)]
-            
-            if not imgs1 or not imgs2:
-                st.error("Erro ao carregar imagens.")
-                st.stop()
+    if st.button("🚀 Comparar Visualmente"):
+        if f1 and f2:
+            with st.spinner("Processando imagens..."):
+                # Converte tudo
+                imgs1 = pdf_to_images(f1) if f1.name.lower().endswith(".pdf") else [Image.open(f1)]
+                imgs2 = pdf_to_images(f2) if f2.name.lower().endswith(".pdf") else [Image.open(f2)]
+                
+                if not imgs1 or not imgs2:
+                    st.error("Erro ao carregar imagens.")
+                    st.stop()
 
-            # Limita a 5 páginas para não demorar
-            max_p = min(len(imgs1), len(imgs2), 5)
-            
-            for i in range(max_p):
-                st.markdown(f"### 📄 Página {i+1}")
-                col_a, col_b = st.columns(2)
-                col_a.image(imgs1[i], caption="Arte Original", use_container_width=True)
-                col_b.image(imgs2[i], caption="Gráfica", use_container_width=True)
+                # Limita a 5 páginas para não demorar
+                max_p = min(len(imgs1), len(imgs2), 5)
                 
-                prompt = """
-                Atue como Especialista de Pré-Impressão.
-                Compare as duas imagens lado a lado.
-                
-                Verifique RIGOROSAMENTE:
-                1. Layout (elementos deslocados, margens).
-                2. Fontes (mudança de estilo, corrompidas).
-                3. Logotipos e Cores (mudanças visíveis).
-                4. Blocos de texto sumidos ou corrompidos.
-                
-                Se estiver idêntico, responda APENAS: "✅ Visualmente Aprovado".
-                Se houver erro, descreva em tópicos curtos.
-                """
-                
-                try:
-                    with st.spinner(f"Analisando Pág {i+1}..."):
-                        # O Gemini 1.5 Flash aceita múltiplas imagens no input
-                        resp = model.generate_content([prompt, imgs1[i], imgs2[i]])
-                        
-                        if resp and resp.text:
-                            if "✅" in resp.text:
-                                st.success(resp.text)
-                            else:
-                                st.error("Divergências Encontradas:")
-                                st.write(resp.text)
-                        
-                        # Pausa anti-spam de API
-                        time.sleep(1.5)
-                        
-                except Exception as e:
-                    st.error(f"Erro na análise (Pág {i+1}): {e}")
-                    # Tenta mostrar erro detalhado se for de cota
-                    if "429" in str(e):
-                        st.warning("Limite de velocidade da API atingido. Aguarde alguns segundos e tente de novo.")
-                
-                st.divider()
-    else:
-        st.warning("Envie os arquivos.")
+                for i in range(max_p):
+                    st.markdown(f"### 📄 Página {i+1}")
+                    col_a, col_b = st.columns(2)
+                    col_a.image(imgs1[i], caption="Arte Original", use_container_width=True)
+                    col_b.image(imgs2[i], caption="Gráfica", use_container_width=True)
+                    
+                    prompt = """
+                    Atue como Especialista de Pré-Impressão Gráfica.
+                    Compare as duas imagens fornecidas.
+                    
+                    Verifique RIGOROSAMENTE:
+                    1. Layout (elementos deslocados, margens).
+                    2. Fontes (mudança de estilo, corrompidas).
+                    3. Logotipos e Cores (mudanças visíveis).
+                    4. Blocos de texto sumidos ou corrompidos.
+                    
+                    Se estiver idêntico, responda APENAS: "✅ Visualmente Aprovado".
+                    Se houver erro, descreva em tópicos curtos e diretos.
+                    """
+                    
+                    try:
+                        with st.spinner(f"Analisando Pág {i+1}..."):
+                            # O Gemini aceita [prompt, img1, img2]
+                            resp = model.generate_content([prompt, imgs1[i], imgs2[i]])
+                            
+                            if resp and resp.text:
+                                if "✅" in resp.text:
+                                    st.success(resp.text)
+                                else:
+                                    st.error("Divergências Encontradas:")
+                                    st.write(resp.text)
+                            
+                            # Pausa anti-spam de API (Rate Limit)
+                            time.sleep(2)
+                            
+                    except Exception as e:
+                        st.error(f"Erro na análise (Pág {i+1}): {e}")
+                        if "429" in str(e):
+                            st.warning("Limite de velocidade da API atingido. Aguardando...")
+                            time.sleep(5)
+                    
+                    st.divider()
+        else:
+            st.warning("Envie os arquivos.")
