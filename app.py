@@ -15,7 +15,7 @@ from PIL import Image
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
     page_title="Validador Híbrido Pro",
-    page_icon="🎯",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -54,53 +54,25 @@ st.markdown("""
     
     .box-content { 
         background-color: #ffffff; 
-        padding: 18px; 
-        border-radius: 10px; 
-        font-size: 0.95em; 
+        padding: 15px; 
+        border-radius: 8px; 
+        font-size: 0.9em; 
         white-space: pre-wrap; 
-        line-height: 1.6; 
+        line-height: 1.5; 
         border: 1px solid #e0e0e0;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-        min-height: 80px;
+        min-height: 60px;
         color: #2c3e50;
     }
-    .box-bel { background-color: #f9fbe7; border-left: 5px solid #827717; }
-    .box-ref { background-color: #f5f5f5; border-left: 5px solid #757575; }
+    .box-bel { background-color: #f1f8e9; border-left: 4px solid #7cb342; }
+    .box-ref { background-color: #f5f5f5; border-left: 4px solid #757575; }
     
-    mark.diff { 
-        background-color: #ffeb3b !important; 
-        color: #000 !important;
-        padding: 2px 6px; 
-        border-radius: 4px; 
-        font-weight: 800; 
-        border: 1px solid #f9a825;
-        text-decoration: none;
-        display: inline-block;
-    }
-    mark.ort { 
-        background-color: #ff1744 !important; 
-        color: #fff !important; 
-        padding: 2px 6px; 
-        border-radius: 4px; 
-        font-weight: 800; 
-        border: 1px solid #b71c1c;
-        text-decoration: underline wavy #fff;
-        display: inline-block;
-    }
-    mark.anvisa { 
-        background-color: #00e5ff !important; 
-        color: #000 !important; 
-        padding: 2px 6px; 
-        border-radius: 4px; 
-        font-weight: bold; 
-        border: 1px solid #006064; 
-    }
-    
-    h1, h2, h3 { font-family: 'Segoe UI', sans-serif; color: #2c3e50; }
+    mark.diff { background-color: #ffeb3b !important; color: #000; padding: 2px 5px; border-radius: 4px; font-weight: 800; }
+    mark.ort { background-color: #ff1744 !important; color: #fff; padding: 2px 5px; border-radius: 4px; font-weight: 800; }
+    mark.anvisa { background-color: #00e5ff !important; color: #000; padding: 2px 5px; border-radius: 4px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- CONSTANTES -----------------
+# ----------------- CONSTANTES (SUA LISTA ATUALIZADA) -----------------
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", 
     "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", 
@@ -134,16 +106,23 @@ SAFETY = {
 def configure_apis():
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if gem_key: genai.configure(api_key=gem_key)
-    
     mis_key = st.secrets.get("MISTRAL_API_KEY") or os.environ.get("MISTRAL_API_KEY")
     mistral_client = Mistral(api_key=mis_key) if mis_key else None
-    
     return (gem_key is not None), mistral_client
 
+def clean_text_layout(text):
+    """Limpa ruídos de layout para ajudar a IA a achar títulos"""
+    # Remove excesso de quebras de linha que quebram frases no meio
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    # Remove espaços excessivos
+    text = re.sub(r'[ \t]+', ' ', text)
+    return text.strip()
+
 def ocr_with_gemini_flash(images):
+    """OCR Rápido"""
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
-        prompt = "Transcreva TODO o texto desta bula médica EXATAMENTE como está. Mantenha tabelas e estrutura."
+        prompt = "Transcreva TODO o texto desta bula médica. Mantenha a ordem de leitura das colunas corretamente."
         response = model.generate_content([prompt, *images], safety_settings=SAFETY)
         return response.text if response.text else ""
     except:
@@ -158,7 +137,7 @@ def extract_content(uploaded_file):
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
-            return {"data": text, "method": "DOCX Nativo", "len": len(text)}
+            return {"data": clean_text_layout(text), "method": "DOCX", "len": len(text)}
 
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -168,23 +147,22 @@ def extract_content(uploaded_file):
             
             avg_chars = len(full_text) / max(1, len(doc))
             
+            # Se tem texto selecionável suficiente
             if avg_chars > 200:
                 doc.close()
-                return {"data": full_text, "method": "PDF Nativo", "len": len(full_text)}
+                return {"data": clean_text_layout(full_text), "method": "PDF Texto", "len": len(full_text)}
             
-            st.toast(f"👁️ '{filename}': Modo OCR...", icon="⚡")
+            # Se for imagem/curvas
+            st.toast(f"👁️ '{filename}': OCR (Layout Curvas)...", icon="⚡")
             images = []
-            limit = min(15, len(doc))
+            limit = min(12, len(doc)) # Reduzi levemente o limite para ganhar velocidade
             for i in range(limit):
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                pix = doc[i].get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # Matrix 1.5 é mais rápida e suficiente
                 images.append(Image.open(io.BytesIO(pix.tobytes("png"))))
             doc.close()
             
             ocr_text = ocr_with_gemini_flash(images)
-            if ocr_text:
-                return {"data": ocr_text, "method": "OCR Gemini Flash", "len": len(ocr_text)}
-            else:
-                return {"data": "", "method": "Falha OCR", "len": 0}
+            return {"data": ocr_text, "method": "OCR AI", "len": len(ocr_text)}
 
     except Exception as e:
         st.error(f"Erro leitura: {e}")
@@ -211,6 +189,7 @@ def normalize_sections(data, allowed_titles):
         tit = clean(sec.get("titulo", "").upper())
         match = mapa.get(tit)
         
+        # Fuzzy match simples
         if not match:
             for k, v in mapa.items():
                 if k in tit or tit in k:
@@ -221,6 +200,7 @@ def normalize_sections(data, allowed_titles):
             sec["titulo"] = match
             normalized.append(sec)
             
+    # Ordenação forçada pela lista oficial
     normalized.sort(key=lambda x: allowed_titles.index(x["titulo"]) if x["titulo"] in allowed_titles else 999)
     data["SECOES"] = normalized
     return data
@@ -229,35 +209,36 @@ def get_audit_prompt(secoes_lista):
     secoes_txt = "\n".join([f"- {s}" for s in secoes_lista])
     secoes_ignorar = ", ".join(SECOES_IGNORAR_DIFF)
     
-    prompt = f"""Você é um Auditor de Qualidade Farmacêutica (QA).
-TAREFA: Extrair seções e comparar o texto da REFERÊNCIA vs CANDIDATO ("bel").
+    prompt = f"""Você é um Auditor Farmacêutico.
+TAREFA: Localizar as seções listada abaixo no texto da bula e comparar REFERÊNCIA vs CANDIDATO ("bel").
 
-SEÇÕES OBRIGATÓRIAS (Processe o documento todo):
+MAPA DE SEÇÕES (OBRIGATÓRIO ENCONTRAR E MAPEAR):
 {secoes_txt}
+
+INSTRUÇÃO DE LAYOUT: O texto pode estar em colunas quebradas. Reconstrua as frases logicamente.
+INSTRUÇÃO DE TÍTULOS: Se o título no texto for ligeiramente diferente (ex: "Posologia" vs "POSOLOGIA E MODO DE USAR"), considere como encontrado e use o título da lista acima.
 
 --- REGRAS DE COMPARAÇÃO ---
 
-[CASO 1: SEÇÕES ESPECIAIS -> {secoes_ignorar}]
-- Nestas: APENAS COPIE O TEXTO. NÃO MARQUE DIVERGÊNCIAS. 
-- Status sempre "OK".
+1. SEÇÕES ESPECIAIS [{secoes_ignorar}]:
+   - Extraia o texto completo.
+   - Status: "OK".
+   - NÃO MARQUE DIVERGÊNCIAS (Ignore amarelo).
 
-[CASO 2: OUTRAS SEÇÕES]
-- Compare palavra por palavra.
-- Se houver diferença no CANDIDATO, marque com HTML:
-  <mark class='diff'>texto diferente</mark>
-- Se houver erro de português grave:
-  <mark class='ort'>erro</mark>
-- Se for data da Anvisa:
-  <mark class='anvisa'>dd/mm/aaaa</mark>
+2. DEMAIS SEÇÕES:
+   - Compare palavra por palavra.
+   - Diferenças (texto/número/pontuação) -> use <mark class='diff'>texto do candidato</mark>
+   - Erros de português -> use <mark class='ort'>erro</mark>
+   - Data Anvisa -> use <mark class='anvisa'>dd/mm/aaaa</mark>
 
-OUTPUT JSON (Estrito):
+SAÍDA JSON (Apenas o JSON):
 {{
     "METADADOS": {{ "datas": ["dd/mm/aaaa"], "produto": "Nome" }},
     "SECOES": [
         {{
-            "titulo": "EXATO DA LISTA",
-            "ref": "Texto referência...",
-            "bel": "Texto candidato com tags <mark> se houver erro...",
+            "titulo": "TITULO DA LISTA ACIMA",
+            "ref": "Texto extraído da referência...",
+            "bel": "Texto do candidato com tags <mark>...",
             "status": "OK" | "DIVERGENTE" | "FALTANTE"
         }}
     ]
@@ -281,40 +262,38 @@ with st.sidebar:
 st.markdown(f"## 🚀 Auditoria: {pag}")
 
 if pag == "Ref x BELFAR":
-    tipo = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True)
+    tipo = st.radio("Tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
     lista_alvo = SECOES_PROFISSIONAL if tipo == "Profissional" else SECOES_PACIENTE
 else:
     lista_alvo = SECOES_PACIENTE
 
 st.markdown("---")
 
-c_up1, c_up2 = st.columns(2)
-with c_up1:
-    f1 = st.file_uploader("📂 Arquivo Referência (Padrão)", type=["pdf", "docx"])
-with c_up2:
-    f2 = st.file_uploader("📂 Arquivo Candidato (Validar)", type=["pdf", "docx"])
+c1, c2 = st.columns(2)
+f1 = c1.file_uploader("📂 Referência", type=["pdf", "docx"])
+f2 = c2.file_uploader("📂 Candidato", type=["pdf", "docx"])
 
-if st.button("🚀 INICIAR AUDITORIA INTELIGENTE"):
+if st.button("🚀 INICIAR AUDITORIA RÁPIDA"):
     if not f1 or not f2:
-        st.warning("⚠️ Envie os dois arquivos.")
+        st.warning("⚠️ Arquivos necessários.")
         st.stop()
         
     bar = st.progress(0, "Lendo arquivos...")
     
     # 1. Leitura
     d1 = extract_content(f1)
-    bar.progress(30, "Referência ok...")
+    bar.progress(30, "Ref OK...")
     d2 = extract_content(f2)
-    bar.progress(60, "Candidato ok...")
+    bar.progress(60, "Cand OK...")
     
     if not d1 or not d2:
-        st.error("Erro leitura.")
+        st.error("Erro na leitura.")
         st.stop()
         
-    total_len = d1['len'] + d2['len']
-    st.caption(f"Ref: {d1['len']} | Cand: {d2['len']} | Total: {total_len} chars")
+    tot_len = d1['len'] + d2['len']
+    st.caption(f"Ref: {d1['len']} | Cand: {d2['len']} | Total: {tot_len}")
     
-    # 2. Processamento IA
+    # 2. IA
     sys_prompt = get_audit_prompt(lista_alvo)
     user_prompt = f"--- TEXTO REF ---\n{d1['data']}\n\n--- TEXTO CANDIDATO ---\n{d2['data']}"
     
@@ -323,27 +302,27 @@ if st.button("🚀 INICIAR AUDITORIA INTELIGENTE"):
     start_t = time.time()
     
     try:
-        # LÓGICA DE ROTEAMENTO HÍBRIDO
+        # LÓGICA DE VELOCIDADE
         if pag in ["Ref x BELFAR", "Conferência MKT"]:
             if not mis_client:
-                st.error("Erro: API Mistral não configurada.")
+                st.error("Mistral API ausente.")
                 st.stop()
             
-            # DECISÃO INTELIGENTE BASEADA NO TAMANHO
-            # Limite de segurança: 15.000 caracteres (aprox. 5 páginas cheias)
-            if total_len < 15000:
+            # Limite aumentado para 80k para favorecer velocidade (Small é muito mais rápido)
+            # O Prompt melhorado garante que ele ache as seções mesmo sendo "Small"
+            if tot_len < 80000:
                 model_id = "mistral-small-latest"
                 model_name = "Mistral Small (Turbo)"
-                msg_status = "🌪️ Mistral Small (Rápido) Analisando..."
+                msg_status = "🌪️ Analisando Rápido (Mistral Turbo)..."
             else:
                 model_id = "mistral-large-latest"
                 model_name = "Mistral Large (Preciso)"
-                msg_status = "🧠 Mistral Large (Pesado/Streaming) Analisando..."
+                msg_status = "🧠 Analisando Detalhado (Mistral Large)..."
             
             bar.progress(70, msg_status)
             
-            # USO DO STREAMING (Resolve o problema do Timeout)
-            stream_response = mis_client.chat.stream(
+            # Streaming sempre ativo para evitar travamentos
+            stream = mis_client.chat.stream(
                 model=model_id,
                 messages=[
                     {"role": "system", "content": sys_prompt},
@@ -351,63 +330,57 @@ if st.button("🚀 INICIAR AUDITORIA INTELIGENTE"):
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.0,
-                timeout_ms=300000 # 5 min timeout de conexão (segurança)
+                timeout_ms=300000
             )
             
             chunks = []
-            for chunk in stream_response:
+            for chunk in stream:
                 if chunk.data.choices[0].delta.content:
                     chunks.append(chunk.data.choices[0].delta.content)
             json_res = "".join(chunks)
 
         else: # Gráfica (Gemini)
             if not gem_ok:
-                st.error("Erro: API Gemini não configurada.")
+                st.error("Gemini API ausente.")
                 st.stop()
-                
-            bar.progress(70, "💎 Gemini Pro Analisando...")
+            bar.progress(70, "💎 Analisando (Gemini Pro)...")
             model_name = "Gemini 1.5 Pro"
-            
-            model = genai.GenerativeModel("gemini-1.5-pro")
-            resp = model.generate_content(
+            resp = genai.GenerativeModel("gemini-1.5-pro").generate_content(
                 f"{sys_prompt}\n\n{user_prompt}",
                 generation_config={"response_mime_type": "application/json", "temperature": 0.0}
             )
             json_res = resp.text
             
     except Exception as e:
-        st.error(f"❌ Erro na IA: {e}")
+        st.error(f"Erro IA: {e}")
         st.stop()
         
     bar.progress(100, "Concluído!")
     time.sleep(0.5)
     bar.empty()
     
-    # 3. Resultados
+    # 3. Render
     if json_res:
         dados = clean_json_response(json_res)
         if dados:
             dados = normalize_sections(dados, lista_alvo)
-            
             duracao = time.time() - start_t
             
-            # Define cor do badge
-            if "Small" in model_name: cls_css = "mistral-small-badge"
-            elif "Large" in model_name: cls_css = "mistral-large-badge"
-            else: cls_css = "gemini-badge"
-                
-            st.markdown(f"<div class='ia-badge {cls_css}'>Processado por: {model_name} em {duracao:.1f}s</div>", unsafe_allow_html=True)
+            badges = {"Small": "mistral-small-badge", "Large": "mistral-large-badge", "Gemini": "gemini-badge"}
+            css = next((v for k, v in badges.items() if k in model_name), "mistral-small-badge")
+            
+            st.markdown(f"<div class='ia-badge {css}'>Motor: {model_name} ({duracao:.1f}s)</div>", unsafe_allow_html=True)
             
             secoes = dados.get("SECOES", [])
             auditaveis = [s for s in secoes if s['titulo'] not in SECOES_IGNORAR_DIFF]
             erros = sum(1 for s in auditaveis if s.get("status") != "OK")
             
-            cM1, cM2, cM3 = st.columns(3)
-            cM1.metric("Seções", len(auditaveis))
-            cM2.metric("Divergências", erros)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Seções Encontradas", len(secoes))
+            m2.metric("Divergências", erros)
             
             dt = dados.get("METADADOS", {}).get("datas", ["-"])[0]
-            cM3.markdown(f"**Data Anvisa:** <mark class='anvisa'>{dt}</mark>", unsafe_allow_html=True)
+            m3.markdown(f"**Anvisa:** <mark class='anvisa'>{dt}</mark>", unsafe_allow_html=True)
             
             st.divider()
             
@@ -426,11 +399,8 @@ if st.button("🚀 INICIAR AUDITORIA INTELIGENTE"):
                 
                 with st.expander(f"{icon} {tit} - {lbl}", expanded=aberto):
                     cR, cB = st.columns(2)
-                    cR.markdown("<b>Referência</b>", unsafe_allow_html=True)
                     cR.markdown(f"<div class='box-content box-ref'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
-                    
-                    cB.markdown("<b>Candidato</b>", unsafe_allow_html=True)
                     cB.markdown(f"<div class='box-content box-bel'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
         else:
-            st.error("Falha ao ler resposta da IA.")
+            st.error("Falha resposta IA.")
             st.code(json_res)
