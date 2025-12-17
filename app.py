@@ -15,8 +15,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Híbrido (Nemo)",
-    page_icon="⚡",
+    page_title="Validador Híbrido (Preciso)",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -36,9 +36,9 @@ st.markdown("""
     .box-bel { background-color: #f9fbe7; border-left: 5px solid #827717; }
     .box-ref { background-color: #f5f5f5; border-left: 5px solid #757575; }
     
-    /* CORES VIBRANTES */
+    /* CORES CORRETAS */
     mark.diff { 
-        background-color: #ffea00 !important;
+        background-color: #ffea00 !important; /* AMARELO FORTE */
         color: #000 !important;
         padding: 2px 5px; 
         border-radius: 4px; 
@@ -46,8 +46,8 @@ st.markdown("""
         border: 2px solid #ffd600;
     }
     mark.ort { 
-        background-color: #ffcdd2 !important;
-        color: #b71c1c !important;
+        background-color: #ffcdd2 !important; /* VERMELHO CLARO Fundo */
+        color: #b71c1c !important; /* VERMELHO ESCURO Texto */
         padding: 2px 5px; 
         border-radius: 4px; 
         font-weight: bold; 
@@ -55,7 +55,7 @@ st.markdown("""
         text-decoration: underline;
     }
     mark.anvisa { 
-        background-color: #b3e5fc !important;
+        background-color: #b3e5fc !important; /* AZUL */
         color: #01579b !important; 
         padding: 2px 5px; 
         border-radius: 4px; 
@@ -122,6 +122,7 @@ def process_uploaded_file(uploaded_file):
             
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
+            
             full_text = ""
             for page in doc: full_text += page.get_text() + "\n"
             
@@ -129,12 +130,11 @@ def process_uploaded_file(uploaded_file):
                 doc.close()
                 return {"type": "text", "data": full_text, "len": len(full_text)}
             
-            st.toast(f"📄 '{uploaded_file.name}': OCR Rápido...", icon="⚡")
+            st.toast(f"📄 '{uploaded_file.name}': Ativando OCR...", icon="👁️")
             
             images = []
             limit = min(15, len(doc))
             for i in range(limit):
-                # Otimização: Baixa resolução (1.5) para ser rápido
                 pix = doc[i].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                 try: img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=80))
                 except: img_byte_arr = io.BytesIO(pix.tobytes("png"))
@@ -183,7 +183,7 @@ def normalize_sections(data, allowed):
 # ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.title("Validador Turbo")
+    st.title("Validador Preciso")
     pag = st.radio("Menu", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
     st.divider()
     
@@ -203,7 +203,7 @@ f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 AUDITAR AGORA"):
     if f1 and f2:
-        with st.spinner("📖 Lendo arquivos..."):
+        with st.spinner("📖 Processando..."):
             d1 = process_uploaded_file(f1)
             d2 = process_uploaded_file(f2)
             gc.collect()
@@ -218,56 +218,62 @@ if st.button("🚀 AUDITAR AGORA"):
             
             secoes_str = "\n".join([f"- {s}" for s in lista])
             
-            # --- PROMPT OTIMIZADO PARA MISTRAL NEMO ---
+            # --- PROMPT ANTI-ALUCINAÇÃO ---
             prompt = f"""
-            ATUE COMO UM COMPARADOR DE TEXTOS (DIFF TOOL).
-            SEÇÕES: {secoes_str}
+            ATUE COMO UM ALGORITMO DE COMPARAÇÃO DE TEXTO.
+            SEÇÕES ALVO: {secoes_str}
             
-            REGRAS CRÍTICAS:
-            1. Extraia o texto COMPLETO. O campo 'bel' NÃO PODE SER VAZIO.
-            2. Se a palavra for IGUAL, copie. Se for DIFERENTE, use HTML.
+            INSTRUÇÕES CRÍTICAS (LEIA COM ATENÇÃO):
+            1. Extraia o texto COMPLETO.
+            2. Ignore pontilhados (.....).
+            3. O campo 'bel' NÃO PODE SER VAZIO.
             
-            COMO MARCAR NO CAMPO 'bel':
-            🟡 USE <mark class='diff'>palavra</mark> SE ELA FOR DIFERENTE DA REF (Letra, número, acento).
-            🔴 USE <mark class='ort'>palavra</mark> SE FOR ERRO DE PORTUGUÊS GRAVE.
-            🔵 USE <mark class='anvisa'>DD/MM/AAAA</mark> PARA DATA EM DIZERES LEGAIS.
+            REGRAS DE MARCAÇÃO (EVITE FALSOS POSITIVOS):
             
-            EXEMPLO:
-            Ref: "Próstata" | Bel: "Prostata" -> Saída Bel: "<mark class='diff'>Prostata</mark>"
-            Ref: "Próstata" | Bel: "Próstata" -> Saída Bel: "Próstata" (Sem marca)
+            1. SE A PALAVRA FOR IDÊNTICA (mesmas letras, mesmos acentos), NÃO USE NENHUMA TAG. Apenas copie o texto.
+               Exemplo: Ref="próstata" Cand="próstata" -> Saída: "próstata" (SEM MARCAÇÃO).
             
-            SAÍDA JSON:
-            {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"", "bel":"", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
+            2. 🟡 USE <mark class='diff'>APENAS SE HOUVER DIFERENÇA REAL</mark> (letras, acentos ou palavras diferentes).
+               Exemplo: Ref="próstata" Cand="prostata" -> Saída: "<mark class='diff'>prostata</mark>" (Falta acento).
+               Exemplo: Ref="500mg" Cand="400mg" -> Saída: "<mark class='diff'>400mg</mark>".
+            
+            3. 🔴 USE <mark class='ort'> PARA ERROS DE PORTUGUÊS GRAVES.
+               Exemplo: "Farmacia" (sem acento) -> "<mark class='ort'>Farmacia</mark>".
+            
+            4. 🔵 USE <mark class='anvisa'> PARA DATAS NOS DIZERES LEGAIS.
+            
+            JSON ESTRITO:
+            {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"...", "bel":"...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
             """
 
-            # 🛑 ZONA MISTRAL (MUDANÇA AQUI: open-mistral-nemo)
+            # 🛑 MISTRAL
             if pag in ["Ref x BELFAR", "Conferência MKT"]:
                 if not mis_client: st.error("MISTRAL OFF"); st.stop()
                 if d1['type'] == 'images' or d2['type'] == 'images':
                     st.error("Erro: OCR falhou."); st.stop()
 
                 try:
-                    with st.spinner("🌪️ Mistral Nemo (Rápido e Preciso)..."):
+                    with st.spinner("🌪️ Mistral Comparando..."):
                         chat = mis_client.chat.complete(
-                            model="open-mistral-nemo", # <--- O EQUILÍBRIO PERFEITO
+                            model="mistral-large-latest", # USANDO LARGE PARA OBEDECER A REGRA "NÃO MARQUE SE FOR IGUAL"
                             messages=[
-                                {"role":"system", "content":"Você é um validador JSON estrito. Responda apenas o JSON."},
+                                {"role":"system", "content":"Você é um validador preciso. NÃO MARQUE palavras idênticas."},
                                 {"role":"user", "content":f"{prompt}\n\n=== REF ===\n{d1['data']}\n\n=== CAND ===\n{d2['data']}"}
                             ],
                             response_format={"type": "json_object"},
-                            temperature=0.1 # Baixa temperatura para evitar loops
+                            temperature=0.0
                         )
                         final_res = chat.choices[0].message.content
-                        model_used = "🌪️ Mistral Nemo"
+                        model_used = "🌪️ Mistral Large"
                         success = True
                 except Exception as e:
                     st.error(f"Erro Mistral: {e}"); st.stop()
 
-            # 🛑 ZONA GEMINI
+            # 🛑 GEMINI
             elif pag == "Gráfica x Arte":
                 if not gem_ok: st.error("GEMINI OFF"); st.stop()
                 try:
-                    with st.spinner("💎 Gemini Auditing..."):
+                    with st.spinner("💎 Gemini Comparando..."):
                         model = genai.GenerativeModel("models/gemini-1.5-flash")
                         payload = [prompt]
                         payload.append(f"REF:\n{d1['data']}" if d1['type']=='text' else d1['data'])
