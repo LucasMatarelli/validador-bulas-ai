@@ -86,7 +86,7 @@ SECOES_PROFISSIONAL = [
 
 SECOES_IGNORAR_DIFF = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# Configurações de Segurança para evitar bloqueios
+# Configurações de Segurança
 SAFETY_SETTINGS = {
     genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
     genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
@@ -94,22 +94,17 @@ SAFETY_SETTINGS = {
     genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
 }
 
-# ----------------- INTELIGÊNCIA PYTHON (PRÉ-PROCESSAMENTO) -----------------
+# ----------------- INTELIGÊNCIA PYTHON -----------------
 
 def clean_text(text):
-    """Limpa quebras de linha ruins de colunas"""
     text = re.sub(r'([a-zà-ú])- \n([a-zà-ú])', r'\1\2', text)
     text = re.sub(r'([a-zà-ú,])\n([a-zà-ú])', r'\1 \2', text)
     return text
 
 def mark_sections_hardcoded(text, section_list):
-    """
-    O Python acha os títulos e coloca marcadores para ajudar a IA Rápida.
-    """
     lines = text.split('\n')
     enhanced_text = []
     
-    # Mapa de palavras-chave para títulos longos
     keywords = {
         "QUANTIDADE MAIOR": "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?",
         "SUPERDOSE": "SUPERDOSE",
@@ -125,11 +120,9 @@ def mark_sections_hardcoded(text, section_list):
         line_clean = re.sub(r'[^A-Z]', '', line).upper()
         found = None
         
-        # 1. Busca Exata
         if line_clean in clean_titles:
             found = clean_titles[line_clean]
         
-        # 2. Busca por Palavras-Chave (Salva-vidas)
         if not found:
             for kw, full_t in keywords.items():
                 if kw in re.sub(r'[^A-Z ]', '', line.upper()):
@@ -137,7 +130,6 @@ def mark_sections_hardcoded(text, section_list):
                     break
         
         if found:
-            # INSERE MARCADOR DESTRUTIVO PARA A IA VER
             enhanced_text.append(f"\n\n👉👉👉 SEÇÃO IDENTIFICADA: {found} 👈👈👈\n")
         else:
             enhanced_text.append(line)
@@ -147,24 +139,32 @@ def mark_sections_hardcoded(text, section_list):
 # ----------------- EXTRAÇÃO & MODELOS -----------------
 
 def try_generate_content(model_name, contents, config=None):
-    """Tenta gerar conteúdo tratando erro 404 de modelos"""
+    """Tenta gerar conteúdo tratando erro 404"""
     try:
         model = genai.GenerativeModel(model_name, generation_config=config)
         return model.generate_content(contents, safety_settings=SAFETY_SETTINGS), model_name
     except Exception as e:
-        # Se der erro 404, retorna None para tentar o próximo
-        if "404" in str(e) or "not found" in str(e).lower():
+        # Erros de modelo não encontrado
+        if "404" in str(e) or "not found" in str(e).lower() or "400" in str(e):
             return None, None
-        raise e
+        raise e # Outros erros (ex: Auth) repassa para cima
 
 def get_robust_response(contents, prefer_flash=True, config=None):
     """Tenta lista de modelos até um funcionar"""
     
-    # Lista de tentativas por prioridade
+    # Lista expandida de tentativas
     if prefer_flash:
-        candidates = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-001", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
+        candidates = [
+            "gemini-1.5-flash", 
+            "gemini-1.5-flash-latest", 
+            "gemini-1.5-flash-001", 
+            "gemini-1.5-flash-002",
+            "models/gemini-1.5-flash",
+            "gemini-1.0-pro",
+            "gemini-pro"
+        ]
     else:
-        candidates = ["gemini-1.5-pro", "gemini-1.5-pro-latest", "gemini-1.5-pro-001"]
+        candidates = ["gemini-1.5-pro", "gemini-1.5-pro-latest", "gemini-1.5-pro-001", "models/gemini-1.5-pro"]
 
     last_error = None
     for model_name in candidates:
@@ -176,13 +176,13 @@ def get_robust_response(contents, prefer_flash=True, config=None):
             last_error = e
             continue
             
-    return None, "Nenhum modelo disponível"
+    # Se chegou aqui, nenhum funcionou. Retorna o erro real.
+    return None, str(last_error)
 
 def get_ocr_gemini(images):
     try:
-        # Tenta OCR com o modelo mais rápido disponível
         resp, _ = get_robust_response(["Transcreva TUDO. Não pule nada. Mantenha tabelas.", *images], prefer_flash=True)
-        return resp.text if resp and resp.text else ""
+        return resp.text if resp and hasattr(resp, 'text') else ""
     except: return ""
 
 def extract_text(file, section_list):
@@ -200,7 +200,6 @@ def extract_text(file, section_list):
             full_txt = ""
             for p in doc: full_txt += p.get_text() + "\n"
             
-            # Se tiver texto selecionável
             if len(full_txt) / max(1, len(doc)) > 200:
                 text = full_txt
                 doc.close()
@@ -219,14 +218,24 @@ def extract_text(file, section_list):
     except: return ""
 
 # ----------------- UI & CONFIG -----------------
-def get_config():
-    k = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if k: genai.configure(api_key=k)
-    return (k is not None)
+def configure_api():
+    # Tenta pegar dos segredos ou ambiente
+    api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if api_key:
+        genai.configure(api_key=api_key)
+        return True, "Chave Encontrada"
+    return False, "Chave NÃO encontrada"
 
-gemini_ok = get_config()
-
+# Barra lateral de Diagnóstico
 st.sidebar.title("Validador Flash")
+key_status, key_msg = configure_api()
+
+if key_status:
+    st.sidebar.success(f"🔑 {key_msg}")
+else:
+    st.sidebar.error(f"🚫 {key_msg}")
+    st.sidebar.info("Adicione 'GEMINI_API_KEY' no .streamlit/secrets.toml")
+
 page = st.sidebar.radio("Navegação", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
 
 list_secs = SECOES_PACIENTE
@@ -240,13 +249,13 @@ c1, c2 = st.columns(2)
 f1 = c1.file_uploader("Referência")
 f2 = c2.file_uploader("Candidato")
 
-if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
+if st.button("🚀 AUDITAR (MODO ROBUSTO)"):
     if not f1 or not f2:
         st.warning("Arquivos faltando.")
         st.stop()
     
-    if not gemini_ok:
-        st.error("Chave do Gemini (Google) não encontrada.")
+    if not key_status:
+        st.error("ERRO CRÍTICO: Configure a GEMINI_API_KEY para continuar.")
         st.stop()
         
     bar = st.progress(0, "Processando...")
@@ -257,7 +266,6 @@ if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
     t2 = extract_text(f2, list_secs)
     bar.progress(60, "Candidato OK")
     
-    # 2. PROMPT BLINDADO + FLASH
     secoes_ignorar_str = ", ".join(SECOES_IGNORAR_DIFF)
     
     prompt = f"""Você é um Auditor Sênior de Bulas Rápido e Preciso.
@@ -298,11 +306,11 @@ if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
     start_t = time.time()
     
     try:
-        bar.progress(70, "⚡ IA Analisando (Auto-Seleção de Modelo)...")
+        bar.progress(70, "⚡ IA Analisando...")
         
         prefer_flash = True
         if page == "Gráfica x Arte":
-            prefer_flash = False # Prefere Pro para gráfica
+            prefer_flash = False
             
         resp, model_name = get_robust_response(
             [prompt, f"--- TEXTO REFERÊNCIA ---\n{t1}", f"--- TEXTO CANDIDATO ---\n{t2}"],
@@ -310,14 +318,14 @@ if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
             config={"response_mime_type": "application/json"}
         )
         
-        if resp:
+        if resp and hasattr(resp, 'text'):
             json_res = resp.text
         else:
-            st.error("Nenhum modelo IA conseguiu processar. Verifique sua Chave API.")
+            st.error(f"Falha na IA. Detalhe do erro: {model_name}")
             st.stop()
             
     except Exception as e:
-        st.error(f"Erro Crítico na IA: {e}")
+        st.error(f"Erro Crítico: {e}")
         st.stop()
         
     bar.progress(100, "Concluído!")
@@ -326,22 +334,18 @@ if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
     
     # 3. RESULTADOS
     if json_res:
-        # Limpeza bruta caso venha markdown
         json_res = json_res.replace("```json", "").replace("```", "").strip()
         try:
             data = json.loads(json_res)
         except:
             st.error("Erro no JSON da IA. Tente novamente.")
-            with st.expander("Ver JSON Bruto"):
-                st.code(json_res)
+            st.code(json_res)
             st.stop()
             
         secs = []
         raw_secs = data.get("SECOES", [])
         
-        # Reconstrói a lista garantindo a ordem
         for target in list_secs:
-            # Procura na resposta usando Fuzzy Matching
             found = next((s for s in raw_secs if SequenceMatcher(None, target, s.get('titulo','').upper()).ratio() > 0.8), None)
             
             if found:
@@ -359,7 +363,6 @@ if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
         
         st.markdown(f"<div class='ia-badge'>Motor: {model_name} ({time.time()-start_t:.1f}s)</div>", unsafe_allow_html=True)
         
-        # Legenda Manual
         st.markdown("### Legenda:")
         l1, l2, l3 = st.columns(3)
         l1.markdown("<span style='background-color: #ffeb3b; color: black; font-weight: bold; padding: 2px;'>Amarelo</span> = Diferença", unsafe_allow_html=True)
@@ -390,5 +393,4 @@ if st.button("🚀 AUDITAR (AUTO-FIX 404)"):
             with st.expander(f"{icon} {tit} - {stat}", expanded=aberto):
                 cR, cB = st.columns(2)
                 cR.markdown(f"<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
-                # O highlight funciona graças ao allow_html=True e o style inline
                 cB.markdown(f"<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
