@@ -8,7 +8,7 @@ import os
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Visual (Auto-Detect)",
+    page_title="Validador Visual (Estável)",
     page_icon="🎨",
     layout="wide"
 )
@@ -36,52 +36,13 @@ def configure_api():
         st.error(f"Erro na configuração: {e}")
         return False
 
-def get_best_available_model():
-    """
-    Lista os modelos disponíveis na sua conta e escolhe o melhor para visão.
-    Prioridade: Flash > 1.5 Pro > Pro Vision (Antigo)
-    """
-    try:
-        # Pede a lista real para o Google
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Ordem de preferência
-        preferencias = [
-            "gemini-1.5-flash",          # O ideal (Rápido)
-            "gemini-1.5-flash-latest",   # Variação
-            "gemini-1.5-flash-001",      # Versão congelada
-            "gemini-1.5-pro",            # Mais potente (mas mais lento)
-            "gemini-pro-vision"          # Antigo (Legacy)
-        ]
-        
-        # 1. Tenta achar o nome exato na lista
-        for pref in preferencias:
-            for model in available_models:
-                if pref in model:
-                    return model # Retorna o nome oficial (ex: models/gemini-1.5-flash-001)
-        
-        # 2. Se não achar nenhum da lista, pega qualquer um que tenha 'vision' ou 'flash'
-        for model in available_models:
-            if "vision" in model or "flash" in model:
-                return model
-                
-        # 3. Último caso: o primeiro da lista
-        if available_models:
-            return available_models[0]
-            
-        return "models/gemini-1.5-flash" # Fallback cego
-        
-    except Exception as e:
-        # Se listar falhar (erro de permissão), tenta o Flash direto
-        return "models/gemini-1.5-flash"
-
 def pdf_to_images(uploaded_file):
     images = []
     try:
         file_bytes = uploaded_file.read()
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         for page in doc:
-            # Zoom 2.0 para boa resolução
+            # Zoom 2.0 para boa resolução de leitura
             pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
             img_data = pix.tobytes("jpeg", jpg_quality=85)
             images.append(Image.open(io.BytesIO(img_data)))
@@ -91,17 +52,17 @@ def pdf_to_images(uploaded_file):
         return []
 
 # ----------------- UI PRINCIPAL -----------------
-st.title("🎨 Gráfica x Arte (Visual)")
+st.title("🎨 Gráfica x Arte (Visual Estável)")
 
 if configure_api():
-    # Detecta o modelo automaticamente
-    model_name = get_best_available_model()
-    st.info(f"🤖 **Motor IA Detectado:** `{model_name}`")
+    # FORÇANDO O MODELO ESTÁVEL 1.5 FLASH (Alto Limite de Cota)
+    model_name = "models/gemini-1.5-flash"
+    st.info(f"🤖 **Motor IA:** `{model_name}` (Modo Alta Disponibilidade)")
     
     try:
         model = genai.GenerativeModel(model_name)
     except:
-        st.warning("Falha ao carregar modelo detectado. Tentando 'gemini-1.5-flash' forçado.")
+        # Fallback de segurança para versão genérica
         model = genai.GenerativeModel("gemini-1.5-flash")
 
     c1, c2 = st.columns(2)
@@ -154,14 +115,14 @@ if configure_api():
                                     st.error("Divergências Encontradas:")
                                     st.write(resp.text)
                             
-                            # Pausa anti-spam de API (Rate Limit)
-                            time.sleep(2)
+                            # PAUSA OBRIGATÓRIA DE 4 SEGUNDOS PARA EVITAR O ERRO 429
+                            time.sleep(4)
                             
                     except Exception as e:
                         st.error(f"Erro na análise (Pág {i+1}): {e}")
                         if "429" in str(e):
-                            st.warning("Limite de velocidade da API atingido. Aguardando...")
-                            time.sleep(5)
+                            st.warning("⚠️ Limite de velocidade atingido. Aguardando 10 segundos...")
+                            time.sleep(10) # Pausa longa de recuperação
                     
                     st.divider()
         else:
