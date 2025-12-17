@@ -31,9 +31,7 @@ st.markdown("""
         box-shadow: 0 10px 20px rgba(0,0,0,0.05); margin-bottom: 25px;
         border: 1px solid #e1e4e8; transition: transform 0.2s; height: 100%;
     }
-    .stCard:hover { transform: translateY(-5px); border-color: #55a68e; }
     .stButton>button { width: 100%; background-color: #55a68e; color: white; font-weight: bold; border-radius: 10px; height: 55px; border: none; font-size: 16px; }
-    .stButton>button:hover { background-color: #448c75; }
     
     mark.diff { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     mark.ort { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #dc3545; }
@@ -99,15 +97,16 @@ def process_uploaded_file(uploaded_file):
                 doc.close()
                 return {"type": "text", "data": full_text, "is_image": False}
             
-            # MODO IMAGEM (ALTA RESOLUÇÃO)
+            # MODO IMAGEM (ULTRA RESOLUÇÃO PARA BULAS GRANDES)
             images = []
             limit_pages = min(8, len(doc)) 
             
             for i in range(limit_pages):
                 page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
+                # Aumentei o zoom para 3.5 para o Lite ler melhor letras pequenas
+                pix = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5))
                 try:
-                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=90))
+                    img_byte_arr = io.BytesIO(pix.tobytes("jpeg", jpg_quality=95))
                 except:
                     img_byte_arr = io.BytesIO(pix.tobytes("png"))
                 images.append(Image.open(img_byte_arr))
@@ -148,27 +147,54 @@ def extract_json(text):
     return None
 
 def normalize_sections(data_json, allowed_titles):
+    """
+    Normaliza e GARANTE que todas as seções apareçam, mesmo que vazias.
+    """
     if not data_json or "SECOES" not in data_json:
-        return data_json
+        return {"METADADOS": {}, "SECOES": []}
     
-    clean_sections = []
-    # Cria um dicionário para busca fuzzy
-    allowed_map = {t.strip().upper(): t for t in allowed_titles}
+    # Cria um mapa das seções que a IA encontrou
+    found_map = {}
+    
+    # Mapa de referência (Upper Case -> Título Original)
+    allowed_map_upper = {t.strip().upper(): t for t in allowed_titles}
     
     for sec in data_json["SECOES"]:
         titulo_ia = sec.get("titulo", "").strip().upper()
-        # Se o título está na lista, adiciona
-        if titulo_ia in allowed_map:
-            clean_sections.append(sec)
+        
+        # Tenta achar correspondência exata ou parcial
+        matched_title = None
+        
+        if titulo_ia in allowed_map_upper:
+            matched_title = allowed_map_upper[titulo_ia]
         else:
-            # Tenta encontrar similaridade (ex: IA esqueceu a interrogação)
-            for k in allowed_map:
+            # Fuzzy match simples
+            for k, v in allowed_map_upper.items():
                 if k in titulo_ia or titulo_ia in k:
-                    sec["titulo"] = allowed_map[k]
-                    clean_sections.append(sec)
+                    matched_title = v
                     break
+        
+        if matched_title:
+            found_map[matched_title] = sec
+    
+    # Reconstrói a lista final na ordem correta, preenchendo buracos
+    final_sections = []
+    for standard_title in allowed_titles:
+        if standard_title in found_map:
+            # Se achou, usa o da IA
+            section_data = found_map[standard_title]
+            section_data["titulo"] = standard_title # Corrige o nome para o padrão
+            final_sections.append(section_data)
+        else:
+            # Se não achou, cria um placeholder de erro
+            final_sections.append({
+                "titulo": standard_title,
+                "ref": "Texto não identificado nesta seção.",
+                "bel": "Texto não identificado nesta seção.",
+                "status": "🚨 FALTANTE (IA NÃO ENCONTROU)"
+            })
             
-    data_json["SECOES"] = clean_sections
+    data_json["SECOES"] = final_sections
     return data_json
 
 # ----------------- UI LATERAL -----------------
@@ -193,7 +219,7 @@ c1, c2 = st.columns(2)
 f1 = c1.file_uploader(label1, type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader(label2, type=["pdf", "docx"], key="f2")
     
-if st.button("🚀 INICIAR AUDITORIA (BUSCA PROFUNDA)"):
+if st.button("🚀 INICIAR AUDITORIA (BUSCA COMPLETA)"):
     if f1 and f2 and api_key:
         with st.spinner("Analisando colunas, fluxo e layout..."):
             try:
@@ -210,30 +236,29 @@ if st.button("🚀 INICIAR AUDITORIA (BUSCA PROFUNDA)"):
                     if d2['type'] == 'text': payload.append(f"--- DOC 2 (TEXTO) ---\n{d2['data']}")
                     else: payload.append("--- DOC 2 (IMAGENS) ---"); payload.extend(d2['data'])
 
-                    # Lista numerada para ajudar a IA
+                    # Checklist explicito no prompt
                     secoes_str = "\n".join([f"{i+1}. {s}" for i, s in enumerate(SECOES_PADRAO)])
                     
-                    # PROMPT DE BUSCA PROFUNDA (O Segredo)
+                    # PROMPT DE VARREDURA OBRIGATÓRIA
                     prompt = f"""
                     Você é um Auditor de Qualidade Sênior.
                     
-                    SUA MISSÃO: Encontrar e extrair o texto de **TODAS AS 12 SEÇÕES OBRIGATÓRIAS** abaixo.
+                    SUA MISSÃO: Encontrar e extrair o texto de **TODAS AS 12 SEÇÕES OBRIGATÓRIAS** listadas abaixo.
                     
-                    LISTA DE VERIFICAÇÃO (Checklist):
+                    CHECKLIST DE SEÇÕES (Você DEVE encontrar todas):
                     {secoes_str}
                     
-                    ⚠️ REGRAS DE EXTRAÇÃO:
-                    1. **VARREDURA COMPLETA:** O documento TEM essas 12 seções. Se você achou apenas 8, VOCÊ FALHOU. Continue lendo até o final, inclusive rodapés e colunas laterais.
-                    2. **TEXTO EM COLUNAS:** O texto está em colunas jornalísticas. Leia a coluna 1 até o fim, depois a coluna 2, etc. Não misture.
-                    3. **PRESERVAÇÃO:** Extraia o texto EXATO. Não resuma.
-                    4. **SEÇÕES FALTANTES:** Se realmente não existir, marque o status como "FALTANTE". Mas procure muito bem antes.
+                    ⚠️ REGRAS DE BUSCA (NÃO PULE NADA):
+                    1. **VARREDURA TOTAL:** O documento TEM 12 seções. Se você achou menos, continue lendo colunas laterais, rodapés e caixas de texto.
+                    2. **NÃO PARE:** A seção "DIZERES LEGAIS" geralmente está no finalzinho, em letras miúdas. Encontre-a.
+                    3. **OUTPUT OBRIGATÓRIO:** Gere um JSON com 12 itens no array "SECOES". Se uma seção estiver vazia no arquivo, retorne o texto "N/A" para ela, mas NÃO A OMITA do JSON.
                     
-                    SAÍDA JSON OBRIGATÓRIA: 
+                    SAÍDA JSON ESTRITA: 
                     {{ 
                         "METADADOS": {{ "score": 0, "datas": [] }}, 
                         "SECOES": [ 
                             {{ 
-                                "titulo": "TÍTULO EXATO DA LISTA ACIMA", 
+                                "titulo": "TÍTULO EXATO DA LISTA", 
                                 "ref": "Texto completo...", 
                                 "bel": "Texto completo...", 
                                 "status": "OK" 
@@ -246,15 +271,16 @@ if st.button("🚀 INICIAR AUDITORIA (BUSCA PROFUNDA)"):
                     sucesso = False
                     error_log = []
                     
+                    # TENTA PEGAR O MODELO FLASH LITE PRIMEIRO (COMO VOCÊ PEDIU)
                     try:
                         all_models = genai.list_models()
                         available_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
                         
                         def sort_priority(name):
-                            # Prioriza modelos FLASH e LITE pela velocidade, mas tenta outros se falhar
-                            if "flash" in name: return 0  # Tenta flash primeiro (incluindo lite)
-                            if "gemini-1.5-pro" in name: return 1
-                            if "gemini-2.0" in name: return 2
+                            # Prioriza modelos FLASH e LITE pela velocidade
+                            if "flash" in name and "lite" in name: return 0  # Prioridade Máxima
+                            if "flash" in name: return 1
+                            if "gemini-1.5-pro" in name: return 2
                             return 50
                         
                         available_models.sort(key=sort_priority)
@@ -266,20 +292,19 @@ if st.button("🚀 INICIAR AUDITORIA (BUSCA PROFUNDA)"):
                     except:
                         available_models = ["models/gemini-1.5-flash"]
 
-                    st.caption(f"🔄 Buscando em profundidade...")
+                    st.caption(f"🔄 Varrendo documento com IA...")
 
                     for model_name in available_models:
-                        # Pula modelos instáveis/preview se não for o Flash Lite (que queremos testar)
                         if "robotics" in model_name: continue
                                 
                         try:
                             model_run = genai.GenerativeModel(model_name)
-                            # Aumentei o output token limit para garantir que caiba as 12 seções
+                            # Aumentei para 100k tokens para garantir que cabe tudo
                             response = model_run.generate_content(
                                 [prompt] + payload,
                                 generation_config={
                                     "response_mime_type": "application/json",
-                                    "max_output_tokens": 60000  # Aumentado para caber texto longo
+                                    "max_output_tokens": 100000 
                                 },
                                 safety_settings=SAFETY_SETTINGS
                             )
@@ -294,29 +319,34 @@ if st.button("🚀 INICIAR AUDITORIA (BUSCA PROFUNDA)"):
                     if sucesso and response:
                         raw_data = extract_json(response.text)
                         if raw_data:
+                            # AQUI A MÁGICA: Preenche as faltantes via código se a IA falhar
                             data = normalize_sections(raw_data, SECOES_PADRAO)
                             
                             meta = data.get("METADADOS", {})
                             cM1, cM2, cM3 = st.columns(3)
                             
-                            # Contagem de Seções
-                            qtd_secoes = len(data.get("SECOES", []))
+                            qtd_secoes_ia = sum(1 for s in data.get("SECOES", []) if "FALTANTE" not in s.get("status", ""))
+                            
+                            # Lógica visual de erro se faltar seção
                             cor_secoes = "normal"
-                            if qtd_secoes < 12: cor_secoes = "off"
+                            msg_secoes = f"{qtd_secoes_ia}/12"
+                            if qtd_secoes_ia < 12: 
+                                cor_secoes = "off"
+                                msg_secoes += " (Incompleto)"
                             
                             cM1.metric("Score", f"{meta.get('score',0)}%")
-                            cM2.metric("Seções Encontradas", f"{qtd_secoes}/12", delta="Incompleto" if qtd_secoes < 12 else "Completo", delta_color=cor_secoes)
+                            cM2.metric("Seções Detectadas", msg_secoes, delta_color=cor_secoes)
                             cM3.metric("Datas", str(meta.get("datas", [])))
                             st.divider()
                             
-                            if qtd_secoes < 12:
-                                st.warning(f"⚠️ Atenção: A IA encontrou apenas {qtd_secoes} das 12 seções esperadas. Verifique se o arquivo está legível.")
+                            if qtd_secoes_ia < 12:
+                                st.warning(f"⚠️ A IA encontrou apenas {qtd_secoes_ia} seções reais. As {12 - qtd_secoes_ia} faltantes estão marcadas abaixo.")
                             
                             for sec in data.get("SECOES", []):
                                 status = sec.get('status', 'N/A')
                                 icon = "✅"
                                 if "DIVERGENTE" in status: icon = "❌"
-                                elif "FALTANTE" in status: icon = "🚨"
+                                elif "FALTANTE" in status: icon = "🚨" # Ícone de alerta para as que a IA pulou
                                 elif "DIVERGRIFO" in status: icon = "❓"
                                 
                                 with st.expander(f"{icon} {sec['titulo']} - {status}"):
