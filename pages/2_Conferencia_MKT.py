@@ -1,20 +1,26 @@
 import streamlit as st
 import google.generativeai as genai
-import fitz  # PyMuPDF
+import fitz
 
-st.set_page_config(page_title="Conferência MKT (Gemini)", layout="wide")
+st.set_page_config(page_title="MKT (Dual Key)", layout="wide")
 
-# ----------------- CONFIGURAÇÃO -----------------
-try:
-    api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("MISTRAL_API_KEY")
-    if api_key:
-        genai.configure(api_key=api_key)
-    else:
-        st.error("Sem chave API.")
-        st.stop()
-except:
-    st.error("Erro config API.")
-    st.stop()
+# ----------------- FUNÇÃO DE ROTAÇÃO -----------------
+def try_generate_content(model_name, prompt):
+    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    valid_keys = [k for k in keys if k]
+    
+    if not valid_keys: raise Exception("Sem chaves API configuradas.")
+    
+    last_err = None
+    for key in valid_keys:
+        try:
+            genai.configure(api_key=key)
+            model = genai.GenerativeModel(model_name)
+            return model.generate_content(prompt)
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err
 
 def get_text(file):
     try:
@@ -24,12 +30,12 @@ def get_text(file):
         return text
     except: return ""
 
-st.title("📋 Conferência MKT (Regras)")
-st.markdown("Validação de Regras e Ortografia via **Gemini 2.0 Flash Lite** (Sem OCR).")
+st.title("📋 Conferência MKT")
+st.caption("Modelo: gemini-2.0-flash-lite-preview-02-05 | Backup Key: ON")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Bula Anvisa (Regra)", type="pdf", key="mkt1")
-f2 = c2.file_uploader("Arte Marketing (Análise)", type="pdf", key="mkt2")
+f1 = c1.file_uploader("Bula Anvisa", type="pdf", key="mkt1")
+f2 = c2.file_uploader("Arte MKT", type="pdf", key="mkt2")
 
 if st.button("🚀 Validar MKT"):
     if f1 and f2:
@@ -38,35 +44,35 @@ if st.button("🚀 Validar MKT"):
             t2 = get_text(f2)
             
         if len(t1) < 50 or len(t2) < 50:
-            st.error("⚠️ Um dos arquivos não possui texto digital. OCR desativado.")
+            st.error("⚠️ Texto insuficiente. OCR desligado.")
         else:
-            with st.spinner("⚡ Gemini Lite validando regras..."):
+            with st.spinner("⚡ Gemini Lite validando (Alternando chaves se necessário)..."):
                 prompt = f"""
-                Atue como um Revisor de Marketing Farmacêutico Sênior.
-                Analise a ARTE DE MARKETING (Texto 2) com base nas regras da BULA ANVISA (Texto 1).
+                Atue como Revisor Farmacêutico.
+                Compare ARTE MKT (Texto 2) com BULA ANVISA (Texto 1).
                 
-                VERIFIQUE OS SEGUINTES PONTOS CRÍTICOS:
-                1. **Ortografia e Gramática:** Liste qualquer erro de português na Arte.
-                2. **Informações Obrigatórias:** Verifique se as informações de Posologia, Contraindicações e Cuidados estão coerentes com a Bula.
-                3. **Proibições:** Verifique se há promessas de cura milagrosas ou uso off-label não permitido na bula.
+                VERIFIQUE:
+                1. Ortografia/Gramática.
+                2. Omissão de Contraindicações.
+                3. Erros de Posologia.
                 
-                TEXTO 1 (BULA ANVISA - A VERDADE):
-                {t1[:20000]}
+                TEXTO 1 (ANVISA):
+                {t1[:30000]}
                 
-                TEXTO 2 (ARTE MKT - PARA ANÁLISE):
-                {t2[:20000]}
+                TEXTO 2 (MKT):
+                {t2[:30000]}
                 
-                Gere um relatório detalhado e profissional.
+                Gere relatório detalhado.
                 """
                 
                 try:
-                    model = genai.GenerativeModel("models/gemini-2.0-flash-lite-preview-02-05")
-                    resp = model.generate_content(prompt)
-                    
-                    st.info("📝 Relatório de Conformidade")
+                    resp = try_generate_content(
+                        "models/gemini-2.0-flash-lite-preview-02-05",
+                        prompt
+                    )
+                    st.info("📝 Relatório")
                     st.markdown(resp.text)
-                    
                 except Exception as e:
-                    st.error(f"Erro na IA: {e}")
+                    st.error(f"Erro Fatal (Todas as chaves falharam): {e}")
     else:
         st.warning("Envie os arquivos.")
