@@ -1,7 +1,5 @@
 import streamlit as st
 import google.generativeai as genai
-from mistralai import Mistral
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import fitz  # PyMuPDF
 import docx
 import io
@@ -14,13 +12,13 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Pro (Mistral Large)",
-    page_icon="🧬",
+    page_title="Validador Flash ⚡",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- CSS GERAL -----------------
+# ----------------- ESTILOS (CSS) -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -28,7 +26,7 @@ st.markdown("""
     
     .stButton>button { 
         width: 100%; 
-        background-color: #2e7d32; 
+        background: linear-gradient(90deg, #2e7d32 0%, #4caf50 100%);
         color: white; 
         font-weight: bold; 
         height: 60px; 
@@ -38,7 +36,7 @@ st.markdown("""
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         transition: all 0.3s;
     }
-    .stButton>button:hover { background-color: #1b5e20; transform: translateY(-2px); }
+    .stButton>button:hover { transform: translateY(-2px); box-shadow: 0 6px 8px rgba(0,0,0,0.2); }
     
     .box-content { 
         background-color: #ffffff; 
@@ -54,14 +52,14 @@ st.markdown("""
     
     .ia-badge {
         padding: 5px 12px;
-        background-color: #e3f2fd;
-        color: #0d47a1;
+        background-color: #fff3e0;
+        color: #e65100;
         border-radius: 12px;
         font-weight: bold;
         font-size: 0.85em;
         margin-bottom: 10px;
         display: inline-block;
-        border: 1px solid #90caf9;
+        border: 1px solid #ffe0b2;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -99,27 +97,25 @@ SAFETY = {
 
 def clean_text(text):
     """Remove quebras de linha ruins de colunas"""
-    # Une palavras quebradas por hífen (ex: medica- mento)
     text = re.sub(r'([a-zà-ú])- \n([a-zà-ú])', r'\1\2', text)
-    # Une frases quebradas abruptamente
     text = re.sub(r'([a-zà-ú,])\n([a-zà-ú])', r'\1 \2', text)
     return text
 
 def mark_sections_hardcoded(text, section_list):
     """
-    ESSENCIAL: O Python acha os títulos e coloca marcadores gigantes.
-    Isso impede que o Mistral Large perca tempo procurando.
+    O Python acha os títulos e coloca marcadores para ajudar a IA Rápida.
     """
     lines = text.split('\n')
     enhanced_text = []
     
-    # Mapa de palavras-chave para títulos longos que costumam falhar
+    # Mapa de palavras-chave para títulos longos
     keywords = {
         "QUANTIDADE MAIOR": "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?",
         "SUPERDOSE": "SUPERDOSE",
         "MALES QUE": "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?",
         "COMO FUNCIONA": "COMO ESTE MEDICAMENTO FUNCIONA?",
-        "ARMAZENAMENTO": "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO"
+        "ARMAZENAMENTO": "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO",
+        "ESQUECER": "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?"
     }
 
     clean_titles = {re.sub(r'[^A-Z]', '', t).upper(): t for t in section_list}
@@ -150,7 +146,7 @@ def mark_sections_hardcoded(text, section_list):
 # ----------------- EXTRAÇÃO -----------------
 def get_ocr_gemini(images):
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash") # Flash é ótimo para OCR
         resp = model.generate_content(["Transcreva TUDO. Não pule nada. Mantenha tabelas.", *images], safety_settings=SAFETY)
         return resp.text if resp.text else ""
     except: return ""
@@ -175,7 +171,6 @@ def extract_text(file, section_list):
                 text = full_txt
                 doc.close()
             else:
-                # OCR Rápido
                 st.toast(f"OCR Ativado: {name}", icon="👁️")
                 imgs = []
                 for i in range(min(12, len(doc))):
@@ -192,14 +187,14 @@ def extract_text(file, section_list):
 
 # ----------------- UI & CONFIG -----------------
 def get_config():
-    k1 = st.secrets.get("MISTRAL_API_KEY") or os.environ.get("MISTRAL_API_KEY")
-    k2 = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if k2: genai.configure(api_key=k2)
-    return (Mistral(api_key=k1) if k1 else None), (k2 is not None)
+    # Apenas Gemini é necessário agora
+    k = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if k: genai.configure(api_key=k)
+    return (k is not None)
 
-mistral, gemini_ok = get_config()
+gemini_ok = get_config()
 
-st.sidebar.title("Validador Pro")
+st.sidebar.title("Validador Flash")
 page = st.sidebar.radio("Navegação", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
 
 list_secs = SECOES_PACIENTE
@@ -213,13 +208,13 @@ c1, c2 = st.columns(2)
 f1 = c1.file_uploader("Referência")
 f2 = c2.file_uploader("Candidato")
 
-if st.button("🚀 AUDITAR COM MISTRAL FORTE"):
+if st.button("🚀 AUDITAR COM GEMINI FLASH (ULTRA RÁPIDO)"):
     if not f1 or not f2:
         st.warning("Arquivos faltando.")
         st.stop()
     
-    if page in ["Ref x BELFAR", "Conferência MKT"] and not mistral:
-        st.error("Chave Mistral não encontrada.")
+    if not gemini_ok:
+        st.error("Chave do Gemini (Google) não encontrada.")
         st.stop()
         
     bar = st.progress(0, "Processando...")
@@ -230,24 +225,24 @@ if st.button("🚀 AUDITAR COM MISTRAL FORTE"):
     t2 = extract_text(f2, list_secs)
     bar.progress(60, "Candidato OK")
     
-    # 2. PROMPT BLINDADO (Com Style Inline Obrigatório)
+    # 2. PROMPT BLINDADO + FLASH
     secoes_ignorar_str = ", ".join(SECOES_IGNORAR_DIFF)
     
-    prompt = f"""Você é um Auditor Sênior de Bulas.
+    prompt = f"""Você é um Auditor Sênior de Bulas Rápido e Preciso.
     
     MISSÃO: Encontrar as seções marcadas com "👉👉👉 SEÇÃO IDENTIFICADA: ... 👈👈👈" e comparar os textos.
     
-    LISTA DE SEÇÕES OBRIGATÓRIAS (Você deve preencher todas no JSON):
+    LISTA DE SEÇÕES OBRIGATÓRIAS (Encontre TODAS no JSON):
     {json.dumps(list_secs, ensure_ascii=False)}
 
     REGRAS DE CONTEÚDO:
-    1. Traga o texto COMPLETO. Não resuma.
+    1. Traga o texto COMPLETO de cada seção.
     2. Nas seções [{secoes_ignorar_str}], APENAS COPIE o texto. Status "OK".
     
     REGRAS VISUAIS (MARCA-TEXTO OBRIGATÓRIO):
-    Nas divergências, você NÃO PODE usar classes CSS. Você DEVE usar o atributo STYLE inline.
+    Nas divergências, USE O ATRIBUTO STYLE inline (não use classes).
     
-    Use EXATAMENTE estes códigos HTML:
+    Use EXATAMENTE estes códigos HTML para marcar o texto do Candidato (Bel):
     - Diferença: <span style="background-color: #ffeb3b; color: black; font-weight: bold; padding: 2px;">TEXTO ERRADO</span>
     - Erro Ortográfico: <span style="background-color: #ff1744; color: white; font-weight: bold; padding: 2px;">ERRO</span>
     - Data Anvisa: <span style="background-color: #00e5ff; color: black; font-weight: bold; padding: 2px;">DATA</span>
@@ -267,41 +262,23 @@ if st.button("🚀 AUDITAR COM MISTRAL FORTE"):
     """
     
     json_res = ""
-    model_name = ""
+    model_name = "Gemini 1.5 Flash"
     start_t = time.time()
     
     try:
-        if page in ["Ref x BELFAR", "Conferência MKT"]:
-            # MISTRAL LARGE (O Forte) com Streaming para não travar
-            model_name = "Mistral Large (Latest)"
-            bar.progress(70, "🧠 Mistral Large Analisando (Streaming)...")
-            
-            stream = mistral.chat.stream(
-                model="mistral-large-latest", # O mais forte
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": f"REF:\n{t1}\n\nCAND:\n{t2}"}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.0,
-                timeout_ms=600000 # 10 min de timeout (streaming segura a conexão)
-            )
-            
-            chunks = []
-            for chunk in stream:
-                if chunk.data.choices[0].delta.content:
-                    chunks.append(chunk.data.choices[0].delta.content)
-            json_res = "".join(chunks)
-
-        else: # Gemini para Gráfica
-            if not gemini_ok: st.error("Gemini Key missing"); st.stop()
-            model_name = "Gemini 1.5 Pro"
-            bar.progress(70, "💎 Gemini Analisando...")
-            resp = genai.GenerativeModel("gemini-1.5-pro").generate_content(
-                f"{prompt}\n\nREF:\n{t1}\n\nCAND:\n{t2}",
-                generation_config={"response_mime_type": "application/json"}
-            )
-            json_res = resp.text
+        # AQUI ESTÁ A MUDANÇA: GEMINI 1.5 FLASH PARA TUDO
+        # Ele é 10x mais rápido que o Mistral Large e suporta muito contexto.
+        
+        bar.progress(70, "⚡ Gemini Flash Analisando (Segundos)...")
+        
+        # Configuração para resposta JSON garantida
+        model = genai.GenerativeModel("gemini-1.5-flash", generation_config={"response_mime_type": "application/json"})
+        
+        resp = model.generate_content(
+            [prompt, f"--- TEXTO REFERÊNCIA ---\n{t1}", f"--- TEXTO CANDIDATO ---\n{t2}"],
+            safety_settings=SAFETY
+        )
+        json_res = resp.text
             
     except Exception as e:
         st.error(f"Erro IA: {e}")
@@ -313,11 +290,13 @@ if st.button("🚀 AUDITAR COM MISTRAL FORTE"):
     
     # 3. RESULTADOS
     if json_res:
+        # Limpeza bruta caso venha markdown
         json_res = json_res.replace("```json", "").replace("```", "").strip()
         try:
             data = json.loads(json_res)
         except:
             st.error("Erro no JSON da IA. Tente novamente.")
+            st.code(json_res)
             st.stop()
             
         secs = []
@@ -325,7 +304,7 @@ if st.button("🚀 AUDITAR COM MISTRAL FORTE"):
         
         # Reconstrói a lista garantindo a ordem
         for target in list_secs:
-            # Procura na resposta
+            # Procura na resposta usando Fuzzy Matching
             found = next((s for s in raw_secs if SequenceMatcher(None, target, s.get('titulo','').upper()).ratio() > 0.8), None)
             
             if found:
@@ -343,7 +322,7 @@ if st.button("🚀 AUDITAR COM MISTRAL FORTE"):
         
         st.markdown(f"<div class='ia-badge'>Motor: {model_name} ({time.time()-start_t:.1f}s)</div>", unsafe_allow_html=True)
         
-        # Legenda Manual (já que agora é inline style)
+        # Legenda Manual
         st.markdown("### Legenda:")
         l1, l2, l3 = st.columns(3)
         l1.markdown("<span style='background-color: #ffeb3b; color: black; font-weight: bold; padding: 2px;'>Amarelo</span> = Diferença", unsafe_allow_html=True)
@@ -374,4 +353,5 @@ if st.button("🚀 AUDITAR COM MISTRAL FORTE"):
             with st.expander(f"{icon} {tit} - {stat}", expanded=aberto):
                 cR, cB = st.columns(2)
                 cR.markdown(f"<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
+                # O highlight funciona graças ao allow_html=True e o style inline
                 cB.markdown(f"<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
