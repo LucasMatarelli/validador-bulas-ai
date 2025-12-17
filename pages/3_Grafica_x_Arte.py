@@ -5,14 +5,23 @@ import fitz  # PyMuPDF
 import io
 import time
 
-st.set_page_config(page_title="Visual (Scanner)", layout="wide")
+st.set_page_config(page_title="Visual (Força Bruta)", layout="wide")
 
-# ----------------- FUNÇÃO DE DESCOBERTA REAL -----------------
-def find_working_model_and_key():
+# ----------------- CONFIGURAÇÃO ROBUSTA -----------------
+# Lista de todos os nomes possíveis para o Gemini Flash
+KNOWN_MODELS = [
+    "models/gemini-1.5-flash",          # Padrão
+    "models/gemini-1.5-flash-001",      # Versão Congelada (Geralmente a que salva)
+    "models/gemini-1.5-flash-002",      # Versão Nova
+    "models/gemini-1.5-flash-latest",   # Alias
+    "models/gemini-1.5-flash-8b",       # Versão Leve
+    "gemini-1.5-flash"                  # Nome Curto
+]
+
+def get_working_config():
     """
-    1. Testa as chaves API.
-    2. Pergunta ao Google: 'Quais modelos eu tenho?'.
-    3. Retorna o primeiro modelo 'Flash' da lista que suporta visão.
+    Testa cada chave com cada modelo até achar um par que funcione.
+    Não usa list_models (que está bloqueado na sua conta).
     """
     keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
     valid_keys = [k for k in keys if k]
@@ -20,50 +29,38 @@ def find_working_model_and_key():
     if not valid_keys:
         return None, None, "Sem chaves configuradas."
 
+    # Teste de conexão rápido
     for api_key in valid_keys:
-        try:
-            genai.configure(api_key=api_key)
-            
-            # Pede a lista oficial para a API (O PULO DO GATO)
-            all_models = list(genai.list_models())
-            
-            # Filtra modelos que existem, suportam conteúdo e são Flash (Rápido/Vision)
-            # Evita 'gemini-1.0' que não lê imagem e 'exp' que tem cota zero
-            valid_models = []
-            for m in all_models:
-                name = m.name
-                methods = m.supported_generation_methods
+        genai.configure(api_key=api_key)
+        
+        for model_name in KNOWN_MODELS:
+            try:
+                # Tenta instanciar
+                model = genai.GenerativeModel(model_name)
+                # Tenta uma geração 'dummy' leve só para ver se a rota existe (evita erro 404 depois)
+                # Isso gasta o mínimo de token possível
+                model.generate_content("oi") 
                 
-                if 'generateContent' in methods:
-                    # Prioridade: Flash 1.5 (Estável)
-                    if 'gemini-1.5-flash' in name and 'exp' not in name and '8b' not in name:
-                        valid_models.insert(0, name) # Coloca no topo
-                    # Fallback: Pro 1.5
-                    elif 'gemini-1.5-pro' in name and 'exp' not in name:
-                        valid_models.append(name)
-            
-            if valid_models:
-                # Retorna a chave que funcionou e o nome oficial do modelo
-                return api_key, valid_models[0], None
-                
-        except Exception as e:
-            continue # Tenta a próxima chave
+                return api_key, model_name, None # SUCESSO!
+            except Exception:
+                continue # Tenta o próximo nome
 
-    return None, None, "Não foi possível listar modelos em nenhuma chave."
+    return None, None, "Nenhum modelo Gemini Flash funcionou nas suas chaves."
 
 # ----------------- UI -----------------
-st.title("🎨 Gráfica x Arte (Varredura Automática)")
+st.title("🎨 Gráfica x Arte (Conexão Direta)")
 
-# Executa a descoberta no início
-found_key, found_model_name, error_msg = find_working_model_and_key()
+# Executa a busca no carregamento da página
+with st.spinner("Buscando rota de API válida..."):
+    found_key, found_model, err = get_working_config()
 
-if found_key and found_model_name:
-    st.success(f"🔌 Conectado: **{found_model_name}**")
-    # Configura globalmente com a chave vencedora
+if found_key and found_model:
+    st.success(f"🔌 Conectado via: **{found_model}**")
     genai.configure(api_key=found_key)
-    model = genai.GenerativeModel(found_model_name)
+    model = genai.GenerativeModel(found_model)
 else:
-    st.error(f"❌ Falha Fatal: {error_msg}")
+    st.error(f"❌ Erro Fatal: {err}")
+    st.info("Dica: Verifique se a API 'Generative Language' está ativada no Google Cloud Console.")
     st.stop()
 
 # ----------------- UTILITÁRIOS -----------------
@@ -85,7 +82,7 @@ f2 = c2.file_uploader("Arquivo Gráfica", type=["pdf", "jpg", "png"], key="f2")
 
 if st.button("🚀 Comparar Visualmente"):
     if f1 and f2:
-        with st.spinner("Processando..."):
+        with st.spinner("Processando imagens..."):
             imgs1 = pdf_to_images(f1) if f1.name.lower().endswith(".pdf") else [Image.open(f1)]
             imgs2 = pdf_to_images(f2) if f2.name.lower().endswith(".pdf") else [Image.open(f2)]
             
@@ -98,7 +95,7 @@ if st.button("🚀 Comparar Visualmente"):
                 col_b.image(imgs2[i], caption="Gráfica", use_container_width=True)
                 
                 prompt = """
-                Atue como Auditor Gráfico.
+                Atue como Auditor de Qualidade Gráfica.
                 Compare visualmente as duas imagens.
                 
                 VERIFIQUE:
@@ -115,12 +112,13 @@ if st.button("🚀 Comparar Visualmente"):
                     if "✅" in resp.text: st.success(resp.text)
                     else: st.error(resp.text)
                     
-                    # Pausa anti-cota (429)
-                    time.sleep(5)
+                    time.sleep(4) # Pausa anti-cota
                     
                 except Exception as e:
                     st.error(f"Erro na execução: {e}")
-                    if "429" in str(e): time.sleep(10)
+                    if "429" in str(e): 
+                        st.warning("Aguardando cota...")
+                        time.sleep(10)
                 
                 st.divider()
     else:
