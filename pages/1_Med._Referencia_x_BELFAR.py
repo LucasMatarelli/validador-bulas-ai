@@ -1,81 +1,98 @@
 import streamlit as st
+from mistralai import Mistral
 import google.generativeai as genai
-from PIL import Image
 import fitz  # PyMuPDF
 import io
-import time
+import os
+from PIL import Image
 
-st.set_page_config(page_title="Gráfica x Arte", layout="wide")
+st.set_page_config(page_title="Ref x BELFAR", layout="wide")
 
-# Configuração Segura
+# --- FUNÇÃO BLINDADA: SELETOR DE MODELO ---
+def get_best_gemini():
+    """Testa qual modelo Gemini está funcionando na sua conta e retorna o primeiro válido."""
+    candidates = [
+        "models/gemini-1.5-flash-latest",       # Alias mais comum
+        "models/gemini-1.5-flash",              # Padrão
+        "models/gemini-1.5-flash-001",          # Versionado
+        "models/gemini-2.0-flash-lite-preview-02-05", # Lite (Rápido)
+        "models/gemini-pro"                     # Fallback antigo
+    ]
+    for model_name in candidates:
+        try:
+            return genai.GenerativeModel(model_name)
+        except: continue
+    return genai.GenerativeModel("gemini-1.5-flash") # Última tentativa
+
+# Configuração de APIs
 try:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    if st.secrets.get("GEMINI_API_KEY"):
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    client = Mistral(api_key=st.secrets["MISTRAL_API_KEY"])
 except:
-    st.error("Sem chave API.")
+    st.error("Configure as chaves GEMINI_API_KEY e MISTRAL_API_KEY no secrets.toml")
     st.stop()
 
-def pdf_to_images(uploaded_file):
-    images = []
-    file_bytes = uploaded_file.read()
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    for page in doc:
-        # Zoom 2.0 para boa resolução
-        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-        img_data = pix.tobytes("jpeg", jpg_quality=85)
-        images.append(Image.open(io.BytesIO(img_data)))
-    return images
+def get_text_from_pdf(file):
+    doc = fitz.open(stream=file.read(), filetype="pdf")
+    text = ""
+    for page in doc: text += page.get_text() + "\n"
+    
+    # Se não tiver texto (escaneado), usa o Gemini Blindado
+    if len(text) < 50:
+        file.seek(0)
+        images = []
+        for page in doc:
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+            img_data = pix.tobytes("jpeg")
+            images.append(Image.open(io.BytesIO(img_data)))
+        
+        try:
+            model = get_best_gemini() # <--- USA A FUNÇÃO BLINDADA
+            resp = model.generate_content(["Transcreva o texto destas imagens fielmente:", *images])
+            return resp.text
+        except Exception as e:
+            return f"Erro no OCR: {e}"
+    return text
 
-st.title("🎨 Gráfica x Arte (Visual)")
-st.warning("Usando Modelo: **Gemini 1.5 Flash** (Estável e Rápido)")
+st.title("💊 Med. Referência x BELFAR")
+st.caption("Comparação de Texto Puro via IA")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Arte Aprovada", type=["pdf", "jpg", "png"])
-f2 = c2.file_uploader("Arquivo Gráfica", type=["pdf", "jpg", "png"])
+f1 = c1.file_uploader("Referência (PDF)", type="pdf", key="f1")
+f2 = c2.file_uploader("Belfar (PDF)", type="pdf", key="f2")
 
-if st.button("🚀 Comparar Visualmente"):
+if st.button("🚀 Iniciar Comparação"):
     if f1 and f2:
-        with st.spinner("Processando imagens..."):
-            # Converte tudo
-            imgs1 = pdf_to_images(f1) if f1.name.endswith(".pdf") else [Image.open(f1)]
-            imgs2 = pdf_to_images(f2) if f2.name.endswith(".pdf") else [Image.open(f2)]
+        with st.spinner("Extraindo textos (pode usar OCR se necessário)..."):
+            t1 = get_text_from_pdf(f1)
+            t2 = get_text_from_pdf(f2)
+        
+        with st.spinner("🌪️ Mistral analisando divergências..."):
+            prompt = f"""
+            Você é um Auditor Farmacêutico RÍGIDO.
+            Compare o texto REF com o texto CAND (Belfar).
             
-            # Limita a 5 páginas para não demorar
-            max_p = min(len(imgs1), len(imgs2), 5)
+            REGRAS:
+            1. Liste APENAS as divergências de conteúdo (palavras erradas, números trocados, frases faltantes).
+            2. Ignore formatação e quebras de linha.
+            3. Se houver erro, mostre: "Na Referência diz X, no Belfar diz Y".
             
-            # Modelo ESTÁVEL (Sem erro 429)
-            model = genai.GenerativeModel("models/gemini-1.5-flash")
+            --- REF ---
+            {t1[:20000]}
             
-            for i in range(max_p):
-                st.markdown(f"### 📄 Página {i+1}")
-                col_a, col_b = st.columns(2)
-                col_a.image(imgs1[i], caption="Arte Original", use_container_width=True)
-                col_b.image(imgs2[i], caption="Gráfica", use_container_width=True)
-                
-                prompt = """
-                Atue como Especialista de Pré-Impressão.
-                Compare as duas imagens.
-                
-                Verifique:
-                1. Layout (elementos deslocados).
-                2. Fontes (mudança de estilo).
-                3. Logotipos e Cores.
-                4. Blocos de texto sumidos ou corrompidos.
-                
-                Se estiver idêntico, responda apenas: "✅ OK".
-                Se houver erro, descreva.
-                """
-                
-                try:
-                    with st.spinner(f"Analisando Pág {i+1}..."):
-                        resp = model.generate_content([prompt, imgs1[i], imgs2[i]])
-                        st.success("Análise da IA:")
-                        st.write(resp.text)
-                        
-                        # Pequena pausa para evitar limite de requisições por segundo
-                        time.sleep(2)
-                        
-                except Exception as e:
-                    st.error(f"Erro na análise: {e}")
-                st.divider()
+            --- CAND ---
+            {t2[:20000]}
+            """
+            
+            try:
+                resp = client.chat.complete(
+                    model="mistral-small-latest",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                st.success("Relatório de Divergências:")
+                st.markdown(resp.choices[0].message.content)
+            except Exception as e:
+                st.error(f"Erro na IA: {e}")
     else:
-        st.warning("Envie os arquivos.")
+        st.warning("Envie os dois arquivos.")
