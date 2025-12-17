@@ -1,76 +1,114 @@
 import streamlit as st
 import google.generativeai as genai
-import requests
+from PIL import Image
+import fitz  # PyMuPDF
+import io
+import time
 
-st.set_page_config(page_title="Relatório Forense de Chaves", layout="wide")
+st.set_page_config(page_title="Visual (Auto-Hunter)", layout="wide")
 
-st.title("🕵️ Diagnóstico Forense de API")
-st.markdown("""
-Este painel testa a saúde das suas chaves diretamente nos servidores do Google.
-Ele vai revelar se o problema é **Bloqueio (403)**, **Não Encontrado (404)** ou **Cota (429)**.
-""")
+# ----------------- CAÇADOR DE MODELOS (A LÓGICA DE OURO) -----------------
+def hunt_for_flash_model():
+    """
+    Conecta na API, baixa a lista de 54 modelos e pega o PRIMEIRO
+    que for da família Flash e suporte visão.
+    """
+    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    valid_keys = [k for k in keys if k]
 
-# --- INFORMAÇÕES DE COTA (Sua Pergunta) ---
-with st.expander("📊 QUAIS SÃO OS MEUS LIMITES DIÁRIOS? (Plano Gratuito)", expanded=True):
-    st.markdown("""
-    Se você usa o **Google AI Studio (Free Tier)**, seus limites para o **Gemini 1.5 Flash** são:
-    
-    * **15 Requisições por Minuto (RPM)** (Velocidade)
-    * **1.500 Requisições por Dia (RPD)** (Volume)
-    * **1 Milhão de Tokens por Minuto (TPM)** (Tamanho do texto)
-    
-    *Se você exceder 15 RPM, recebe erro 429. Se exceder 1.500 no dia, a chave para até amanhã.*
-    """)
+    if not valid_keys:
+        return None, None, "Sem chaves configuradas."
 
-# --- FUNÇÃO DE TESTE REAL ---
-def testar_chave_bruta(nome_chave, api_key):
-    if not api_key:
-        st.warning(f"⚠️ {nome_chave}: Não configurada no secrets.toml")
-        return
-
-    st.markdown(f"### Testando: `{nome_chave}`")
-    st.write(f"🔑 Final da chave: `...{api_key[-4:]}`")
-    
-    genai.configure(api_key=api_key)
-    
-    # 1. TESTE DE LISTAGEM (Permissão Básica)
-    st.write("1️⃣ Tentando listar modelos permitidos...")
-    try:
-        modelos = list(genai.list_models())
-        nomes = [m.name for m in modelos]
-        st.success(f"✅ Conexão OK! A conta tem acesso a {len(nomes)} modelos.")
-    except Exception as e:
-        err = str(e)
-        if "403" in err:
-            st.error("❌ ERRO 403 (PROIBIDO): A API 'Generative Language' não está ativada neste projeto do Google Cloud.")
-            st.markdown("[👉 Clique aqui para ativar a API no Google Console](https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com)")
-        elif "400" in err:
-            st.error("❌ ERRO 400 (INVÁLIDO): A chave API está incorreta ou mal formatada.")
-        else:
-            st.error(f"❌ Falha na Listagem: {err}")
+    for api_key in valid_keys:
+        try:
+            genai.configure(api_key=api_key)
             
-    # 2. TESTE DE GERAÇÃO (Vida ou Morte)
-    st.write("2️⃣ Tentando gerar 'Oi' com Gemini 1.5 Flash...")
+            # Pede a lista REAL para o Google
+            all_models = list(genai.list_models())
+            
+            # Filtra apenas os que geram conteúdo
+            candidates = []
+            for m in all_models:
+                if 'generateContent' in m.supported_generation_methods:
+                    candidates.append(m.name)
+            
+            # ESTRATÉGIA DE CAÇA:
+            # Procura qualquer coisa que pareça com Flash 1.5
+            for name in candidates:
+                if "flash" in name.lower() and "1.5" in name and "8b" not in name:
+                    return api_key, name, None # ACHAMOS O NOME CORRETO!
+            
+            # Se não achar Flash, tenta o Pro 1.5
+            for name in candidates:
+                if "pro" in name.lower() and "1.5" in name:
+                    return api_key, name, None
+            
+            # Se não achar nada, pega o primeiro da lista
+            if candidates:
+                return api_key, candidates[0], None
+                
+        except Exception as e:
+            continue
+
+    return None, None, "Não foi possível encontrar um modelo compatível na lista."
+
+# ----------------- UI -----------------
+st.title("🎨 Gráfica x Arte (Auto-Hunter)")
+
+# Executa a caça imediatamente
+with st.spinner("🔍 Analisando os 54 modelos da sua conta..."):
+    found_key, found_model_name, err = hunt_for_flash_model()
+
+if found_key and found_model_name:
+    st.success(f"🎯 Modelo Encontrado e Ativado: **{found_model_name}**")
+    genai.configure(api_key=found_key)
+    model = genai.GenerativeModel(found_model_name)
+else:
+    st.error(f"❌ Falha: {err}")
+    st.stop()
+
+# ----------------- UTILITÁRIOS -----------------
+def pdf_to_images(uploaded_file):
     try:
-        model = genai.GenerativeModel("models/gemini-1.5-flash")
-        resp = model.generate_content("Oi")
-        st.success("✅ GERAÇÃO BEM SUCEDIDA! O modelo respondeu.")
-        st.balloons()
-    except Exception as e:
-        err = str(e)
-        if "404" in err:
-            st.error("❌ ERRO 404 (NÃO ENCONTRADO): O modelo 'gemini-1.5-flash' não existe para esta chave. Sua chave pode ser do Vertex AI (Empresarial) em vez do AI Studio.")
-        elif "429" in err:
-            st.warning("⚠️ ERRO 429 (COTA): A chave funciona, mas você estourou o limite de hoje.")
-        else:
-            st.error(f"❌ Erro Fatal na Geração: {err}")
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        images = []
+        for page in doc:
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
+        return images
+    except: return []
 
-    st.divider()
+c1, c2 = st.columns(2)
+f1 = c1.file_uploader("Arte", type=["pdf", "jpg", "png"], key="f1")
+f2 = c2.file_uploader("Gráfica", type=["pdf", "jpg", "png"], key="f2")
 
-# --- BOTÃO DE AÇÃO ---
-if st.button("🚨 RODAR DIAGNÓSTICO AGORA"):
-    k1 = st.secrets.get("GEMINI_API_KEY")
-    k2 = st.secrets.get("GEMINI_API_KEY2")
-    
-    testar_chave_bruta("GEMINI_API_KEY", k1)
-    testar_chave_bruta("GEMINI_API_KEY2", k2)
+if st.button("🚀 Comparar Visualmente"):
+    if f1 and f2:
+        with st.spinner(f"Processando com {found_model_name}..."):
+            imgs1 = pdf_to_images(f1) if f1.name.endswith(".pdf") else [Image.open(f1)]
+            imgs2 = pdf_to_images(f2) if f2.name.endswith(".pdf") else [Image.open(f2)]
+            
+            max_p = min(len(imgs1), len(imgs2), 5)
+            
+            for i in range(max_p):
+                st.markdown(f"### 📄 Página {i+1}")
+                colA, colB = st.columns(2)
+                colA.image(imgs1[i], use_container_width=True)
+                colB.image(imgs2[i], use_container_width=True)
+                
+                try:
+                    resp = model.generate_content([
+                        "Atue como auditor gráfico. Compare as duas imagens. Se idêntico: '✅ Aprovado'. Se erro: Liste.",
+                        imgs1[i], imgs2[i]
+                    ])
+                    
+                    if "✅" in resp.text: st.success(resp.text)
+                    else: st.error(resp.text)
+                    
+                    time.sleep(4)
+                except Exception as e:
+                    st.error(f"Erro: {e}")
+                    if "429" in str(e): time.sleep(10)
+                st.divider()
+    else:
+        st.warning("Envie os arquivos.")
