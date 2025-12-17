@@ -8,7 +8,7 @@ import os
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Visual (Oficial)",
+    page_title="Validador Visual (Auto-Scan)",
     page_icon="🎨",
     layout="wide"
 )
@@ -36,13 +36,63 @@ def configure_api():
         st.error(f"Erro config: {e}")
         return False
 
+def get_best_model_from_list():
+    """
+    VARRE a lista de modelos disponíveis na sua conta e pega o melhor disponível.
+    Não adivinha nomes. Pega o real.
+    """
+    try:
+        st.toast("Listando modelos disponíveis...", icon="🔍")
+        
+        # Pede a lista oficial para o Google
+        all_models = list(genai.list_models())
+        
+        # Filtra apenas os que geram conteúdo (texto/imagem)
+        usable_models = [m for m in all_models if 'generateContent' in m.supported_generation_methods]
+        
+        # LISTA DE PREFERÊNCIA (Do melhor para o "pior")
+        # O código vai procurar nesta ordem dentro da lista que você tem acesso
+        preference_keywords = [
+            "gemini-1.5-flash",  # Rápido e bom para visão
+            "gemini-2.0-flash",  # Novo (se tiver)
+            "gemini-1.5-pro",    # Mais inteligente (mas mais lento)
+            "gemini-pro-vision", # Antigo
+            "gemini-1.0-pro"     # Básico
+        ]
+        
+        selected_model = None
+        
+        # Tenta achar o melhor match
+        for keyword in preference_keywords:
+            for m in usable_models:
+                if keyword in m.name:
+                    selected_model = m.name
+                    break
+            if selected_model: break
+            
+        # Se não achou nenhum da preferência, pega o primeiro da lista que seja Gemini
+        if not selected_model:
+            for m in usable_models:
+                if "gemini" in m.name:
+                    selected_model = m.name
+                    break
+        
+        if selected_model:
+            return selected_model
+        else:
+            return "models/gemini-1.5-flash" # Fallback final
+            
+    except Exception as e:
+        st.error(f"Erro ao listar modelos: {e}")
+        return "models/gemini-1.5-flash"
+
 def pdf_to_images(uploaded_file):
     images = []
     try:
         file_bytes = uploaded_file.read()
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         for page in doc:
-            # Zoom 2.0 = Qualidade suficiente para leitura sem travar
+            # Zoom 2.0 = Boa qualidade sem estourar memória
             pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
             img_data = pix.tobytes("jpeg", jpg_quality=85)
             images.append(Image.open(io.BytesIO(img_data)))
@@ -52,21 +102,21 @@ def pdf_to_images(uploaded_file):
         return []
 
 # ----------------- UI PRINCIPAL -----------------
-st.title("🎨 Gráfica x Arte (Visual)")
+st.title("🎨 Gráfica x Arte (Scanner de IA)")
 
 if configure_api():
-    # DEFINIÇÃO DIRETA DO MODELO QUE NÃO DÁ 404
-    # Usamos o sufixo '-latest' que força o apontamento correto na API v1beta
-    MODEL_NAME = "models/gemini-1.5-flash-latest"
+    # Detecta o modelo REAL disponível na sua conta
+    with st.spinner("Procurando melhor IA disponível na sua conta..."):
+        MODEL_NAME = get_best_model_from_list()
     
-    st.info(f"🤖 Motor Visual Ativo: `{MODEL_NAME}`")
+    st.info(f"🤖 **IA Selecionada Automaticamente:** `{MODEL_NAME}`")
     
-    # Instancia o modelo uma única vez
+    # Instancia
     try:
         model = genai.GenerativeModel(MODEL_NAME)
-    except:
-        # Último recurso se o latest falhar: versionado fixo
-        model = genai.GenerativeModel("models/gemini-1.5-flash-001")
+    except Exception as e:
+        st.error(f"Erro fatal ao carregar {MODEL_NAME}: {e}")
+        st.stop()
 
     c1, c2 = st.columns(2)
     f1 = c1.file_uploader("Arte Aprovada", type=["pdf", "jpg", "png"], key="f1")
@@ -108,7 +158,7 @@ if configure_api():
                     """
                     
                     try:
-                        with st.spinner(f"Analisando Pág {i+1}..."):
+                        with st.spinner(f"Analisando Pág {i+1} com {MODEL_NAME}..."):
                             # Gera resposta
                             resp = model.generate_content([prompt, imgs1[i], imgs2[i]])
                             
@@ -119,8 +169,8 @@ if configure_api():
                                     st.error("Divergências:")
                                     st.write(resp.text)
                             
-                            # Pausa vital para evitar erro 429 (Too Many Requests)
-                            time.sleep(4)
+                            # Pausa para evitar erro 429
+                            time.sleep(3)
                             
                     except Exception as e:
                         st.error(f"Erro na análise: {e}")
