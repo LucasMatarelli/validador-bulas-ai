@@ -4,4 +4,4 @@ pymupdf
 python-docx
 Pillow
 spacy
-fuzz
+thefuzz
