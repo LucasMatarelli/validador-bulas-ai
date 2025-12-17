@@ -14,14 +14,13 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Turbo V2",
-    page_icon="⚡",
+    page_title="Validador Pro (Mistral Large)",
+    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS (CSS BLINDADO) -----------------
-# Removemos a dependência de classes. O estilo será inline, mas mantemos backup aqui.
+# ----------------- CSS GERAL -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -29,39 +28,40 @@ st.markdown("""
     
     .stButton>button { 
         width: 100%; 
-        background-color: #55a68e; 
+        background-color: #2e7d32; 
         color: white; 
         font-weight: bold; 
         height: 60px; 
-        border-radius: 12px; 
+        border-radius: 8px; 
         font-size: 18px;
         border: none; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         transition: all 0.3s;
     }
-    .stButton>button:hover { background-color: #3d8070; transform: scale(1.02); }
+    .stButton>button:hover { background-color: #1b5e20; transform: translateY(-2px); }
     
-    /* Caixas de Texto */
     .box-content { 
         background-color: #ffffff; 
-        padding: 20px; 
+        padding: 15px; 
         border-radius: 8px; 
-        border: 1px solid #e0e0e0; 
-        line-height: 1.8; 
-        color: #212121;
-        font-family: 'Segoe UI', sans-serif;
+        border: 1px solid #ddd; 
+        line-height: 1.6; 
+        color: #111;
+        font-family: sans-serif;
     }
-    .box-ref { border-left: 6px solid #9e9e9e; background-color: #f5f5f5; }
-    .box-bel { border-left: 6px solid #66bb6a; background-color: #f1f8e9; }
+    .box-ref { border-left: 5px solid #757575; background-color: #f5f5f5; }
+    .box-bel { border-left: 5px solid #2e7d32; background-color: #f1f8e9; }
     
     .ia-badge {
-        padding: 5px 10px;
+        padding: 5px 12px;
         background-color: #e3f2fd;
-        color: #1565c0;
-        border-radius: 15px;
+        color: #0d47a1;
+        border-radius: 12px;
         font-weight: bold;
-        font-size: 0.8em;
+        font-size: 0.85em;
         margin-bottom: 10px;
         display: inline-block;
+        border: 1px solid #90caf9;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -88,44 +88,60 @@ SECOES_PROFISSIONAL = [
 
 SECOES_IGNORAR_DIFF = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- INTELIGÊNCIA PYTHON (PRÉ-IA) -----------------
+SAFETY = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
 
-def clean_text_structure(text):
-    """Limpa quebras de linha ruins que confundem a IA"""
-    # Junta linhas que foram quebradas no meio da frase
+# ----------------- INTELIGÊNCIA PYTHON (PRÉ-PROCESSAMENTO) -----------------
+
+def clean_text(text):
+    """Remove quebras de linha ruins de colunas"""
+    # Une palavras quebradas por hífen (ex: medica- mento)
+    text = re.sub(r'([a-zà-ú])- \n([a-zà-ú])', r'\1\2', text)
+    # Une frases quebradas abruptamente
     text = re.sub(r'([a-zà-ú,])\n([a-zà-ú])', r'\1 \2', text)
-    # Remove múltiplos espaços
-    text = re.sub(r'[ \t]+', ' ', text)
     return text
 
-def mark_sections_in_text(text, allowed_list):
+def mark_sections_hardcoded(text, section_list):
     """
-    O PYTHON ENCONTRA AS SEÇÕES E INSERE MARCADORES GIGANTES.
-    Isso obriga o Mistral Turbo a ver a seção.
+    ESSENCIAL: O Python acha os títulos e coloca marcadores gigantes.
+    Isso impede que o Mistral Large perca tempo procurando.
     """
     lines = text.split('\n')
     enhanced_text = []
     
-    # Normaliza lista para busca
-    clean_titles = {re.sub(r'[^A-Z]', '', t).upper(): t for t in allowed_list}
-    
+    # Mapa de palavras-chave para títulos longos que costumam falhar
+    keywords = {
+        "QUANTIDADE MAIOR": "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?",
+        "SUPERDOSE": "SUPERDOSE",
+        "MALES QUE": "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?",
+        "COMO FUNCIONA": "COMO ESTE MEDICAMENTO FUNCIONA?",
+        "ARMAZENAMENTO": "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO"
+    }
+
+    clean_titles = {re.sub(r'[^A-Z]', '', t).upper(): t for t in section_list}
+
     for line in lines:
         line_clean = re.sub(r'[^A-Z]', '', line).upper()
-        
         found = None
-        # Busca exata ou muito próxima
+        
+        # 1. Busca Exata
         if line_clean in clean_titles:
             found = clean_titles[line_clean]
-        else:
-            # Busca parcial forte (para títulos longos)
-            for k, v in clean_titles.items():
-                if len(k) > 10 and k in line_clean:
-                    found = v
+        
+        # 2. Busca por Palavras-Chave (Salva-vidas)
+        if not found:
+            for kw, full_t in keywords.items():
+                if kw in re.sub(r'[^A-Z ]', '', line.upper()):
+                    found = full_t
                     break
         
         if found:
-            # MARCADOR INEQUÍVOCO PARA A IA
-            enhanced_text.append(f"\n\n============== SEÇÃO: {found} ==============\n")
+            # INSERE MARCADOR DESTRUTIVO PARA A IA VER
+            enhanced_text.append(f"\n\n👉👉👉 SEÇÃO IDENTIFICADA: {found} 👈👈👈\n")
         else:
             enhanced_text.append(line)
             
@@ -135,7 +151,7 @@ def mark_sections_in_text(text, allowed_list):
 def get_ocr_gemini(images):
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
-        resp = model.generate_content(["Transcreva TUDO. Não pule nada. Mantenha tabelas.", *images])
+        resp = model.generate_content(["Transcreva TUDO. Não pule nada. Mantenha tabelas.", *images], safety_settings=SAFETY)
         return resp.text if resp.text else ""
     except: return ""
 
@@ -154,28 +170,27 @@ def extract_text(file, section_list):
             full_txt = ""
             for p in doc: full_txt += p.get_text() + "\n"
             
-            # Decide se usa OCR
+            # Se tiver texto selecionável
             if len(full_txt) / max(1, len(doc)) > 200:
                 text = full_txt
                 doc.close()
             else:
+                # OCR Rápido
+                st.toast(f"OCR Ativado: {name}", icon="👁️")
                 imgs = []
-                # Limita paginas para velocidade, mas garante o suficiente
-                for i in range(min(15, len(doc))):
+                for i in range(min(12, len(doc))):
                     pix = doc[i].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                     imgs.append(Image.open(io.BytesIO(pix.tobytes("png"))))
                 doc.close()
                 text = get_ocr_gemini(imgs)
 
-        # 1. Limpeza básica
-        text = clean_text_structure(text)
-        # 2. Marcação de Títulos via Python
-        text = mark_sections_in_text(text, section_list)
-        
+        # Limpeza e Marcação
+        text = clean_text(text)
+        text = mark_sections_hardcoded(text, section_list)
         return text
     except: return ""
 
-# ----------------- CONFIG APIs -----------------
+# ----------------- UI & CONFIG -----------------
 def get_config():
     k1 = st.secrets.get("MISTRAL_API_KEY") or os.environ.get("MISTRAL_API_KEY")
     k2 = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -184,13 +199,12 @@ def get_config():
 
 mistral, gemini_ok = get_config()
 
-# ----------------- UI -----------------
 st.sidebar.title("Validador Pro")
 page = st.sidebar.radio("Navegação", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
 
 list_secs = SECOES_PACIENTE
 if page == "Ref x BELFAR":
-    if st.radio("Tipo", ["Paciente", "Profissional"], horizontal=True) == "Profissional":
+    if st.radio("Tipo de Bula", ["Paciente", "Profissional"], horizontal=True) == "Profissional":
         list_secs = SECOES_PROFISSIONAL
 
 st.markdown(f"## 🚀 {page}")
@@ -199,54 +213,53 @@ c1, c2 = st.columns(2)
 f1 = c1.file_uploader("Referência")
 f2 = c2.file_uploader("Candidato")
 
-if st.button("🚀 AUDITAR AGORA (TURBO OTIMIZADO)"):
+if st.button("🚀 AUDITAR COM MISTRAL FORTE"):
     if not f1 or not f2:
         st.warning("Arquivos faltando.")
         st.stop()
     
     if page in ["Ref x BELFAR", "Conferência MKT"] and not mistral:
-        st.error("Mistral API necessária.")
+        st.error("Chave Mistral não encontrada.")
         st.stop()
         
-    bar = st.progress(0, "Lendo arquivos...")
+    bar = st.progress(0, "Processando...")
     
+    # 1. Extração
     t1 = extract_text(f1, list_secs)
-    bar.progress(30, "Ref OK")
+    bar.progress(30, "Referência OK")
     t2 = extract_text(f2, list_secs)
-    bar.progress(60, "Cand OK")
+    bar.progress(60, "Candidato OK")
     
-    # ---------------- PROMPT DE ALTA PRECISÃO ----------------
-    # Truque: Usamos CSS inline no prompt para garantir que o highlight funcione
+    # 2. PROMPT BLINDADO (Com Style Inline Obrigatório)
     secoes_ignorar_str = ", ".join(SECOES_IGNORAR_DIFF)
     
-    prompt = f"""Você é um Auditor JSON Rigoroso.
+    prompt = f"""Você é um Auditor Sênior de Bulas.
     
-    SUA TAREFA:
-    Localize no texto as seções marcadas como "============== SEÇÃO: TITULO ==============".
-    Compare o texto da Referência com o Candidato.
+    MISSÃO: Encontrar as seções marcadas com "👉👉👉 SEÇÃO IDENTIFICADA: ... 👈👈👈" e comparar os textos.
     
-    LISTA DE SEÇÕES OBRIGATÓRIAS (Você DEVE incluir TODAS no JSON, mesmo que vazias):
+    LISTA DE SEÇÕES OBRIGATÓRIAS (Você deve preencher todas no JSON):
     {json.dumps(list_secs, ensure_ascii=False)}
 
     REGRAS DE CONTEÚDO:
-    1. **NÃO RESUMA**: Traga o texto COMPLETO de cada seção. Se o texto for longo, traga TUDO.
-    2. **SEÇÕES ESPECIAIS** [{secoes_ignorar_str}]:
-       - Apenas copie o texto. Status: "OK". NÃO MARQUE DIFERENÇAS.
+    1. Traga o texto COMPLETO. Não resuma.
+    2. Nas seções [{secoes_ignorar_str}], APENAS COPIE o texto. Status "OK".
     
-    REGRAS DE MARCAÇÃO (CRUCIAL):
-    Nas outras seções, se houver diferença no Candidato, USE ESTILOS INLINE (Não use classes):
-    - Diferença: <span style='background-color: #ffeb3b; font-weight: bold; color: black;'>TEXTO DIFERENTE</span>
-    - Erro PT: <span style='background-color: #ff5252; font-weight: bold; color: white;'>ERRO</span>
-    - Data: <span style='background-color: #00e5ff; font-weight: bold; color: black;'>DATA</span>
+    REGRAS VISUAIS (MARCA-TEXTO OBRIGATÓRIO):
+    Nas divergências, você NÃO PODE usar classes CSS. Você DEVE usar o atributo STYLE inline.
+    
+    Use EXATAMENTE estes códigos HTML:
+    - Diferença: <span style="background-color: #ffeb3b; color: black; font-weight: bold; padding: 2px;">TEXTO ERRADO</span>
+    - Erro Ortográfico: <span style="background-color: #ff1744; color: white; font-weight: bold; padding: 2px;">ERRO</span>
+    - Data Anvisa: <span style="background-color: #00e5ff; color: black; font-weight: bold; padding: 2px;">DATA</span>
 
-    SAÍDA JSON APENAS:
+    SAÍDA JSON:
     {{
         "METADADOS": {{ "datas": [], "produto": "" }},
         "SECOES": [
             {{
                 "titulo": "TITULO EXATO DA LISTA",
-                "ref": "Texto completo...",
-                "bel": "Texto com <span style...>tags</span>...",
+                "ref": "Texto referência...",
+                "bel": "Texto candidato com tags <span>...",
                 "status": "OK" ou "DIVERGENTE"
             }}
         ]
@@ -254,24 +267,24 @@ if st.button("🚀 AUDITAR AGORA (TURBO OTIMIZADO)"):
     """
     
     json_res = ""
-    model_used = ""
+    model_name = ""
     start_t = time.time()
     
     try:
-        # LÓGICA ROTEAMENTO
         if page in ["Ref x BELFAR", "Conferência MKT"]:
-            model_used = "Mistral Small (Turbo)"
-            bar.progress(75, "🌪️ Mistral Turbo Analisando (Streaming)...")
+            # MISTRAL LARGE (O Forte) com Streaming para não travar
+            model_name = "Mistral Large (Latest)"
+            bar.progress(70, "🧠 Mistral Large Analisando (Streaming)...")
             
-            # Streaming para evitar timeout + Prompt reforçado
             stream = mistral.chat.stream(
-                model="mistral-small-latest",
+                model="mistral-large-latest", # O mais forte
                 messages=[
                     {"role": "system", "content": prompt},
-                    {"role": "user", "content": f"REFERENCIA:\n{t1}\n\nCANDIDATO:\n{t2}"}
+                    {"role": "user", "content": f"REF:\n{t1}\n\nCAND:\n{t2}"}
                 ],
                 response_format={"type": "json_object"},
-                temperature=0.0
+                temperature=0.0,
+                timeout_ms=600000 # 10 min de timeout (streaming segura a conexão)
             )
             
             chunks = []
@@ -279,13 +292,13 @@ if st.button("🚀 AUDITAR AGORA (TURBO OTIMIZADO)"):
                 if chunk.data.choices[0].delta.content:
                     chunks.append(chunk.data.choices[0].delta.content)
             json_res = "".join(chunks)
-            
-        else: # Gemini
+
+        else: # Gemini para Gráfica
             if not gemini_ok: st.error("Gemini Key missing"); st.stop()
-            model_used = "Gemini 1.5 Pro"
-            bar.progress(75, "💎 Gemini Analisando...")
+            model_name = "Gemini 1.5 Pro"
+            bar.progress(70, "💎 Gemini Analisando...")
             resp = genai.GenerativeModel("gemini-1.5-pro").generate_content(
-                f"{prompt}\n\nREFERENCIA:\n{t1}\n\nCANDIDATO:\n{t2}",
+                f"{prompt}\n\nREF:\n{t1}\n\nCAND:\n{t2}",
                 generation_config={"response_mime_type": "application/json"}
             )
             json_res = resp.text
@@ -298,74 +311,67 @@ if st.button("🚀 AUDITAR AGORA (TURBO OTIMIZADO)"):
     time.sleep(0.5)
     bar.empty()
     
-    # RENDERIZAÇÃO
+    # 3. RESULTADOS
     if json_res:
-        # Limpeza do JSON
         json_res = json_res.replace("```json", "").replace("```", "").strip()
         try:
             data = json.loads(json_res)
         except:
-            st.error("Erro ao processar resposta da IA. Tente novamente.")
+            st.error("Erro no JSON da IA. Tente novamente.")
             st.stop()
             
-        # Normalização e Ordenação
         secs = []
         raw_secs = data.get("SECOES", [])
         
-        # Mapeamento para garantir ordem e nomes corretos
-        for target_title in list_secs:
-            found_sec = None
-            # Procura a seção na resposta da IA
-            for s in raw_secs:
-                # Limpa strings para comparação
-                t_ia = re.sub(r'[^A-Z]', '', s.get('titulo','').upper())
-                t_target = re.sub(r'[^A-Z]', '', target_title.upper())
-                
-                if t_target in t_ia or t_ia in t_target:
-                    found_sec = s
-                    break
+        # Reconstrói a lista garantindo a ordem
+        for target in list_secs:
+            # Procura na resposta
+            found = next((s for s in raw_secs if SequenceMatcher(None, target, s.get('titulo','').upper()).ratio() > 0.8), None)
             
-            if found_sec:
-                found_sec['titulo'] = target_title # Força o nome correto
-                secs.append(found_sec)
+            if found:
+                found['titulo'] = target
+                secs.append(found)
             else:
-                # Se a IA comeu a seção, cria uma vazia avisando
                 secs.append({
-                    "titulo": target_title,
-                    "ref": "Não encontrado no texto.",
-                    "bel": "Não encontrado no texto.",
+                    "titulo": target,
+                    "ref": "Não encontrado / Não identificado.",
+                    "bel": "Não encontrado / Não identificado.",
                     "status": "FALTANTE"
                 })
 
         diverg = sum(1 for s in secs if s['status'] != "OK" and s['titulo'] not in SECOES_IGNORAR_DIFF)
         
-        # Header Resultados
-        st.markdown(f"<div class='ia-badge'>Motor: {model_used} ({time.time()-start_t:.1f}s)</div>", unsafe_allow_html=True)
-        cM1, cM2, cM3 = st.columns(3)
+        st.markdown(f"<div class='ia-badge'>Motor: {model_name} ({time.time()-start_t:.1f}s)</div>", unsafe_allow_html=True)
+        
+        # Legenda Manual (já que agora é inline style)
+        st.markdown("### Legenda:")
+        l1, l2, l3 = st.columns(3)
+        l1.markdown("<span style='background-color: #ffeb3b; color: black; font-weight: bold; padding: 2px;'>Amarelo</span> = Diferença", unsafe_allow_html=True)
+        l2.markdown("<span style='background-color: #ff1744; color: white; font-weight: bold; padding: 2px;'>Vermelho</span> = Erro Ortográfico", unsafe_allow_html=True)
+        l3.markdown("<span style='background-color: #00e5ff; color: black; font-weight: bold; padding: 2px;'>Azul</span> = Data Anvisa", unsafe_allow_html=True)
+        st.markdown("---")
+
+        cM1, cM2 = st.columns(2)
         cM1.metric("Seções", len(secs))
         cM2.metric("Divergências", diverg)
-        dt = data.get("METADADOS", {}).get("datas", ["-"])[0]
-        cM3.markdown(f"**Anvisa:** {dt}")
         
-        st.markdown("---")
+        st.divider()
         
         for s in secs:
-            title = s['titulo']
-            status = s['status']
+            tit = s['titulo']
+            stat = s['status']
             
-            # Ícones e Cores
             icon = "✅"
-            if "DIVERGENTE" in status: icon = "❌"
-            elif "FALTANTE" in status: icon = "🚨"
+            if "DIVERGENTE" in stat: icon = "❌"
+            elif "FALTANTE" in stat: icon = "🚨"
             
-            if title in SECOES_IGNORAR_DIFF:
+            if tit in SECOES_IGNORAR_DIFF:
                 icon = "🔒"
-                status = "OK (Conteúdo Extraído)"
+                stat = "OK (Conteúdo Extraído)"
             
-            # Expander
-            aberto = (status != "OK" and "Conteúdo" not in status)
-            with st.expander(f"{icon} {title} - {status}", expanded=aberto):
+            aberto = (stat != "OK" and "Conteúdo" not in stat)
+            
+            with st.expander(f"{icon} {tit} - {stat}", expanded=aberto):
                 cR, cB = st.columns(2)
-                # O parâmetro unsafe_allow_html=True aqui é OBRIGATÓRIO para o highlight funcionar
                 cR.markdown(f"<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
                 cB.markdown(f"<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
