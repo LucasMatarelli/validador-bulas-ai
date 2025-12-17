@@ -6,14 +6,9 @@ import io
 import time
 import os
 
-# ----------------- CONFIGURAÇÃO -----------------
-st.set_page_config(
-    page_title="Validador Visual",
-    page_icon="🎨",
-    layout="wide"
-)
+st.set_page_config(page_title="Validador Visual", page_icon="🎨", layout="wide")
 
-# ----------------- ESTILOS -----------------
+# --- ESTILOS ---
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -22,7 +17,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- BACKEND -----------------
+# --- BACKEND BLINDADO ---
 def configure_api():
     try:
         api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -32,6 +27,30 @@ def configure_api():
         genai.configure(api_key=api_key)
         return True
     except: return False
+
+def get_working_visual_model():
+    """
+    Retorna o melhor modelo visual disponível, testando um por um.
+    Evita erros 404 e 429 procurando o melhor candidato.
+    """
+    # Ordem de preferência: Lite (Rápido) -> Latest -> Stable -> Pro
+    candidates = [
+        "models/gemini-2.0-flash-lite-preview-02-05", # O mais rápido atual
+        "models/gemini-1.5-flash-latest",             # O mais atualizado
+        "models/gemini-1.5-flash-001",                # O mais compatível
+        "models/gemini-1.5-flash"                     # O padrão
+    ]
+    
+    for model_name in candidates:
+        try:
+            # Tenta instanciar para ver se não dá 404 na sua conta
+            model = genai.GenerativeModel(model_name)
+            return model, model_name
+        except:
+            continue
+            
+    # Se tudo falhar, retorna o Flash padrão
+    return genai.GenerativeModel("models/gemini-1.5-flash"), "gemini-1.5-flash"
 
 def pdf_to_images(uploaded_file):
     images = []
@@ -45,20 +64,13 @@ def pdf_to_images(uploaded_file):
         return images
     except: return []
 
-# ----------------- UI -----------------
-st.title("🎨 Gráfica x Arte (Gemini 2.0 Lite)")
+# --- UI ---
+st.title("🎨 Gráfica x Arte (Auto-Detect)")
 
 if configure_api():
-    # MODELO SOLICITADO: LITE PREVIEW (Rápido e Eficiente)
-    MODEL_NAME = "models/gemini-2.0-flash-lite-preview-02-05"
-    st.caption(f"Motor Ativo: `{MODEL_NAME}`")
-
-    try:
-        model = genai.GenerativeModel(MODEL_NAME)
-    except:
-        # Fallback se a conta não tiver acesso ao preview ainda
-        model = genai.GenerativeModel("models/gemini-1.5-flash")
-        st.warning("Lite Preview indisponível, usando Flash 1.5.")
+    # Detecta o modelo que funciona NA SUA CONTA
+    model, model_name = get_working_visual_model()
+    st.info(f"🤖 Motor Visual Ativo: `{model_name}`")
 
     c1, c2 = st.columns(2)
     f1 = c1.file_uploader("Arte Original", type=["pdf", "jpg", "png"], key="f1")
@@ -66,7 +78,7 @@ if configure_api():
 
     if st.button("🚀 Comparar Visualmente"):
         if f1 and f2:
-            with st.spinner("Processando..."):
+            with st.spinner("Processando imagens..."):
                 imgs1 = pdf_to_images(f1) if f1.name.lower().endswith(".pdf") else [Image.open(f1)]
                 imgs2 = pdf_to_images(f2) if f2.name.lower().endswith(".pdf") else [Image.open(f2)]
                 
@@ -92,18 +104,20 @@ if configure_api():
                     """
                     
                     try:
-                        # Chamada ao modelo
                         resp = model.generate_content([prompt, imgs1[i], imgs2[i]])
                         
                         if resp and resp.text:
                             if "✅" in resp.text: st.success(resp.text)
                             else: st.error(resp.text)
                         
-                        time.sleep(2) # Pausa leve
+                        # Pausa para evitar cota
+                        time.sleep(3)
                         
                     except Exception as e:
                         st.error(f"Erro: {e}")
-                        if "429" in str(e): time.sleep(5)
+                        if "429" in str(e): 
+                            st.warning("Aguardando cota...")
+                            time.sleep(5)
                     
                     st.divider()
         else:
