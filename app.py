@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS (Visual Bonito) -----------------
+# ----------------- ESTILOS CSS -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -41,7 +41,7 @@ st.markdown("""
     }
     .stButton>button:hover { background-color: #3d8070; transform: scale(1.01); }
     
-    /* BADGES DE IA */
+    /* BADGES */
     .ia-badge { 
         padding: 6px 12px; 
         border-radius: 6px; 
@@ -69,7 +69,7 @@ st.markdown("""
     .box-bel { background-color: #f9fbe7; border-left: 5px solid #827717; }
     .box-ref { background-color: #f5f5f5; border-left: 5px solid #757575; }
     
-    /* MARCADORES (Highlight) */
+    /* MARCADORES */
     mark.diff { 
         background-color: #ffeb3b !important; 
         color: #000 !important;
@@ -97,12 +97,11 @@ st.markdown("""
         border: 1px solid #006064; 
     }
     
-    /* FONTE */
     h1, h2, h3 { font-family: 'Segoe UI', sans-serif; color: #2c3e50; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- CONSTANTES & LISTAS -----------------
+# ----------------- CONSTANTES -----------------
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", 
     "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", 
@@ -122,7 +121,6 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-# SEÇÕES QUE NÃO DEVEM TER DIVERGÊNCIAS MARCADAS
 SECOES_IGNORAR_DIFF = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 SAFETY = {
@@ -135,7 +133,6 @@ SAFETY = {
 # ----------------- FUNÇÕES DO SISTEMA -----------------
 
 def configure_apis():
-    """Configura as APIs"""
     gem_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if gem_key: genai.configure(api_key=gem_key)
     
@@ -155,12 +152,7 @@ def ocr_with_gemini_flash(images):
         return ""
 
 def extract_content(uploaded_file):
-    """
-    Extrai o conteúdo de PDF ou DOCX.
-    Detecta automaticamente se precisa de OCR (se for PDF imagem).
-    """
     if not uploaded_file: return None
-    
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
@@ -174,32 +166,25 @@ def extract_content(uploaded_file):
         # --- PDF ---
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            
-            # 1. Tenta extração de texto nativo
             full_text = ""
             for page in doc:
                 full_text += page.get_text() + "\n"
             
-            # Verifica se o texto é "útil" ou se é um PDF imagem
-            # Se tiver menos de 100 caracteres por página média, assumimos que é imagem/curvas
+            # Se tiver muito pouco texto, assume layout em curvas (imagem)
             avg_chars = len(full_text) / max(1, len(doc))
             
             if avg_chars > 150:
                 doc.close()
                 return {"data": full_text, "method": "PDF Nativo", "len": len(full_text)}
             
-            # 2. Se falhar, usa OCR (Gemini Flash)
-            st.toast(f"👁️ Detectado layout em curvas/imagem em '{filename}'. Ativando OCR IA...", icon="⚡")
-            
+            # OCR Automático
+            st.toast(f"👁️ Layout em curvas detectado em '{filename}'. Ativando OCR...", icon="⚡")
             images = []
-            limit_pages = min(15, len(doc)) # Limite de segurança
-            
+            limit_pages = min(15, len(doc))
             for i in range(limit_pages):
-                # Zoom 2.0 para melhor leitura
                 pix = doc[i].get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 img_data = pix.tobytes("png")
                 images.append(Image.open(io.BytesIO(img_data)))
-            
             doc.close()
             
             ocr_text = ocr_with_gemini_flash(images)
@@ -213,7 +198,6 @@ def extract_content(uploaded_file):
         return None
 
 def clean_json_response(text):
-    """Limpa a resposta da IA para obter o JSON puro"""
     if not text: return None
     clean = text.replace("```json", "").replace("```", "").strip()
     try:
@@ -224,25 +208,18 @@ def clean_json_response(text):
         return None
 
 def normalize_sections(data, allowed_titles):
-    """Normaliza os títulos das seções para bater com a lista oficial"""
     if not data or "SECOES" not in data: return data
-    
     normalized_sections = []
     
-    # Função auxiliar de limpeza
     def clean(s): return re.sub(r'[^A-Z0-9]', '', s.upper())
-    
     mapa_allowed = {clean(t): t for t in allowed_titles}
     
     for sec in data["SECOES"]:
         titulo_ia = sec.get("titulo", "").upper()
         titulo_clean = clean(titulo_ia)
-        
-        # Match Exato ou Fuzzy
         match = mapa_allowed.get(titulo_clean)
         
         if not match:
-            # Tenta encontrar por contiguidade
             for k, v in mapa_allowed.items():
                 if k in titulo_clean or titulo_clean in k:
                     match = v
@@ -252,17 +229,15 @@ def normalize_sections(data, allowed_titles):
             sec["titulo"] = match
             normalized_sections.append(sec)
     
-    # Ordena conforme a lista oficial
     normalized_sections.sort(key=lambda x: allowed_titles.index(x["titulo"]) if x["titulo"] in allowed_titles else 999)
     data["SECOES"] = normalized_sections
     return data
 
 def get_audit_prompt(secoes_lista):
-    """Gera o prompt mestre para a IA"""
     secoes_txt = "\n".join([f"- {s}" for s in secoes_lista])
     secoes_ignorar_txt = ", ".join(SECOES_IGNORAR_DIFF)
     
-    prompt = f"""Você é um Auditor de Qualidade Farmacêutica. 
+    prompt = f"""Você é um Auditor de Qualidade Farmacêutica.
 Sua missão é extrair e comparar o texto das bulas.
 
 LISTA DE SEÇÕES OBRIGATÓRIAS:
@@ -273,8 +248,6 @@ LISTA DE SEÇÕES OBRIGATÓRIAS:
 2. COLUNAS/LAYOUT: O texto pode estar em colunas. Junte as frases corretamente.
 
 --- REGRAS DE COMPARAÇÃO (AUDITORIA) ---
-Para cada seção, compare o texto da REFERÊNCIA com o CANDIDATO ("bel").
-
 >>> CASO ESPECIAL: SEÇÕES [{secoes_ignorar_txt}] <<<
 - Nestas seções, APENAS EXTRAIA o texto.
 - NÃO MARQUE DIVERGÊNCIAS (não use <mark>).
@@ -306,12 +279,9 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
     st.title("Validador Pro")
     st.divider()
-    
     pag = st.radio("Navegação", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
-    
     st.divider()
     gem_ok, mis_client = configure_apis()
-    
     c1, c2 = st.columns(2)
     c1.markdown(f"Mistral: {'✅' if mis_client else '❌'}")
     c2.markdown(f"Gemini: {'✅' if gem_ok else '❌'}")
@@ -319,12 +289,11 @@ with st.sidebar:
 # ----------------- CORPO PRINCIPAL -----------------
 st.markdown(f"## 🚀 Auditoria: {pag}")
 
-# Configuração da Lista de Seções
 if pag == "Ref x BELFAR":
     tipo_bula = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True)
     lista_alvo = SECOES_PROFISSIONAL if tipo_bula == "Profissional" else SECOES_PACIENTE
 else:
-    lista_alvo = SECOES_PACIENTE # Padrão para os outros
+    lista_alvo = SECOES_PACIENTE
 
 st.markdown("---")
 
@@ -334,17 +303,16 @@ with col_up1:
 with col_up2:
     f2 = st.file_uploader("📂 Arquivo Candidato (Validar)", type=["pdf", "docx"])
 
-if st.button("🚀 INICIAR AUDITORIA (SEM TIMEOUT)"):
+if st.button("🚀 INICIAR AUDITORIA (TURBO)"):
     if not f1 or not f2:
         st.warning("⚠️ Anexe os dois arquivos!")
         st.stop()
 
     bar = st.progress(0, "Lendo arquivos...")
     
-    # 1. Extração de Conteúdo (Com OCR Automático se precisar)
+    # 1. Leitura
     d1 = extract_content(f1)
     bar.progress(30, "Referência processada...")
-    
     d2 = extract_content(f2)
     bar.progress(60, "Candidato processado...")
     
@@ -352,10 +320,9 @@ if st.button("🚀 INICIAR AUDITORIA (SEM TIMEOUT)"):
         st.error("Erro na leitura. Verifique os arquivos.")
         st.stop()
         
-    # Mostra método usado
     st.caption(f"Ref: {d1['method']} ({d1['len']} chars) | Cand: {d2['method']} ({d2['len']} chars)")
     
-    # 2. Preparação da IA
+    # 2. IA
     prompt_sistema = get_audit_prompt(lista_alvo)
     prompt_usuario = f"--- TEXTO REF ---\n{d1['data']}\n\n--- TEXTO CANDIDATO ---\n{d2['data']}"
     
@@ -364,19 +331,18 @@ if st.button("🚀 INICIAR AUDITORIA (SEM TIMEOUT)"):
     start_t = time.time()
     
     try:
-        # ---------------- LÓGICA DE ROTEAMENTO ----------------
+        # ROTEAMENTO OTIMIZADO (SPEED)
         if pag in ["Ref x BELFAR", "Conferência MKT"]:
-            # --- MISTRAL (Obrigatório) ---
             if not mis_client:
                 st.error("Erro: API Mistral não configurada.")
                 st.stop()
             
-            bar.progress(70, "🌪️ Processando com Mistral Large (Modo Rápido)...")
-            modelo_usado = "Mistral Large"
+            # MUDANÇA CRUCIAL: 'mistral-small-latest' é o modelo rápido e eficiente
+            bar.progress(70, "🌪️ Mistral Small (Turbo) analisando...")
+            modelo_usado = "Mistral Small"
             
-            # Chama Mistral SEM TIMEOUT
             resp = mis_client.chat.complete(
-                model="mistral-large-latest",
+                model="mistral-small-latest", # <--- AQUI ESTÁ O SEGREDO DA VELOCIDADE
                 messages=[
                     {"role": "system", "content": prompt_sistema},
                     {"role": "user", "content": prompt_usuario}
@@ -387,12 +353,11 @@ if st.button("🚀 INICIAR AUDITORIA (SEM TIMEOUT)"):
             json_str = resp.choices[0].message.content
 
         else:
-            # --- GEMINI (Gráfica x Arte) ---
             if not gem_ok:
                 st.error("Erro: API Gemini não configurada.")
                 st.stop()
                 
-            bar.progress(70, "💎 Processando com Gemini 1.5 Pro...")
+            bar.progress(70, "💎 Gemini 1.5 Pro analisando...")
             modelo_usado = "Gemini 1.5 Pro"
             
             model = genai.GenerativeModel("gemini-1.5-pro")
@@ -410,18 +375,16 @@ if st.button("🚀 INICIAR AUDITORIA (SEM TIMEOUT)"):
     time.sleep(0.5)
     bar.empty()
     
-    # 3. Exibição dos Resultados
+    # 3. Resultados
     if json_str:
         dados = clean_json_response(json_str)
         if dados:
             dados = normalize_sections(dados, lista_alvo)
             
-            # Badge
             tempo = time.time() - start_t
             classe_css = "mistral-badge" if "Mistral" in modelo_usado else "gemini-badge"
             st.markdown(f"<div class='ia-badge {classe_css}'>Processado por: {modelo_usado} em {tempo:.1f}s</div>", unsafe_allow_html=True)
             
-            # Métricas
             secoes = dados.get("SECOES", [])
             auditadas = [s for s in secoes if s['titulo'] not in SECOES_IGNORAR_DIFF]
             erros = sum(1 for s in auditadas if s.get("status") != "OK")
@@ -436,12 +399,10 @@ if st.button("🚀 INICIAR AUDITORIA (SEM TIMEOUT)"):
             
             st.divider()
             
-            # Loop das Seções
             for sec in secoes:
                 tit = sec.get("titulo", "N/A")
                 stat = sec.get("status", "OK")
                 
-                # Definição visual
                 if tit in SECOES_IGNORAR_DIFF:
                     icon, cor_stat = "🔒", "OK (Não auditado)"
                 else:
@@ -458,7 +419,6 @@ if st.button("🚀 INICIAR AUDITORIA (SEM TIMEOUT)"):
                     
                     cB.markdown("<b>Candidato</b>", unsafe_allow_html=True)
                     cB.markdown(f"<div class='box-content box-bel'>{sec.get('bel','')}</div>", unsafe_allow_html=True)
-
         else:
-            st.error("Não foi possível ler a resposta da IA.")
+            st.error("Resposta inválida da IA.")
             st.code(json_str)
