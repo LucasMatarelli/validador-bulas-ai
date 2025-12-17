@@ -21,13 +21,12 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- ESTILOS CSS -----------------
+# ----------------- ESTILOS CSS (Reforçado para Highlight) -----------------
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
     .main .block-container { padding-top: 20px !important; }
     
-    /* BOTÃO PRINCIPAL */
     .stButton>button { 
         width: 100%; 
         background-color: #55a68e; 
@@ -41,7 +40,6 @@ st.markdown("""
     }
     .stButton>button:hover { background-color: #3d8070; transform: scale(1.01); }
     
-    /* BADGES */
     .ia-badge { 
         padding: 6px 12px; 
         border-radius: 6px; 
@@ -65,33 +63,36 @@ st.markdown("""
         border: 1px solid #e0e0e0;
         box-shadow: 0 1px 3px rgba(0,0,0,0.08);
         min-height: 80px;
+        color: #333;
     }
     .box-bel { background-color: #f9fbe7; border-left: 5px solid #827717; }
     .box-ref { background-color: #f5f5f5; border-left: 5px solid #757575; }
     
-    /* MARCADORES */
+    /* MARCADORES OBRIGATÓRIOS */
     mark.diff { 
         background-color: #ffeb3b !important; 
         color: #000 !important;
-        padding: 2px 4px; 
+        padding: 2px 5px; 
         border-radius: 4px; 
         font-weight: 800; 
         border: 1px solid #f9a825;
         text-decoration: none;
+        display: inline-block; /* Garante visibilidade */
     }
     mark.ort { 
         background-color: #ff1744 !important; 
         color: #fff !important; 
-        padding: 2px 4px; 
+        padding: 2px 5px; 
         border-radius: 4px; 
         font-weight: 800; 
         border: 1px solid #b71c1c;
         text-decoration: underline wavy #fff;
+        display: inline-block;
     }
     mark.anvisa { 
         background-color: #00e5ff !important; 
         color: #000 !important; 
-        padding: 2px 4px; 
+        padding: 2px 5px; 
         border-radius: 4px; 
         font-weight: bold; 
         border: 1px solid #006064; 
@@ -142,16 +143,17 @@ def configure_apis():
     return (gem_key is not None), mistral_client
 
 def ocr_with_gemini_flash(images):
-    """OCR Rápido usando Gemini Flash"""
+    """OCR Rápido usando Gemini Flash (Backup de Leitura)"""
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
-        prompt = "Transcreva TODO o texto desta bula médica EXATAMENTE como está. Mantenha tabelas e estrutura. Não resuma."
+        prompt = "Transcreva TODO o texto desta bula médica EXATAMENTE como está. Mantenha tabelas e estrutura. Não pule nenhuma linha."
         response = model.generate_content([prompt, *images], safety_settings=SAFETY)
         return response.text if response.text else ""
     except Exception as e:
         return ""
 
 def extract_content(uploaded_file):
+    """Extração Inteligente: Nativo primeiro, OCR se necessário"""
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
@@ -170,15 +172,15 @@ def extract_content(uploaded_file):
             for page in doc:
                 full_text += page.get_text() + "\n"
             
-            # Se tiver muito pouco texto, assume layout em curvas (imagem)
+            # Análise de densidade para decidir OCR
             avg_chars = len(full_text) / max(1, len(doc))
             
-            if avg_chars > 150:
+            if avg_chars > 200: # Se tem bastante texto, usa nativo
                 doc.close()
                 return {"data": full_text, "method": "PDF Nativo", "len": len(full_text)}
             
-            # OCR Automático
-            st.toast(f"👁️ Layout em curvas detectado em '{filename}'. Ativando OCR...", icon="⚡")
+            # Se tem pouco texto, provavelmente é Curva/Imagem -> OCR
+            st.toast(f"👁️ Detectado arquivo em Curvas/Imagem: '{filename}'. Ativando OCR IA...", icon="⚡")
             images = []
             limit_pages = min(15, len(doc))
             for i in range(limit_pages):
@@ -208,6 +210,7 @@ def clean_json_response(text):
         return None
 
 def normalize_sections(data, allowed_titles):
+    """Garante que todas as seções encontradas sejam mapeadas"""
     if not data or "SECOES" not in data: return data
     normalized_sections = []
     
@@ -229,6 +232,8 @@ def normalize_sections(data, allowed_titles):
             sec["titulo"] = match
             normalized_sections.append(sec)
     
+    # Ordena e coloca seções faltantes visualmente no final (opcional, aqui mantemos a ordem do documento)
+    # Apenas ordenamos se estiverem na lista permitida
     normalized_sections.sort(key=lambda x: allowed_titles.index(x["titulo"]) if x["titulo"] in allowed_titles else 999)
     data["SECOES"] = normalized_sections
     return data
@@ -237,37 +242,47 @@ def get_audit_prompt(secoes_lista):
     secoes_txt = "\n".join([f"- {s}" for s in secoes_lista])
     secoes_ignorar_txt = ", ".join(SECOES_IGNORAR_DIFF)
     
-    prompt = f"""Você é um Auditor de Qualidade Farmacêutica.
-Sua missão é extrair e comparar o texto das bulas.
+    # Prompt REFORÇADO para HTML e Exaustividade
+    prompt = f"""Você é um Auditor de Qualidade Farmacêutica EXTREMAMENTE PRECISO.
+Sua tarefa é comparar o texto da REFERÊNCIA com o texto do CANDIDATO.
 
-LISTA DE SEÇÕES OBRIGATÓRIAS:
+LISTA DE SEÇÕES QUE VOCÊ DEVE PROCURAR (OBRIGATÓRIO ACHAR TODAS):
 {secoes_txt}
 
---- REGRAS DE OURO ---
-1. EXTRAÇÃO: Extraia o texto COMPLETO de cada seção. Não resuma.
-2. COLUNAS/LAYOUT: O texto pode estar em colunas. Junte as frases corretamente.
+--- REGRAS CRÍTICAS DE AUDITORIA ---
+1. **EXAUSTIVIDADE**: Processe o documento inteiro. Não pare no meio. Se uma seção da lista acima existe no texto, ELA TEM QUE APARECER NO JSON.
+2. **FIDELIDADE**: Copie o texto EXATAMENTE como está nos arquivos. Não resuma.
+3. **HTML OBRIGATÓRIO**: Nas divergências, você DEVE inserir as tags HTML dentro da string do JSON.
 
---- REGRAS DE COMPARAÇÃO (AUDITORIA) ---
->>> CASO ESPECIAL: SEÇÕES [{secoes_ignorar_txt}] <<<
-- Nestas seções, APENAS EXTRAIA o texto.
-- NÃO MARQUE DIVERGÊNCIAS (não use <mark>).
-- Defina status = "OK" sempre.
+--- REGRAS DE COMPARAÇÃO ---
 
->>> DEMAIS SEÇÕES <<<
+CASO 1: SEÇÕES ESPECIAIS [{secoes_ignorar_txt}]
+- Nestas seções: APENAS COPIE O TEXTO.
+- NÃO MARQUE DIFERENÇAS.
+- NÃO USE TAGS <mark>.
+- Defina status: "OK".
+
+CASO 2: TODAS AS OUTRAS SEÇÕES
 - Compare palavra por palavra.
-- Use <mark class='diff'>palavra</mark> para QUALQUER diferença (texto, número, pontuação).
-- Use <mark class='ort'>palavra</mark> para ERROS DE PORTUGUÊS graves.
-- Use <mark class='anvisa'>data</mark> para datas da ANVISA.
+- Se o CANDIDATO tiver qualquer diferença (letra, número, acento, palavra trocada), marque ASSIM:
+  Texto original: "Tomar 10ml"
+  Texto candidato: "Tomar <mark class='diff'>20ml</mark>"
+  
+- Se for erro de português grave:
+  "<mark class='ort'>frequência</mark>" (se estiver escrito errado)
 
-SAÍDA JSON OBRIGATÓRIA:
+- Se for data da Anvisa:
+  "<mark class='anvisa'>10/05/2024</mark>"
+
+FORMATO DE SAÍDA JSON (Não use Markdown no JSON, apenas texto cru com as tags HTML embutidas):
 {{
     "METADADOS": {{ "datas": ["dd/mm/aaaa"], "produto": "Nome" }},
     "SECOES": [
         {{
-            "titulo": "TÍTULO DA LISTA",
-            "ref": "Texto da referência...",
-            "bel": "Texto do candidato com marcações...",
-            "status": "OK" ou "DIVERGENTE" ou "FALTANTE"
+            "titulo": "TÍTULO DA SEÇÃO",
+            "ref": "Texto completo da referência...",
+            "bel": "Texto do candidato COM AS TAGS <mark class='diff'>...</mark> ONDE HOUVER ERRO",
+            "status": "DIVERGENTE" (se tiver mark diff) ou "OK" ou "FALTANTE"
         }}
     ]
 }}
@@ -303,7 +318,7 @@ with col_up1:
 with col_up2:
     f2 = st.file_uploader("📂 Arquivo Candidato (Validar)", type=["pdf", "docx"])
 
-if st.button("🚀 INICIAR AUDITORIA (TURBO)"):
+if st.button("🚀 INICIAR AUDITORIA (MODO PRECISÃO)"):
     if not f1 or not f2:
         st.warning("⚠️ Anexe os dois arquivos!")
         st.stop()
@@ -331,18 +346,18 @@ if st.button("🚀 INICIAR AUDITORIA (TURBO)"):
     start_t = time.time()
     
     try:
-        # ROTEAMENTO OTIMIZADO (SPEED)
+        # ROTEAMENTO ESTRITO
         if pag in ["Ref x BELFAR", "Conferência MKT"]:
             if not mis_client:
                 st.error("Erro: API Mistral não configurada.")
                 st.stop()
             
-            # MUDANÇA CRUCIAL: 'mistral-small-latest' é o modelo rápido e eficiente
-            bar.progress(70, "🌪️ Mistral Small (Turbo) analisando...")
-            modelo_usado = "Mistral Small"
+            # VOLTAMOS PARA O LARGE (Para garantir que ache as seções e marque o texto)
+            bar.progress(70, "🌪️ Mistral Large analisando (Pode levar 1-2 min pela precisão)...")
+            modelo_usado = "Mistral Large"
             
             resp = mis_client.chat.complete(
-                model="mistral-small-latest", # <--- AQUI ESTÁ O SEGREDO DA VELOCIDADE
+                model="mistral-large-latest", 
                 messages=[
                     {"role": "system", "content": prompt_sistema},
                     {"role": "user", "content": prompt_usuario}
@@ -352,7 +367,7 @@ if st.button("🚀 INICIAR AUDITORIA (TURBO)"):
             )
             json_str = resp.choices[0].message.content
 
-        else:
+        else: # Gráfica x Arte
             if not gem_ok:
                 st.error("Erro: API Gemini não configurada.")
                 st.stop()
@@ -399,22 +414,25 @@ if st.button("🚀 INICIAR AUDITORIA (TURBO)"):
             
             st.divider()
             
+            # Renderização com Segurança HTML
             for sec in secoes:
                 tit = sec.get("titulo", "N/A")
                 stat = sec.get("status", "OK")
                 
                 if tit in SECOES_IGNORAR_DIFF:
-                    icon, cor_stat = "🔒", "OK (Não auditado)"
+                    icon, cor_stat = "🔒", "OK (Conteúdo Extraído)"
                 else:
                     if "DIVERGENTE" in stat: icon, cor_stat = "❌", "DIVERGENTE"
                     elif "FALTANTE" in stat: icon, cor_stat = "🚨", "FALTANTE"
                     else: icon, cor_stat = "✅", "OK"
                 
-                aberto = (cor_stat != "OK" and "Não auditado" not in cor_stat)
+                # Abre se tiver erro OU se for divergente
+                aberto = (cor_stat != "OK" and "Conteúdo Extraído" not in cor_stat)
                 
                 with st.expander(f"{icon} {tit} - {cor_stat}", expanded=aberto):
                     cR, cB = st.columns(2)
                     cR.markdown("<b>Referência</b>", unsafe_allow_html=True)
+                    # allow_html=True é essencial para o highlight funcionar
                     cR.markdown(f"<div class='box-content box-ref'>{sec.get('ref','')}</div>", unsafe_allow_html=True)
                     
                     cB.markdown("<b>Candidato</b>", unsafe_allow_html=True)
