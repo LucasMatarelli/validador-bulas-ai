@@ -15,8 +15,8 @@ from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO -----------------
 st.set_page_config(
-    page_title="Validador Híbrido (Highlighter Fix)",
-    page_icon="🖍️",
+    page_title="Validador Híbrido (Final)",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -32,14 +32,37 @@ st.markdown("""
     .mistral-badge { background-color: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
     .gemini-badge { background-color: #e1f5fe; color: #01579b; border: 1px solid #b3e5fc; }
     
-    .box-content { background-color: #f8f9fa; padding: 15px; border-radius: 5px; font-size: 0.9em; white-space: pre-wrap; line-height: 1.5; }
-    .box-bel { background-color: #f1f8e9; border-left: 4px solid #55a68e; }
-    .box-ref { border-left: 4px solid #6c757d; }
+    .box-content { background-color: #ffffff; padding: 15px; border-radius: 8px; font-size: 0.95em; white-space: pre-wrap; line-height: 1.6; border: 1px solid #e0e0e0; }
+    .box-bel { background-color: #f9fbe7; border-left: 5px solid #827717; }
+    .box-ref { background-color: #f5f5f5; border-left: 5px solid #757575; }
     
-    /* CORES VIBRANTES PARA OS MARCADORES */
-    mark.diff { background-color: #ffd54f; color: #000; padding: 2px 4px; border-radius: 3px; font-weight: 800; border: 2px solid #ff6f00; }
-    mark.ort { background-color: #ef9a9a; color: #b71c1c; padding: 2px 4px; border-radius: 3px; font-weight: 800; border-bottom: 3px solid #b71c1c; text-decoration: underline; }
-    mark.anvisa { background-color: #81d4fa; color: #01579b; padding: 2px 4px; border-radius: 3px; font-weight: 800; border: 2px solid #0277bd; }
+    /* MARCADORES EXTREMOS */
+    mark.diff { 
+        background-color: #ffea00 !important; /* Amarelo Neon */
+        color: #000000 !important;
+        padding: 3px 6px; 
+        border-radius: 4px; 
+        font-weight: 900; 
+        border: 2px solid #ffd600;
+        box-shadow: 0 0 5px rgba(255, 214, 0, 0.5);
+    }
+    mark.ort { 
+        background-color: #ff5252 !important; /* Vermelho Neon */
+        color: #ffffff !important; 
+        padding: 3px 6px; 
+        border-radius: 4px; 
+        font-weight: 900; 
+        border: 2px solid #d50000;
+        text-decoration: underline;
+    }
+    mark.anvisa { 
+        background-color: #40c4ff !important; 
+        color: #000; 
+        padding: 2px 5px; 
+        border-radius: 4px; 
+        font-weight: bold; 
+        border: 2px solid #00b0ff; 
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -135,14 +158,9 @@ def process_uploaded_file(uploaded_file):
 
 def extract_json(text):
     if not text: return None
-    # Remove blocos markdown ```json ... ```
-    clean_text = re.sub(r'```json\s*', '', text)
-    clean_text = re.sub(r'\s*```', '', clean_text)
-    
-    # Tenta pegar apenas o objeto JSON {...}
+    clean_text = text.replace("```json", "").replace("```", "").strip()
     match = re.search(r'\{.*\}', clean_text, re.DOTALL)
     if match: clean_text = match.group(0)
-    
     try: return json.loads(clean_text)
     except: return None
 
@@ -167,7 +185,7 @@ def normalize_sections(data, allowed):
 # ----------------- UI -----------------
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=70)
-    st.title("Validador Rápido")
+    st.title("Validador Final")
     pag = st.radio("Menu", ["Ref x BELFAR", "Conferência MKT", "Gráfica x Arte"])
     st.divider()
     
@@ -187,7 +205,7 @@ f2 = c2.file_uploader("Candidato", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 AUDITAR AGORA"):
     if f1 and f2:
-        with st.spinner("📖 Processando arquivos..."):
+        with st.spinner("📖 Lendo arquivos..."):
             d1 = process_uploaded_file(f1)
             d2 = process_uploaded_file(f2)
             gc.collect()
@@ -202,37 +220,35 @@ if st.button("🚀 AUDITAR AGORA"):
             
             secoes_str = "\n".join([f"- {s}" for s in lista])
             
-            # --- PROMPT COM EXEMPLOS PRÁTICOS (FEW-SHOT) ---
+            # --- PROMPT AGRESSIVO PARA DIFF ---
             prompt = f"""
-            ATUE COMO UM AUDITOR FARMACÊUTICO.
-            SEÇÕES: {secoes_str}
+            VOCÊ É UM ALGORITMO DE COMPARAÇÃO DE TEXTO (DIFF ENGINE).
             
-             REGRAS OBRIGATÓRIAS:
-            1. Extraia o texto COMPLETO.
-            2. Ignore linhas de pontilhados (................).
-            3. Use tags HTML no campo 'bel' para mostrar ERROS.
+            SEÇÕES ALVO: {secoes_str}
             
-            EXEMPLOS DE COMO MARCAR (Siga este padrão):
+            TAREFA:
+            1. Compare o texto REF e o texto BEL (Candidato) palavra por palavra.
+            2. Gere o JSON com o campo 'bel' contendo o texto do candidato.
             
-            CASO 1: Divergência de Texto (Use amarelo)
-            Ref: "Conservar em temperatura ambiente"
-            Cand: "Conservar em temperatura"
-            Saída 'bel': "Conservar em <mark class='diff'>temperatura</mark>"
+            REGRAS DE FORMATAÇÃO HTML OBRIGATÓRIAS (NÃO IGNORE):
             
-            CASO 2: Acento Errado (Use amarelo)
-            Ref: "Frequência"
-            Cand: "Frequencia"
-            Saída 'bel': "<mark class='diff'>Frequencia</mark>"
+            >>> USE <mark class='diff'>... </mark> <<<
+            Sempre que uma palavra, número ou pontuação no BEL for diferente do REF.
+            Exemplo: Ref="500mg" Bel="<mark class='diff'>500 mg</mark>"
+            Exemplo: Ref="Frequência" Bel="<mark class='diff'>Frequencia</mark>"
             
-            CASO 3: Erro de Português Grave (Use vermelho)
-            Ref: "Farmacêutico"
-            Cand: "Farmaceutico"
-            Saída 'bel': "<mark class='ort'>Farmaceutico</mark>"
+            >>> USE <mark class='ort'>... </mark> <<<
+            Apenas para erros grotescos de português.
             
-            CASO 4: Data Anvisa (Use azul)
-            Saída 'bel': "...em <mark class='anvisa'>10/05/2024</mark>."
+            >>> USE <mark class='anvisa'>... </mark> <<<
+            Apenas para a data na seção Dizeres Legais.
             
-            SAÍDA JSON ESTRITA:
+            IMPORTANTE:
+            - NÃO corrija o texto. Mostre o erro destacado.
+            - Se o texto for igual, não use tags.
+            - IGNORE pontilhados longos (............).
+            
+            JSON OUTPUT:
             {{ "METADADOS": {{"datas":[]}}, "SECOES": [ {{"titulo":"", "ref":"...", "bel":"...", "status":"OK/DIVERGENTE/FALTANTE"}} ] }}
             """
 
@@ -240,21 +256,22 @@ if st.button("🚀 AUDITAR AGORA"):
             if pag in ["Ref x BELFAR", "Conferência MKT"]:
                 if not mis_client: st.error("MISTRAL OFF"); st.stop()
                 if d1['type'] == 'images' or d2['type'] == 'images':
-                    st.error("Erro: OCR falhou. Arquivo é imagem pura."); st.stop()
+                    st.error("Erro: Arquivo imagem pura."); st.stop()
 
                 try:
-                    with st.spinner("🌪️ Mistral Auditing..."):
+                    with st.spinner("🌪️ Mistral Large (Analisando Diffs)..."):
+                        # USANDO LARGE PARA GARANTIR QUE ELE COLOQUE OS MARKERS
                         chat = mis_client.chat.complete(
-                            model="mistral-small-latest",
+                            model="mistral-large-latest", 
                             messages=[
-                                {"role":"system", "content":"Você é um validador JSON. Use as tags <mark> conforme os exemplos."},
+                                {"role":"system", "content":"Você é um motor de comparação de texto rigoroso. Você SEMPRE usa as tags HTML solicitadas para qualquer diferença."},
                                 {"role":"user", "content":f"{prompt}\n\n=== REF ===\n{d1['data']}\n\n=== CAND ===\n{d2['data']}"}
                             ],
                             response_format={"type": "json_object"},
                             temperature=0.0
                         )
                         final_res = chat.choices[0].message.content
-                        model_used = "🌪️ Mistral Small"
+                        model_used = "🌪️ Mistral Large"
                         success = True
                 except Exception as e:
                     st.error(f"Erro Mistral: {e}"); st.stop()
@@ -263,7 +280,7 @@ if st.button("🚀 AUDITAR AGORA"):
             elif pag == "Gráfica x Arte":
                 if not gem_ok: st.error("GEMINI OFF"); st.stop()
                 try:
-                    with st.spinner("💎 Gemini Auditing..."):
+                    with st.spinner("💎 Gemini Flash..."):
                         model = genai.GenerativeModel("models/gemini-1.5-flash")
                         payload = [prompt]
                         payload.append(f"REF:\n{d1['data']}" if d1['type']=='text' else d1['data'])
@@ -305,11 +322,10 @@ if st.button("🚀 AUDITAR AGORA"):
                         
                         with st.expander(f"{icon} {s['titulo']} - {s['status']}"):
                             cR, cB = st.columns(2)
-                            cR.markdown(f"<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
-                            cB.markdown(f"<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
+                            cR.markdown(f"**Referência**<div class='box-content box-ref'>{s.get('ref','')}</div>", unsafe_allow_html=True)
+                            cB.markdown(f"**Candidato**<div class='box-content box-bel'>{s.get('bel','')}</div>", unsafe_allow_html=True)
                 else:
-                    st.error("❌ Erro JSON. Tente novamente.")
-                    with st.expander("Ver Resposta Bruta"):
-                        st.code(final_res)
+                    st.error("❌ Erro JSON.")
+                    with st.expander("Debug"): st.code(final_res)
     else:
         st.warning("Envie os arquivos.")
