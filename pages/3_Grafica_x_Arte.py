@@ -4,69 +4,77 @@ from PIL import Image
 import fitz  # PyMuPDF
 import io
 import time
+import os
 
-st.set_page_config(page_title="Visual (Auto-Fix)", layout="wide")
+st.set_page_config(page_title="Visual (Auto-Discovery)", layout="wide")
 
-# ----------------- LISTA DE MODELOS PARA TENTAR -----------------
-# O código vai testar um por um até achar o que sua conta aceita.
-MODEL_CANDIDATES = [
-    "models/gemini-1.5-flash",          # Nome padrão
-    "models/gemini-1.5-flash-001",      # Nome versionado (comum em contas antigas)
-    "models/gemini-1.5-flash-002",      # Versão atualizada
-    "models/gemini-1.5-flash-latest",   # Alias
-    "models/gemini-1.5-flash-8b",       # Versão ultra-leve
-    "gemini-1.5-flash"                  # Sem prefixo
-]
-
-# ----------------- FUNÇÃO MESTRA (ROTAÇÃO TOTAL) -----------------
-def try_generate_vision_robust(prompt, img_objects):
+# ----------------- FUNÇÃO DE AUTO-DESCOBERTA -----------------
+def get_available_vision_model(api_key):
     """
-    Tenta:
-    1. Chave 1 -> Testa todos os modelos da lista.
-    2. Se der erro de cota (429), muda para Chave 2 -> Testa todos os modelos.
+    Em vez de adivinhar, LISTA os modelos disponíveis na conta
+    e escolhe o melhor compatível com visão.
     """
-    
-    # 1. Pega as chaves
+    genai.configure(api_key=api_key)
+    try:
+        # Pede a lista oficial para o Google
+        all_models = list(genai.list_models())
+        
+        # Filtra apenas os que geram conteúdo
+        candidates = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
+        
+        # 1. Prioridade: Flash 1.5 (Estável)
+        for m in candidates:
+            if "gemini-1.5-flash" in m and "exp" not in m and "8b" not in m:
+                return m # Ex: models/gemini-1.5-flash-001
+        
+        # 2. Prioridade: Pro 1.5 (Se Flash não existir)
+        for m in candidates:
+            if "gemini-1.5-pro" in m and "exp" not in m:
+                return m
+                
+        # 3. Prioridade: Legacy (Gemini Pro Vision)
+        for m in candidates:
+            if "gemini-pro-vision" in m:
+                return m
+        
+        # 4. Se não achar nada específico, pega o primeiro da lista
+        if candidates:
+            return candidates[0]
+            
+    except Exception as e:
+        print(f"Erro ao listar modelos: {e}")
+        
+    # Último recurso se a listagem falhar
+    return "models/gemini-1.5-flash"
+
+# ----------------- FUNÇÃO DE GERAÇÃO ROBUSTA -----------------
+def generate_vision_content(prompt, img_objects):
     keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
-    valid_keys = [k for k in keys if k] # Remove vazias
+    valid_keys = [k for k in keys if k]
 
     if not valid_keys:
-        raise Exception("Nenhuma chave API encontrada no secrets.toml")
+        raise Exception("Sem chaves API configuradas.")
 
     last_error = None
 
-    # LOOP 1: Rotação de Chaves
-    for key_idx, api_key in enumerate(valid_keys):
-        genai.configure(api_key=api_key)
-        
-        # LOOP 2: Rotação de Nomes de Modelo
-        for model_name in MODEL_CANDIDATES:
-            try:
-                model = genai.GenerativeModel(model_name)
-                
-                # Tenta gerar
-                response = model.generate_content([prompt, *img_objects])
-                return response, model_name # Sucesso! Retorna resposta e qual modelo funcionou
-                
-            except Exception as e:
-                error_str = str(e)
-                last_error = e
-                
-                # ANÁLISE DO ERRO PARA DECIDIR O QUE FAZER
-                
-                # Se for 404 (Model not found) -> TENTA O PRÓXIMO NOME NA MESMA CHAVE
-                if "404" in error_str or "not found" in error_str.lower():
-                    continue 
-                
-                # Se for 429 (Quota) -> PARA DE TESTAR NOMES E VAI PARA A PRÓXIMA CHAVE
-                elif "429" in error_str or "quota" in error_str.lower():
-                    break # Sai do loop de modelos, cai no loop de chaves
-                
-                # Outros erros -> Continua tentando
-                else:
-                    continue
-
-    # Se chegou aqui, nada funcionou
+    for key in valid_keys:
+        try:
+            # 1. Descobre o modelo exato que essa chave aceita
+            model_name = get_available_vision_model(key)
+            
+            # 2. Configura e Instancia
+            genai.configure(api_key=key)
+            model = genai.GenerativeModel(model_name)
+            
+            # 3. Tenta gerar
+            response = model.generate_content([prompt, *img_objects])
+            return response, model_name
+            
+        except Exception as e:
+            last_error = e
+            # Se for erro de cota (429) ou não encontrado (404), tenta a próxima chave
+            continue
+            
     raise last_error
 
 # ----------------- UTILITÁRIOS -----------------
@@ -83,8 +91,8 @@ def pdf_to_images(uploaded_file):
     except: return []
 
 # ----------------- UI -----------------
-st.title("🎨 Gráfica x Arte (Auto-Fix 404)")
-st.caption("Motor: Busca automática do modelo Gemini Flash compatível.")
+st.title("🎨 Gráfica x Arte (Auto-Discovery)")
+st.caption("Motor: Detecção automática do modelo disponível na sua conta.")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("Arte", type=["pdf", "jpg", "png"], key="f1")
@@ -105,36 +113,37 @@ if st.button("🚀 Comparar Visualmente"):
                 col_b.image(imgs2[i], caption="Gráfica", use_container_width=True)
                 
                 prompt = """
-                Atue como Especialista de Pré-Impressão.
+                Atue como Auditor de Pré-Impressão.
                 Compare visualmente as duas imagens.
                 
                 VERIFIQUE:
-                1. Layout (deslocamentos).
-                2. Fontes (trocas ou quebras).
+                1. Layout e Diagramação.
+                2. Fontes e Textos.
                 3. Logotipos e Cores.
-                4. Textos (blocos sumidos).
                 
-                Se idêntico: Responda apenas "✅ Aprovado".
-                Se houver erro: Liste os erros.
+                Se idêntico: Responda "✅ Aprovado".
+                Se erro: Liste os erros.
                 """
                 
                 try:
-                    # Chama a função robusta
-                    resp, used_model = try_generate_vision_robust(prompt, [imgs1[i], imgs2[i]])
-                    
-                    if i == 0:
-                        st.toast(f"Conectado com sucesso em: {used_model}", icon="🔌")
-                    
-                    if "✅" in resp.text:
-                        st.success(resp.text)
-                    else:
-                        st.error(resp.text)
-                    
-                    time.sleep(4)
-                    
+                    with st.spinner("IA Analisando..."):
+                        # Chama a função inteligente
+                        resp, used_model = generate_vision_content(prompt, [imgs1[i], imgs2[i]])
+                        
+                        # Mostra qual modelo foi usado (para você saber)
+                        if i == 0:
+                            st.toast(f"Conectado em: {used_model}", icon="🤖")
+                        
+                        if "✅" in resp.text:
+                            st.success(resp.text)
+                        else:
+                            st.error(resp.text)
+                        
+                        time.sleep(4) # Pausa de segurança
+                        
                 except Exception as e:
                     st.error(f"Erro Fatal: {e}")
-                    st.warning("Verifique se suas chaves API têm acesso ao Gemini 1.5 Flash no Google AI Studio.")
+                    st.warning("Dica: Verifique se suas chaves API têm a API 'Generative Language' ativada no Google Cloud Console.")
                 
                 st.divider()
     else:
