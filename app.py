@@ -11,7 +11,6 @@ import os
 import gc
 import time
 from PIL import Image
-from difflib import SequenceMatcher
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
 st.set_page_config(
@@ -49,7 +48,8 @@ st.markdown("""
         display: inline-block; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    .mistral-badge { background-color: #e3f2fd; color: #1565c0; border: 2px solid #90caf9; }
+    .mistral-small-badge { background-color: #e8f5e9; color: #2e7d32; border: 2px solid #a5d6a7; }
+    .mistral-large-badge { background-color: #e3f2fd; color: #1565c0; border: 2px solid #90caf9; }
     .gemini-badge { background-color: #fff3e0; color: #e65100; border: 2px solid #ffb74d; }
     
     .box-content { 
@@ -67,7 +67,6 @@ st.markdown("""
     .box-bel { background-color: #f9fbe7; border-left: 5px solid #827717; }
     .box-ref { background-color: #f5f5f5; border-left: 5px solid #757575; }
     
-    /* Highlight Styles */
     mark.diff { 
         background-color: #ffeb3b !important; 
         color: #000 !important;
@@ -142,7 +141,6 @@ def configure_apis():
     return (gem_key is not None), mistral_client
 
 def ocr_with_gemini_flash(images):
-    """OCR Rápido para imagens/curvas"""
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
         prompt = "Transcreva TODO o texto desta bula médica EXATAMENTE como está. Mantenha tabelas e estrutura."
@@ -152,34 +150,29 @@ def ocr_with_gemini_flash(images):
         return ""
 
 def extract_content(uploaded_file):
-    """Extrai conteúdo de PDF/DOCX (Nativo ou OCR)"""
     if not uploaded_file: return None
     try:
         file_bytes = uploaded_file.read()
         filename = uploaded_file.name.lower()
         
-        # --- DOCX ---
         if filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs])
             return {"data": text, "method": "DOCX Nativo", "len": len(text)}
 
-        # --- PDF ---
         elif filename.endswith('.pdf'):
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = ""
             for page in doc:
                 full_text += page.get_text() + "\n"
             
-            # Decide se usa OCR (baseado em densidade de texto)
             avg_chars = len(full_text) / max(1, len(doc))
             
             if avg_chars > 200:
                 doc.close()
                 return {"data": full_text, "method": "PDF Nativo", "len": len(full_text)}
             
-            # OCR Necessário
-            st.toast(f"👁️ '{filename}': Modo OCR (Imagem/Curvas)...", icon="⚡")
+            st.toast(f"👁️ '{filename}': Modo OCR...", icon="⚡")
             images = []
             limit = min(15, len(doc))
             for i in range(limit):
@@ -219,7 +212,6 @@ def normalize_sections(data, allowed_titles):
         match = mapa.get(tit)
         
         if not match:
-            # Busca aproximada
             for k, v in mapa.items():
                 if k in tit or tit in k:
                     match = v
@@ -229,7 +221,6 @@ def normalize_sections(data, allowed_titles):
             sec["titulo"] = match
             normalized.append(sec)
             
-    # Ordena pela lista oficial
     normalized.sort(key=lambda x: allowed_titles.index(x["titulo"]) if x["titulo"] in allowed_titles else 999)
     data["SECOES"] = normalized
     return data
@@ -303,14 +294,14 @@ with c_up1:
 with c_up2:
     f2 = st.file_uploader("📂 Arquivo Candidato (Validar)", type=["pdf", "docx"])
 
-if st.button("🚀 INICIAR AUDITORIA (MISTRAL LARGE)"):
+if st.button("🚀 INICIAR AUDITORIA INTELIGENTE"):
     if not f1 or not f2:
         st.warning("⚠️ Envie os dois arquivos.")
         st.stop()
         
     bar = st.progress(0, "Lendo arquivos...")
     
-    # 1. Leitura (Otimizada)
+    # 1. Leitura
     d1 = extract_content(f1)
     bar.progress(30, "Referência ok...")
     d2 = extract_content(f2)
@@ -320,39 +311,54 @@ if st.button("🚀 INICIAR AUDITORIA (MISTRAL LARGE)"):
         st.error("Erro leitura.")
         st.stop()
         
-    st.caption(f"Ref: {d1['len']} chars | Cand: {d2['len']} chars")
+    total_len = d1['len'] + d2['len']
+    st.caption(f"Ref: {d1['len']} | Cand: {d2['len']} | Total: {total_len} chars")
     
     # 2. Processamento IA
     sys_prompt = get_audit_prompt(lista_alvo)
     user_prompt = f"--- TEXTO REF ---\n{d1['data']}\n\n--- TEXTO CANDIDATO ---\n{d2['data']}"
     
-    json_res = None
+    json_res = ""
     model_name = ""
     start_t = time.time()
     
     try:
-        # LÓGICA ROTEAMENTO (MISTRAL LARGE COM TIMEOUT)
+        # LÓGICA DE ROTEAMENTO HÍBRIDO
         if pag in ["Ref x BELFAR", "Conferência MKT"]:
             if not mis_client:
                 st.error("Erro: API Mistral não configurada.")
                 st.stop()
             
-            bar.progress(70, "🌪️ Mistral Large Analisando (Max 3 min)...")
-            model_name = "Mistral Large"
+            # DECISÃO INTELIGENTE BASEADA NO TAMANHO
+            # Limite de segurança: 15.000 caracteres (aprox. 5 páginas cheias)
+            if total_len < 15000:
+                model_id = "mistral-small-latest"
+                model_name = "Mistral Small (Turbo)"
+                msg_status = "🌪️ Mistral Small (Rápido) Analisando..."
+            else:
+                model_id = "mistral-large-latest"
+                model_name = "Mistral Large (Preciso)"
+                msg_status = "🧠 Mistral Large (Pesado/Streaming) Analisando..."
             
-            # --- AQUI ESTÁ A PROTEÇÃO ---
-            # Timeout de 180s (3 minutos) para não ficar eterno
-            resp = mis_client.chat.complete(
-                model="mistral-large-latest",
+            bar.progress(70, msg_status)
+            
+            # USO DO STREAMING (Resolve o problema do Timeout)
+            stream_response = mis_client.chat.stream(
+                model=model_id,
                 messages=[
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.0,
-                timeout_ms=180000  # <--- SEGREDO PARA NÃO TRAVAR
+                timeout_ms=300000 # 5 min timeout de conexão (segurança)
             )
-            json_res = resp.choices[0].message.content
+            
+            chunks = []
+            for chunk in stream_response:
+                if chunk.data.choices[0].delta.content:
+                    chunks.append(chunk.data.choices[0].delta.content)
+            json_res = "".join(chunks)
 
         else: # Gráfica (Gemini)
             if not gem_ok:
@@ -370,7 +376,7 @@ if st.button("🚀 INICIAR AUDITORIA (MISTRAL LARGE)"):
             json_res = resp.text
             
     except Exception as e:
-        st.error(f"❌ Erro ou Tempo Excedido: {e}")
+        st.error(f"❌ Erro na IA: {e}")
         st.stop()
         
     bar.progress(100, "Concluído!")
@@ -384,7 +390,12 @@ if st.button("🚀 INICIAR AUDITORIA (MISTRAL LARGE)"):
             dados = normalize_sections(dados, lista_alvo)
             
             duracao = time.time() - start_t
-            cls_css = "mistral-badge" if "Mistral" in model_name else "gemini-badge"
+            
+            # Define cor do badge
+            if "Small" in model_name: cls_css = "mistral-small-badge"
+            elif "Large" in model_name: cls_css = "mistral-large-badge"
+            else: cls_css = "gemini-badge"
+                
             st.markdown(f"<div class='ia-badge {cls_css}'>Processado por: {model_name} em {duracao:.1f}s</div>", unsafe_allow_html=True)
             
             secoes = dados.get("SECOES", [])
@@ -404,7 +415,6 @@ if st.button("🚀 INICIAR AUDITORIA (MISTRAL LARGE)"):
                 tit = sec.get("titulo", "N/A")
                 stat = sec.get("status", "OK")
                 
-                # Ícones
                 if tit in SECOES_IGNORAR_DIFF:
                     icon, lbl = "🔒", "OK (Conteúdo Extraído)"
                 else:
