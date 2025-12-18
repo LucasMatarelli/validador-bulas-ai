@@ -3,8 +3,8 @@ import google.generativeai as genai
 import fitz  # PyMuPDF
 import json
 
-# ----------------- 1. VISUAL & CSS (O mesmo do anterior) -----------------
-st.set_page_config(page_title="MKT Lado a Lado", page_icon="📢", layout="wide")
+# ----------------- 1. VISUAL & CSS (Igual ao Visual Lado a Lado) -----------------
+st.set_page_config(page_title="MKT Estruturado", page_icon="📢", layout="wide")
 
 st.markdown("""
 <style>
@@ -20,10 +20,10 @@ st.markdown("""
         border: 1px solid #ced4da;
         height: 100%; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; /* Mantém quebras de linha */
+        white-space: pre-wrap; /* Mantém parágrafos */
     }
 
-    /* Destaques */
+    /* Destaques (Marca-textos) */
     .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; border: 1px solid #ffeeba; }
     .highlight-red { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 3px; border: 1px solid #f5c6cb; font-weight: bold; }
     .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 3px; border: 1px solid #bee5eb; font-weight: bold; }
@@ -31,12 +31,11 @@ st.markdown("""
     /* Bordas de Status */
     .border-ok { border-left: 6px solid #28a745 !important; }   /* Verde */
     .border-warn { border-left: 6px solid #ffc107 !important; } /* Amarelo */
-    .border-err { border-left: 6px solid #dc3545 !important; }  /* Vermelho */
+    .border-info { border-left: 6px solid #17a2b8 !important; } /* Azul (Info) */
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-# Usando o flash-latest para garantir JSON estável e cota alta
 MODELO_FIXO = "models/gemini-flash-latest"
 
 def setup_model():
@@ -46,6 +45,7 @@ def setup_model():
     for api_key in valid_keys:
         try:
             genai.configure(api_key=api_key)
+            # Temperatura 0.0 para garantir fidelidade ao texto extraído
             return genai.GenerativeModel(
                 MODELO_FIXO, 
                 generation_config={"response_mime_type": "application/json", "temperature": 0.0}
@@ -53,77 +53,92 @@ def setup_model():
         except: continue
     return None
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO (SEM OCR) -----------------
+# ----------------- 3. EXTRAÇÃO DE TEXTO (PDF -> STRING) -----------------
 def extract_text_from_pdf(uploaded_file):
-    """Extrai texto puro do PDF usando PyMuPDF (Fitz)"""
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         text = ""
         for page in doc:
             text += page.get_text("text") + "\n"
         return text
-    except Exception as e:
-        return ""
+    except: return ""
+
+# LISTA OFICIAL DE SEÇÕES
+SECOES_PACIENTE = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
+    "DIZERES LEGAIS"
+]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("📢 Conferência MKT (Texto vs Texto)")
+st.title("📢 Conferência MKT (Estruturada)")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf"], key="anvisa")
-f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf"], key="mkt")
+f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf"], key="f1")
+f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf"], key="f2")
 
-if st.button("🚀 Validar Marketing"):
+if st.button("🚀 Estruturar e Validar"):
     if f1 and f2:
         model = setup_model()
         if not model:
-            st.error("Erro de API Key.")
+            st.error("Sem chave API.")
             st.stop()
 
-        with st.spinner("Extraindo textos e validando claims..."):
-            # Extração de texto direto (Rápido, leve)
+        with st.spinner("Extraindo textos e organizando nas seções..."):
+            # 1. Pega o texto cru dos PDFs
             t_anvisa = extract_text_from_pdf(f1)
             t_mkt = extract_text_from_pdf(f2)
-            
+
             if len(t_anvisa) < 50 or len(t_mkt) < 50:
-                st.error("⚠️ Um dos arquivos parece vazio ou é imagem (não contém texto selecionável).")
+                st.error("Erro: Um dos arquivos não tem texto selecionável (pode ser imagem).")
                 st.stop()
-
-            # PROMPT ADAPTADO PARA MKT
-            prompt = f"""
-            Atue como Revisor Farmacêutico (Medical Affairs).
-            Compare o TEXTO DO MKT (Material Promocional) com o TEXTO DA ANVISA (Bula/Referência).
             
-            OBJETIVO: Validar se as afirmações do Marketing estão embasadas na Bula.
+            # 2. PROMPT PARA ORGANIZAR E VALIDAR
+            prompt = f"""
+            Você é um Revisor Farmacêutico. 
+            Tenho dois textos brutos extraídos de PDF:
+            TEXTO 1 (ANVISA/REF): {t_anvisa[:50000]}
+            TEXTO 2 (MKT/VAL): {t_mkt[:30000]}
 
-            TEXTO ANVISA (FONTE DE VERDADE):
-            {t_anvisa[:50000]} 
+            SUA TAREFA:
+            1. Identifique no TEXTO 2 (MKT) o conteúdo correspondente a cada seção da lista abaixo.
+            2. Compare com o TEXTO 1.
+            
+            LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
-            TEXTO MKT (PARA VALIDAR):
-            {t_mkt[:20000]}
+            ⚠️ REGRAS ESPECÍFICAS DE STATUS E VISUALIZAÇÃO:
 
-            TAREFA:
-            1. Identifique cada TÓPICO/CLAIM feito no MKT (ex: "Indicação", "Posologia", "Slogan", "Advertências").
-            2. Busque o trecho correspondente na Anvisa que comprova (ou contradiz) o MKT.
-            3. Gere um JSON comparativo.
+            GRUPO A (Não Comparar): ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+            - Defina status sempre como "CONFORME".
+            - Apenas transcreva o conteúdo completo encontrado.
+            - REGRA ESPECIAL PARA 'DIZERES LEGAIS':
+                - Procure a data da Anvisa (ex: "aprovado em dd/mm/aaaa").
+                - Se achar, envolva com <span class="highlight-blue">DATA</span>.
+                - Se NÃO achar, escreva "N/A" no final do texto.
 
-            REGRAS DE DESTAQUE (apenas no campo 'texto_mkt'):
-            - <span class="highlight-yellow">TEXTO</span> para informações no MKT que não constam na bula ou estão exageradas (Divergência).
-            - <span class="highlight-red">TEXTO</span> para erros gramaticais/ortográficos no MKT.
-            - <span class="highlight-blue">TEXTO</span> para avisos legais obrigatórios (ex: "SE PERSISTIREM OS SINTOMAS...").
+            GRUPO B (Comparar Rigorosamente): [TODAS AS OUTRAS]
+            - Compare o conteúdo. Se o MKT omitiu avisos importantes ou mudou o sentido, status "DIVERGENTE".
+            - Use <span class="highlight-yellow">TEXTO</span> para divergências de conteúdo.
+            - Use <span class="highlight-red">TEXTO</span> para erros de português.
+            - Se a seção não existir no MKT (comum em peças publicitárias), coloque "Não consta na peça" e status "CONFORME" (pois MKT nem sempre tem tudo).
 
-            SAÍDA JSON OBRIGATÓRIA:
+            SAÍDA JSON ARRAY:
             [
-              {{
-                "titulo": "Tópico Identificado (ex: Posologia)",
-                "texto_anvisa": "Trecho copiado da Bula que valida o tópico",
-                "texto_mkt": "Trecho do MKT com tags HTML de destaque",
-                "status": "CONFORME" (se validado) ou "DIVERGENTE" (se inventado/errado)
-              }}
+                {{
+                    "titulo": "NOME DA SEÇÃO",
+                    "texto_anvisa": "Conteúdo completo da Anvisa",
+                    "texto_mkt": "Conteúdo completo do MKT com highlights",
+                    "status": "CONFORME" ou "DIVERGENTE"
+                }}
             ]
             """
             
             try:
-                # Chamada ao modelo
                 response = model.generate_content(prompt)
                 dados = json.loads(response.text)
 
@@ -134,39 +149,42 @@ if st.button("🚀 Validar Marketing"):
                 divergentes = sum(1 for d in dados if d['status'] != 'CONFORME')
                 
                 k1, k2, k3 = st.columns(3)
-                k1.metric("Tópicos no MKT", total)
-                k2.metric("Validados", total - divergentes)
-                k3.metric("Atenção Requerida", divergentes, delta_color="inverse")
+                k1.metric("Seções Mapeadas", total)
+                k2.metric("Conformes", total - divergentes)
+                k3.metric("Divergências", divergentes, delta_color="inverse")
                 st.divider()
 
-                # Renderização Lado a Lado
+                # Renderização Visual
                 for item in dados:
                     status = item.get('status', 'CONFORME')
-                    titulo = item.get('titulo', 'Tópico')
+                    titulo = item.get('titulo', 'Seção')
                     
-                    if status == "CONFORME":
+                    # Definição visual (ícone e borda)
+                    if "DIZERES LEGAIS" in titulo.upper():
+                        icon = "📅"
+                        css = "border-info"
+                        aberto = True
+                    elif status == "CONFORME":
                         icon = "✅"
                         css = "border-ok"
+                        aberto = False
                     else:
                         icon = "⚠️"
                         css = "border-warn"
+                        aberto = True
 
-                    with st.expander(f"{icon} {titulo}", expanded=(status != "CONFORME")):
+                    with st.expander(f"{icon} {titulo}", expanded=aberto):
                         col_esq, col_dir = st.columns(2)
                         
                         with col_esq:
-                            st.caption("Referência (Bula Anvisa)")
-                            # Texto Anvisa sem highlight, apenas para prova
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_anvisa", "Não encontrado na bula.")}</div>', unsafe_allow_html=True)
+                            st.caption("📜 Bula Anvisa (Referência)")
+                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_anvisa", "")}</div>', unsafe_allow_html=True)
                             
                         with col_dir:
-                            st.caption("Peça MKT (Validada)")
-                            # Texto MKT com os highlights coloridos
+                            st.caption("🎨 Arte MKT (Validado)")
                             st.markdown(f'<div class="texto-box {css}">{item.get("texto_mkt", "")}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"Erro ao processar: {e}")
-                st.caption("Dica: Verifique se os PDFs possuem texto selecionável (não são imagens escaneadas).")
-
+                st.error(f"Erro no processamento: {e}")
     else:
-        st.warning("Envie a Bula Anvisa e a Arte MKT.")
+        st.warning("Envie os dois PDFs.")
