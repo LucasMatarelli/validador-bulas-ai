@@ -97,7 +97,7 @@ if st.button("🚀 Processar Conferência"):
             st.error("Sem chave API.")
             st.stop()
 
-        with st.spinner("Lendo arquivos, corrigindo formatação e organizando seções..."):
+        with st.spinner("Comparando palavra por palavra..."):
             t_anvisa = extract_text_from_pdf(f1)
             t_mkt = extract_text_from_pdf(f2)
 
@@ -105,7 +105,7 @@ if st.button("🚀 Processar Conferência"):
                 st.error("Erro: Arquivo vazio ou ilegível (imagem sem OCR).")
                 st.stop()
 
-            # PROMPT AVANÇADO: SEPARAÇÃO DE DADOS E FORMATAÇÃO
+            # PROMPT CORRIGIDO PARA PRECISÃO CIRÚRGICA
             prompt = f"""
             Você é um Revisor Farmacêutico Meticuloso.
             
@@ -117,14 +117,22 @@ if st.button("🚀 Processar Conferência"):
             1. Encontre a "Data de Aprovação da Anvisa" nos Dizeres Legais de AMBOS os textos.
             2. Mapeie o conteúdo do TEXTO 2 (MKT) nas seções da lista abaixo.
             3. Compare com o TEXTO 1.
-            4. **CRÍTICO: CORRIJA A FORMATAÇÃO.** O texto extraído do PDF pode ter quebras de linha erradas (uma palavra por linha). Junte as frases para formarem parágrafos normais e bonitos.
+            4. **CRÍTICO: CORRIJA A FORMATAÇÃO.** O texto extraído do PDF pode ter quebras de linha erradas. Junte as frases.
 
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
-            REGRAS DE STATUS:
-            - "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS": Sempre "CONFORME". Apenas transcreva o texto (Sem highlights de erro).
-            - OUTRAS SEÇÕES: Compare rigorosamente. Use <span class="highlight-yellow">TEXTO</span> para divergências e <span class="highlight-red">TEXTO</span> para erros de PT.
-            - DIZERES LEGAIS: Destaque a data da Anvisa (se houver no texto) com <span class="highlight-blue">DATA</span>. NÃO adicione "N/A" se não tiver.
+            ⚠️ REGRAS DE COMPARAÇÃO E DESTAQUE (HIGHLIGHT):
+
+            GRUPO 1 (BLINDADO): ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+            - Status: SEMPRE "CONFORME".
+            - Ação: Apenas transcreva o texto limpo da Gráfica.
+            - DIZERES LEGAIS: Extraia a data para o cabeçalho. No texto, se achar a data, marque <span class="highlight-blue">DATA</span>. Se não achar, NÃO escreva "N/A".
+
+            GRUPO 2 (RIGOROSO): [TODAS AS OUTRAS]
+            - Ação: Compare palavra por palavra.
+            - **PRECISÃO CIRÚRGICA:** Se a divergência for apenas uma palavra (ex: "não"), destaque APENAS a palavra "não". NÃO destaque a frase inteira.
+            - Use <span class="highlight-yellow">PALAVRA_DIVERGENTE</span> para conteúdo diferente/extra.
+            - Use <span class="highlight-red">PALAVRA_ERRADA</span> para erros ortográficos.
 
             SAÍDA JSON OBRIGATÓRIA:
             {{
@@ -133,8 +141,8 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Texto formatado (sem quebras malucas)",
-                        "texto_mkt": "Texto formatado (sem quebras malucas) com highlights",
+                        "texto_anvisa": "Texto formatado",
+                        "texto_mkt": "Texto formatado com highlights PRECISOS",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
@@ -150,7 +158,7 @@ if st.button("🚀 Processar Conferência"):
                 data_mkt = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
 
-                # --- ÁREA DE MÉTRICAS (LÁ EM CIMA) ---
+                # --- ÁREA DE MÉTRICAS (VISUAL DO PRINT) ---
                 st.markdown("### 📊 Resumo da Conferência")
                 
                 # Linha 1: Datas
@@ -163,13 +171,13 @@ if st.button("🚀 Processar Conferência"):
                 divergentes = sum(1 for d in dados_secoes if d['status'] != 'CONFORME')
                 c_d3.metric("Seções Analisadas", total)
 
-                # Mostra contadores menores abaixo
+                # Mostra contadores menores abaixo (Barras coloridas)
                 sub1, sub2 = st.columns(2)
-                sub1.info(f"✅ **Conformes:** {total - divergentes}")
+                sub1.success(f"✅ **Conformes: {total - divergentes}**")
                 if divergentes > 0:
-                    sub2.warning(f"⚠️ **Divergentes:** {divergentes}")
+                    sub2.warning(f"⚠️ **Divergentes: {divergentes}**")
                 else:
-                    sub2.success("✨ **Divergências:** 0")
+                    sub2.success("✨ **Divergências: 0**")
 
                 st.divider()
 
