@@ -1,134 +1,120 @@
 import streamlit as st
+import pdfplumber
 import re
 import difflib
 
-# Configuração da página
-st.set_page_config(page_title="Validador de Bulas", layout="wide")
+st.set_page_config(page_title="Validador Belfar", layout="wide")
 
-def extrair_conteudo_entre_secoes(texto_completo, titulo_atual, titulo_proximo):
-    """
-    Extrai o texto estritamente entre o fim do titulo_atual e o inicio do titulo_proximo.
-    """
-    if not texto_completo:
-        return ""
+# --- FUNÇÕES ---
 
-    # Escapa os títulos para evitar erros de regex com caracteres especiais
-    t_atual = re.escape(titulo_atual)
+def ler_pdf(arquivo):
+    """Lê o arquivo PDF carregado e retorna todo o texto."""
+    texto_completo = ""
+    with pdfplumber.open(arquivo) as pdf:
+        for page in pdf.pages:
+            texto_completo += page.extract_text() + "\n"
+    return texto_completo
+
+def extrair_secao(texto, titulo_inicio, titulo_fim):
+    """Recorta o texto entre o título de início e o título de fim."""
+    if not texto: return ""
     
-    # Se houver uma próxima seção definida, busca até ela. 
-    # Se não (for a última), busca até o fim do arquivo ($).
-    if titulo_proximo:
-        t_prox = re.escape(titulo_proximo)
-        pattern = f"{t_atual}(.*?){t_prox}"
-    else:
-        pattern = f"{t_atual}(.*)$"
-
-    # re.DOTALL faz o ponto (.) pegar quebras de linha também
-    # re.IGNORECASE permite que o título seja detectado mesmo com maiúsculas/minúsculas diferentes
-    match = re.search(pattern, texto_completo, re.DOTALL | re.IGNORECASE)
+    t_inicio = re.escape(titulo_inicio)
+    t_fim = re.escape(titulo_fim)
+    
+    # Procura algo que começa com o titulo_inicio e vai até o titulo_fim
+    # re.DOTALL faz pegar quebras de linha
+    padrao = f"{t_inicio}(.*?){t_fim}"
+    
+    # Tenta encontrar com o título de fim definido
+    match = re.search(padrao, texto, re.DOTALL | re.IGNORECASE)
+    
+    # Se não achar o título de fim (ex: é a última seção), tenta pegar até o final do arquivo
+    if not match:
+        padrao_fim = f"{t_inicio}(.*)$"
+        match = re.search(padrao_fim, texto, re.DOTALL | re.IGNORECASE)
 
     if match:
-        # Retorna o grupo 1 (conteúdo do meio) sem espaços nas pontas
         return match.group(1).strip()
-    else:
-        return "Seção não encontrada ou ordem dos títulos incorreta."
+    return "" # Retorna vazio se não achar o título de início
 
-def processar_comparacao_visual(texto_original, texto_novo):
-    """
-    Compara dois textos e retorna HTML:
-    - Amarelo: Diferenças (o que existe no novo e não no original).
-    - Azul: Datas no formato dd/mm/aaaa.
-    """
-    
-    # 1. COMPARAÇÃO (AMARELO)
-    matcher = difflib.SequenceMatcher(None, texto_original, texto_novo)
-    resultado_html = []
+def gerar_html_comparacao(texto_ref, texto_novo):
+    """Gera o HTML com o amarelo (diferenças) e azul (datas)."""
+    matcher = difflib.SequenceMatcher(None, texto_ref, texto_novo)
+    html_output = []
 
-    # Itera sobre os blocos de diferença
+    # 1. DIFERENÇAS (AMARELO)
     for opcode, i1, i2, j1, j2 in matcher.get_opcodes():
         trecho = texto_novo[j1:j2]
-        
         if opcode == 'equal':
-            # Texto igual: mantém normal
-            resultado_html.append(trecho)
+            html_output.append(trecho)
         elif opcode in ('replace', 'insert'):
-            # Texto diferente (alterado ou inserido): marca de amarelo
-            # Usamos background-color yellow
-            resultado_html.append(f'<span style="background-color: #FFEB3B; color: black;">{trecho}</span>')
-        elif opcode == 'delete':
-            # Se algo foi deletado do original, não mostramos no texto final (ou poderíamos usar strike)
-            pass
-
-    texto_final = "".join(resultado_html)
-
-    # 2. DATA DA ANVISA (AZUL)
-    # Procura padrões de data (dd/mm/aaaa ou dd/mm/aa)
-    # A regex \b garante que pegue a data inteira
-    padrao_data = r"\b(\d{2}/\d{2}/\d{2,4})\b"
+            html_output.append(f'<span style="background-color: #FFEB3B; color: black;">{trecho}</span>')
     
-    # Substitui a data encontrada por ela mesma envolvida em azul
-    # Isso funciona mesmo se a data estiver dentro de um span amarelo (o azul terá prioridade na fonte)
-    texto_final = re.sub(
+    texto_processado = "".join(html_output)
+
+    # 2. DATAS (AZUL)
+    # Regex para datas dd/mm/aaaa ou dd/mm/aa
+    padrao_data = r"\b(\d{2}/\d{2}/\d{2,4})\b"
+    texto_processado = re.sub(
         padrao_data, 
         r'<span style="color: blue; font-weight: bold;">\1</span>', 
-        texto_final
+        texto_processado
     )
 
-    # Converte quebras de linha do texto (\n) para HTML (<br>) para exibir corretamente
-    return texto_final.replace("\n", "<br>")
+    return texto_processado.replace("\n", "<br>")
 
-# --- INTERFACE DO STREAMLIT ---
+# --- INTERFACE ---
 
-st.title("💊 Validador de Bulas - Comparação de Seções")
+st.title("💊 Validador de Bulas Automático")
 
-st.info("Cole os textos completos dos arquivos abaixo para testar a extração e validação.")
+# 1. Seleção do Tipo de Bula
+tipo_bula = st.radio("Qual o tipo da bula?", ["Paciente", "Profissional"], horizontal=True)
 
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("Arquivo Original (Referência)")
-    texto_arq1 = st.text_area("Cole o texto do PDF 1 aqui:", height=300, placeholder="Ex: DIZERES LEGAIS\nFarm. Resp.: Dr. João...\n...")
-
-with col2:
-    st.subheader("Arquivo Novo (Para Validar)")
-    texto_arq2 = st.text_area("Cole o texto do PDF 2 aqui:", height=300, placeholder="Ex: DIZERES LEGAIS\nFarm. Resp.: Dr. João...\nData: 15/10/2025...")
+# Define os títulos de corte automaticamente baseados na escolha
+# (Você pode ajustar esses títulos fixos se na Belfar for diferente)
+if tipo_bula == "Paciente":
+    titulo_corte_inicio = "DIZERES LEGAIS"
+    titulo_corte_fim = "HISTÓRICO DE ALTERAÇÃO" # Ou outro título que venha depois
+else: # Profissional
+    titulo_corte_inicio = "DIZERES LEGAIS"
+    titulo_corte_fim = "HISTÓRICO DE ALTERAÇÃO"
 
 st.markdown("---")
-st.subheader("Configuração da Seção")
 
-# Inputs para definir quais títulos delimitam o texto que queremos analisar
-c_input1, c_input2 = st.columns(2)
-titulo_secao_atual = c_input1.text_input("Título da Seção para extrair:", value="DIZERES LEGAIS")
-titulo_proxima_secao = c_input2.text_input("Título da Próxima Seção (Pare ao encontrar):", value="HISTÓRICO DE ALTERAÇÃO", help="Deixe em branco se for a última seção do arquivo.")
+# 2. Upload dos Arquivos
+col1, col2 = st.columns(2)
+with col1:
+    arq_ref = st.file_uploader("📂 Arquivo Original (Referência)", type="pdf")
+with col2:
+    arq_novo = st.file_uploader("📂 Arquivo Novo (Para Validar)", type="pdf")
 
-if st.button("Validar Seção"):
-    if texto_arq1 and texto_arq2 and titulo_secao_atual:
-        
-        # 1. Extração
-        conteudo_1 = extrair_conteudo_entre_secoes(texto_arq1, titulo_secao_atual, titulo_proxima_secao)
-        conteudo_2 = extrair_conteudo_entre_secoes(texto_arq2, titulo_secao_atual, titulo_proxima_secao)
-        
-        # Mostra o texto cru extraído (para debug, se quiser pode remover depois)
-        with st.expander("Ver texto extraído (Sem formatação)"):
-            st.text(f"Texto 1 extraído:\n{conteudo_1}")
-            st.markdown("---")
-            st.text(f"Texto 2 extraído:\n{conteudo_2}")
+# 3. Processamento Automático
+if arq_ref and arq_novo:
+    with st.spinner("Lendo PDFs e extraindo seção..."):
+        # Ler textos
+        texto_ref_full = ler_pdf(arq_ref)
+        texto_novo_full = ler_pdf(arq_novo)
 
-        # 2. Processamento Visual (Amarelo e Azul)
-        html_final = processar_comparacao_visual(conteudo_1, conteudo_2)
+        # Recortar apenas a seção desejada
+        secao_ref = extrair_secao(texto_ref_full, titulo_corte_inicio, titulo_corte_fim)
+        secao_novo = extrair_secao(texto_novo_full, titulo_corte_inicio, titulo_corte_fim)
 
-        # 3. Exibição do Resultado
-        st.markdown("### Resultado da Validação:")
-        st.markdown(
-            f"""
-            <div style="border:1px solid #ccc; padding: 20px; border-radius: 5px; background-color: #f9f9f9; font-family: sans-serif; line-height: 1.6;">
-                {html_final}
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
-        
-        st.caption("Legenda: Fundo Amarelo = Divergência de texto | Texto Azul = Data encontrada")
-        
-    else:
-        st.warning("Por favor, preencha os textos e o título da seção.")
+        if not secao_ref or not secao_novo:
+            st.error(f"Não consegui encontrar a seção '{titulo_corte_inicio}' em um dos arquivos. Verifique se o PDF é pesquisável (texto selecionável).")
+        else:
+            # Gerar visualização
+            html_final = gerar_html_comparacao(secao_ref, secao_novo)
+
+            st.success("Comparação realizada!")
+            st.markdown("### Resultado (Dizeres Legais):")
+            st.markdown(
+                f"""
+                <div style="border:1px solid #ccc; padding: 20px; border-radius: 5px; background-color: #f9f9f9; line-height: 1.6;">
+                    {html_final}
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+else:
+    st.info("👆 Solta os arquivos ali em cima pra começar.")
