@@ -2,7 +2,6 @@ import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
 import json
-import random
 
 # ----------------- 1. VISUAL & CSS (Design Limpo) -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
@@ -47,25 +46,6 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
-
-def setup_model():
-    # Pega as duas chaves dos secrets
-    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
-    valid_keys = [k for k in keys if k]
-    
-    if valid_keys:
-        # Sorteia uma das chaves disponíveis para usar (Balanceamento)
-        selected_key = random.choice(valid_keys)
-        try:
-            genai.configure(api_key=selected_key)
-            # Temperatura 0.0 para precisão máxima
-            return genai.GenerativeModel(
-                MODELO_FIXO, 
-                generation_config={"response_mime_type": "application/json", "temperature": 0.0}
-            )
-        except:
-            return None
-    return None
 
 # ----------------- 3. EXTRAÇÃO DE TEXTO -----------------
 def extract_text_from_pdf(uploaded_file):
@@ -113,12 +93,16 @@ f1 = c1.file_uploader("📂 Arquivo Referência", type=["pdf"], key="f1")
 f2 = c2.file_uploader("📂 Arquivo BELFAR", type=["pdf"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    if f1 and f2:
-        model = setup_model()
-        if not model:
-            st.error("Sem chave API configurada.")
-            st.stop()
+    # 1. PREPARAÇÃO DAS CHAVES (PEGA AS DUAS)
+    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    # Remove chaves vazias (caso não tenha configurado a 2 ainda)
+    keys_validas = [k for k in keys_disponiveis if k]
 
+    if not keys_validas:
+        st.error("Nenhuma chave API encontrada nos Secrets.")
+        st.stop()
+
+    if f1 and f2:
         with st.spinner("Lendo arquivos, corrigindo formatação e organizando seções..."):
             # Importante: resetar o ponteiro do arquivo antes de ler caso tenha sido lido antes
             f1.seek(0)
@@ -167,70 +151,102 @@ if st.button("🚀 Processar Conferência"):
             }}
             """
             
-            try:
-                response = model.generate_content(prompt)
-                resultado = json.loads(response.text)
-                
-                # Extrai dados globais
-                data_ref = resultado.get("data_anvisa_ref", "-")
-                data_belfar = resultado.get("data_anvisa_belfar", "-")
-                dados_secoes = resultado.get("secoes", [])
+            # --- LÓGICA DE TENTATIVA E ERRO (FAILOVER) ---
+            response = None
+            ultimo_erro = ""
 
-                # --- ÁREA DE MÉTRICAS ---
-                st.markdown("### 📊 Resumo da Conferência")
-                
-                # Linha 1: Datas
-                c_d1, c_d2, c_d3 = st.columns(3)
-                c_d1.metric("Data Ref.", data_ref)
-                c_d2.metric("Data BELFAR", data_belfar, delta="Igual" if data_ref == data_belfar else "Diferente")
-                
-                # Linha 2: Estatísticas
-                total = len(dados_secoes)
-                divergentes = sum(1 for d in dados_secoes if d['status'] != 'CONFORME')
-                c_d3.metric("Seções Analisadas", total)
-
-                # Mostra contadores menores abaixo
-                sub1, sub2 = st.columns(2)
-                sub1.info(f"✅ **Conformes:** {total - divergentes}")
-                if divergentes > 0:
-                    sub2.warning(f"⚠️ **Divergentes:** {divergentes}")
-                else:
-                    sub2.success("✨ **Divergências:** 0")
-
-                st.divider()
-
-                # --- LOOP DE SEÇÕES ---
-                for item in dados_secoes:
-                    status = item.get('status', 'CONFORME')
-                    titulo = item.get('titulo', 'Seção')
+            # Loop para tentar Chave 1, depois Chave 2
+            for i, api_key in enumerate(keys_validas):
+                try:
+                    # Configura a chave da vez
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(
+                        MODELO_FIXO, 
+                        generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                    )
                     
-                    # Definição visual (ícone e borda)
-                    if "DIZERES LEGAIS" in titulo.upper():
-                        icon = "⚖️"
-                        css = "border-info"
-                        aberto = True
-                    elif status == "CONFORME":
-                        icon = "✅"
-                        css = "border-ok"
-                        aberto = False
+                    # Tenta gerar
+                    response = model.generate_content(prompt)
+                    
+                    # Se chegou aqui, funcionou! Para o loop.
+                    break 
+
+                except Exception as e:
+                    ultimo_erro = str(e)
+                    # Se não for a última chave, avisa que vai tentar a próxima
+                    if i < len(keys_validas) - 1:
+                        st.warning(f"⚠️ Chave {i+1} excedeu a cota ou falhou. Tentando Chave {i+2} automaticamente...")
+                        continue # Vai para a próxima iteração do loop (Chave 2)
                     else:
-                        icon = "⚠️"
-                        css = "border-warn"
-                        aberto = True
+                        # Se for a última e falhou também
+                        st.error(f"❌ Todas as chaves falharam. Erro final: {ultimo_erro}")
+                        st.stop()
 
-                    with st.expander(f"{icon} {titulo}", expanded=aberto):
-                        col_esq, col_dir = st.columns(2)
+            # --- PROCESSAMENTO DO RESULTADO ---
+            if response:
+                try:
+                    resultado = json.loads(response.text)
+                    
+                    # Extrai dados globais
+                    data_ref = resultado.get("data_anvisa_ref", "-")
+                    data_belfar = resultado.get("data_anvisa_belfar", "-")
+                    dados_secoes = resultado.get("secoes", [])
+
+                    # --- ÁREA DE MÉTRICAS ---
+                    st.markdown("### 📊 Resumo da Conferência")
+                    
+                    # Linha 1: Datas
+                    c_d1, c_d2, c_d3 = st.columns(3)
+                    c_d1.metric("Data Ref.", data_ref)
+                    c_d2.metric("Data BELFAR", data_belfar, delta="Igual" if data_ref == data_belfar else "Diferente")
+                    
+                    # Linha 2: Estatísticas
+                    total = len(dados_secoes)
+                    divergentes = sum(1 for d in dados_secoes if d['status'] != 'CONFORME')
+                    c_d3.metric("Seções Analisadas", total)
+
+                    # Mostra contadores menores abaixo
+                    sub1, sub2 = st.columns(2)
+                    sub1.info(f"✅ **Conformes:** {total - divergentes}")
+                    if divergentes > 0:
+                        sub2.warning(f"⚠️ **Divergentes:** {divergentes}")
+                    else:
+                        sub2.success("✨ **Divergências:** 0")
+
+                    st.divider()
+
+                    # --- LOOP DE SEÇÕES ---
+                    for item in dados_secoes:
+                        status = item.get('status', 'CONFORME')
+                        titulo = item.get('titulo', 'Seção')
                         
-                        with col_esq:
-                            st.caption("📜 Referência")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_ref", "")}</div>', unsafe_allow_html=True)
-                            
-                        with col_dir:
-                            st.caption("💊 BELFAR")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_belfar", "")}</div>', unsafe_allow_html=True)
+                        # Definição visual (ícone e borda)
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            icon = "⚖️"
+                            css = "border-info"
+                            aberto = True
+                        elif status == "CONFORME":
+                            icon = "✅"
+                            css = "border-ok"
+                            aberto = False
+                        else:
+                            icon = "⚠️"
+                            css = "border-warn"
+                            aberto = True
 
-            except Exception as e:
-                st.error(f"Erro ao processar o retorno: {e}")
-                st.warning("Tente novamente, o modelo pode ter falhado na formatação do JSON.")
+                        with st.expander(f"{icon} {titulo}", expanded=aberto):
+                            col_esq, col_dir = st.columns(2)
+                            
+                            with col_esq:
+                                st.caption("📜 Referência")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_ref", "")}</div>', unsafe_allow_html=True)
+                                
+                            with col_dir:
+                                st.caption("💊 BELFAR")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_belfar", "")}</div>', unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"Erro ao processar o JSON de resposta: {e}")
+                    st.warning("Tente novamente.")
     else:
         st.warning("Por favor, envie os dois arquivos PDF (Referência e BELFAR).")
