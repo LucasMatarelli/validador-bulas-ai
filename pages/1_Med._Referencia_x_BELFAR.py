@@ -2,13 +2,10 @@ import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
 import json
-import utils  # <--- IMPORTANTE: O arquivo que controla as 2 chaves e o contador
+import random
 
 # ----------------- 1. VISUAL & CSS (Design Limpo) -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
-
-# Chama o contador na barra lateral (Universal para todas as páginas)
-utils.mostrar_sidebar_contador()
 
 st.markdown("""
 <style>
@@ -48,14 +45,27 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELO (INTEGRADO AO UTILS) -----------------
-# Agora usamos o utils para decidir qual chave usar (1 ou 2) baseado no contador
+# ----------------- 2. CONFIGURAÇÃO MODELO -----------------
+MODELO_FIXO = "models/gemini-flash-latest"
+
 def setup_model():
-    # Essa função do utils já checa o contador:
-    # Se uso < 20: Pega Key 1
-    # Se uso >= 20: Pega Key 2
-    # Se uso >= 40: Retorna None (Bloqueado)
-    return utils.configurar_modelo_inteligente()
+    # Pega as duas chaves dos secrets
+    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    valid_keys = [k for k in keys if k]
+    
+    if valid_keys:
+        # Sorteia uma das chaves disponíveis para usar (Balanceamento)
+        selected_key = random.choice(valid_keys)
+        try:
+            genai.configure(api_key=selected_key)
+            # Temperatura 0.0 para precisão máxima
+            return genai.GenerativeModel(
+                MODELO_FIXO, 
+                generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+            )
+        except:
+            return None
+    return None
 
 # ----------------- 3. EXTRAÇÃO DE TEXTO -----------------
 def extract_text_from_pdf(uploaded_file):
@@ -104,11 +114,9 @@ f2 = c2.file_uploader("📂 Arquivo BELFAR", type=["pdf"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     if f1 and f2:
-        # Configura o modelo usando a lógica inteligente de chaves
         model = setup_model()
-        
         if not model:
-            st.error("⛔ Limite diário de 40 créditos atingido! O sistema voltará amanhã.")
+            st.error("Sem chave API configurada.")
             st.stop()
 
         with st.spinner("Lendo arquivos, corrigindo formatação e organizando seções..."):
@@ -162,9 +170,6 @@ if st.button("🚀 Processar Conferência"):
             try:
                 response = model.generate_content(prompt)
                 resultado = json.loads(response.text)
-                
-                # --- SUCESSO: INCREMENTA O CONTADOR NO UTILS ---
-                utils.gerenciar_uso_diario(incrementar=True)
                 
                 # Extrai dados globais
                 data_ref = resultado.get("data_anvisa_ref", "-")
