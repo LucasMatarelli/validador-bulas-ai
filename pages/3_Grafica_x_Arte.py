@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import fitz  # PyMuPDF
-import docx  # Adicionado para DOCX
+import docx  # Para ler Word
 import io
 import json
 
@@ -60,43 +60,32 @@ st.markdown("""
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-def setup_model():
-    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
-    valid_keys = [k for k in keys if k]
-    
-    for api_key in valid_keys:
-        try:
-            genai.configure(api_key=api_key)
-            return genai.GenerativeModel(
-                MODELO_FIXO, 
-                # Temperatura 0.0 é crucial para precisão
-                generation_config={"response_mime_type": "application/json", "temperature": 0.0}
-            )
-        except: continue
-    return None
-
 # ----------------- 3. PROCESSAMENTO -----------------
-def pdf_to_images(uploaded_file):
-    try:
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        images = []
-        for page in doc:
-            # Zoom 3.0 para alta resolução no OCR
-            pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
-            images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
-        return images
-    except: return []
-
-# Função auxiliar para tratar DOCX ou Imagem/PDF
 def process_file_content(uploaded_file):
-    if uploaded_file.name.lower().endswith(".pdf"):
-        return pdf_to_images(uploaded_file)
-    elif uploaded_file.name.lower().endswith(".docx"):
-        doc = docx.Document(uploaded_file)
-        full_text = "\n".join([p.text for p in doc.paragraphs])
-        return [full_text] # Retorna como lista de texto
-    else:
-        return [Image.open(uploaded_file)]
+    """Lê PDF (Imagens), Imagens Diretas ou DOCX (Texto)."""
+    try:
+        # 1. PDF -> Imagens (OCR Visual)
+        if uploaded_file.name.lower().endswith(".pdf"):
+            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+            images = []
+            for page in doc:
+                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
+                images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
+            return images
+        
+        # 2. Imagens Diretas
+        elif uploaded_file.name.lower().endswith((".jpg", ".png", ".jpeg")):
+            return [Image.open(uploaded_file)]
+        
+        # 3. DOCX -> Texto
+        elif uploaded_file.name.lower().endswith(".docx"):
+            doc = docx.Document(uploaded_file)
+            full_text = []
+            for para in doc.paragraphs:
+                full_text.append(para.text)
+            return ["\n".join(full_text)]
+            
+    except: return []
 
 SECOES_COMPLETAS = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
@@ -113,23 +102,31 @@ SECOES_COMPLETAS = [
 st.title("💊 Validador de Bulas (Gráfica x Arte)")
 
 c1, c2 = st.columns(2)
-# Adicionado docx na lista de tipos
+# Tipos atualizados
 f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png", "docx"])
 f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png", "docx"])
 
 if st.button("🚀 Validar"):
-    if f1 and f2:
-        model = setup_model()
-        if not model:
-            st.error("Erro de API Key.")
-            st.stop()
+    
+    # Prepara as chaves disponíveis
+    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    keys_validas = [k for k in keys_disponiveis if k]
 
+    if not keys_validas:
+        st.error("Nenhuma chave API encontrada.")
+        st.stop()
+
+    if f1 and f2:
         with st.spinner("Processando leitura inteligente (ignorando espaçamento de gráfica)..."):
-            # Processa o conteúdo dependendo do tipo (PDF/Img/Docx)
+            # Reseta ponteiros
+            f1.seek(0)
+            f2.seek(0)
+            
+            # Processa conteúdo (Imagens ou Texto)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT CORRIGIDO PARA IGNORAR ESPAÇAMENTO DE JUSTIFICAÇÃO
+            # PROMPT
             prompt = f"""
             Você é um leitor de OCR especializado em Bulas Farmacêuticas.
             
@@ -169,67 +166,92 @@ if st.button("🚀 Validar"):
             }}
             """
             
-            try:
-                # Monta o payload com o prompt + conteudos processados
-                payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRAFICA ---"] + conteudo2
-                
-                response = model.generate_content(payload)
-                resultado = json.loads(response.text)
-                
-                # Dados globais
-                data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
-                data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
-                secoes = resultado.get("secoes", [])
+            # Prepara o payload
+            payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRAFICA ---"] + conteudo2
+            
+            response = None
+            ultimo_erro = ""
 
-                # --- 1. RESUMO NO TOPO ---
-                st.markdown("### 📊 Resumo da Conferência")
-                
-                k1, k2, k3 = st.columns(3)
-                k1.metric("Data Anvisa (Ref)", data_ref)
-                
-                cor_delta = "normal" if data_ref == data_graf and data_ref != "Não encontrada" else "inverse"
-                msg_delta = "Vigência" if data_ref == data_graf else "Diferente"
-                if data_graf == "Não encontrada": msg_delta = ""
-                
-                k2.metric("Data Anvisa (Gráfica)", data_graf, delta=msg_delta, delta_color=cor_delta)
-                k3.metric("Seções Analisadas", len(secoes))
-
-                div_count = sum(1 for s in secoes if s['status'] != 'CONFORME')
-                ok_count = len(secoes) - div_count
-                
-                b1, b2 = st.columns(2)
-                b1.success(f"✅ **Conformes: {ok_count}**")
-                if div_count > 0:
-                    b2.warning(f"⚠️ **Divergentes: {div_count}**")
-                else:
-                    b2.success("✨ **Divergentes: 0**")
-                
-                st.divider()
-
-                # --- 2. LISTA DE SEÇÕES ---
-                for item in secoes:
-                    status = item.get('status', 'CONFORME')
-                    titulo = item.get('titulo', 'Seção')
+            # --- LÓGICA DE TENTATIVA DE CHAVES ---
+            for i, api_key in enumerate(keys_validas):
+                try:
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(
+                        MODELO_FIXO, 
+                        generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                    )
                     
-                    if "DIZERES LEGAIS" in titulo.upper():
-                        icon, css, aberto = "📅", "border-info", True
-                    elif status == "CONFORME":
-                        icon, css, aberto = "✅", "border-ok", False
+                    response = model.generate_content(payload)
+                    break # Sucesso! Sai do loop
+
+                except Exception as e:
+                    ultimo_erro = str(e)
+                    if i < len(keys_validas) - 1:
+                        st.warning(f"⚠️ Chave {i+1} falhou. Tentando Chave {i+2}...")
+                        continue
                     else:
-                        icon, css, aberto = "⚠️", "border-warn", True
+                        st.error(f"❌ Todas as chaves falharam. Erro: {ultimo_erro}")
+                        st.stop()
+            
+            # --- PROCESSAMENTO DO RESULTADO ---
+            if response:
+                try:
+                    resultado = json.loads(response.text)
+                    
+                    # Dados globais
+                    data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
+                    data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
+                    secoes = resultado.get("secoes", [])
 
-                    with st.expander(f"{icon} {titulo}", expanded=aberto):
-                        col_esq, col_dir = st.columns(2)
-                        with col_esq:
-                            st.caption("Referência (Arte)")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
-                        with col_dir:
-                            st.caption("Validação (Gráfica)")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+                    # --- 1. RESUMO NO TOPO ---
+                    st.markdown("### 📊 Resumo da Conferência")
+                    
+                    k1, k2, k3 = st.columns(3)
+                    k1.metric("Data Anvisa (Ref)", data_ref)
+                    
+                    cor_delta = "normal" if data_ref == data_graf and data_ref != "Não encontrada" else "inverse"
+                    msg_delta = "Vigência" if data_ref == data_graf else "Diferente"
+                    if data_graf == "Não encontrada": msg_delta = ""
+                    
+                    k2.metric("Data Anvisa (Gráfica)", data_graf, delta=msg_delta, delta_color=cor_delta)
+                    k3.metric("Seções Analisadas", len(secoes))
 
-            except Exception as e:
-                st.error(f"Erro no processamento: {e}")
-                st.warning("Tente novamente. O modelo pode ter oscilado.")
+                    div_count = sum(1 for s in secoes if s['status'] != 'CONFORME')
+                    ok_count = len(secoes) - div_count
+                    
+                    b1, b2 = st.columns(2)
+                    b1.success(f"✅ **Conformes: {ok_count}**")
+                    if div_count > 0:
+                        b2.warning(f"⚠️ **Divergentes: {div_count}**")
+                    else:
+                        b2.success("✨ **Divergentes: 0**")
+                    
+                    st.divider()
+
+                    # --- 2. LISTA DE SEÇÕES ---
+                    for item in secoes:
+                        status = item.get('status', 'CONFORME')
+                        titulo = item.get('titulo', 'Seção')
+                        
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            icon, css, aberto = "📅", "border-info", True
+                        elif status == "CONFORME":
+                            icon, css, aberto = "✅", "border-ok", False
+                        else:
+                            icon, css, aberto = "⚠️", "border-warn", True
+
+                        with st.expander(f"{icon} {titulo}", expanded=aberto):
+                            col_esq, col_dir = st.columns(2)
+                            with col_esq:
+                                st.caption("Referência (Arte)")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
+                            with col_dir:
+                                st.caption("Validação (Gráfica)")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"Erro no processamento do JSON: {e}")
+                    st.warning("Tente novamente. O modelo pode ter oscilado.")
 
     else:
         st.warning("Adicione os arquivos.")
