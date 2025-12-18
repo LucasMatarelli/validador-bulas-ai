@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import fitz  # PyMuPDF
-import docx  # Para ler Word
+import docx  # Para ler DOCX
 import io
 import json
 
@@ -60,25 +60,49 @@ st.markdown("""
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 3. PROCESSAMENTO -----------------
+# ----------------- 3. PROCESSAMENTO INTELIGENTE (TEXTO PRIMEIRO, IMAGEM SÓ SE PRECISAR) -----------------
 def process_file_content(uploaded_file):
-    """Lê PDF (Imagens), Imagens Diretas ou DOCX (Texto)."""
+    """
+    Lógica Híbrida:
+    1. Tenta extrair TEXTO puro do PDF (100% precisão, sem alucinação).
+    2. Se não tiver texto (scan/curvas), converte para IMAGEM (OCR da IA).
+    3. Se for DOCX, extrai texto direto.
+    """
     try:
-        # 1. PDF -> Imagens (OCR Visual)
-        if uploaded_file.name.lower().endswith(".pdf"):
+        filename = uploaded_file.name.lower()
+
+        # --- PROCESSAMENTO DE PDF ---
+        if filename.endswith(".pdf"):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            images = []
+            
+            # Tenta pegar texto digital primeiro
+            full_text = ""
+            has_digital_text = False
+            
             for page in doc:
-                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
-                images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
-            return images
+                text = page.get_text("text")
+                if len(text.strip()) > 50: # Se tiver mais de 50 caracteres, consideramos que tem texto
+                    has_digital_text = True
+                full_text += text + "\n"
+            
+            # SE TIVER TEXTO DIGITAL: Retorna o texto (A IA não vai precisar "olhar" imagem)
+            if has_digital_text:
+                return [full_text]
+            
+            # SE NÃO TIVER TEXTO (É SCAN/IMAGEM): Gera imagens para a IA olhar
+            else:
+                images = []
+                for page in doc:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) # Alta resolução
+                    images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
+                return images
         
-        # 2. Imagens Diretas
-        elif uploaded_file.name.lower().endswith((".jpg", ".png", ".jpeg")):
+        # --- PROCESSAMENTO DE IMAGENS DIRETAS ---
+        elif filename.endswith((".jpg", ".png", ".jpeg")):
             return [Image.open(uploaded_file)]
 
-        # 3. DOCX -> Texto (OCR Nativo)
-        elif uploaded_file.name.lower().endswith(".docx"):
+        # --- PROCESSAMENTO DE DOCX ---
+        elif filename.endswith(".docx"):
             doc = docx.Document(uploaded_file)
             full_text = []
             for para in doc.paragraphs:
@@ -107,7 +131,6 @@ f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png", "docx"
 
 if st.button("🚀 Validar"):
     
-    # Prepara as chaves disponíveis
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -116,41 +139,42 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando leitura literal (sem alucinações)..."):
-            # Reseta ponteiros
+        with st.spinner("Processando... Priorizando texto original para evitar alucinações..."):
             f1.seek(0)
             f2.seek(0)
             
-            # Processa conteúdo (Imagens ou Texto)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT ANTI-ALUCINAÇÃO
+            # PROMPT FORENSE (ANTI-ALUCINAÇÃO)
             prompt = f"""
-            Você é um Comparador de Texto LITERAL (Robô Cego).
+            Você é um EXTRATOR FORENSE DE TEXTO. Sua função NÃO é interpretar, é TRANSCREVER E COMPARAR.
             
-            INPUT: Imagens ou Texto de documentos.
-            TAREFA: Extrair e comparar o texto das seções: {SECOES_COMPLETAS}
+            INPUT: Documentos farmacêuticos (Texto Digital ou Imagens).
+            TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}
 
-            ⚠️ PROTOCOLO DE LEITURA (ANTI-ALUCINAÇÃO):
-            1. **LEITURA PIXEL POR PIXEL:** Não tente adivinhar o que está escrito. Se está escrito "fabricação", NÃO LEIA "validade". Se está escrito "cirurgião", NÃO LEIA "do cirurgião".
-            2. **NÃO CORRIJA O PORTUGUÊS:** Não adicione preposições (de, do, da) se elas não existirem na imagem. Copie exatamente o que vê.
-            3. **IGNORAR JUSTIFICAÇÃO:** Ignore espaços falsos dentro de palavras (ex: "E m b o r a" = "Embora").
+            ⚠️ PROTOCOLO DE TOLERÂNCIA ZERO PARA ALUCINAÇÃO:
+            1. **VERBATIM (IPSIS LITTERIS):** Copie as palavras EXATAMENTE como estão.
+               - Se está escrito "fabricação", ESCREVA "fabricação". NÃO troque por "validade".
+               - Se está escrito "cirurgião", ESCREVA "cirurgião". NÃO adicione "do".
+            
+            2. **PROIBIDO CORRIGIR:** Não corrija gramática, não expanda abreviações, não adicione conectivos que não existem visualmente.
+            
+            3. **IGNORAR FORMATAÇÃO:** Ignore quebras de linha (`\\n`) ou espaços duplos. O foco é a SEQUÊNCIA DE PALAVRAS.
 
-            🚨 REGRAS DE COMPARAÇÃO POR GRUPO:
+            🚨 REGRAS DE STATUS POR GRUPO:
 
-            >>> GRUPO 1 (BLINDADO - SEM DIVERGÊNCIAS): 
+            >>> GRUPO BLINDADO (SEM DIVERGÊNCIAS): 
             [ "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS" ]
-            - NUNCA marque <span class="highlight-yellow"> nestas seções.
-            - O Status deve ser SEMPRE "CONFORME".
-            - Apenas transcreva o texto.
-            - Única exceção: Em "DIZERES LEGAIS", se houver data (dd/mm/aaaa), marque com <span class="highlight-blue">DATA</span>.
+            - Status OBRIGATÓRIO: "CONFORME".
+            - PROIBIDO usar highlight amarelo nestas seções.
+            - Apenas transcreva o texto original limpo.
+            - Exceção: Em "DIZERES LEGAIS", se encontrar uma data, envolva em <span class="highlight-blue">DATA</span>.
 
-            >>> GRUPO 2 (RIGOROSO):
-            [ Todas as outras seções ]
+            >>> GRUPO PADRÃO (TODAS AS OUTRAS SEÇÕES):
             - Compare palavra por palavra.
-            - Se houver diferença REAL (palavra trocada, número errado), marque <span class="highlight-yellow">DIFERENÇA</span>.
-            - Se for apenas quebra de linha diferente, considere IGUAL.
+            - Diferença REAL (palavra trocada, número errado)? Marque <span class="highlight-yellow">TEXTO ERRADO</span>.
+            - Se a diferença for apenas layout/quebra de linha, considere IGUAL.
 
             SAÍDA JSON:
             {{
@@ -159,21 +183,20 @@ if st.button("🚀 Validar"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto fiel da arte",
-                        "texto_grafica": "Texto fiel da gráfica (com highlights APENAS se permitido)",
+                        "texto_arte": "Texto EXATO da arte",
+                        "texto_grafica": "Texto EXATO da gráfica (com highlights APENAS se permitido)",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
             }}
             """
             
-            # Prepara o payload
-            payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRAFICA ---"] + conteudo2
+            payload = [prompt, "--- ARTE (REFERÊNCIA) ---"] + conteudo1 + ["--- GRÁFICA (VALIDAÇÃO) ---"] + conteudo2
             
             response = None
             ultimo_erro = ""
 
-            # --- LÓGICA DE TENTATIVA DE CHAVES ---
+            # Loop de Chaves (Failover)
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
@@ -183,28 +206,25 @@ if st.button("🚀 Validar"):
                     )
                     
                     response = model.generate_content(payload)
-                    break # Sucesso! Sai do loop
+                    break 
 
                 except Exception as e:
                     ultimo_erro = str(e)
                     if i < len(keys_validas) - 1:
-                        st.warning(f"⚠️ Chave {i+1} falhou. Tentando Chave {i+2}...")
+                        st.warning(f"⚠️ Chave {i+1} falhou. Trocando para Chave {i+2}...")
                         continue
                     else:
-                        st.error(f"❌ Todas as chaves falharam. Erro: {ultimo_erro}")
+                        st.error(f"❌ Erro fatal: {ultimo_erro}")
                         st.stop()
             
-            # --- PROCESSAMENTO DO RESULTADO ---
             if response:
                 try:
                     resultado = json.loads(response.text)
                     
-                    # Dados globais
                     data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
                     data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
                     secoes = resultado.get("secoes", [])
 
-                    # --- 1. RESUMO NO TOPO ---
                     st.markdown("### 📊 Resumo da Conferência")
                     
                     k1, k2, k3 = st.columns(3)
@@ -229,12 +249,10 @@ if st.button("🚀 Validar"):
                     
                     st.divider()
 
-                    # --- 2. LISTA DE SEÇÕES ---
                     for item in secoes:
                         status = item.get('status', 'CONFORME')
                         titulo = item.get('titulo', 'Seção')
                         
-                        # Definição visual
                         if "DIZERES LEGAIS" in titulo.upper():
                             icon, css, aberto = "📅", "border-info", True
                         elif status == "CONFORME":
@@ -252,8 +270,8 @@ if st.button("🚀 Validar"):
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"Erro no processamento do JSON: {e}")
-                    st.warning("Tente novamente. O modelo pode ter oscilado.")
+                    st.error(f"Erro no processamento: {e}")
+                    st.warning("Tente novamente.")
 
     else:
         st.warning("Adicione os arquivos.")
