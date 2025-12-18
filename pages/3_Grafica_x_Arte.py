@@ -60,12 +60,12 @@ st.markdown("""
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 3. PROCESSAMENTO INTELIGENTE (TEXTO PRIMEIRO, IMAGEM SÓ SE PRECISAR) -----------------
+# ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
 def process_file_content(uploaded_file):
     """
     Lógica Híbrida:
-    1. Tenta extrair TEXTO puro do PDF (100% precisão, sem alucinação).
-    2. Se não tiver texto (scan/curvas), converte para IMAGEM (OCR da IA).
+    1. Tenta extrair TEXTO puro do PDF.
+    2. Se não tiver texto (scan), converte para IMAGEM.
     3. Se for DOCX, extrai texto direto.
     """
     try:
@@ -81,19 +81,19 @@ def process_file_content(uploaded_file):
             
             for page in doc:
                 text = page.get_text("text")
-                if len(text.strip()) > 50: # Se tiver mais de 50 caracteres, consideramos que tem texto
+                if len(text.strip()) > 50: 
                     has_digital_text = True
                 full_text += text + "\n"
             
-            # SE TIVER TEXTO DIGITAL: Retorna o texto (A IA não vai precisar "olhar" imagem)
+            # SE TIVER TEXTO DIGITAL
             if has_digital_text:
                 return [full_text]
             
-            # SE NÃO TIVER TEXTO (É SCAN/IMAGEM): Gera imagens para a IA olhar
+            # SE NÃO TIVER TEXTO (É SCAN/IMAGEM)
             else:
                 images = []
                 for page in doc:
-                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) # Alta resolução
+                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) 
                     images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
                 return images
         
@@ -219,7 +219,12 @@ if st.button("🚀 Validar"):
             
             if response:
                 try:
-                    resultado = json.loads(response.text)
+                    # --- CORREÇÃO DO ERRO DE JSON AQUI ---
+                    # Remove blocos markdown caso a IA coloque ```json ... ```
+                    texto_limpo = response.text.replace("```json", "").replace("```", "").strip()
+                    
+                    # strict=False é o segredo para aceitar caracteres de controle
+                    resultado = json.loads(texto_limpo, strict=False)
                     
                     data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
                     data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
