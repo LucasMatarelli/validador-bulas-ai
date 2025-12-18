@@ -7,118 +7,119 @@ import io
 import time
 import re
 
-# ----------------- CONFIGURAÇÃO -----------------
-st.set_page_config(page_title="Validador V2 (No-Lite)", layout="wide")
+# ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
+st.set_page_config(page_title="Validador Multi-Modelos", layout="wide")
 
 st.markdown("""
 <style>
     .highlight-yellow { background-color: #fff9c4; color: #000000; padding: 2px 5px; border-radius: 3px; border: 1px solid #fbc02d; }
     .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 5px; border-radius: 3px; border: 1px solid #b71c1c; font-weight: bold; }
     .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 5px; border-radius: 3px; border: 1px solid #1976d2; }
-    .status-ok { background-color: #e8f5e9; color: #2e7d32; padding: 10px; border-radius: 5px; border: 1px solid #c8e6c9; text-align: center; font-weight: bold;}
-    .status-err { background-color: #ffebee; color: #c62828; padding: 10px; border-radius: 5px; border: 1px solid #ef9a9a; text-align: center;}
+    .status-ok { background-color: #e8f5e9; color: #2e7d32; padding: 10px; border-radius: 5px; border: 1px solid #c8e6c9; font-weight: bold; }
+    .status-warning { background-color: #fff3e0; color: #ef6c00; padding: 10px; border-radius: 5px; border: 1px solid #ffe0b2; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- CAÇADOR DE MODELOS V2 -----------------
-def get_best_v2_model():
+# ----------------- GERENCIAMENTO DE CHAVES E MODELOS -----------------
+def get_available_models():
     """
-    Busca qualquer modelo que tenha '2.0' no nome.
-    Ignora 1.0 e 1.5.
-    Tenta fugir do 'Lite' se houver outro disponível.
+    Lista TODOS os modelos disponíveis na chave que suportam geração de conteúdo.
+    Não filtra nada, para dar opção total ao usuário.
     """
     keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
     valid_keys = [k for k in keys if k]
 
     if not valid_keys:
-        return None, None, "Sem chaves API."
+        return None, [], "Sem chaves configuradas."
 
     for api_key in valid_keys:
         try:
             genai.configure(api_key=api_key)
             models = list(genai.list_models())
             
-            # Filtra apenas modelos 2.0 que geram conteúdo
-            candidatos = [
+            # Pega tudo que gera conteúdo (texto/imagem)
+            model_names = [
                 m.name for m in models 
-                if "generateContent" in m.supported_generation_methods 
-                and "2.0" in m.name
+                if "generateContent" in m.supported_generation_methods
             ]
             
-            if not candidatos:
-                continue # Tenta a próxima chave
+            # Ordena para facilitar (coloca os experimentais no topo se houver)
+            model_names.sort(key=lambda x: "exp" not in x)
+            
+            if model_names:
+                return api_key, model_names, None
                 
-            # ORDENAÇÃO DE PREFERÊNCIA:
-            # 1. Tenta o Flash Experimental (Padrão) - Melhor cota que o Lite
-            for nome in candidatos:
-                if "flash-exp" in nome and "lite" not in nome:
-                    return api_key, nome, None
-            
-            # 2. Tenta o Pro Experimental (Se tiver acesso)
-            for nome in candidatos:
-                if "pro-exp" in nome:
-                    return api_key, nome, None
-            
-            # 3. Se só tiver o Lite ou outros, pega o primeiro que achar da lista V2
-            return api_key, candidatos[0], None
-
         except Exception as e:
             continue
             
-    return None, None, "Nenhum modelo 2.0 encontrado na sua conta."
+    return None, [], "Não foi possível listar modelos com suas chaves."
 
-# ----------------- FUNÇÃO DE RETRY (COM BACKOFF MAIOR) -----------------
+# ----------------- FUNÇÃO DE RETRY (SEGURANÇA CONTRA ERRO 429) -----------------
 def generate_with_retry(model, payload, max_retries=3):
+    """
+    Se der erro de cota, espera e tenta de novo.
+    """
     for attempt in range(max_retries):
         try:
             return model.generate_content(payload)
         
         except exceptions.ResourceExhausted as e:
             error_msg = str(e)
-            wait_time = 60 # Padrão
+            wait_time = 60 # Tempo padrão se não conseguir ler do erro
             
-            # Tenta ler o tempo sugerido pelo erro
+            # Tenta ler o tempo exato que o Google pediu
             match = re.search(r"retry.*in\s+([\d\.]+)", error_msg)
             if match:
-                # Se o Google pedir X segundos, esperamos X + 5 de segurança
-                wait_time = float(match.group(1)) + 5
+                wait_time = float(match.group(1)) + 5 # +5s de margem
             
-            st.warning(f"⚠️ Limite de tokens atingido (Tentativa {attempt+1}/{max_retries}).")
+            st.warning(f"⚠️ Modelo sobrecarregado (Erro 429). Aguardando {int(wait_time)}s para tentar de novo...")
             
-            # Barra de progresso
+            # Barra de progresso visual
             my_bar = st.progress(0, text="Resfriando API...")
             step = 100
             for i in range(step):
                 time.sleep(wait_time / step)
-                my_bar.progress(i + 1, text=f"⏳ Aguardando liberação de cota: {int(wait_time * (1 - i/step))}s...")
+                my_bar.progress(i + 1)
             
             my_bar.empty()
-            # Tenta novamente
+            # Tenta novamente no próximo loop
             
         except Exception as e:
-            st.error(f"Erro inesperado: {e}")
+            st.error(f"Erro no modelo: {e}")
             return None
             
-    st.error("❌ Não foi possível processar. O arquivo pode ser muito pesado para a cota atual deste modelo.")
+    st.error("❌ O modelo continua rejeitando as requisições. Tente trocar de modelo na barra lateral.")
     return None
 
-# ----------------- UI & SETUP -----------------
+# ----------------- SIDEBAR: SELETOR MANUAL -----------------
 with st.sidebar:
-    st.header("⚙️ Modelo Selecionado")
+    st.header("🎛️ Painel de Controle")
     
-    key, model_name, err = get_best_v2_model()
+    key, options, err = get_available_models()
     
-    if model_name:
+    if key and options:
         genai.configure(api_key=key)
-        model = genai.GenerativeModel(model_name, generation_config={"temperature": 0.1})
-        st.markdown(f'<div class="status-ok">✅ Usando:<br>{model_name}</div>', unsafe_allow_html=True)
+        
+        st.info("Como você excluiu as famílias principais, selecione abaixo qualquer outro disponível na sua conta:")
+        
+        # O usuário escolhe EXATAMENTE qual quer usar
+        selected_model_name = st.selectbox(
+            "Escolha o Modelo:", 
+            options, 
+            index=0
+        )
+        
+        # Configura o modelo escolhido
+        model = genai.GenerativeModel(selected_model_name, generation_config={"temperature": 0.1})
+        
+        st.markdown(f'<div class="status-ok">✅ Conectado:<br>{selected_model_name}</div>', unsafe_allow_html=True)
+        st.warning("Dica: Modelos com 'exp' (Experimental) costumam ter cotas menos congestionadas.")
+        
     else:
-        st.markdown(f'<div class="status-err">{err}</div>', unsafe_allow_html=True)
+        st.error(f"Erro: {err}")
         st.stop()
 
-st.title("🛡️ Validador (Família Gemini 2.0)")
-
-# ----------------- UTILITÁRIOS -----------------
+# ----------------- LÓGICA DE PROCESSAMENTO -----------------
 def pdf_to_images(uploaded_file):
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
@@ -140,35 +141,39 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-# ----------------- CORPO PRINCIPAL -----------------
+# ----------------- UI PRINCIPAL -----------------
+st.title("🛡️ Validador Flexível (Seletor Manual)")
+
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("Arte", type=["pdf", "jpg", "png"], key="f1")
 f2 = c2.file_uploader("Gráfica", type=["pdf", "jpg", "png"], key="f2")
 
-if st.button("🚀 Validar (Forçar V2)"):
+if st.button("🚀 Validar com Modelo Selecionado"):
     if f1 and f2:
-        with st.spinner(f"Lendo arquivos com {model_name}..."):
+        with st.spinner(f"Enviando para o modelo {selected_model_name}..."):
             imgs1 = pdf_to_images(f1) if f1.name.endswith(".pdf") else [Image.open(f1)]
             imgs2 = pdf_to_images(f2) if f2.name.endswith(".pdf") else [Image.open(f2)]
             
             prompt = f"""
-            Auditor Farmacêutico (Belfar). Análise Visual + OCR.
-            Compare ARTE vs GRÁFICA.
+            Auditor de Bula Farmacêutica.
+            Compare visualmente o CONJUNTO A (Arte) com o CONJUNTO B (Gráfica).
+            Use OCR para ler tudo.
             
-            Seções obrigatórias: {SECOES_PACIENTE}
+            Separe pelas seções: {SECOES_PACIENTE}
             
-            HTML Obrigatório:
-            - Divergência: <span class="highlight-yellow">TEXTO</span>
-            - Erro PT: <span class="highlight-red">TEXTO</span>
-            - Dizeres Legais (Data Anvisa): <span class="highlight-blue">DATA</span>
+            Use HTML estrito para retorno:
+            - Divergências de texto: <span class="highlight-yellow">TEXTO</span>
+            - Erros de português: <span class="highlight-red">TEXTO</span>
+            - Data Anvisa (em Dizeres Legais): <span class="highlight-blue">DATA</span>
             """
             
             payload = [prompt, "--- ARTE ---"] + imgs1 + ["--- GRAFICA ---"] + imgs2
             
+            # Chama com Retry
             response = generate_with_retry(model, payload)
             
             if response:
                 st.markdown(response.text, unsafe_allow_html=True)
-                st.success("Processo finalizado.")
+                st.success("Análise completa.")
     else:
-        st.warning("Faltam arquivos.")
+        st.warning("Envie os arquivos primeiro.")
