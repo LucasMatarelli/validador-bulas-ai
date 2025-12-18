@@ -45,7 +45,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-1.5-flash" # Atualizado para nome padrão estável, ajuste se necessário
+MODELO_FIXO = "models/gemini-flash-latest"
 
 def setup_model():
     keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
