@@ -6,3 +6,4 @@ Pillow
 spacy
 thefuzz
 pyspellchecker
+pdfplumber
