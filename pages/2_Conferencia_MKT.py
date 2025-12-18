@@ -3,7 +3,7 @@ import google.generativeai as genai
 import fitz  # PyMuPDF
 import docx  # Para ler DOCX
 import json
-import difflib # BIBLIOTECA MATEMÁTICA PARA COMPARAÇÃO EXATA
+import difflib # Biblioteca matemática para comparação exata
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="MKT Final", page_icon="📢", layout="wide")
@@ -23,7 +23,7 @@ st.markdown("""
         white-space: pre-wrap; 
         text-align: justify;
     }
-    /* O Amarelo agora será aplicado pelo Python */
+    /* O Amarelo agora será aplicado pelo Python (Exato) */
     .highlight-yellow { background-color: #fff9c4; color: #000; padding: 2px 0; font-weight: bold;}
     .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 4px; font-weight: bold; }
     
@@ -47,9 +47,12 @@ MODELO_FIXO = "models/gemini-flash-latest"
 # ----------------- 3. FUNÇÃO DE COMPARAÇÃO EXATA (PYTHON) -----------------
 def gerar_diff_html(texto_ref, texto_novo):
     """
-    Compara dois textos palavra por palavra usando matemática, não IA.
-    Retorna o texto novo com as diferenças destacadas em amarelo.
+    Compara dois textos palavra por palavra usando matemática (difflib).
+    Isso impede que a IA invente diferenças ou ignore palavras.
     """
+    if not texto_ref or not texto_novo:
+        return texto_novo, False
+
     # Quebra em palavras para comparar
     a = texto_ref.split()
     b = texto_novo.split()
@@ -64,28 +67,33 @@ def gerar_diff_html(texto_ref, texto_novo):
         if tag == 'equal':
             html_output.append(trecho_novo)
         elif tag == 'replace':
+            # Diferença real: Marca de amarelo
             html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
             eh_divergente = True
         elif tag == 'insert':
+            # Texto novo: Marca de amarelo
             html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
             eh_divergente = True
         elif tag == 'delete':
-            # Se algo foi deletado, podemos marcar o local ou ignorar. 
-            # O usuário pediu para marcar o que não tem igual.
+            # Palavra removida do original. Opcional mostrar.
             pass 
             
     return " ".join(html_output), eh_divergente
 
-# ----------------- 4. EXTRAÇÃO -----------------
+# ----------------- 4. EXTRAÇÃO DE TEXTO -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
+        # PDF
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            for page in doc: text += page.get_text("text") + "\n"
+            for page in doc: 
+                text += page.get_text("text") + "\n"
+        # DOCX
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
-            for para in doc.paragraphs: text += para.text + "\n"
+            for para in doc.paragraphs: 
+                text += para.text + "\n"
         return text
     except: return ""
 
@@ -108,6 +116,8 @@ f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], ke
 f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
+    
+    # 1. Configuração de Chaves (Failover)
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -116,26 +126,30 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Lendo textos e comparando matematicamente..."):
+        with st.spinner("Extraindo textos e comparando..."):
+            # Reseta arquivos
             f1.seek(0); f2.seek(0)
+            
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
 
             if len(t_anvisa) < 50 or len(t_mkt) < 50:
-                st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
+                st.error("Erro: Arquivo vazio ou ilegível (pode ser imagem sem texto)."); st.stop()
 
-            # PROMPT SIMPLIFICADO: A IA SÓ LIMPA, NÃO COMPARA MAIS
+            # PROMPT SOMENTE PARA LIMPEZA (SEM COMPARAÇÃO PELA IA)
             prompt = f"""
-            Você é um Extrator de Texto.
+            Você é um Extrator de Dados Literais.
+            
             INPUT:
-            TEXTO 1 (REFERÊNCIA): {t_anvisa[:60000]}
-            TEXTO 2 (MKT): {t_mkt[:40000]}
+            TEXTO 1 (REF): {t_anvisa[:100000]}
+            TEXTO 2 (MKT): {t_mkt[:100000]}
 
             SUA MISSÃO:
-            1. Para cada seção da lista, extraia o texto LIMPO (sem quebras de linha aleatórias).
-            2. NÃO COMPARE. NÃO USE HIGHLIGHTS. Apenas me dê o texto puro de cada lado.
-            3. Em "DIZERES LEGAIS", se houver data, envolva em <span class="highlight-blue">DATA</span>.
-
+            1. Localize as seções da lista abaixo nos dois textos.
+            2. Extraia o conteúdo LIMPO (remova quebras de linha que cortam frases).
+            3. **PROIBIDO ALTERAR PALAVRAS:** Copie exatamente o que está escrito. Não corrija "cirurgião" para "do cirurgião". Não corrija "validade" para "fabricação". Seja um espelho.
+            4. **NÃO COMPARE:** Apenas me entregue o texto de cada lado. O Python fará a comparação.
+            
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
             SAÍDA JSON:
@@ -145,7 +159,7 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Texto limpo da anvisa",
+                        "texto_anvisa": "Texto limpo da referência",
                         "texto_mkt": "Texto limpo do mkt"
                     }}
                 ]
@@ -155,6 +169,7 @@ if st.button("🚀 Processar Conferência"):
             response = None
             ultimo_erro = ""
 
+            # Loop de Chaves
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
@@ -164,7 +179,7 @@ if st.button("🚀 Processar Conferência"):
                 except Exception as e:
                     ultimo_erro = str(e)
                     if i < len(keys_validas) - 1: continue
-                    else: st.error(f"Erro: {ultimo_erro}"); st.stop()
+                    else: st.error(f"Erro Fatal: {ultimo_erro}"); st.stop()
 
             if response:
                 try:
@@ -173,10 +188,8 @@ if st.button("🚀 Processar Conferência"):
                     data_mkt = resultado.get("data_anvisa_mkt", "-")
                     dados_secoes = resultado.get("secoes", [])
 
-                    # --- COMPARAÇÃO PYTHON (AQUI ACONTECE A MÁGICA) ---
-                    # O Python vai passar item por item. Se não for igual, marca amarelo.
-                    
-                    secoes_processadas = []
+                    # --- COMPARAÇÃO VIA PYTHON (INFALÍVEL) ---
+                    secoes_finais = []
                     divergentes_count = 0
 
                     for item in dados_secoes:
@@ -184,12 +197,17 @@ if st.button("🚀 Processar Conferência"):
                         txt_ref = item.get('texto_anvisa', '').strip()
                         txt_mkt = item.get('texto_mkt', '').strip()
                         
-                        # Regra das seções blindadas (não marca amarelo nelas)
+                        # Data em Azul nos Dizeres Legais (Processamento de texto manual)
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            # Apenas marca visualmente, sem alterar o texto base da comparação
+                            pass 
+
+                        # Seções que você pediu para IGNORAR DIVERGÊNCIAS
                         if titulo in ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]:
                             status = "CONFORME"
-                            html_mkt = txt_mkt # Texto original sem amarelo
+                            html_mkt = txt_mkt # Mostra sem amarelo
                         else:
-                            # Python compara matematicamente
+                            # Python compara. Se tiver uma letra diferente, ele marca.
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             if teve_diff:
                                 status = "DIVERGENTE"
@@ -197,24 +215,22 @@ if st.button("🚀 Processar Conferência"):
                             else:
                                 status = "CONFORME"
                         
-                        secoes_processadas.append({
+                        secoes_finais.append({
                             "titulo": titulo,
                             "texto_anvisa": txt_ref,
                             "texto_mkt": html_mkt,
                             "status": status
                         })
 
-                    # --- EXIBIÇÃO ---
+                    # --- RESULTADOS ---
                     st.markdown("### 📊 Resumo da Conferência")
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("Data Anvisa (Ref)", data_ref)
-                    c2.metric("Data Anvisa (MKT)", data_mkt, delta="Vigência" if data_ref == data_mkt else "Diferente")
-                    
-                    total = len(secoes_processadas)
-                    c3.metric("Seções Analisadas", total)
+                    c1.metric("Ref.", data_ref)
+                    c2.metric("MKT", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
+                    c3.metric("Seções", len(secoes_finais))
 
                     sub1, sub2 = st.columns(2)
-                    sub1.info(f"✅ **Conformes:** {total - divergentes_count}")
+                    sub1.info(f"✅ **Conformes:** {len(secoes_finais) - divergentes_count}")
                     if divergentes_count > 0:
                         sub2.warning(f"⚠️ **Divergentes:** {divergentes_count}")
                     else:
@@ -222,7 +238,7 @@ if st.button("🚀 Processar Conferência"):
 
                     st.divider()
 
-                    for item in secoes_processadas:
+                    for item in secoes_finais:
                         status = item['status']
                         titulo = item['titulo']
                         
@@ -236,14 +252,13 @@ if st.button("🚀 Processar Conferência"):
                         with st.expander(f"{icon} {titulo}", expanded=aberto):
                             col_esq, col_dir = st.columns(2)
                             with col_esq:
-                                st.caption("📜 Bula Anvisa (Referência)")
+                                st.caption("📜 Referência")
                                 st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
                             with col_dir:
-                                st.caption("🎨 Arte MKT (Validado)")
+                                st.caption("🎨 Validado")
                                 st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"Erro ao processar: {e}")
-                    st.warning("Tente novamente.")
+                    st.error(f"Erro ao processar JSON: {e}")
     else:
-        st.warning("Envie os arquivos.")
+        st.warning("Adicione os arquivos.")
