@@ -22,19 +22,30 @@ st.markdown("""
         border: 1px solid #ced4da;
         height: 100%; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        white-space: pre-wrap; /* Mantém parágrafos */
+        text-align: justify;
     }
 
-    /* Destaques */
-    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; border: 1px solid #ffeeba; }
-    .highlight-red { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 3px; border: 1px solid #f5c6cb; font-weight: bold; }
-    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 3px; border: 1px solid #bee5eb; font-weight: bold; }
+    /* Destaques Precisos */
+    .highlight-yellow { 
+        background-color: #fff3cd; color: #856404; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
+    }
+    .highlight-red { 
+        background-color: #f8d7da; color: #721c24; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; font-weight: bold; 
+    }
+    .highlight-blue { 
+        background-color: #d1ecf1; color: #0c5460; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
+    }
 
     /* Status das Bordas */
     .border-ok { border-left: 6px solid #28a745 !important; }   /* Verde */
     .border-warn { border-left: 6px solid #ffc107 !important; } /* Amarelo */
-    .border-info { border-left: 6px solid #17a2b8 !important; } /* Azul (Info) */
+    .border-info { border-left: 6px solid #17a2b8 !important; } /* Azul */
 
-    /* Estilo das Métricas (Igual ao Print) */
+    /* Métricas no Topo */
     div[data-testid="stMetric"] {
         background-color: #f8f9fa;
         border: 1px solid #dee2e6;
@@ -57,7 +68,7 @@ def setup_model():
             genai.configure(api_key=api_key)
             return genai.GenerativeModel(
                 MODELO_FIXO, 
-                # Temperatura 0.0 para não inventar nada
+                # Temperatura 0.0 é crucial para precisão
                 generation_config={"response_mime_type": "application/json", "temperature": 0.0}
             )
         except: continue
@@ -74,7 +85,6 @@ def pdf_to_images(uploaded_file):
         return images
     except: return []
 
-# LISTA DE TODAS AS SEÇÕES
 SECOES_COMPLETAS = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -100,127 +110,108 @@ if st.button("🚀 Validar"):
             st.error("Erro de API Key.")
             st.stop()
 
-        with st.spinner("Analisando seções conforme regras de negócio..."):
+        with st.spinner("Realizando comparação cirúrgica (palavra por palavra)..."):
             imgs1 = pdf_to_images(f1) if f1.name.endswith(".pdf") else [Image.open(f1)]
             imgs2 = pdf_to_images(f2) if f2.name.endswith(".pdf") else [Image.open(f2)]
             
-            # PROMPT COM AS NOVAS REGRAS DE NEGÓCIO E ESTRUTURA PARA O RESUMO
+            # PROMPT DE ALTA PRECISÃO
             prompt = f"""
-            Você é um auditor farmacêutico rigoroso. Analise as imagens.
+            Você é um auditor farmacêutico de precisão.
+            Analise as imagens e extraia o texto das seções: {SECOES_COMPLETAS}
+
+            ⚠️ INSTRUÇÕES DE COMPARAÇÃO (IMPORTANTE):
+            1. Compare o TEXTO DA ARTE com o TEXTO DA GRÁFICA.
+            2. Seja CIRÚRGICO nos destaques.
+            3. Se houver uma palavra a mais (ex: "não"), marque APENAS a palavra "não". NÃO marque a frase inteira.
+            4. Se houver erro de digitação (ex: "vocÊ" vs "você"), marque APENAS a palavra errada.
+
+            REGRAS POR GRUPO:
+            - GRUPO 1 ("APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"):
+                * Não marque erros. Status sempre "CONFORME".
+                * "DIZERES LEGAIS": Extraia a data da Anvisa separadamente para o JSON. No texto, se achar a data, marque de azul. Se não achar, não escreva nada.
             
-            SEÇÕES PARA ANALISAR: {SECOES_COMPLETAS}
+            - GRUPO 2 (Outras Seções):
+                * Marque divergências (palavras extras/faltantes) com <span class="highlight-yellow">PALAVRA</span>.
+                * Marque erros gramaticais com <span class="highlight-red">PALAVRA</span>.
+                * Capture avisos de "Atenção".
 
-            ⚠️ REGRAS ESPECÍFICAS POR GRUPO DE SEÇÃO:
-
-            GRUPO 1: ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
-            - NESTAS SEÇÕES, NÃO COMPARE O TEXTO EM BUSCA DE ERROS.
-            - Status deve ser SEMPRE "CONFORME".
-            - Apenas transcreva o texto da Gráfica.
-            - REGRA ESPECIAL "DIZERES LEGAIS": 
-                1. Extraia a "Data da Anvisa" separadamente para o cabeçalho.
-                2. No texto da seção, se achar a data, marque com <span class="highlight-blue">DATA</span>.
-                3. Se NÃO achar a data, NÃO escreva "N/A" dentro do texto da seção. Deixe o texto limpo.
-
-            GRUPO 2: [TODAS AS OUTRAS SEÇÕES]
-            - Comparação rigorosa ARTE vs GRÁFICA.
-            - Marque divergências (texto extra/faltante) com <span class="highlight-yellow">TEXTO</span>.
-            - Marque erros de português com <span class="highlight-red">TEXTO</span>.
-            - Capture avisos de "Atenção" até o próximo título.
-
-            SAÍDA JSON OBRIGATÓRIA:
+            SAÍDA JSON:
             {{
-                "data_anvisa_arte": "dd/mm/aaaa" (ou "Não encontrada"),
+                "data_anvisa_ref": "dd/mm/aaaa" (ou "Não encontrada"),
                 "data_anvisa_grafica": "dd/mm/aaaa" (ou "Não encontrada"),
                 "secoes": [
-                  {{
-                    "titulo": "NOME DA SEÇÃO",
-                    "texto_arte": "Texto extraído da arte",
-                    "texto_grafica": "Texto da gráfica (com highlights se aplicável)",
-                    "status": "CONFORME" ou "DIVERGENTE"
-                  }}
+                    {{
+                        "titulo": "NOME DA SEÇÃO",
+                        "texto_arte": "Texto da arte",
+                        "texto_grafica": "Texto da gráfica com highlights precisos",
+                        "status": "CONFORME" ou "DIVERGENTE"
+                    }}
                 ]
             }}
             """
             
-            payload = [prompt, "--- ARTE ---"] + imgs1 + ["--- GRAFICA ---"] + imgs2
-            
             try:
+                payload = [prompt, "--- ARTE ---"] + imgs1 + ["--- GRAFICA ---"] + imgs2
                 response = model.generate_content(payload)
                 resultado = json.loads(response.text)
                 
-                # Extraindo dados do JSON novo
-                data_arte = resultado.get("data_anvisa_arte", "Não encontrada")
-                data_grafica = resultado.get("data_anvisa_grafica", "Não encontrada")
-                lista_secoes = resultado.get("secoes", [])
+                # Dados globais
+                data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
+                data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
+                secoes = resultado.get("secoes", [])
 
-                # ----------------- ÁREA DO RESUMO (IGUAL FOTO) -----------------
+                # --- 1. RESUMO NO TOPO (Igual foto) ---
                 st.markdown("### 📊 Resumo da Conferência")
                 
-                # Parte de Cima (3 Métricas)
+                # Linha de métricas
                 k1, k2, k3 = st.columns(3)
-                k1.metric("Data Anvisa (Ref/Arte)", data_arte)
+                k1.metric("Data Anvisa (Ref)", data_ref)
                 
-                # Lógica para cor da data gráfica
-                delta_color = "normal"
-                delta_msg = ""
-                if data_grafica == data_arte and data_arte != "Não encontrada":
-                    delta_msg = "Vigência ✅"
-                    delta_color = "normal" # Streamlit usa verde por padrão para delta positivo
-                elif data_grafica != "Não encontrada":
-                    delta_msg = "Diferente ⚠️"
-                    delta_color = "inverse"
-
-                k2.metric("Data Anvisa (Gráfica)", data_grafica, delta=delta_msg, delta_color=delta_color)
+                # Cor dinâmica para a data
+                cor_delta = "normal" if data_ref == data_graf and data_ref != "Não encontrada" else "inverse"
+                msg_delta = "Vigência" if data_ref == data_graf else "Diferente"
+                if data_graf == "Não encontrada": msg_delta = ""
                 
-                k3.metric("Seções Analisadas", len(lista_secoes))
+                k2.metric("Data Anvisa (Gráfica)", data_graf, delta=msg_delta, delta_color=cor_delta)
+                k3.metric("Seções Analisadas", len(secoes))
 
-                # Parte de Baixo (Barras Conforme/Divergente)
-                divergentes_qtd = sum(1 for d in lista_secoes if d['status'] != 'CONFORME')
-                conformes_qtd = len(lista_secoes) - divergentes_qtd
-
-                bar1, bar2 = st.columns(2)
-                bar1.success(f"✅ **Conformes: {conformes_qtd}**")
+                # Barras de status
+                div_count = sum(1 for s in secoes if s['status'] != 'CONFORME')
+                ok_count = len(secoes) - div_count
                 
-                if divergentes_qtd > 0:
-                    bar2.warning(f"⚠️ **Divergentes: {divergentes_qtd}**")
+                b1, b2 = st.columns(2)
+                b1.success(f"✅ **Conformes: {ok_count}**")
+                if div_count > 0:
+                    b2.warning(f"⚠️ **Divergentes: {div_count}**")
                 else:
-                    bar2.success(f"✨ **Divergentes: 0**")
-
+                    b2.success("✨ **Divergentes: 0**")
+                
                 st.divider()
-                # ---------------------------------------------------------------
 
-                # Loop das Seções (Mantido Igual)
-                for item in lista_secoes:
+                # --- 2. LISTA DE SEÇÕES LADO A LADO ---
+                for item in secoes:
                     status = item.get('status', 'CONFORME')
                     titulo = item.get('titulo', 'Seção')
                     
-                    # Lógica Visual dos Ícones e Cores
                     if "DIZERES LEGAIS" in titulo.upper():
-                        icon = "📅" # Ícone de calendário para data
-                        css = "border-info" # Azul
-                        expandir = True 
+                        icon, css, aberto = "📅", "border-info", True
                     elif status == "CONFORME":
-                        icon = "✅"
-                        css = "border-ok" # Verde
-                        expandir = False
+                        icon, css, aberto = "✅", "border-ok", False
                     else:
-                        icon = "⚠️"
-                        css = "border-warn" # Amarelo/Vermelho
-                        expandir = True
+                        icon, css, aberto = "⚠️", "border-warn", True
 
-                    with st.expander(f"{icon} {titulo}", expanded=expandir):
+                    with st.expander(f"{icon} {titulo}", expanded=aberto):
                         col_esq, col_dir = st.columns(2)
-                        
                         with col_esq:
                             st.caption("Referência (Arte)")
                             st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
-                            
                         with col_dir:
                             st.caption("Validação (Gráfica)")
                             st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
             except Exception as e:
                 st.error(f"Erro no processamento: {e}")
+                st.warning("Tente novamente. O modelo pode ter oscilado.")
 
     else:
         st.warning("Adicione os arquivos.")
