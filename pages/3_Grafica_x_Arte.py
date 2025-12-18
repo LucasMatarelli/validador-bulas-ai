@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import fitz  # PyMuPDF
-import docx  # Para ler Word
+import docx  # Para ler DOCX
 import io
 import json
 
@@ -76,13 +76,14 @@ def process_file_content(uploaded_file):
         # 2. Imagens Diretas
         elif uploaded_file.name.lower().endswith((".jpg", ".png", ".jpeg")):
             return [Image.open(uploaded_file)]
-        
-        # 3. DOCX -> Texto
+
+        # 3. DOCX -> Texto (OCR Nativo)
         elif uploaded_file.name.lower().endswith(".docx"):
             doc = docx.Document(uploaded_file)
             full_text = []
             for para in doc.paragraphs:
                 full_text.append(para.text)
+            # Retorna como uma lista contendo a string (o Gemini aceita misturar imagem e texto)
             return ["\n".join(full_text)]
             
     except: return []
