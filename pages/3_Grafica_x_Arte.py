@@ -22,7 +22,7 @@ st.markdown("""
         border: 1px solid #ced4da;
         height: 100%; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; /* Mantém parágrafos */
+        white-space: pre-wrap; /* Mantém parágrafos originais */
         text-align: justify;
     }
 
@@ -68,7 +68,7 @@ def setup_model():
             genai.configure(api_key=api_key)
             return genai.GenerativeModel(
                 MODELO_FIXO, 
-                # Temperatura 0.0 é crucial para precisão
+                # CRÍTICO: Temperatura 0.0 elimina a criatividade (invenção)
                 generation_config={"response_mime_type": "application/json", "temperature": 0.0}
             )
         except: continue
@@ -80,17 +80,22 @@ def pdf_to_images(uploaded_file):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         images = []
         for page in doc:
-            # Zoom aumentado para 3.0 para garantir leitura de letras pequenas
+            # Aumentei o Zoom para 3.0 (300 DPI) para ele ler letras miúdas de bula
             pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
             images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
         return images
     except: return []
 
+# LISTA EXATA NA ORDEM DA BULA (IMPORTANTE PARA O ROBÔ SABER ONDE PARAR)
 SECOES_COMPLETAS = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
-    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "APRESENTAÇÕES", 
+    "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", 
+    "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", 
+    "COMO DEVO USAR ESTE MEDICAMENTO?", 
     "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
     "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
     "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
@@ -111,33 +116,40 @@ if st.button("🚀 Validar"):
             st.error("Erro de API Key.")
             st.stop()
 
-        with st.spinner("Lendo documento inteiro (Título a Título)..."):
+        with st.spinner("Realizando leitura integral (OCR Forense)..."):
             imgs1 = pdf_to_images(f1) if f1.name.endswith(".pdf") else [Image.open(f1)]
             imgs2 = pdf_to_images(f2) if f2.name.endswith(".pdf") else [Image.open(f2)]
             
-            # PROMPT DE LIMITES RÍGIDOS (BOUNDARY)
+            # PROMPT BLINDADO
             prompt = f"""
-            Você é um leitor de OCR de alta fidelidade.
+            Você é um Scanner OCR Forense. Sua tarefa NÃO é interpretar, é TRANSCREVER.
             
-            SUA TAREFA: Extrair e comparar o texto das seções listadas abaixo.
-            LISTA DE SEÇÕES (TÍTULOS): {SECOES_COMPLETAS}
+            INPUT: Imagens da bula.
+            TAREFA: Extrair texto EXATO das seções abaixo.
 
-            ⚠️ REGRA DE OURO PARA EXTRAÇÃO (LIMITE DE SEÇÃO):
-            Para cada seção da lista:
-            1. Encontre o título exato na imagem (ex: "3. QUANDO NÃO DEVO USAR...").
-            2. Copie TODO o texto que vem depois dele. Inclua parágrafos, tópicos, avisos de "Atenção", "Importante" e rodapés.
-            3. **PARE DE COPIAR IMEDIATAMENTE** assim que encontrar o título da PRÓXIMA seção da lista.
-            4. Se for a última seção ("DIZERES LEGAIS"), copie até o fim do documento.
+            LISTA DE TÍTULOS (ORDEM DE LEITURA): 
+            {SECOES_COMPLETAS}
+
+            ⚠️ REGRAS DE EXTRAÇÃO (CRÍTICO):
+            1. **ONDE COMEÇA E ONDE TERMINA:**
+               - Para extrair a seção X, encontre o título X.
+               - Copie TUDO o que vier depois dele (parágrafos, quadros de "Atenção", notas de rodapé).
+               - **SÓ PARE** quando encontrar o TÍTULO da próxima seção da lista.
+               - Se for "DIZERES LEGAIS", copie até o fim da página.
+            
+            2. **FIDELIDADE TOTAL:**
+               - Não corrija erros. Se está escrito "Inflamasão", copie "Inflamasão".
+               - Não invente palavras. Se a imagem está borrada, não adivinhe.
 
             REGRAS DE COMPARAÇÃO (ARTE vs GRÁFICA):
             - GRUPO 1 ("APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"):
                 * Status SEMPRE "CONFORME".
-                * Apenas transcreva o texto.
-                * "DIZERES LEGAIS": Procure a data da Anvisa. Se achar, marque de <span class="highlight-blue">AZUL</span> no texto. Extraia também separadamente.
+                * Apenas transcreva o texto completo encontrado.
+                * "DIZERES LEGAIS": Procure a data da Anvisa (ex: aprovado em dd/mm/aaaa). Se achar, extraia para o campo de data e marque de <span class="highlight-blue">AZUL</span> no texto. Se não achar, não marque nada.
             
             - GRUPO 2 (Todas as outras):
                 * Comparação palavra por palavra.
-                * Divergência (ex: "não" extra, "mg" faltando): Marque <span class="highlight-yellow">APENAS A PALAVRA</span>.
+                * Divergência (ex: "não" extra): Marque <span class="highlight-yellow">APENAS A PALAVRA</span>.
                 * Erro ortográfico: Marque <span class="highlight-red">APENAS A PALAVRA</span>.
 
             SAÍDA JSON:
@@ -147,8 +159,8 @@ if st.button("🚀 Validar"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto COMPLETO da arte (Título até Próximo Título)",
-                        "texto_grafica": "Texto COMPLETO da gráfica com highlights precisos",
+                        "texto_arte": "Texto COMPLETO extraído da arte",
+                        "texto_grafica": "Texto COMPLETO da gráfica com highlights",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
@@ -160,7 +172,7 @@ if st.button("🚀 Validar"):
                 response = model.generate_content(payload)
                 resultado = json.loads(response.text)
                 
-                # Dados globais
+                # Extração de dados
                 data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
                 data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
                 secoes = resultado.get("secoes", [])
@@ -213,7 +225,7 @@ if st.button("🚀 Validar"):
 
             except Exception as e:
                 st.error(f"Erro no processamento: {e}")
-                st.warning("O documento pode ser muito longo ou complexo. Tente processar por partes se persistir.")
+                st.warning("Dica: Se o erro persistir, o arquivo pode estar muito pesado. Tente cortar as páginas.")
 
     else:
         st.warning("Adicione os arquivos.")
