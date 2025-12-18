@@ -85,7 +85,6 @@ f1 = c1.file_uploader("📂 Arquivo Referência", type=["pdf"], key="f1")
 f2 = c2.file_uploader("📂 Arquivo BELFAR", type=["pdf"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    # Validação de chaves
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -94,7 +93,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Lendo arquivos, extraindo conteúdo completo e analisando..."):
+        with st.spinner("Processando Inteligência Artificial (Isso pode levar alguns segundos)..."):
             f1.seek(0)
             f2.seek(0)
             
@@ -105,37 +104,39 @@ if st.button("🚀 Processar Conferência"):
                 st.error("Erro: Arquivo vazio ou ilegível.")
                 st.stop()
 
-            # PROMPT AJUSTADO PARA CORRIGIR O CORTE DE TEXTO E IGNORAR DIVERGÊNCIAS NAS SEÇÕES ESPECÍFICAS
+            # --- PROMPT ANTI-ALUCINAÇÃO ---
+            # Aumentei o limite de caracteres para garantir que ele leia tudo
             prompt = f"""
-            Você é um Auditor de Qualidade Farmacêutica.
+            Você é um Auditor de Qualidade Farmacêutica Rígido, mas justo.
             
             INPUT TEXTO REFERÊNCIA:
-            {t_ref[:60000]}
+            {t_ref} 
             
             INPUT TEXTO BELFAR:
-            {t_belfar[:40000]}
+            {t_belfar}
 
-            SUA TAREFA CRÍTICA:
-            1. Para cada seção listada abaixo, extraia o texto correspondente.
-            2. **TRANSCRIÇÃO INTEGRAL (IMPORTANTE):** Você DEVE pegar o conteúdo COMPLETO da seção, do primeiro parágrafo até o último ponto antes do próximo título. Não resuma. Não corte o final. Se a seção for longa, escreva tudo.
-            3. **LIMPEZA:** O texto do PDF vem com quebras de linha erradas no meio das frases. Junte as linhas para formar parágrafos corretos.
+            SUA TAREFA:
+            1. Para cada seção listada, extraia o texto correspondente.
+            2. **REGRA DE OURO (ANTI-ALUCINAÇÃO):** O PDF original pode ter quebras de linha (`\\n`) em lugares diferentes do PDF novo. Isso NÃO é uma diferença.
+               - Antes de comparar, remova mentalmente todas as quebras de linha e espaços extras.
+               - Se a SEQUÊNCIA DE PALAVRAS for a mesma, o texto é **CONFORME**.
+               - Só marque DIVERGENTE se houver palavras diferentes, números diferentes ou frases faltando.
 
             LISTA DE SEÇÕES: {lista_secoes_ativa}
 
-            REGRAS DE COMPARAÇÃO (HIGHLIGHTS):
+            REGRAS DE FORMATAÇÃO DO OUTPUT:
             
             CASO 1: Seções "APRESENTAÇÕES", "COMPOSIÇÃO" e "DIZERES LEGAIS":
-               - NÃO procure divergências.
+               - Status SEMPRE "CONFORME".
                - NÃO use highlight amarelo.
-               - Apenas transcreva o texto limpo e organizado.
-               - Status deve ser sempre "CONFORME".
-               - Única exceção: Em "DIZERES LEGAIS", marque a Data da Anvisa com <span class="highlight-blue">DATA</span>.
+               - Apenas transcreva o texto limpo (parágrafos unidos).
+               - Exceção: Destaque a Data da Anvisa em "DIZERES LEGAIS" com <span class="highlight-blue">DATA</span>.
 
             CASO 2: TODAS AS OUTRAS SEÇÕES:
-               - Compare rigorosamente o sentido.
-               - Qualquer divergência de conteúdo no texto da BELFAR deve ser marcada com <span class="highlight-yellow">TEXTO DIVERGENTE</span>.
-               - Erros de português graves marque com <span class="highlight-red">ERRO</span>.
-               - Se houver highlight amarelo, o status DEVE ser "DIVERGENTE".
+               - Compare a sequência de palavras.
+               - Se for IDÊNTICO (ignorando quebra de linha): Status "CONFORME", sem highlight.
+               - Se for DIFERENTE: Status "DIVERGENTE". Use <span class="highlight-yellow">TRECHO NOVO/ALTERADO</span> apenas na parte que mudou.
+               - Erros graves de PT: <span class="highlight-red">ERRO</span>.
 
             SAÍDA JSON OBRIGATÓRIA:
             {{
@@ -144,8 +145,8 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_ref": "Texto completo e limpo da Referência",
-                        "texto_belfar": "Texto completo e limpo da Belfar (com highlights se aplicável)",
+                        "texto_ref": "Texto completo da Referência (sem cortar o final)",
+                        "texto_belfar": "Texto completo da Belfar",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
@@ -155,7 +156,6 @@ if st.button("🚀 Processar Conferência"):
             response = None
             ultimo_erro = ""
 
-            # Failover de Chaves
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
@@ -164,7 +164,6 @@ if st.button("🚀 Processar Conferência"):
                         generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                     )
                     
-                    # retry=None para não travar em loop infinito
                     response = model.generate_content(prompt, request_options={'retry': None})
                     break 
 
@@ -185,11 +184,9 @@ if st.button("🚀 Processar Conferência"):
                     data_belfar = resultado.get("data_anvisa_belfar", "-")
                     dados_secoes = resultado.get("secoes", [])
 
-                    # LÓGICA DO AMARELINHO = DIVERGENTE NO PYTHON
-                    # Para garantir que mesmo que a IA erre o status no JSON, a gente corrige aqui
+                    # Correção de Status via Python
                     divergentes_count = 0
                     for item in dados_secoes:
-                        # Se tiver highlight amarelo no texto OU a IA marcou como divergente
                         if 'highlight-yellow' in item.get('texto_belfar', '') or item.get('status') == 'DIVERGENTE':
                             item['status'] = 'DIVERGENTE'
                             divergentes_count += 1
@@ -218,7 +215,6 @@ if st.button("🚀 Processar Conferência"):
                         status = item.get('status', 'CONFORME')
                         titulo = item.get('titulo', 'Seção')
                         
-                        # Ícones e cores
                         if "DIZERES LEGAIS" in titulo.upper():
                             icon = "⚖️"; css = "border-info"; aberto = True
                         elif status == "CONFORME":
@@ -229,10 +225,10 @@ if st.button("🚀 Processar Conferência"):
                         with st.expander(f"{icon} {titulo}", expanded=aberto):
                             col_esq, col_dir = st.columns(2)
                             with col_esq:
-                                st.caption("📜 Referência (Organizado)")
+                                st.caption("📜 Referência")
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_ref", "")}</div>', unsafe_allow_html=True)
                             with col_dir:
-                                st.caption("💊 BELFAR (Validado)")
+                                st.caption("💊 BELFAR")
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_belfar", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
