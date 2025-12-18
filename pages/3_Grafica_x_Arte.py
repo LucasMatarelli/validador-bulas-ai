@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import fitz  # PyMuPDF
-import docx  # Para ler DOCX
+import docx  # Para ler Word
 import io
 import json
 
@@ -83,7 +83,6 @@ def process_file_content(uploaded_file):
             full_text = []
             for para in doc.paragraphs:
                 full_text.append(para.text)
-            # Retorna como uma lista contendo a string (o Gemini aceita misturar imagem e texto)
             return ["\n".join(full_text)]
             
     except: return []
@@ -103,7 +102,6 @@ SECOES_COMPLETAS = [
 st.title("💊 Validador de Bulas (Gráfica x Arte)")
 
 c1, c2 = st.columns(2)
-# Tipos atualizados
 f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png", "docx"])
 f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png", "docx"])
 
@@ -118,7 +116,7 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando leitura inteligente (ignorando espaçamento de gráfica)..."):
+        with st.spinner("Processando leitura literal (sem alucinações)..."):
             # Reseta ponteiros
             f1.seek(0)
             f2.seek(0)
@@ -127,30 +125,32 @@ if st.button("🚀 Validar"):
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT
+            # PROMPT ANTI-ALUCINAÇÃO
             prompt = f"""
-            Você é um leitor de OCR especializado em Bulas Farmacêuticas.
+            Você é um Comparador de Texto LITERAL (Robô Cego).
             
-            INPUT: Imagens ou Texto de documentos justificados (com espaçamento irregular).
+            INPUT: Imagens ou Texto de documentos.
             TAREFA: Extrair e comparar o texto das seções: {SECOES_COMPLETAS}
 
-            ⚠️ REGRAS DE LEITURA (CRÍTICO):
-            1. **CORREÇÃO DE JUSTIFICAÇÃO:** Documentos de gráfica usam texto justificado que cria espaços visuais falsos dentro das palavras (ex: "Em bora" visualmente, mas é "Embora"). 
-               - Você DEVE ignorar esses espaços visuais e ler a palavra correta ("Embora").
-               - NÃO separe palavras que o português define como juntas.
-            
-            2. **LIMITES:** Copie do Título da Seção até o Título da Próxima Seção.
-            
-            REGRAS DE COMPARAÇÃO:
-            - GRUPO 1 ("APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"):
-                * Status SEMPRE "CONFORME". Apenas transcreva o texto limpo.
-                * "DIZERES LEGAIS": Se achar data (dd/mm/aaaa), marque <span class="highlight-blue">DATA</span>. Se não achar, não marque nada.
-            
-            - GRUPO 2 (Outras Seções):
-                * Compare o texto REAL (sem os bugs de espaçamento).
-                * Se houver divergência REAL (palavra errada, texto faltando), marque <span class="highlight-yellow">PALAVRA</span>.
-                * Erros ortográficos REAIS: Marque <span class="highlight-red">PALAVRA</span>.
-                * Não marque falsos positivos causados por espaçamento (ex: "Em bora" vs "Embora" -> Considere igual).
+            ⚠️ PROTOCOLO DE LEITURA (ANTI-ALUCINAÇÃO):
+            1. **LEITURA PIXEL POR PIXEL:** Não tente adivinhar o que está escrito. Se está escrito "fabricação", NÃO LEIA "validade". Se está escrito "cirurgião", NÃO LEIA "do cirurgião".
+            2. **NÃO CORRIJA O PORTUGUÊS:** Não adicione preposições (de, do, da) se elas não existirem na imagem. Copie exatamente o que vê.
+            3. **IGNORAR JUSTIFICAÇÃO:** Ignore espaços falsos dentro de palavras (ex: "E m b o r a" = "Embora").
+
+            🚨 REGRAS DE COMPARAÇÃO POR GRUPO:
+
+            >>> GRUPO 1 (BLINDADO - SEM DIVERGÊNCIAS): 
+            [ "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS" ]
+            - NUNCA marque <span class="highlight-yellow"> nestas seções.
+            - O Status deve ser SEMPRE "CONFORME".
+            - Apenas transcreva o texto.
+            - Única exceção: Em "DIZERES LEGAIS", se houver data (dd/mm/aaaa), marque com <span class="highlight-blue">DATA</span>.
+
+            >>> GRUPO 2 (RIGOROSO):
+            [ Todas as outras seções ]
+            - Compare palavra por palavra.
+            - Se houver diferença REAL (palavra trocada, número errado), marque <span class="highlight-yellow">DIFERENÇA</span>.
+            - Se for apenas quebra de linha diferente, considere IGUAL.
 
             SAÍDA JSON:
             {{
@@ -159,8 +159,8 @@ if st.button("🚀 Validar"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto da arte",
-                        "texto_grafica": "Texto da gráfica com highlights",
+                        "texto_arte": "Texto fiel da arte",
+                        "texto_grafica": "Texto fiel da gráfica (com highlights APENAS se permitido)",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
@@ -234,6 +234,7 @@ if st.button("🚀 Validar"):
                         status = item.get('status', 'CONFORME')
                         titulo = item.get('titulo', 'Seção')
                         
+                        # Definição visual
                         if "DIZERES LEGAIS" in titulo.upper():
                             icon, css, aberto = "📅", "border-info", True
                         elif status == "CONFORME":
