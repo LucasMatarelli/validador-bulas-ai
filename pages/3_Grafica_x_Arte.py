@@ -1,105 +1,74 @@
 import streamlit as st
 import google.generativeai as genai
-from google.api_core import exceptions
 from PIL import Image
 import fitz  # PyMuPDF
 import io
-import time
-import re
+import json
 
-# ----------------- CONFIGURAÇÃO DA PÁGINA -----------------
-st.set_page_config(page_title="Validador (Flash Latest)", layout="wide")
+# ----------------- 1. VISUAL & CSS (O segredo do Design) -----------------
+st.set_page_config(page_title="Validador Visual", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
-    .highlight-yellow { background-color: #fff9c4; color: #000000; padding: 2px 5px; border-radius: 3px; border: 1px solid #fbc02d; }
-    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 5px; border-radius: 3px; border: 1px solid #b71c1c; font-weight: bold; }
-    .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 5px; border-radius: 3px; border: 1px solid #1976d2; }
-    .section-box { border: 1px solid #ddd; padding: 15px; border-radius: 5px; margin-bottom: 20px; background-color: #f9f9f9; }
-    .status-ok { background-color: #e8f5e9; color: #2e7d32; padding: 10px; border-radius: 5px; border: 1px solid #c8e6c9; font-weight: bold; text-align: center; }
+    /* Estilo das caixas de texto */
+    .texto-box { 
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 0.95rem;
+        line-height: 1.6;
+        color: #333;
+        background-color: #ffffff;
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+        height: 100%; /* Para alinhar altura */
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+
+    /* CORES DOS MARCA-TEXTOS (Funcionam dentro do HTML) */
+    .highlight-yellow { 
+        background-color: #fff9c4; color: #000; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #fbc02d; 
+    }
+    .highlight-red { 
+        background-color: #ffcdd2; color: #b71c1c; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #b71c1c; font-weight: bold; 
+    }
+    .highlight-blue { 
+        background-color: #bbdefb; color: #0d47a1; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #1976d2; font-weight: bold; 
+    }
+
+    /* Bordas laterais para indicar Status */
+    .border-ok { border-left: 5px solid #4caf50 !important; }
+    .border-warn { border-left: 5px solid #ff9800 !important; }
+    .border-info { border-left: 5px solid #2196f3 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- DEFINIÇÃO DO MODELO (EXATO) -----------------
-# Usando exatamente a string solicitada
+# ----------------- 2. MODELO GEMINI -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
 def setup_model():
     keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
     valid_keys = [k for k in keys if k]
-
-    if not valid_keys:
-        return None, "Sem chaves configuradas."
-
+    
     for api_key in valid_keys:
         try:
             genai.configure(api_key=api_key)
-            # Teste de conexão com o nome exato
-            model = genai.GenerativeModel(MODELO_FIXO)
-            return api_key, None
-        except Exception as e:
-            # Se der erro no nome do modelo, tenta continuar para a próxima chave
-            continue
-    
-    return None, f"Erro: O modelo '{MODELO_FIXO}' não foi reconhecido ou a chave falhou."
-
-# ----------------- FUNÇÃO DE RETRY (ANTI-429) -----------------
-def generate_with_retry(model, payload, max_retries=3):
-    """
-    Tenta executar a chamada. Se der erro de cota (429), espera e tenta de novo.
-    """
-    for attempt in range(max_retries):
-        try:
-            return model.generate_content(payload)
-        
-        except exceptions.ResourceExhausted as e:
-            error_msg = str(e)
-            wait_time = 30 # Tempo base
-            
-            # Tenta ler o tempo que o Google pediu
-            match = re.search(r"retry.*in\s+([\d\.]+)", error_msg)
-            if match:
-                wait_time = float(match.group(1)) + 5
-            
-            st.warning(f"⚠️ Cota atingida. Aguardando {int(wait_time)}s para retomar...")
-            
-            # Barra de progresso para o usuário ver que não travou
-            my_bar = st.progress(0, text="Aguardando liberação...")
-            step = 100
-            for i in range(step):
-                time.sleep(wait_time / step)
-                my_bar.progress(i + 1)
-            my_bar.empty()
-            
-        except Exception as e:
-            st.error(f"Erro técnico: {e}")
-            return None
-            
-    st.error("❌ Falha na conexão após várias tentativas.")
+            # IMPORTANTE: Forçamos a resposta em JSON para montar o layout depois
+            return genai.GenerativeModel(
+                MODELO_FIXO, 
+                generation_config={"response_mime_type": "application/json"}
+            )
+        except: continue
     return None
 
-# ----------------- SIDEBAR -----------------
-with st.sidebar:
-    st.header("⚙️ Configuração")
-    
-    key, err = setup_model()
-    
-    if key:
-        genai.configure(api_key=key)
-        # Temperatura baixa para evitar alucinações no OCR
-        model = genai.GenerativeModel(MODELO_FIXO, generation_config={"temperature": 0.1})
-        st.markdown(f'<div class="status-ok">Conectado:<br>{MODELO_FIXO}</div>', unsafe_allow_html=True)
-    else:
-        st.error(f"{err}")
-        st.stop()
-
-# ----------------- PROCESSAMENTO DE IMAGENS -----------------
+# ----------------- 3. PROCESSAMENTO -----------------
 def pdf_to_images(uploaded_file):
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         images = []
         for page in doc:
-            # Zoom 2.0 melhora a leitura de letras pequenas
             pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
             images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
         return images
@@ -116,49 +85,104 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-# ----------------- UI PRINCIPAL -----------------
-st.title("💊 Validador (Modelo Latest)")
+# ----------------- 4. INTERFACE PRINCIPAL -----------------
+st.title("⚖️ Comparador Lado a Lado (Seção por Seção)")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Arte (Original)", type=["pdf", "jpg", "png"], key="f1")
-f2 = c2.file_uploader("Gráfica (Prova)", type=["pdf", "jpg", "png"], key="f2")
+f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png"])
+f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png"])
 
 if st.button("🚀 Iniciar Comparação"):
     if f1 and f2:
-        with st.spinner(f"Enviando para {MODELO_FIXO}..."):
+        model = setup_model()
+        if not model:
+            st.error("Chave API inválida.")
+            st.stop()
+
+        with st.spinner("Lendo documentos e separando seções..."):
             imgs1 = pdf_to_images(f1) if f1.name.endswith(".pdf") else [Image.open(f1)]
             imgs2 = pdf_to_images(f2) if f2.name.endswith(".pdf") else [Image.open(f2)]
             
+            # PROMPT ESTRUTURADO PARA JSON
             prompt = f"""
-            Você é um auditor de qualidade na farmacêutica Belfar.
-            Compare visualmente o CONJUNTO A (Arte) com o CONJUNTO B (Gráfica).
+            Atue como auditor farmacêutico.
+            Compare as imagens da ARTE (Referência) com a GRÁFICA (Prova).
             
-            ATENÇÃO:
-            1. Use OCR para extrair todo o texto, mesmo que esteja em curvas/vetores.
-            2. Não alucine texto que não existe.
-            3. Verifique todas as seções.
-            
-            Gere o relatório em HTML, separado por estas seções exatas:
-            {SECOES_PACIENTE}
-            
-            REGRAS DE FORMATAÇÃO (HTML):
-            - Divergências de texto (texto a mais ou a menos): <span class="highlight-yellow">TEXTO AQUI</span>
-            - Erros de português/digitação: <span class="highlight-red">TEXTO AQUI</span>
-            - Na seção 'DIZERES LEGAIS', valide a data da Anvisa: <span class="highlight-blue">Esta bula foi atualizada... (DATA)</span>
-            
-            Para cada seção, use este bloco:
-            <div class="section-box">
-                <b>NOME DA SEÇÃO</b><br>
-                <p>Texto comparado...</p>
-            </div>
+            Extraia e compare o texto destas seções: {SECOES_PACIENTE}
+
+            SAÍDA OBRIGATÓRIA (JSON Array):
+            [
+              {{
+                "titulo": "NOME DA SEÇÃO",
+                "texto_arte": "Texto puro da Arte",
+                "texto_grafica": "Texto da Gráfica com tags HTML de destaque",
+                "status": "CONFORME" (se igual) ou "DIVERGENTE" (se diferente)
+              }}
+            ]
+
+            REGRAS DE DESTAQUE (apenas no campo 'texto_grafica'):
+            - Diferenças de texto: <span class="highlight-yellow">TEXTO</span>
+            - Erros de português: <span class="highlight-red">TEXTO</span>
+            - Data Anvisa (Dizeres Legais): <span class="highlight-blue">DATA</span>
             """
             
-            payload = [prompt, "--- CONJUNTO A ---"] + imgs1 + ["--- CONJUNTO B ---"] + imgs2
+            payload = [prompt, "--- ARTE ---"] + imgs1 + ["--- GRAFICA ---"] + imgs2
             
-            response = generate_with_retry(model, payload)
-            
-            if response:
-                st.markdown(response.text, unsafe_allow_html=True)
-                st.success("Processamento concluído.")
+            try:
+                # 1. Pega a resposta do Gemini
+                response = model.generate_content(payload)
+                
+                # 2. Converte o texto JSON em objeto Python
+                dados = json.loads(response.text)
+
+                # 3. MOSTRA NA TELA (O Layout Lado a Lado Real)
+                st.write("")
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Seções", len(dados))
+                divergentes = sum(1 for d in dados if d['status'] != 'CONFORME')
+                k3.metric("Divergências", divergentes, delta_color="inverse")
+                st.divider()
+
+                for item in dados:
+                    status = item.get('status', 'DIVERGENTE')
+                    titulo = item.get('titulo', 'Seção')
+                    
+                    # Define ícone e cor da borda
+                    if status == "CONFORME":
+                        icon = "✅"
+                        css = "border-ok"
+                    elif "DIZERES LEGAIS" in titulo.upper():
+                        icon = "👁️"
+                        css = "border-info"
+                    else:
+                        icon = "⚠️"
+                        css = "border-warn"
+
+                    # CRIA O ACORDEÃO PARA A SEÇÃO
+                    with st.expander(f"{icon} {titulo}", expanded=(status != "CONFORME")):
+                        
+                        # AQUI ESTÁ O SEGREDO: COLUNAS REAIS DO STREAMLIT
+                        col_esq, col_dir = st.columns(2)
+                        
+                        with col_esq:
+                            st.caption("📄 Arte (Referência)")
+                            st.markdown(f"""
+                            <div class="texto-box {css}">
+                                {item.get('texto_arte', '')}
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                        with col_dir:
+                            st.caption("📄 Gráfica (Validação)")
+                            st.markdown(f"""
+                            <div class="texto-box {css}">
+                                {item.get('texto_grafica', '')}
+                            </div>
+                            """, unsafe_allow_html=True)
+
+            except Exception as e:
+                st.error(f"Erro ao processar: {e}")
+                st.write(response.text) # Debug se falhar o JSON
+
     else:
-        st.warning("Por favor, faça upload dos dois arquivos.")
+        st.warning("Envie os arquivos.")
