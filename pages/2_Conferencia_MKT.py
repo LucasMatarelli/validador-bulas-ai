@@ -8,7 +8,7 @@ import re
 import unicodedata
 
 # ----------------- 1. VISUAL & CSS -----------------
-st.set_page_config(page_title="Validador Farmacêutico Final", page_icon="💊", layout="wide")
+st.set_page_config(page_title="MKT Final", page_icon="📢", layout="wide")
 
 st.markdown("""
 <style>
@@ -47,49 +47,53 @@ st.markdown("""
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 3. FUNÇÕES DE COMPARAÇÃO (PYTHON PURO) -----------------
-def limpar_texto_para_diff(texto):
-    """Remove quebras de linha e espaços extras para comparação justa."""
+# ----------------- 3. FUNÇÃO DE COMPARAÇÃO INTELIGENTE -----------------
+def normalizar_para_comparacao(texto):
+    """Remove caracteres invisíveis e padroniza o texto para evitar falso erro."""
     if not texto: return ""
-    # Substitui quebras de linha e tabs por espaço simples
-    texto = re.sub(r'[\n\r\t]+', ' ', texto)
-    # Remove múltiplos espaços seguidos
-    texto = re.sub(r'\s+', ' ', texto)
-    return texto.strip()
+    # Normaliza unicode (ex: ã vira ã padrão)
+    texto = unicodedata.normalize('NFKD', texto)
+    # Remove caracteres de controle estranhos
+    texto = "".join([c for c in texto if not unicodedata.combining(c)])
+    return texto
 
 def gerar_diff_html(texto_ref, texto_novo):
     """
-    Compara palavra por palavra ignorando formatação.
+    Compara palavra por palavra com autojunk=False para não se perder.
     """
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
 
-    # Limpeza agressiva para garantir que só pegue diferença de conteúdo
-    a_limpo = limpar_texto_para_diff(texto_ref)
-    b_limpo = limpar_texto_para_diff(texto_novo)
+    # Normaliza antes de quebrar
+    ref_norm = normalizar_para_comparacao(texto_ref)
+    novo_norm = normalizar_para_comparacao(texto_novo)
 
-    a_words = a_limpo.split()
-    b_words = b_limpo.split()
+    # Quebra em palavras (split remove todos os espaços extras e quebras de linha)
+    a = ref_norm.split()
+    b = novo_norm.split()
     
-    # autojunk=False impede que ele pule blocos grandes
-    matcher = difflib.SequenceMatcher(None, a_words, b_words, autojunk=False)
+    # autojunk=False É O SEGREDO para ele não ignorar palavras comuns e não marcar tudo amarelo
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     
     html_output = []
     eh_divergente = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        trecho_novo = " ".join(b_words[j1:j2])
+        # Reconstrói o texto usando as palavras da lista 'b' (novo)
+        trecho_novo = " ".join(b[j1:j2])
         
         if tag == 'equal':
             html_output.append(trecho_novo)
         elif tag == 'replace':
+            # Diferença real
             html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
             eh_divergente = True
         elif tag == 'insert':
+            # Texto novo adicionado
             html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
             eh_divergente = True
         elif tag == 'delete':
-            # Texto que sumiu não mostramos no lado direito (BELFAR), mas conta erro
+            # Texto deletado (não mostramos para manter o visual limpo, mas conta como erro)
             eh_divergente = True 
             
     return " ".join(html_output), eh_divergente
@@ -101,8 +105,7 @@ def extract_text_from_file(uploaded_file):
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
-                # Tenta manter a ordem física do texto
-                text += page.get_text("text", sort=True) + "\n"
+                text += page.get_text("text") + "\n"
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
             for para in doc.paragraphs: 
@@ -122,10 +125,10 @@ SECOES_PACIENTE = [
 ]
 
 # ----------------- 5. UI PRINCIPAL -----------------
-st.title("💊 Validador de Bulas (Gráfica x Arte)")
+st.title("📢 Conferência MKT (Relatório Estruturado)")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "docx"], key="f1")
+f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
@@ -138,7 +141,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Lendo arquivos, estruturando seções e comparando..."):
+        with st.spinner("Extraindo textos e comparando..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
@@ -146,21 +149,20 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 50 or len(t_mkt) < 50:
                 st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # PROMPT REFORÇADO PARA PEGAR TUDO
+            # PROMPT DE EXTRAÇÃO PURA (SEM ANÁLISE)
             prompt = f"""
-            Você é um Extrator de Dados Farmacêuticos.
+            Você é um Extrator de Dados Literais.
             
-            INPUT REFERÊNCIA: {t_anvisa[:150000]}
-            INPUT MKT: {t_mkt[:150000]}
+            INPUT:
+            TEXTO 1 (REF): {t_anvisa[:100000]}
+            TEXTO 2 (MKT): {t_mkt[:100000]}
 
-            SUA TAREFA:
-            1. Identifique as seções listadas abaixo.
-            2. Extraia TODO o conteúdo de texto pertencente a cada seção.
-            3. **IMPORTANTE:** Comece a extração logo após o título da seção e vá até encontrar o próximo título em caixa alta ou o fim do texto.
-            4. **NÃO RESUMA.** Se a seção for longa, extraia ela inteira.
-            5. **LIMPEZA:** Remova quebras de linha que cortam frases no meio (ex: "comprim- ido" -> "comprimido").
-            6. NÃO COMPARE. Apenas me dê o texto.
-
+            SUA MISSÃO:
+            1. Localize as seções da lista abaixo nos dois textos.
+            2. Extraia o conteúdo LIMPO. Junte linhas quebradas para formar frases contínuas.
+            3. **IMPORTANTE:** Copie o texto fielmente. Não corrija nada.
+            4. **NÃO COMPARE:** Apenas me entregue o texto extraído de cada lado.
+            
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
             SAÍDA JSON:
@@ -170,8 +172,8 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Texto completo da seção...",
-                        "texto_mkt": "Texto completo da seção..."
+                        "texto_anvisa": "Conteúdo extraído da referência",
+                        "texto_mkt": "Conteúdo extraído do mkt"
                     }}
                 ]
             }}
@@ -180,7 +182,6 @@ if st.button("🚀 Processar Conferência"):
             response = None
             ultimo_erro = ""
 
-            # Loop de Chaves
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
@@ -199,16 +200,15 @@ if st.button("🚀 Processar Conferência"):
                     data_mkt = resultado.get("data_anvisa_mkt", "-")
                     dados_secoes = resultado.get("secoes", [])
 
-                    # --- COMPARAÇÃO PYTHON ---
                     secoes_finais = []
                     divergentes_count = 0
 
                     for item in dados_secoes:
                         titulo = item.get('titulo', '')
-                        txt_ref = item.get('texto_anvisa', '')
-                        txt_mkt = item.get('texto_mkt', '')
+                        txt_ref = item.get('texto_anvisa', '').strip()
+                        txt_mkt = item.get('texto_mkt', '').strip()
                         
-                        # Data em Azul nos Dizeres Legais
+                        # Marca Data em Azul nos Dizeres Legais
                         if "DIZERES LEGAIS" in titulo.upper():
                             padrao_data = r"(\d{2}/\d{2}/\d{4})"
                             txt_ref = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_ref)
@@ -217,10 +217,9 @@ if st.button("🚀 Processar Conferência"):
                         # Seções BLINDADAS
                         if titulo in ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]:
                             status = "CONFORME"
-                            # Apenas limpa espaços para exibição bonita
-                            html_mkt = limpar_texto_para_diff(txt_mkt) 
+                            html_mkt = txt_mkt 
                         else:
-                            # Compara usando a lógica limpa
+                            # Comparação Matemática com Autojunk=False
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             if teve_diff:
                                 status = "DIVERGENTE"
@@ -230,8 +229,8 @@ if st.button("🚀 Processar Conferência"):
                         
                         secoes_finais.append({
                             "titulo": titulo,
-                            "texto_anvisa": txt_ref, # Mostra original
-                            "texto_mkt": html_mkt,   # Mostra comparado
+                            "texto_anvisa": txt_ref,
+                            "texto_mkt": html_mkt,
                             "status": status
                         })
 
