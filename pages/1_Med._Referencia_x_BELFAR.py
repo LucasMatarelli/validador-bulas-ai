@@ -2,6 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 from google.api_core import retry
 import fitz  # PyMuPDF
+import docx  # Para ler arquivos Word
 import json
 
 # ----------------- 1. VISUAL & CSS -----------------
@@ -43,15 +44,25 @@ st.markdown("""
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO -----------------
-def extract_text_from_pdf(uploaded_file):
+# ----------------- 3. EXTRAÇÃO DE TEXTO (PDF E DOCX) -----------------
+def extract_text_from_file(uploaded_file):
     try:
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         text = ""
-        for page in doc:
-            text += page.get_text("text") + "\n"
+        # Verifica se é PDF
+        if uploaded_file.name.lower().endswith('.pdf'):
+            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+            for page in doc:
+                text += page.get_text("text") + "\n"
+        
+        # Verifica se é DOCX
+        elif uploaded_file.name.lower().endswith('.docx'):
+            doc = docx.Document(uploaded_file)
+            for para in doc.paragraphs:
+                text += para.text + "\n"
+        
         return text
-    except: return ""
+    except Exception as e:
+        return ""
 
 # ----------------- 4. LISTAS DE SEÇÕES -----------------
 SECOES_PACIENTE = [
@@ -81,8 +92,9 @@ lista_secoes_ativa = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROF
 st.divider()
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Arquivo Referência", type=["pdf"], key="f1")
-f2 = c2.file_uploader("📂 Arquivo BELFAR", type=["pdf"], key="f2")
+# Agora aceita PDF e DOCX
+f1 = c1.file_uploader("📂 Arquivo Referência", type=["pdf", "docx"], key="f1")
+f2 = c2.file_uploader("📂 Arquivo BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
@@ -93,19 +105,20 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando Inteligência Artificial (Isso pode levar alguns segundos)..."):
+        with st.spinner("Processando Inteligência Artificial..."):
+            # Reseta ponteiros
             f1.seek(0)
             f2.seek(0)
             
-            t_ref = extract_text_from_pdf(f1)
-            t_belfar = extract_text_from_pdf(f2)
+            # Chama a função nova que lê os dois tipos
+            t_ref = extract_text_from_file(f1)
+            t_belfar = extract_text_from_file(f2)
 
             if len(t_ref) < 50 or len(t_belfar) < 50:
-                st.error("Erro: Arquivo vazio ou ilegível.")
+                st.error("Erro: Arquivo vazio ou ilegível (talvez seja imagem sem OCR ou DOCX corrompido).")
                 st.stop()
 
-            # --- PROMPT ANTI-ALUCINAÇÃO ---
-            # Aumentei o limite de caracteres para garantir que ele leia tudo
+            # --- PROMPT MANTIDO ---
             prompt = f"""
             Você é um Auditor de Qualidade Farmacêutica Rígido, mas justo.
             
@@ -117,7 +130,7 @@ if st.button("🚀 Processar Conferência"):
 
             SUA TAREFA:
             1. Para cada seção listada, extraia o texto correspondente.
-            2. **REGRA DE OURO (ANTI-ALUCINAÇÃO):** O PDF original pode ter quebras de linha (`\\n`) em lugares diferentes do PDF novo. Isso NÃO é uma diferença.
+            2. **REGRA DE OURO (ANTI-ALUCINAÇÃO):** O arquivo original pode ter quebras de linha (`\\n`) em lugares diferentes do novo (especialmente se um for DOCX e outro PDF). Isso NÃO é uma diferença.
                - Antes de comparar, remova mentalmente todas as quebras de linha e espaços extras.
                - Se a SEQUÊNCIA DE PALAVRAS for a mesma, o texto é **CONFORME**.
                - Só marque DIVERGENTE se houver palavras diferentes, números diferentes ou frases faltando.
@@ -234,4 +247,4 @@ if st.button("🚀 Processar Conferência"):
                 except Exception as e:
                     st.error(f"Erro ao ler resposta da IA: {e}")
     else:
-        st.warning("Por favor, envie os dois arquivos PDF.")
+        st.warning("Por favor, envie os dois arquivos PDF ou DOCX.")
