@@ -1,39 +1,40 @@
 import streamlit as st
 import google.generativeai as genai
+from PIL import Image
 import fitz  # PyMuPDF
+import io
 import json
 
-# ----------------- 1. VISUAL & CSS (Design Limpo) -----------------
-st.set_page_config(page_title="MKT Final", page_icon="📢", layout="wide")
+# ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
+st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
-    /* Estilo das Caixas de Texto */
+    /* Caixas de Texto */
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
         font-size: 0.95rem;
         line-height: 1.6;
-        color: #333;
+        color: #212529;
         background-color: #ffffff;
-        padding: 18px;
+        padding: 20px;
         border-radius: 8px;
-        border: 1px solid #e0e0e0;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        white-space: pre-wrap; /* Mantém parágrafos corretos */
-        text-align: justify;
+        border: 1px solid #ced4da;
+        height: 100%; 
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
 
     /* Destaques */
-    .highlight-yellow { background-color: #fff9c4; color: #000; padding: 2px 4px; border-radius: 4px; border: 1px solid #fbc02d; }
-    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 4px; border: 1px solid #b71c1c; font-weight: bold; }
-    .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 4px; border-radius: 4px; border: 1px solid #1976d2; font-weight: bold; }
+    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; border: 1px solid #ffeeba; }
+    .highlight-red { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 3px; border: 1px solid #f5c6cb; font-weight: bold; }
+    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 3px; border: 1px solid #bee5eb; font-weight: bold; }
 
-    /* Bordas de Status */
-    .border-ok { border-left: 6px solid #4caf50 !important; }   /* Verde */
-    .border-warn { border-left: 6px solid #ff9800 !important; } /* Laranja */
-    .border-info { border-left: 6px solid #2196f3 !important; } /* Azul */
+    /* Status das Bordas */
+    .border-ok { border-left: 6px solid #28a745 !important; }   /* Verde */
+    .border-warn { border-left: 6px solid #ffc107 !important; } /* Amarelo */
+    .border-info { border-left: 6px solid #17a2b8 !important; } /* Azul (Info) */
 
-    /* Card de Métricas */
+    /* Estilo das Métricas (Igual ao Print) */
     div[data-testid="stMetric"] {
         background-color: #f8f9fa;
         border: 1px solid #dee2e6;
@@ -54,25 +55,27 @@ def setup_model():
     for api_key in valid_keys:
         try:
             genai.configure(api_key=api_key)
-            # Temperatura 0.0 para precisão máxima
             return genai.GenerativeModel(
                 MODELO_FIXO, 
+                # Temperatura 0.0 para não inventar nada
                 generation_config={"response_mime_type": "application/json", "temperature": 0.0}
             )
         except: continue
     return None
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO -----------------
-def extract_text_from_pdf(uploaded_file):
+# ----------------- 3. PROCESSAMENTO -----------------
+def pdf_to_images(uploaded_file):
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        text = ""
+        images = []
         for page in doc:
-            text += page.get_text("text") + "\n"
-        return text
-    except: return ""
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
+            images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
+        return images
+    except: return []
 
-SECOES_PACIENTE = [
+# LISTA DE TODAS AS SEÇÕES
+SECOES_COMPLETAS = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
     "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
@@ -83,136 +86,141 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-# ----------------- 4. INTERFACE PRINCIPAL -----------------
-st.title("📢 Conferência MKT (Relatório Estruturado)")
+# ----------------- 4. UI PRINCIPAL -----------------
+st.title("💊 Validador de Bulas (Gráfica x Arte)")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf"], key="f1")
-f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf"], key="f2")
+f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png"])
+f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png"])
 
-if st.button("🚀 Processar Conferência"):
+if st.button("🚀 Validar"):
     if f1 and f2:
         model = setup_model()
         if not model:
-            st.error("Sem chave API.")
+            st.error("Erro de API Key.")
             st.stop()
 
-        with st.spinner("Comparando palavra por palavra..."):
-            t_anvisa = extract_text_from_pdf(f1)
-            t_mkt = extract_text_from_pdf(f2)
-
-            if len(t_anvisa) < 50 or len(t_mkt) < 50:
-                st.error("Erro: Arquivo vazio ou ilegível (imagem sem OCR).")
-                st.stop()
-
-            # PROMPT CORRIGIDO PARA PRECISÃO CIRÚRGICA
-            prompt = f"""
-            Você é um Revisor Farmacêutico Meticuloso.
+        with st.spinner("Analisando seções conforme regras de negócio..."):
+            imgs1 = pdf_to_images(f1) if f1.name.endswith(".pdf") else [Image.open(f1)]
+            imgs2 = pdf_to_images(f2) if f2.name.endswith(".pdf") else [Image.open(f2)]
             
-            INPUT:
-            TEXTO 1 (ANVISA): {t_anvisa[:50000]}
-            TEXTO 2 (MKT): {t_mkt[:30000]}
+            # PROMPT COM AS NOVAS REGRAS DE NEGÓCIO E ESTRUTURA PARA O RESUMO
+            prompt = f"""
+            Você é um auditor farmacêutico rigoroso. Analise as imagens.
+            
+            SEÇÕES PARA ANALISAR: {SECOES_COMPLETAS}
 
-            SUA MISSÃO:
-            1. Encontre a "Data de Aprovação da Anvisa" nos Dizeres Legais de AMBOS os textos.
-            2. Mapeie o conteúdo do TEXTO 2 (MKT) nas seções da lista abaixo.
-            3. Compare com o TEXTO 1.
-            4. **CRÍTICO: CORRIJA A FORMATAÇÃO.** O texto extraído do PDF pode ter quebras de linha erradas. Junte as frases.
+            ⚠️ REGRAS ESPECÍFICAS POR GRUPO DE SEÇÃO:
 
-            LISTA DE SEÇÕES: {SECOES_PACIENTE}
+            GRUPO 1: ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+            - NESTAS SEÇÕES, NÃO COMPARE O TEXTO EM BUSCA DE ERROS.
+            - Status deve ser SEMPRE "CONFORME".
+            - Apenas transcreva o texto da Gráfica.
+            - REGRA ESPECIAL "DIZERES LEGAIS": 
+                1. Extraia a "Data da Anvisa" separadamente para o cabeçalho.
+                2. No texto da seção, se achar a data, marque com <span class="highlight-blue">DATA</span>.
+                3. Se NÃO achar a data, NÃO escreva "N/A" dentro do texto da seção. Deixe o texto limpo.
 
-            ⚠️ REGRAS DE COMPARAÇÃO E DESTAQUE (HIGHLIGHT):
-
-            GRUPO 1 (BLINDADO): ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
-            - Status: SEMPRE "CONFORME".
-            - Ação: Apenas transcreva o texto limpo da Gráfica.
-            - DIZERES LEGAIS: Extraia a data para o cabeçalho. No texto, se achar a data, marque <span class="highlight-blue">DATA</span>. Se não achar, NÃO escreva "N/A".
-
-            GRUPO 2 (RIGOROSO): [TODAS AS OUTRAS]
-            - Ação: Compare palavra por palavra.
-            - **PRECISÃO CIRÚRGICA:** Se a divergência for apenas uma palavra (ex: "não"), destaque APENAS a palavra "não". NÃO destaque a frase inteira.
-            - Use <span class="highlight-yellow">PALAVRA_DIVERGENTE</span> para conteúdo diferente/extra.
-            - Use <span class="highlight-red">PALAVRA_ERRADA</span> para erros ortográficos.
+            GRUPO 2: [TODAS AS OUTRAS SEÇÕES]
+            - Comparação rigorosa ARTE vs GRÁFICA.
+            - Marque divergências (texto extra/faltante) com <span class="highlight-yellow">TEXTO</span>.
+            - Marque erros de português com <span class="highlight-red">TEXTO</span>.
+            - Capture avisos de "Atenção" até o próximo título.
 
             SAÍDA JSON OBRIGATÓRIA:
             {{
-                "data_anvisa_ref": "dd/mm/aaaa" (ou "Não encontrada"),
-                "data_anvisa_mkt": "dd/mm/aaaa" (ou "Não encontrada"),
+                "data_anvisa_arte": "dd/mm/aaaa" (ou "Não encontrada"),
+                "data_anvisa_grafica": "dd/mm/aaaa" (ou "Não encontrada"),
                 "secoes": [
-                    {{
-                        "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Texto formatado",
-                        "texto_mkt": "Texto formatado com highlights PRECISOS",
-                        "status": "CONFORME" ou "DIVERGENTE"
-                    }}
+                  {{
+                    "titulo": "NOME DA SEÇÃO",
+                    "texto_arte": "Texto extraído da arte",
+                    "texto_grafica": "Texto da gráfica (com highlights se aplicável)",
+                    "status": "CONFORME" ou "DIVERGENTE"
+                  }}
                 ]
             }}
             """
             
+            payload = [prompt, "--- ARTE ---"] + imgs1 + ["--- GRAFICA ---"] + imgs2
+            
             try:
-                response = model.generate_content(prompt)
+                response = model.generate_content(payload)
                 resultado = json.loads(response.text)
                 
-                # Extrai dados globais
-                data_ref = resultado.get("data_anvisa_ref", "-")
-                data_mkt = resultado.get("data_anvisa_mkt", "-")
-                dados_secoes = resultado.get("secoes", [])
+                # Extraindo dados do JSON novo
+                data_arte = resultado.get("data_anvisa_arte", "Não encontrada")
+                data_grafica = resultado.get("data_anvisa_grafica", "Não encontrada")
+                lista_secoes = resultado.get("secoes", [])
 
-                # --- ÁREA DE MÉTRICAS (VISUAL DO PRINT) ---
+                # ----------------- ÁREA DO RESUMO (IGUAL FOTO) -----------------
                 st.markdown("### 📊 Resumo da Conferência")
                 
-                # Linha 1: Datas
-                c_d1, c_d2, c_d3 = st.columns(3)
-                c_d1.metric("Data Anvisa (Ref)", data_ref)
-                c_d2.metric("Data Anvisa (MKT)", data_mkt, delta="Vigência" if data_ref == data_mkt else "Diferente")
+                # Parte de Cima (3 Métricas)
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Data Anvisa (Ref/Arte)", data_arte)
                 
-                # Linha 2: Estatísticas
-                total = len(dados_secoes)
-                divergentes = sum(1 for d in dados_secoes if d['status'] != 'CONFORME')
-                c_d3.metric("Seções Analisadas", total)
+                # Lógica para cor da data gráfica
+                delta_color = "normal"
+                delta_msg = ""
+                if data_grafica == data_arte and data_arte != "Não encontrada":
+                    delta_msg = "Vigência ✅"
+                    delta_color = "normal" # Streamlit usa verde por padrão para delta positivo
+                elif data_grafica != "Não encontrada":
+                    delta_msg = "Diferente ⚠️"
+                    delta_color = "inverse"
 
-                # Mostra contadores menores abaixo (Barras coloridas)
-                sub1, sub2 = st.columns(2)
-                sub1.success(f"✅ **Conformes: {total - divergentes}**")
-                if divergentes > 0:
-                    sub2.warning(f"⚠️ **Divergentes: {divergentes}**")
+                k2.metric("Data Anvisa (Gráfica)", data_grafica, delta=delta_msg, delta_color=delta_color)
+                
+                k3.metric("Seções Analisadas", len(lista_secoes))
+
+                # Parte de Baixo (Barras Conforme/Divergente)
+                divergentes_qtd = sum(1 for d in lista_secoes if d['status'] != 'CONFORME')
+                conformes_qtd = len(lista_secoes) - divergentes_qtd
+
+                bar1, bar2 = st.columns(2)
+                bar1.success(f"✅ **Conformes: {conformes_qtd}**")
+                
+                if divergentes_qtd > 0:
+                    bar2.warning(f"⚠️ **Divergentes: {divergentes_qtd}**")
                 else:
-                    sub2.success("✨ **Divergências: 0**")
+                    bar2.success(f"✨ **Divergentes: 0**")
 
                 st.divider()
+                # ---------------------------------------------------------------
 
-                # --- LOOP DE SEÇÕES ---
-                for item in dados_secoes:
+                # Loop das Seções (Mantido Igual)
+                for item in lista_secoes:
                     status = item.get('status', 'CONFORME')
                     titulo = item.get('titulo', 'Seção')
                     
-                    # Definição visual (ícone e borda)
+                    # Lógica Visual dos Ícones e Cores
                     if "DIZERES LEGAIS" in titulo.upper():
-                        icon = "⚖️"
-                        css = "border-info"
-                        aberto = True
+                        icon = "📅" # Ícone de calendário para data
+                        css = "border-info" # Azul
+                        expandir = True 
                     elif status == "CONFORME":
                         icon = "✅"
-                        css = "border-ok"
-                        aberto = False
+                        css = "border-ok" # Verde
+                        expandir = False
                     else:
                         icon = "⚠️"
-                        css = "border-warn"
-                        aberto = True
+                        css = "border-warn" # Amarelo/Vermelho
+                        expandir = True
 
-                    with st.expander(f"{icon} {titulo}", expanded=aberto):
+                    with st.expander(f"{icon} {titulo}", expanded=expandir):
                         col_esq, col_dir = st.columns(2)
                         
                         with col_esq:
-                            st.caption("📜 Bula Anvisa (Referência)")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_anvisa", "")}</div>', unsafe_allow_html=True)
+                            st.caption("Referência (Arte)")
+                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
                             
                         with col_dir:
-                            st.caption("🎨 Arte MKT (Validado)")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_mkt", "")}</div>', unsafe_allow_html=True)
+                            st.caption("Validação (Gráfica)")
+                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"Erro ao processar o retorno: {e}")
-                st.warning("Tente novamente, o modelo pode ter falhado na formatação do JSON.")
+                st.error(f"Erro no processamento: {e}")
+
     else:
-        st.warning("Por favor, envie os dois arquivos PDF.")
+        st.warning("Adicione os arquivos.")
