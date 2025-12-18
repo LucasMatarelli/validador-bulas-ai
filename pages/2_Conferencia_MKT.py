@@ -3,8 +3,9 @@ import google.generativeai as genai
 import fitz  # PyMuPDF
 import docx  # Para ler DOCX
 import json
-import difflib # Biblioteca matemática para comparação
+import difflib # Biblioteca matemática
 import re
+import unicodedata
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="MKT Final", page_icon="📢", layout="wide")
@@ -46,40 +47,53 @@ st.markdown("""
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 3. FUNÇÃO DE COMPARAÇÃO INTELIGENTE (PYTHON) -----------------
+# ----------------- 3. FUNÇÃO DE COMPARAÇÃO INTELIGENTE -----------------
+def normalizar_para_comparacao(texto):
+    """Remove caracteres invisíveis e padroniza o texto para evitar falso erro."""
+    if not texto: return ""
+    # Normaliza unicode (ex: ã vira ã padrão)
+    texto = unicodedata.normalize('NFKD', texto)
+    # Remove caracteres de controle estranhos
+    texto = "".join([c for c in texto if not unicodedata.combining(c)])
+    return texto
+
 def gerar_diff_html(texto_ref, texto_novo):
     """
-    Compara as palavras ignorando formatação (espaços, quebras de linha).
-    Só marca amarelo se a palavra for realmente diferente.
+    Compara palavra por palavra com autojunk=False para não se perder.
     """
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
 
-    # 1. Quebra os textos em listas de palavras (remove enters e espaços extras)
-    ref_words = texto_ref.split()
-    novo_words = texto_novo.split()
+    # Normaliza antes de quebrar
+    ref_norm = normalizar_para_comparacao(texto_ref)
+    novo_norm = normalizar_para_comparacao(texto_novo)
+
+    # Quebra em palavras (split remove todos os espaços extras e quebras de linha)
+    a = ref_norm.split()
+    b = novo_norm.split()
     
-    # 2. Compara as listas
-    matcher = difflib.SequenceMatcher(None, ref_words, novo_words)
+    # autojunk=False É O SEGREDO para ele não ignorar palavras comuns e não marcar tudo amarelo
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    
     html_output = []
     eh_divergente = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        # Reconstrói o texto com os espaços
-        trecho_novo = " ".join(novo_words[j1:j2])
+        # Reconstrói o texto usando as palavras da lista 'b' (novo)
+        trecho_novo = " ".join(b[j1:j2])
         
         if tag == 'equal':
             html_output.append(trecho_novo)
         elif tag == 'replace':
-            # Diferença real de conteúdo -> Amarelo
+            # Diferença real
             html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
             eh_divergente = True
         elif tag == 'insert':
-            # Texto adicionado -> Amarelo
+            # Texto novo adicionado
             html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
             eh_divergente = True
         elif tag == 'delete':
-            # Texto deletado (opcional: ignora visualmente para limpar, mas marca status)
+            # Texto deletado (não mostramos para manter o visual limpo, mas conta como erro)
             eh_divergente = True 
             
     return " ".join(html_output), eh_divergente
@@ -88,12 +102,10 @@ def gerar_diff_html(texto_ref, texto_novo):
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
-        # PDF
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
                 text += page.get_text("text") + "\n"
-        # DOCX
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
             for para in doc.paragraphs: 
@@ -121,7 +133,6 @@ f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key=
 
 if st.button("🚀 Processar Conferência"):
     
-    # Validação de Chaves
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -130,7 +141,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Extraindo e normalizando textos..."):
+        with st.spinner("Extraindo textos e comparando..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
@@ -138,9 +149,9 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 50 or len(t_mkt) < 50:
                 st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # PROMPT: APENAS EXTRAÇÃO LITERAL (SEM COMPARAÇÃO PELA IA)
+            # PROMPT DE EXTRAÇÃO PURA (SEM ANÁLISE)
             prompt = f"""
-            Você é um Extrator de Texto.
+            Você é um Extrator de Dados Literais.
             
             INPUT:
             TEXTO 1 (REF): {t_anvisa[:100000]}
@@ -148,9 +159,9 @@ if st.button("🚀 Processar Conferência"):
 
             SUA MISSÃO:
             1. Localize as seções da lista abaixo nos dois textos.
-            2. Extraia o texto EXATAMENTE como está no arquivo (copiar e colar).
-            3. Junte linhas quebradas para formar parágrafos, mas NÃO mude palavras.
-            4. NÃO COMPARE. NÃO COLOQUE COMENTÁRIOS. Apenas extraia.
+            2. Extraia o conteúdo LIMPO. Junte linhas quebradas para formar frases contínuas.
+            3. **IMPORTANTE:** Copie o texto fielmente. Não corrija nada.
+            4. **NÃO COMPARE:** Apenas me entregue o texto extraído de cada lado.
             
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
@@ -171,7 +182,6 @@ if st.button("🚀 Processar Conferência"):
             response = None
             ultimo_erro = ""
 
-            # Loop de Chaves (Failover)
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
@@ -181,7 +191,7 @@ if st.button("🚀 Processar Conferência"):
                 except Exception as e:
                     ultimo_erro = str(e)
                     if i < len(keys_validas) - 1: continue
-                    else: st.error(f"Erro: {ultimo_erro}"); st.stop()
+                    else: st.error(f"Erro Fatal: {ultimo_erro}"); st.stop()
 
             if response:
                 try:
@@ -190,7 +200,6 @@ if st.button("🚀 Processar Conferência"):
                     data_mkt = resultado.get("data_anvisa_mkt", "-")
                     dados_secoes = resultado.get("secoes", [])
 
-                    # --- COMPARAÇÃO VIA PYTHON (MATEMÁTICA) ---
                     secoes_finais = []
                     divergentes_count = 0
 
@@ -199,18 +208,18 @@ if st.button("🚀 Processar Conferência"):
                         txt_ref = item.get('texto_anvisa', '').strip()
                         txt_mkt = item.get('texto_mkt', '').strip()
                         
-                        # Data em Azul nos Dizeres Legais
+                        # Marca Data em Azul nos Dizeres Legais
                         if "DIZERES LEGAIS" in titulo.upper():
                             padrao_data = r"(\d{2}/\d{2}/\d{4})"
                             txt_ref = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_ref)
                             txt_mkt = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_mkt)
 
-                        # Seções BLINDADAS (Ignora amarelo, Status Conforme)
+                        # Seções BLINDADAS
                         if titulo in ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]:
                             status = "CONFORME"
-                            html_mkt = txt_mkt # Sem highlight amarelo
+                            html_mkt = txt_mkt 
                         else:
-                            # Python compara palavra por palavra (ignora formatação)
+                            # Comparação Matemática com Autojunk=False
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             if teve_diff:
                                 status = "DIVERGENTE"
