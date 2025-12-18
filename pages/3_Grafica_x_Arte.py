@@ -5,7 +5,7 @@ import fitz  # PyMuPDF
 import io
 import json
 
-# ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
+# ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
 
 st.markdown("""
@@ -80,7 +80,8 @@ def pdf_to_images(uploaded_file):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         images = []
         for page in doc:
-            pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
+            # Zoom aumentado para 3.0 para garantir leitura de letras pequenas
+            pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
             images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
         return images
     except: return []
@@ -110,30 +111,34 @@ if st.button("🚀 Validar"):
             st.error("Erro de API Key.")
             st.stop()
 
-        with st.spinner("Realizando comparação cirúrgica (palavra por palavra)..."):
+        with st.spinner("Lendo documento inteiro (Título a Título)..."):
             imgs1 = pdf_to_images(f1) if f1.name.endswith(".pdf") else [Image.open(f1)]
             imgs2 = pdf_to_images(f2) if f2.name.endswith(".pdf") else [Image.open(f2)]
             
-            # PROMPT DE ALTA PRECISÃO
+            # PROMPT DE LIMITES RÍGIDOS (BOUNDARY)
             prompt = f"""
-            Você é um auditor farmacêutico de precisão.
-            Analise as imagens e extraia o texto das seções: {SECOES_COMPLETAS}
-
-            ⚠️ INSTRUÇÕES DE COMPARAÇÃO (IMPORTANTE):
-            1. Compare o TEXTO DA ARTE com o TEXTO DA GRÁFICA.
-            2. Seja CIRÚRGICO nos destaques.
-            3. Se houver uma palavra a mais (ex: "não"), marque APENAS a palavra "não". NÃO marque a frase inteira.
-            4. Se houver erro de digitação (ex: "vocÊ" vs "você"), marque APENAS a palavra errada.
-
-            REGRAS POR GRUPO:
-            - GRUPO 1 ("APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"):
-                * Não marque erros. Status sempre "CONFORME".
-                * "DIZERES LEGAIS": Extraia a data da Anvisa separadamente para o JSON. No texto, se achar a data, marque de azul. Se não achar, não escreva nada.
+            Você é um leitor de OCR de alta fidelidade.
             
-            - GRUPO 2 (Outras Seções):
-                * Marque divergências (palavras extras/faltantes) com <span class="highlight-yellow">PALAVRA</span>.
-                * Marque erros gramaticais com <span class="highlight-red">PALAVRA</span>.
-                * Capture avisos de "Atenção".
+            SUA TAREFA: Extrair e comparar o texto das seções listadas abaixo.
+            LISTA DE SEÇÕES (TÍTULOS): {SECOES_COMPLETAS}
+
+            ⚠️ REGRA DE OURO PARA EXTRAÇÃO (LIMITE DE SEÇÃO):
+            Para cada seção da lista:
+            1. Encontre o título exato na imagem (ex: "3. QUANDO NÃO DEVO USAR...").
+            2. Copie TODO o texto que vem depois dele. Inclua parágrafos, tópicos, avisos de "Atenção", "Importante" e rodapés.
+            3. **PARE DE COPIAR IMEDIATAMENTE** assim que encontrar o título da PRÓXIMA seção da lista.
+            4. Se for a última seção ("DIZERES LEGAIS"), copie até o fim do documento.
+
+            REGRAS DE COMPARAÇÃO (ARTE vs GRÁFICA):
+            - GRUPO 1 ("APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"):
+                * Status SEMPRE "CONFORME".
+                * Apenas transcreva o texto.
+                * "DIZERES LEGAIS": Procure a data da Anvisa. Se achar, marque de <span class="highlight-blue">AZUL</span> no texto. Extraia também separadamente.
+            
+            - GRUPO 2 (Todas as outras):
+                * Comparação palavra por palavra.
+                * Divergência (ex: "não" extra, "mg" faltando): Marque <span class="highlight-yellow">APENAS A PALAVRA</span>.
+                * Erro ortográfico: Marque <span class="highlight-red">APENAS A PALAVRA</span>.
 
             SAÍDA JSON:
             {{
@@ -142,8 +147,8 @@ if st.button("🚀 Validar"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto da arte",
-                        "texto_grafica": "Texto da gráfica com highlights precisos",
+                        "texto_arte": "Texto COMPLETO da arte (Título até Próximo Título)",
+                        "texto_grafica": "Texto COMPLETO da gráfica com highlights precisos",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
@@ -160,14 +165,12 @@ if st.button("🚀 Validar"):
                 data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
                 secoes = resultado.get("secoes", [])
 
-                # --- 1. RESUMO NO TOPO (Igual foto) ---
+                # --- 1. RESUMO NO TOPO ---
                 st.markdown("### 📊 Resumo da Conferência")
                 
-                # Linha de métricas
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Data Anvisa (Ref)", data_ref)
                 
-                # Cor dinâmica para a data
                 cor_delta = "normal" if data_ref == data_graf and data_ref != "Não encontrada" else "inverse"
                 msg_delta = "Vigência" if data_ref == data_graf else "Diferente"
                 if data_graf == "Não encontrada": msg_delta = ""
@@ -175,7 +178,6 @@ if st.button("🚀 Validar"):
                 k2.metric("Data Anvisa (Gráfica)", data_graf, delta=msg_delta, delta_color=cor_delta)
                 k3.metric("Seções Analisadas", len(secoes))
 
-                # Barras de status
                 div_count = sum(1 for s in secoes if s['status'] != 'CONFORME')
                 ok_count = len(secoes) - div_count
                 
@@ -188,7 +190,7 @@ if st.button("🚀 Validar"):
                 
                 st.divider()
 
-                # --- 2. LISTA DE SEÇÕES LADO A LADO ---
+                # --- 2. LISTA DE SEÇÕES ---
                 for item in secoes:
                     status = item.get('status', 'CONFORME')
                     titulo = item.get('titulo', 'Seção')
@@ -211,7 +213,7 @@ if st.button("🚀 Validar"):
 
             except Exception as e:
                 st.error(f"Erro no processamento: {e}")
-                st.warning("Tente novamente. O modelo pode ter oscilado.")
+                st.warning("O documento pode ser muito longo ou complexo. Tente processar por partes se persistir.")
 
     else:
         st.warning("Adicione os arquivos.")
