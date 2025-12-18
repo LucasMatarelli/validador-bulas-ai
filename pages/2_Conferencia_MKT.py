@@ -48,21 +48,6 @@ st.markdown("""
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-def setup_model():
-    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
-    valid_keys = [k for k in keys if k]
-    
-    for api_key in valid_keys:
-        try:
-            genai.configure(api_key=api_key)
-            # Temperatura 0.0 para precisão máxima
-            return genai.GenerativeModel(
-                MODELO_FIXO, 
-                generation_config={"response_mime_type": "application/json", "temperature": 0.0}
-            )
-        except: continue
-    return None
-
 # ----------------- 3. EXTRAÇÃO DE TEXTO (PDF E DOCX) -----------------
 def extract_text_from_file(uploaded_file):
     try:
@@ -102,18 +87,22 @@ f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], ke
 f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    if f1 and f2:
-        model = setup_model()
-        if not model:
-            st.error("Sem chave API.")
-            st.stop()
+    
+    # 1. RECUPERA CHAVES PARA O FAILOVER
+    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    keys_validas = [k for k in keys_disponiveis if k]
 
-        with st.spinner("Lendo arquivos, corrigindo formatação e organizando seções..."):
-            # Reseta o ponteiro do arquivo para garantir leitura correta
+    if not keys_validas:
+        st.error("Nenhuma chave API encontrada.")
+        st.stop()
+
+    if f1 and f2:
+        with st.spinner("Lendo arquivos e extraindo texto original (sem alucinações)..."):
+            # Reseta o ponteiro do arquivo
             f1.seek(0)
             f2.seek(0)
             
-            # Chama a função nova que lê os dois tipos
+            # Extração do texto
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
 
@@ -121,26 +110,35 @@ if st.button("🚀 Processar Conferência"):
                 st.error("Erro: Arquivo vazio ou ilegível (imagem sem OCR).")
                 st.stop()
 
-            # PROMPT AVANÇADO: SEPARAÇÃO DE DADOS E FORMATAÇÃO
+            # PROMPT BLINDADO CONTRA ALUCINAÇÃO
             prompt = f"""
-            Você é um Revisor Farmacêutico Meticuloso.
+            Você é um Extrator de Texto LITERAL e Comparador Lógico.
             
             INPUT:
-            TEXTO 1 (ANVISA): {t_anvisa[:50000]}
-            TEXTO 2 (MKT): {t_mkt[:30000]}
+            TEXTO 1 (REFERÊNCIA): {t_anvisa[:60000]}
+            TEXTO 2 (MKT): {t_mkt[:40000]}
 
             SUA MISSÃO:
-            1. Encontre a "Data de Aprovação da Anvisa" nos Dizeres Legais de AMBOS os textos.
-            2. Mapeie o conteúdo do TEXTO 2 (MKT) nas seções da lista abaixo.
-            3. Compare com o TEXTO 1.
-            4. **CRÍTICO: CORRIJA A FORMATAÇÃO.** O texto extraído do PDF pode ter quebras de linha erradas (uma palavra por linha). Junte as frases para formarem parágrafos normais e bonitos.
+            1. Extrair o conteúdo das seções listadas abaixo.
+            2. **REGRA DE OURO (ANTI-ALUCINAÇÃO):** Copie o texto EXATAMENTE como ele aparece no arquivo. 
+               - NÃO corrija português.
+               - NÃO altere palavras (ex: não troque "fabricação" por "validade").
+               - Se o texto original estiver errado, mantenha o erro na extração.
+            3. Comparar o conteúdo extraído.
 
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
             REGRAS DE STATUS:
-            - "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS": Sempre "CONFORME". Apenas transcreva o texto (Sem highlights de erro).
-            - OUTRAS SEÇÕES: Compare rigorosamente. Use <span class="highlight-yellow">TEXTO</span> para divergências e <span class="highlight-red">TEXTO</span> para erros de PT.
-            - DIZERES LEGAIS: Destaque a data da Anvisa (se houver no texto) com <span class="highlight-blue">DATA</span>. NÃO adicione "N/A" se não tiver.
+            - "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS": 
+                * Status SEMPRE "CONFORME".
+                * Apenas transcreva o texto original limpo (sem quebras de linha malucas).
+                * NÃO aponte divergências nestas seções.
+                * Exceção: Em "DIZERES LEGAIS", envolva a data da Anvisa (se houver) em <span class="highlight-blue">DATA</span>.
+            
+            - OUTRAS SEÇÕES: 
+                * Compare palavra por palavra.
+                * Use <span class="highlight-yellow">TEXTO</span> para palavras divergentes.
+                * Use <span class="highlight-red">TEXTO</span> para erros ortográficos graves.
 
             SAÍDA JSON OBRIGATÓRIA:
             {{
@@ -149,78 +147,100 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Texto formatado (sem quebras malucas)",
-                        "texto_mkt": "Texto formatado (sem quebras malucas) com highlights",
+                        "texto_anvisa": "Texto original extraído fielmente",
+                        "texto_mkt": "Texto original extraído fielmente (com highlights se aplicável)",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
             }}
             """
             
-            try:
-                response = model.generate_content(prompt)
-                resultado = json.loads(response.text)
-                
-                # Extrai dados globais
-                data_ref = resultado.get("data_anvisa_ref", "-")
-                data_mkt = resultado.get("data_anvisa_mkt", "-")
-                dados_secoes = resultado.get("secoes", [])
+            response = None
+            ultimo_erro = ""
 
-                # --- ÁREA DE MÉTRICAS (LÁ EM CIMA) ---
-                st.markdown("### 📊 Resumo da Conferência")
-                
-                # Linha 1: Datas
-                c_d1, c_d2, c_d3 = st.columns(3)
-                c_d1.metric("Data Anvisa (Ref)", data_ref)
-                c_d2.metric("Data Anvisa (MKT)", data_mkt, delta="Vigência" if data_ref == data_mkt else "Diferente")
-                
-                # Linha 2: Estatísticas
-                total = len(dados_secoes)
-                divergentes = sum(1 for d in dados_secoes if d['status'] != 'CONFORME')
-                c_d3.metric("Seções Analisadas", total)
-
-                # Mostra contadores menores abaixo
-                sub1, sub2 = st.columns(2)
-                sub1.info(f"✅ **Conformes:** {total - divergentes}")
-                if divergentes > 0:
-                    sub2.warning(f"⚠️ **Divergentes:** {divergentes}")
-                else:
-                    sub2.success("✨ **Divergências:** 0")
-
-                st.divider()
-
-                # --- LOOP DE SEÇÕES ---
-                for item in dados_secoes:
-                    status = item.get('status', 'CONFORME')
-                    titulo = item.get('titulo', 'Seção')
+            # --- LÓGICA DE FAILOVER (TESTA CHAVE 1, DEPOIS CHAVE 2) ---
+            for i, api_key in enumerate(keys_validas):
+                try:
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(
+                        MODELO_FIXO, 
+                        generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                    )
                     
-                    # Definição visual (ícone e borda)
-                    if "DIZERES LEGAIS" in titulo.upper():
-                        icon = "⚖️"
-                        css = "border-info"
-                        aberto = True
-                    elif status == "CONFORME":
-                        icon = "✅"
-                        css = "border-ok"
-                        aberto = False
+                    # request_options={'retry': None} força o erro rápido para trocar logo de chave
+                    response = model.generate_content(prompt, request_options={'retry': None})
+                    break # Se funcionou, sai do loop
+
+                except Exception as e:
+                    ultimo_erro = str(e)
+                    if i < len(keys_validas) - 1:
+                        st.warning(f"⚠️ Chave {i+1} instável. Tentando Chave {i+2}...")
+                        continue
                     else:
-                        icon = "⚠️"
-                        css = "border-warn"
-                        aberto = True
+                        st.error(f"❌ Todas as chaves falharam. Erro final: {ultimo_erro}")
+                        st.stop()
 
-                    with st.expander(f"{icon} {titulo}", expanded=aberto):
-                        col_esq, col_dir = st.columns(2)
+            # --- PROCESSAMENTO DO JSON ---
+            if response:
+                try:
+                    resultado = json.loads(response.text)
+                    
+                    # Extrai dados globais
+                    data_ref = resultado.get("data_anvisa_ref", "-")
+                    data_mkt = resultado.get("data_anvisa_mkt", "-")
+                    dados_secoes = resultado.get("secoes", [])
+
+                    # --- ÁREA DE MÉTRICAS ---
+                    st.markdown("### 📊 Resumo da Conferência")
+                    
+                    c_d1, c_d2, c_d3 = st.columns(3)
+                    c_d1.metric("Data Anvisa (Ref)", data_ref)
+                    c_d2.metric("Data Anvisa (MKT)", data_mkt, delta="Vigência" if data_ref == data_mkt else "Diferente")
+                    
+                    total = len(dados_secoes)
+                    divergentes = sum(1 for d in dados_secoes if d['status'] != 'CONFORME')
+                    c_d3.metric("Seções Analisadas", total)
+
+                    sub1, sub2 = st.columns(2)
+                    sub1.info(f"✅ **Conformes:** {total - divergentes}")
+                    if divergentes > 0:
+                        sub2.warning(f"⚠️ **Divergentes:** {divergentes}")
+                    else:
+                        sub2.success("✨ **Divergências:** 0")
+
+                    st.divider()
+
+                    # --- LOOP DE SEÇÕES ---
+                    for item in dados_secoes:
+                        status = item.get('status', 'CONFORME')
+                        titulo = item.get('titulo', 'Seção')
                         
-                        with col_esq:
-                            st.caption("📜 Bula Anvisa (Referência)")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_anvisa", "")}</div>', unsafe_allow_html=True)
-                            
-                        with col_dir:
-                            st.caption("🎨 Arte MKT (Validado)")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_mkt", "")}</div>', unsafe_allow_html=True)
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            icon = "⚖️"
+                            css = "border-info"
+                            aberto = True
+                        elif status == "CONFORME":
+                            icon = "✅"
+                            css = "border-ok"
+                            aberto = False
+                        else:
+                            icon = "⚠️"
+                            css = "border-warn"
+                            aberto = True
 
-            except Exception as e:
-                st.error(f"Erro ao processar o retorno: {e}")
-                st.warning("Tente novamente, o modelo pode ter falhado na formatação do JSON.")
+                        with st.expander(f"{icon} {titulo}", expanded=aberto):
+                            col_esq, col_dir = st.columns(2)
+                            
+                            with col_esq:
+                                st.caption("📜 Bula Anvisa (Referência)")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_anvisa", "")}</div>', unsafe_allow_html=True)
+                                
+                            with col_dir:
+                                st.caption("🎨 Arte MKT (Validado)")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_mkt", "")}</div>', unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"Erro ao processar o retorno: {e}")
+                    st.warning("Tente novamente.")
     else:
         st.warning("Por favor, envie os dois arquivos (PDF ou DOCX).")
