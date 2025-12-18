@@ -1,5 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
+from google.api_core import retry # Importante para controlar o tempo de resposta
 import fitz  # PyMuPDF
 import json
 
@@ -88,14 +89,12 @@ lista_secoes_ativa = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROF
 st.divider()
 
 c1, c2 = st.columns(2)
-# Uploaders renomeados conforme pedido
 f1 = c1.file_uploader("📂 Arquivo Referência", type=["pdf"], key="f1")
 f2 = c2.file_uploader("📂 Arquivo BELFAR", type=["pdf"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    # 1. PREPARAÇÃO DAS CHAVES (PEGA AS DUAS)
+    # 1. PREPARAÇÃO DAS CHAVES
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
-    # Remove chaves vazias (caso não tenha configurado a 2 ainda)
     keys_validas = [k for k in keys_disponiveis if k]
 
     if not keys_validas:
@@ -103,8 +102,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Lendo arquivos, corrigindo formatação e organizando seções..."):
-            # Importante: resetar o ponteiro do arquivo antes de ler caso tenha sido lido antes
+        with st.spinner("Lendo arquivos, estruturando seções e comparando..."):
             f1.seek(0)
             f2.seek(0)
             
@@ -115,71 +113,75 @@ if st.button("🚀 Processar Conferência"):
                 st.error("Erro: Arquivo vazio ou ilegível (imagem sem OCR).")
                 st.stop()
 
-            # PROMPT AVANÇADO: SEPARAÇÃO DE DADOS E FORMATAÇÃO
+            # PROMPT EXTREMAMENTE ESPECÍFICO PARA ORGANIZAÇÃO E CORREÇÃO
             prompt = f"""
-            Você é um Revisor Farmacêutico Meticuloso da Indústria Farmacêutica.
+            Você é um Auditor de Qualidade Farmacêutica Especialista em Bulas.
+            
+            CONTEXTO:
+            Você receberá dois textos extraídos de PDF (Referência e BELFAR). O texto cru contém quebras de linha aleatórias que deixam o conteúdo bagunçado.
             
             INPUT:
-            TEXTO 1 (REFERÊNCIA): {t_ref[:50000]}
-            TEXTO 2 (BELFAR): {t_belfar[:30000]}
+            --- TEXTO REFERÊNCIA ---
+            {t_ref[:50000]}
+            ------------------------
+            --- TEXTO BELFAR ---
+            {t_belfar[:30000]}
+            --------------------
 
-            SUA MISSÃO:
-            1. Encontre a "Data de Aprovação da Anvisa" nos Dizeres Legais de AMBOS os textos.
-            2. Mapeie o conteúdo do TEXTO 2 (BELFAR) nas seções da lista abaixo.
-            3. Compare com o TEXTO 1 (REFERÊNCIA).
-            4. **CRÍTICO: CORRIJA A FORMATAÇÃO.** O texto extraído do PDF pode ter quebras de linha erradas. Junte as frases para formarem parágrafos normais.
+            SUA TAREFA:
+            1. Para CADA seção da lista abaixo, localize o texto correspondente nos dois arquivos.
+            2. **LIMPEZA OBRIGATÓRIA:** O texto extraído do PDF vem quebrado (ex: "comprim-\nido"). Você DEVE juntar as linhas para formar frases fluídas e parágrafos corretos. Não devolva texto quebrado.
+            3. Compare o conteúdo da BELFAR com a REFERÊNCIA.
+            4. Se uma seção não existir no texto, preencha como "Não encontrado". Não invente texto.
 
-            LISTA DE SEÇÕES ({tipo_bula}): {lista_secoes_ativa}
+            LISTA DE SEÇÕES ALVO ({tipo_bula}): 
+            {lista_secoes_ativa}
 
-            REGRAS DE STATUS:
-            - "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS": Sempre "CONFORME". Apenas transcreva o texto (Sem highlights de erro).
-            - OUTRAS SEÇÕES: Compare rigorosamente. Use <span class="highlight-yellow">TEXTO</span> para divergências de conteúdo e <span class="highlight-red">TEXTO</span> para erros graves de português.
-            - DIZERES LEGAIS: Destaque a data da Anvisa (se houver no texto) com <span class="highlight-blue">DATA</span>.
+            REGRAS DE FORMATAÇÃO (HTML):
+            - Use <span class="highlight-yellow">TEXTO</span> para destacar trechos divergentes/diferentes no texto da BELFAR.
+            - Use <span class="highlight-red">TEXTO</span> para erros ortográficos graves.
+            - Na seção DIZERES LEGAIS, envolva a data da ANVISA (se houver) com <span class="highlight-blue">DATA</span>.
+            - Se o texto for igual, mantenha sem highlight.
 
-            SAÍDA JSON OBRIGATÓRIA:
+            SAÍDA JSON (ESTRITA):
             {{
-                "data_anvisa_ref": "dd/mm/aaaa" (ou "Não encontrada"),
-                "data_anvisa_belfar": "dd/mm/aaaa" (ou "Não encontrada"),
+                "data_anvisa_ref": "dd/mm/aaaa",
+                "data_anvisa_belfar": "dd/mm/aaaa",
                 "secoes": [
                     {{
-                        "titulo": "NOME DA SEÇÃO",
-                        "texto_ref": "Texto formatado da Referência",
-                        "texto_belfar": "Texto formatado da BELFAR com highlights",
-                        "status": "CONFORME" ou "DIVERGENTE"
+                        "titulo": "NOME DA SEÇÃO DA LISTA",
+                        "texto_ref": "Texto limpo, organizado e sem quebras de linha erradas.",
+                        "texto_belfar": "Texto limpo com os highlights de diferença aplicados.",
+                        "status": "CONFORME" (se o sentido for igual) ou "DIVERGENTE"
                     }}
                 ]
             }}
             """
             
-            # --- LÓGICA DE TENTATIVA E ERRO (FAILOVER) ---
             response = None
             ultimo_erro = ""
 
-            # Loop para tentar Chave 1, depois Chave 2
+            # Loop Failover (Tenta Key 1 -> Se der erro -> Tenta Key 2 imediatamente)
             for i, api_key in enumerate(keys_validas):
                 try:
-                    # Configura a chave da vez
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(
                         MODELO_FIXO, 
                         generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                     )
                     
-                    # Tenta gerar
-                    response = model.generate_content(prompt)
-                    
-                    # Se chegou aqui, funcionou! Para o loop.
+                    # request_options={'retry': None} impede que o código fique "dormindo" esperando o erro passar.
+                    # Ele força o erro a acontecer na hora para pularmos para a próxima chave.
+                    response = model.generate_content(prompt, request_options={'retry': None})
                     break 
 
                 except Exception as e:
                     ultimo_erro = str(e)
-                    # Se não for a última chave, avisa que vai tentar a próxima
                     if i < len(keys_validas) - 1:
-                        st.warning(f"⚠️ Chave {i+1} excedeu a cota ou falhou. Tentando Chave {i+2} automaticamente...")
-                        continue # Vai para a próxima iteração do loop (Chave 2)
+                        st.warning(f"⚠️ Chave {i+1} instável. Trocando para Chave {i+2}...")
+                        continue
                     else:
-                        # Se for a última e falhou também
-                        st.error(f"❌ Todas as chaves falharam. Erro final: {ultimo_erro}")
+                        st.error(f"❌ Todas as chaves falharam. Erro: {ultimo_erro}")
                         st.stop()
 
             # --- PROCESSAMENTO DO RESULTADO ---
@@ -187,25 +189,21 @@ if st.button("🚀 Processar Conferência"):
                 try:
                     resultado = json.loads(response.text)
                     
-                    # Extrai dados globais
                     data_ref = resultado.get("data_anvisa_ref", "-")
                     data_belfar = resultado.get("data_anvisa_belfar", "-")
                     dados_secoes = resultado.get("secoes", [])
 
-                    # --- ÁREA DE MÉTRICAS ---
+                    # --- EXIBIÇÃO ---
                     st.markdown("### 📊 Resumo da Conferência")
                     
-                    # Linha 1: Datas
                     c_d1, c_d2, c_d3 = st.columns(3)
                     c_d1.metric("Data Ref.", data_ref)
                     c_d2.metric("Data BELFAR", data_belfar, delta="Igual" if data_ref == data_belfar else "Diferente")
                     
-                    # Linha 2: Estatísticas
                     total = len(dados_secoes)
                     divergentes = sum(1 for d in dados_secoes if d['status'] != 'CONFORME')
                     c_d3.metric("Seções Analisadas", total)
 
-                    # Mostra contadores menores abaixo
                     sub1, sub2 = st.columns(2)
                     sub1.info(f"✅ **Conformes:** {total - divergentes}")
                     if divergentes > 0:
@@ -215,38 +213,28 @@ if st.button("🚀 Processar Conferência"):
 
                     st.divider()
 
-                    # --- LOOP DE SEÇÕES ---
                     for item in dados_secoes:
                         status = item.get('status', 'CONFORME')
                         titulo = item.get('titulo', 'Seção')
                         
-                        # Definição visual (ícone e borda)
+                        # Ícones e cores
                         if "DIZERES LEGAIS" in titulo.upper():
-                            icon = "⚖️"
-                            css = "border-info"
-                            aberto = True
+                            icon = "⚖️"; css = "border-info"; aberto = True
                         elif status == "CONFORME":
-                            icon = "✅"
-                            css = "border-ok"
-                            aberto = False
+                            icon = "✅"; css = "border-ok"; aberto = False
                         else:
-                            icon = "⚠️"
-                            css = "border-warn"
-                            aberto = True
+                            icon = "⚠️"; css = "border-warn"; aberto = True
 
                         with st.expander(f"{icon} {titulo}", expanded=aberto):
                             col_esq, col_dir = st.columns(2)
-                            
                             with col_esq:
-                                st.caption("📜 Referência")
+                                st.caption("📜 Referência (Organizado)")
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_ref", "")}</div>', unsafe_allow_html=True)
-                                
                             with col_dir:
-                                st.caption("💊 BELFAR")
+                                st.caption("💊 BELFAR (Validado)")
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_belfar", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"Erro ao processar o JSON de resposta: {e}")
-                    st.warning("Tente novamente.")
+                    st.error(f"Erro ao ler resposta da IA: {e}")
     else:
-        st.warning("Por favor, envie os dois arquivos PDF (Referência e BELFAR).")
+        st.warning("Por favor, envie os dois arquivos PDF.")
