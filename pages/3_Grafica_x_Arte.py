@@ -2,6 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import fitz  # PyMuPDF
+import docx  # Adicionado para DOCX
 import io
 import json
 
@@ -86,6 +87,17 @@ def pdf_to_images(uploaded_file):
         return images
     except: return []
 
+# Função auxiliar para tratar DOCX ou Imagem/PDF
+def process_file_content(uploaded_file):
+    if uploaded_file.name.lower().endswith(".pdf"):
+        return pdf_to_images(uploaded_file)
+    elif uploaded_file.name.lower().endswith(".docx"):
+        doc = docx.Document(uploaded_file)
+        full_text = "\n".join([p.text for p in doc.paragraphs])
+        return [full_text] # Retorna como lista de texto
+    else:
+        return [Image.open(uploaded_file)]
+
 SECOES_COMPLETAS = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -101,8 +113,9 @@ SECOES_COMPLETAS = [
 st.title("💊 Validador de Bulas (Gráfica x Arte)")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png"])
-f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png"])
+# Adicionado docx na lista de tipos
+f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png", "docx"])
+f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png", "docx"])
 
 if st.button("🚀 Validar"):
     if f1 and f2:
@@ -112,14 +125,15 @@ if st.button("🚀 Validar"):
             st.stop()
 
         with st.spinner("Processando leitura inteligente (ignorando espaçamento de gráfica)..."):
-            imgs1 = pdf_to_images(f1) if f1.name.endswith(".pdf") else [Image.open(f1)]
-            imgs2 = pdf_to_images(f2) if f2.name.endswith(".pdf") else [Image.open(f2)]
+            # Processa o conteúdo dependendo do tipo (PDF/Img/Docx)
+            conteudo1 = process_file_content(f1)
+            conteudo2 = process_file_content(f2)
             
             # PROMPT CORRIGIDO PARA IGNORAR ESPAÇAMENTO DE JUSTIFICAÇÃO
             prompt = f"""
             Você é um leitor de OCR especializado em Bulas Farmacêuticas.
             
-            INPUT: Imagens de documentos justificados (com espaçamento irregular).
+            INPUT: Imagens ou Texto de documentos justificados (com espaçamento irregular).
             TAREFA: Extrair e comparar o texto das seções: {SECOES_COMPLETAS}
 
             ⚠️ REGRAS DE LEITURA (CRÍTICO):
@@ -156,7 +170,9 @@ if st.button("🚀 Validar"):
             """
             
             try:
-                payload = [prompt, "--- ARTE ---"] + imgs1 + ["--- GRAFICA ---"] + imgs2
+                # Monta o payload com o prompt + conteudos processados
+                payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRAFICA ---"] + conteudo2
+                
                 response = model.generate_content(payload)
                 resultado = json.loads(response.text)
                 
