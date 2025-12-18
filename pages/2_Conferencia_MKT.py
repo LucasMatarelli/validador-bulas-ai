@@ -1,6 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
+import docx  # Para ler DOCX
 import json
 
 # ----------------- 1. VISUAL & CSS (Design Limpo) -----------------
@@ -62,13 +63,22 @@ def setup_model():
         except: continue
     return None
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO -----------------
-def extract_text_from_pdf(uploaded_file):
+# ----------------- 3. EXTRAÇÃO DE TEXTO (PDF E DOCX) -----------------
+def extract_text_from_file(uploaded_file):
     try:
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         text = ""
-        for page in doc:
-            text += page.get_text("text") + "\n"
+        # Verifica se é PDF
+        if uploaded_file.name.lower().endswith('.pdf'):
+            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+            for page in doc:
+                text += page.get_text("text") + "\n"
+        
+        # Verifica se é DOCX
+        elif uploaded_file.name.lower().endswith('.docx'):
+            doc = docx.Document(uploaded_file)
+            for para in doc.paragraphs:
+                text += para.text + "\n"
+        
         return text
     except: return ""
 
@@ -87,8 +97,9 @@ SECOES_PACIENTE = [
 st.title("📢 Conferência MKT (Relatório Estruturado)")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf"], key="f1")
-f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf"], key="f2")
+# Atualizado para aceitar docx
+f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], key="f1")
+f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     if f1 and f2:
@@ -98,8 +109,13 @@ if st.button("🚀 Processar Conferência"):
             st.stop()
 
         with st.spinner("Lendo arquivos, corrigindo formatação e organizando seções..."):
-            t_anvisa = extract_text_from_pdf(f1)
-            t_mkt = extract_text_from_pdf(f2)
+            # Reseta o ponteiro do arquivo para garantir leitura correta
+            f1.seek(0)
+            f2.seek(0)
+            
+            # Chama a função nova que lê os dois tipos
+            t_anvisa = extract_text_from_file(f1)
+            t_mkt = extract_text_from_file(f2)
 
             if len(t_anvisa) < 50 or len(t_mkt) < 50:
                 st.error("Erro: Arquivo vazio ou ilegível (imagem sem OCR).")
@@ -207,4 +223,4 @@ if st.button("🚀 Processar Conferência"):
                 st.error(f"Erro ao processar o retorno: {e}")
                 st.warning("Tente novamente, o modelo pode ter falhado na formatação do JSON.")
     else:
-        st.warning("Por favor, envie os dois arquivos PDF.")
+        st.warning("Por favor, envie os dois arquivos (PDF ou DOCX).")
