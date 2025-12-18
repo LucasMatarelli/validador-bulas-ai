@@ -3,35 +3,44 @@ import google.generativeai as genai
 import fitz  # PyMuPDF
 import json
 
-# ----------------- 1. VISUAL & CSS (Igual ao Visual Lado a Lado) -----------------
-st.set_page_config(page_title="MKT Estruturado", page_icon="📢", layout="wide")
+# ----------------- 1. VISUAL & CSS (Design Limpo) -----------------
+st.set_page_config(page_title="MKT Final", page_icon="📢", layout="wide")
 
 st.markdown("""
 <style>
-    /* Caixas de Texto */
+    /* Estilo das Caixas de Texto */
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
         font-size: 0.95rem;
         line-height: 1.6;
-        color: #212529;
+        color: #333;
         background-color: #ffffff;
-        padding: 20px;
+        padding: 18px;
         border-radius: 8px;
-        border: 1px solid #ced4da;
-        height: 100%; 
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; /* Mantém parágrafos */
+        border: 1px solid #e0e0e0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        white-space: pre-wrap; /* Mantém parágrafos corretos */
+        text-align: justify;
     }
 
-    /* Destaques (Marca-textos) */
-    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 3px; border: 1px solid #ffeeba; }
-    .highlight-red { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 3px; border: 1px solid #f5c6cb; font-weight: bold; }
-    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 3px; border: 1px solid #bee5eb; font-weight: bold; }
+    /* Destaques */
+    .highlight-yellow { background-color: #fff9c4; color: #000; padding: 2px 4px; border-radius: 4px; border: 1px solid #fbc02d; }
+    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 4px; border: 1px solid #b71c1c; font-weight: bold; }
+    .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 4px; border-radius: 4px; border: 1px solid #1976d2; font-weight: bold; }
 
     /* Bordas de Status */
-    .border-ok { border-left: 6px solid #28a745 !important; }   /* Verde */
-    .border-warn { border-left: 6px solid #ffc107 !important; } /* Amarelo */
-    .border-info { border-left: 6px solid #17a2b8 !important; } /* Azul (Info) */
+    .border-ok { border-left: 6px solid #4caf50 !important; }   /* Verde */
+    .border-warn { border-left: 6px solid #ff9800 !important; } /* Laranja */
+    .border-info { border-left: 6px solid #2196f3 !important; } /* Azul */
+
+    /* Card de Métricas */
+    div[data-testid="stMetric"] {
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        padding: 10px;
+        border-radius: 5px;
+        text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -45,7 +54,7 @@ def setup_model():
     for api_key in valid_keys:
         try:
             genai.configure(api_key=api_key)
-            # Temperatura 0.0 para garantir fidelidade ao texto extraído
+            # Temperatura 0.0 para precisão máxima
             return genai.GenerativeModel(
                 MODELO_FIXO, 
                 generation_config={"response_mime_type": "application/json", "temperature": 0.0}
@@ -53,7 +62,7 @@ def setup_model():
         except: continue
     return None
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO (PDF -> STRING) -----------------
+# ----------------- 3. EXTRAÇÃO DE TEXTO -----------------
 def extract_text_from_pdf(uploaded_file):
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
@@ -63,7 +72,6 @@ def extract_text_from_pdf(uploaded_file):
         return text
     except: return ""
 
-# LISTA OFICIAL DE SEÇÕES
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -75,93 +83,104 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-# ----------------- 4. UI PRINCIPAL -----------------
-st.title("📢 Conferência MKT (Estruturada)")
+# ----------------- 4. INTERFACE PRINCIPAL -----------------
+st.title("📢 Conferência MKT (Relatório Estruturado)")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf"], key="f1")
 f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf"], key="f2")
 
-if st.button("🚀 Estruturar e Validar"):
+if st.button("🚀 Processar Conferência"):
     if f1 and f2:
         model = setup_model()
         if not model:
             st.error("Sem chave API.")
             st.stop()
 
-        with st.spinner("Extraindo textos e organizando nas seções..."):
-            # 1. Pega o texto cru dos PDFs
+        with st.spinner("Lendo arquivos, corrigindo formatação e organizando seções..."):
             t_anvisa = extract_text_from_pdf(f1)
             t_mkt = extract_text_from_pdf(f2)
 
             if len(t_anvisa) < 50 or len(t_mkt) < 50:
-                st.error("Erro: Um dos arquivos não tem texto selecionável (pode ser imagem).")
+                st.error("Erro: Arquivo vazio ou ilegível (imagem sem OCR).")
                 st.stop()
-            
-            # 2. PROMPT PARA ORGANIZAR E VALIDAR
-            prompt = f"""
-            Você é um Revisor Farmacêutico. 
-            Tenho dois textos brutos extraídos de PDF:
-            TEXTO 1 (ANVISA/REF): {t_anvisa[:50000]}
-            TEXTO 2 (MKT/VAL): {t_mkt[:30000]}
 
-            SUA TAREFA:
-            1. Identifique no TEXTO 2 (MKT) o conteúdo correspondente a cada seção da lista abaixo.
-            2. Compare com o TEXTO 1.
+            # PROMPT AVANÇADO: SEPARAÇÃO DE DADOS E FORMATAÇÃO
+            prompt = f"""
+            Você é um Revisor Farmacêutico Meticuloso.
             
+            INPUT:
+            TEXTO 1 (ANVISA): {t_anvisa[:50000]}
+            TEXTO 2 (MKT): {t_mkt[:30000]}
+
+            SUA MISSÃO:
+            1. Encontre a "Data de Aprovação da Anvisa" nos Dizeres Legais de AMBOS os textos.
+            2. Mapeie o conteúdo do TEXTO 2 (MKT) nas seções da lista abaixo.
+            3. Compare com o TEXTO 1.
+            4. **CRÍTICO: CORRIJA A FORMATAÇÃO.** O texto extraído do PDF pode ter quebras de linha erradas (uma palavra por linha). Junte as frases para formarem parágrafos normais e bonitos.
+
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
-            ⚠️ REGRAS ESPECÍFICAS DE STATUS E VISUALIZAÇÃO:
+            REGRAS DE STATUS:
+            - "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS": Sempre "CONFORME". Apenas transcreva o texto (Sem highlights de erro).
+            - OUTRAS SEÇÕES: Compare rigorosamente. Use <span class="highlight-yellow">TEXTO</span> para divergências e <span class="highlight-red">TEXTO</span> para erros de PT.
+            - DIZERES LEGAIS: Destaque a data da Anvisa (se houver no texto) com <span class="highlight-blue">DATA</span>. NÃO adicione "N/A" se não tiver.
 
-            GRUPO A (Não Comparar): ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
-            - Defina status sempre como "CONFORME".
-            - Apenas transcreva o conteúdo completo encontrado.
-            - REGRA ESPECIAL PARA 'DIZERES LEGAIS':
-                - Procure a data da Anvisa (ex: "aprovado em dd/mm/aaaa").
-                - Se achar, envolva com <span class="highlight-blue">DATA</span>.
-                - Se NÃO achar, escreva "N/A" no final do texto.
-
-            GRUPO B (Comparar Rigorosamente): [TODAS AS OUTRAS]
-            - Compare o conteúdo. Se o MKT omitiu avisos importantes ou mudou o sentido, status "DIVERGENTE".
-            - Use <span class="highlight-yellow">TEXTO</span> para divergências de conteúdo.
-            - Use <span class="highlight-red">TEXTO</span> para erros de português.
-            - Se a seção não existir no MKT (comum em peças publicitárias), coloque "Não consta na peça" e status "CONFORME" (pois MKT nem sempre tem tudo).
-
-            SAÍDA JSON ARRAY:
-            [
-                {{
-                    "titulo": "NOME DA SEÇÃO",
-                    "texto_anvisa": "Conteúdo completo da Anvisa",
-                    "texto_mkt": "Conteúdo completo do MKT com highlights",
-                    "status": "CONFORME" ou "DIVERGENTE"
-                }}
-            ]
+            SAÍDA JSON OBRIGATÓRIA:
+            {{
+                "data_anvisa_ref": "dd/mm/aaaa" (ou "Não encontrada"),
+                "data_anvisa_mkt": "dd/mm/aaaa" (ou "Não encontrada"),
+                "secoes": [
+                    {{
+                        "titulo": "NOME DA SEÇÃO",
+                        "texto_anvisa": "Texto formatado (sem quebras malucas)",
+                        "texto_mkt": "Texto formatado (sem quebras malucas) com highlights",
+                        "status": "CONFORME" ou "DIVERGENTE"
+                    }}
+                ]
+            }}
             """
             
             try:
                 response = model.generate_content(prompt)
-                dados = json.loads(response.text)
+                resultado = json.loads(response.text)
+                
+                # Extrai dados globais
+                data_ref = resultado.get("data_anvisa_ref", "-")
+                data_mkt = resultado.get("data_anvisa_mkt", "-")
+                dados_secoes = resultado.get("secoes", [])
 
-                st.write("")
+                # --- ÁREA DE MÉTRICAS (LÁ EM CIMA) ---
+                st.markdown("### 📊 Resumo da Conferência")
                 
-                # Métricas
-                total = len(dados)
-                divergentes = sum(1 for d in dados if d['status'] != 'CONFORME')
+                # Linha 1: Datas
+                c_d1, c_d2, c_d3 = st.columns(3)
+                c_d1.metric("Data Anvisa (Ref)", data_ref)
+                c_d2.metric("Data Anvisa (MKT)", data_mkt, delta="Vigência" if data_ref == data_mkt else "Diferente")
                 
-                k1, k2, k3 = st.columns(3)
-                k1.metric("Seções Mapeadas", total)
-                k2.metric("Conformes", total - divergentes)
-                k3.metric("Divergências", divergentes, delta_color="inverse")
+                # Linha 2: Estatísticas
+                total = len(dados_secoes)
+                divergentes = sum(1 for d in dados_secoes if d['status'] != 'CONFORME')
+                c_d3.metric("Seções Analisadas", total)
+
+                # Mostra contadores menores abaixo
+                sub1, sub2 = st.columns(2)
+                sub1.info(f"✅ **Conformes:** {total - divergentes}")
+                if divergentes > 0:
+                    sub2.warning(f"⚠️ **Divergentes:** {divergentes}")
+                else:
+                    sub2.success("✨ **Divergências:** 0")
+
                 st.divider()
 
-                # Renderização Visual
-                for item in dados:
+                # --- LOOP DE SEÇÕES ---
+                for item in dados_secoes:
                     status = item.get('status', 'CONFORME')
                     titulo = item.get('titulo', 'Seção')
                     
                     # Definição visual (ícone e borda)
                     if "DIZERES LEGAIS" in titulo.upper():
-                        icon = "📅"
+                        icon = "⚖️"
                         css = "border-info"
                         aberto = True
                     elif status == "CONFORME":
@@ -185,6 +204,7 @@ if st.button("🚀 Estruturar e Validar"):
                             st.markdown(f'<div class="texto-box {css}">{item.get("texto_mkt", "")}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"Erro no processamento: {e}")
+                st.error(f"Erro ao processar o retorno: {e}")
+                st.warning("Tente novamente, o modelo pode ter falhado na formatação do JSON.")
     else:
-        st.warning("Envie os dois PDFs.")
+        st.warning("Por favor, envie os dois arquivos PDF.")
