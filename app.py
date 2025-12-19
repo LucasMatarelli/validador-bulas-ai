@@ -30,6 +30,9 @@ st.markdown("""
         box-shadow: 0 4px 6px rgba(0,0,0,0.05);
         transition: transform 0.2s, box-shadow 0.2s;
         height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
     }
     .module-card:hover {
         transform: translateY(-5px);
@@ -37,6 +40,26 @@ st.markdown("""
         border-color: #55a68e;
     }
     
+    /* Texto do cartão */
+    .card-text {
+        font-size: 0.95rem;
+        color: #555;
+        line-height: 1.5;
+        margin-bottom: 15px;
+        text-align: justify;
+    }
+
+    /* Detalhe técnico (curvas) */
+    .tech-detail {
+        font-size: 0.85rem;
+        color: #666;
+        background-color: #f8f9fa;
+        padding: 10px;
+        border-radius: 6px;
+        margin-top: 10px;
+        border-left: 3px solid #ccc;
+    }
+
     /* Badges de Status */
     .badge {
         display: inline-block;
@@ -44,7 +67,8 @@ st.markdown("""
         border-radius: 4px;
         font-size: 0.8em;
         font-weight: bold;
-        margin-top: 10px;
+        margin-top: 15px;
+        width: fit-content;
     }
     .badge-stable { background-color: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; } /* Azul */
     .badge-new { background-color: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; } /* Verde */
@@ -73,48 +97,52 @@ st.divider()
 # Grid de Módulos
 col1, col2, col3 = st.columns(3, gap="medium")
 
+# --- CARD 1: REFERÊNCIA X BELFAR ---
 with col1:
     st.markdown("""
     <div class="module-card">
-        <div class="icon-large">💊</div>
-        <h3>Med. Referência x BELFAR</h3>
-        <p>Comparação algorítmica de texto puro.</p>
-        <ul>
-            <li>Extração PDF/Word</li>
-            <li>Checagem de Seções</li>
-            <li>Conformidade ANVISA</li>
-        </ul>
-        <div class="badge badge-stable">v21.9 • Estável</div>
+        <div>
+            <div class="icon-large">💊</div>
+            <h3>Medicamento Referência x BELFAR</h3>
+            <div class="card-text">
+                Compara a bula de referência com a bula BELFAR. Aponta as diferenças entre as duas com marca-texto amarelo, possíveis erros de português em rosa e a data da ANVISA em azul.
+            </div>
+        </div>
+        <div class="badge badge-stable">gemni-lite</div>
     </div>
     """, unsafe_allow_html=True)
 
+# --- CARD 2: CONFERÊNCIA MKT ---
 with col2:
     st.markdown("""
     <div class="module-card">
-        <div class="icon-large">📋</div>
-        <h3>Conferência MKT</h3>
-        <p>Validação estrutural e ortográfica avançada.</p>
-        <ul>
-            <li>Motor Híbrido (Mistral AI)</li>
-            <li>Detecção de Erros PT-BR</li>
-            <li>Análise de Contexto</li>
-        </ul>
-        <div class="badge badge-new">v107 • IA Híbrida</div>
+        <div>
+            <div class="icon-large">📋</div>
+            <h3>Conferência MKT (Word/PDF vs PDF)</h3>
+            <div class="card-text">
+                Compara o arquivo da ANVISA (.docx ou .pdf) com o PDF final do Marketing. Aponta as diferenças entre os documentos em amarelo, possíveis erros de português em rosa e a data da ANVISA em azul.
+            </div>
+        </div>
+        <div class="badge badge-new">gemni-lite</div>
     </div>
     """, unsafe_allow_html=True)
 
+# --- CARD 3: GRÁFICA X ARTE ---
 with col3:
     st.markdown("""
     <div class="module-card">
-        <div class="icon-large">🎨</div>
-        <h3>Gráfica x Arte</h3>
-        <p>Conferência visual de pré-impressão.</p>
-        <ul>
-            <li>Visão Computacional (Gemini)</li>
-            <li>Layout, Fontes e Cores</li>
-            <li>OCR de Alta Resolução</li>
-        </ul>
-        <div class="badge badge-beta">IA Visual • Gemini Flash</div>
+        <div>
+            <div class="icon-large">🎨</div>
+            <h3>Gráfica x Arte Vigente</h3>
+            <div class="card-text">
+                Compara o PDF da Gráfica (frequentemente 'em curva') com o PDF da Arte Vigente. O sistema lê ambos os arquivos e aponta as diferenças em amarelo, erros em rosa e a data da ANVISA em azul.
+            </div>
+            <div class="tech-detail">
+                <strong>O que é um arquivo 'em curva'?</strong><br>
+                É um PDF onde o texto virou vetor (imagem). Visualmente é texto, mas o computador vê apenas formas geométricas, exigindo OCR.
+            </div>
+        </div>
+        <div class="badge badge-beta">gemni-lite</div>
     </div>
     """, unsafe_allow_html=True)
 
