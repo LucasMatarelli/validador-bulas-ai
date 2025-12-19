@@ -89,8 +89,8 @@ c_logo, c_title = st.columns([1, 5])
 with c_logo:
     st.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
 with c_title:
-    st.title("Sistema Central de Auditoria")
-    st.caption("Controle de Qualidade Farmacêutica Inteligente")
+    st.title("Validador de Bulas")
+    st.caption("IA para validação de bulas")
 
 st.divider()
 
