@@ -2,7 +2,7 @@ import streamlit as st
 
 # ----------------- CONFIGURAÇÃO DA PÁGINA (HOME) -----------------
 st.set_page_config(
-    page_title="Central de Auditoria Belfar",
+    page_title="Validador de Bulas",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded"
