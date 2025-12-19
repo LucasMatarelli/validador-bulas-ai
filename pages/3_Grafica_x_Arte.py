@@ -11,6 +11,11 @@ st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layou
 
 st.markdown("""
 <style>
+    /* --- ESCONDER MENU SUPERIOR (CONFORME SOLICITADO) --- */
+    [data-testid="stHeader"] {
+        visibility: hidden;
+    }
+
     /* Caixas de Texto */
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
