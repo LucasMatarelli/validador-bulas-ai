@@ -128,7 +128,7 @@ SECOES_COMPLETAS = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("💊 Validador de Bulas (Gráfica x Arte)")
+st.title("💊 Gráfica x Arte")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png", "docx"])
