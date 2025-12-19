@@ -12,6 +12,11 @@ st.set_page_config(page_title="MKT Final", page_icon="📢", layout="wide")
 
 st.markdown("""
 <style>
+    /* --- ESCONDER MENU SUPERIOR (CONFORME SOLICITADO) --- */
+    [data-testid="stHeader"] {
+        visibility: hidden;
+    }
+
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
         font-size: 0.95rem;
