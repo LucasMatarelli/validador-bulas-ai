@@ -8,7 +8,7 @@ import re
 import unicodedata
 
 # ----------------- 1. VISUAL & CSS -----------------
-st.set_page_config(page_title="MKT Final", page_icon="📢", layout="wide")
+st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
@@ -130,7 +130,7 @@ SECOES_PACIENTE = [
 ]
 
 # ----------------- 5. UI PRINCIPAL -----------------
-st.title("📢 Conferência MKT (Relatório Estruturado)")
+st.title("💊 Conferência MKT")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], key="f1")
