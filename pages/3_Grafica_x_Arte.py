@@ -5,7 +5,7 @@ import fitz  # PyMuPDF
 import docx  # Para ler DOCX
 import io
 import json
-import re  # Para limpeza de texto
+import re  # IMPORTANTE: Para limpeza de texto
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
@@ -49,8 +49,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-1.5-flash" # Forçando versão específica para garantir limite alto
+# ----------------- 2. CONFIGURAÇÃO MODELOS (FAILOVER) -----------------
+# Tenta o que funcionava antes primeiro. Se falhar, tenta o 2.5 como solicitado.
+MODELOS_POSSIVEIS = [
+    "models/gemini-flash-latest", 
+    "models/gemini-2.5-flash", 
+    "models/gemini-1.5-flash-latest"
+]
 
 # ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
 def process_file_content(uploaded_file):
@@ -112,7 +117,7 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando textos longos... Isso pode levar alguns segundos..."):
+        with st.spinner("Processando... Lendo documentos complexos..."):
             f1.seek(0)
             f2.seek(0)
             
@@ -126,9 +131,9 @@ if st.button("🚀 Validar"):
             TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}
 
             ⚠️ PROTOCOLO DE EXTRAÇÃO (CRUCIAL):
-            1. **INTEGRIDADE TOTAL:** Extraia TODO o texto de cada seção. NÃO RESUMA. NÃO CORTE.
+            1. **INTEGRIDADE TOTAL:** Extraia TODO o texto de cada seção. NÃO RESUMA. NÃO CORTE. Vá até o último ponto final.
             2. **NEGRITO VISUAL:** Se houver texto em **negrito** (headers, avisos), envolva-o na tag `<b>` e `</b>`.
-            3. **LAYOUT PONTILHADO:** Ignore linhas de pontinhos longas (ex: "Cloridrato .......... 5mg"). Transcreva apenas "Cloridrato 5mg".
+            3. **LAYOUT PONTILHADO:** Ignore linhas de pontinhos longas (ex: "Cloridrato .......... 5mg"). Transcreva apenas "Cloridrato 5mg" para evitar erros.
 
             ⚠️ PROTOCOLO DE JSON E ASPAS:
             - NUNCA use aspas duplas (") dentro do texto sem escapá-las (\").
@@ -158,35 +163,41 @@ if st.button("🚀 Validar"):
             response = None
             ultimo_erro = ""
 
-            for i, api_key in enumerate(keys_validas):
-                try:
-                    genai.configure(api_key=api_key)
-                    # --- CORREÇÃO AQUI: MAX OUTPUT TOKENS AUMENTADO PARA 16.000 ---
-                    model = genai.GenerativeModel(
-                        MODELO_FIXO, 
-                        generation_config={
-                            "response_mime_type": "application/json", 
-                            "temperature": 0.0,
-                            "max_output_tokens": 16000 # Isso impede que o texto corte no meio
-                        }
-                    )
-                    response = model.generate_content(payload)
-                    break 
-                except Exception as e:
-                    ultimo_erro = str(e)
-                    if i < len(keys_validas) - 1: continue
-                    else:
-                        st.error(f"❌ Erro na API: {ultimo_erro}")
-                        st.stop()
-            
+            # Loop de Chaves
+            for api_key in keys_validas:
+                genai.configure(api_key=api_key)
+                
+                # Loop de Modelos (Tentativa de recuperação)
+                for model_name in MODELOS_POSSIVEIS:
+                    try:
+                        # CONFIGURAÇÃO COM TOKEN AUMENTADO PARA NÃO CORTAR (CRUCIAL)
+                        model = genai.GenerativeModel(
+                            model_name, 
+                            generation_config={
+                                "response_mime_type": "application/json", 
+                                "temperature": 0.0,
+                                "max_output_tokens": 8192 # Aumentado para evitar 'finish_reason 2'
+                            }
+                        )
+                        response = model.generate_content(payload)
+                        
+                        # Se chegou aqui sem erro, deu certo o modelo
+                        break 
+                    except Exception as e:
+                        ultimo_erro = str(e)
+                        continue # Tenta o próximo modelo da lista
+                
+                if response: break # Se temos resposta, sai do loop de chaves
+
             if response:
                 try:
-                    # Verifica se o modelo parou por "Segurança" ou "Outros erros" antes de tentar ler
+                    # Verifica se o modelo retornou vazio
                     if not response.parts:
-                        st.error(f"A IA bloqueou a resposta. Motivo: {response.prompt_feedback}")
+                        st.error(f"Erro: O modelo bloqueou a resposta. Tente novamente.")
                         st.stop()
 
                     texto_limpo = response.text.replace("```json", "").replace("```", "").strip()
+                    # Remove excesso de pontos que quebra o JSON
                     texto_limpo = re.sub(r'\.{4,}', '...', texto_limpo)
 
                     resultado = json.loads(texto_limpo, strict=False)
@@ -238,10 +249,12 @@ if st.button("🚀 Validar"):
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except json.JSONDecodeError as e:
-                    st.error("Erro: A resposta foi cortada ou veio inválida.")
-                    st.warning("Tente validar uma seção por vez se o documento for gigante.")
+                    st.error("Erro na leitura dos dados. O documento pode ser muito extenso.")
+                    st.warning("Dica: Tente validar apenas a página específica se o erro persistir.")
                 except Exception as e:
                     st.error(f"Erro no processamento: {e}")
+            else:
+                 st.error(f"Não foi possível conectar com nenhum modelo. Erro: {ultimo_erro}")
 
     else:
         st.warning("Adicione os arquivos.")
