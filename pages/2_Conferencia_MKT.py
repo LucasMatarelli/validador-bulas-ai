@@ -103,18 +103,36 @@ def gerar_diff_html(texto_ref, texto_novo):
             
     return " ".join(html_output), eh_divergente
 
-# ----------------- 4. EXTRAÇÃO DE TEXTO -----------------
+# ----------------- 4. EXTRAÇÃO DE TEXTO (COM NEGRITO) -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
-                text += page.get_text("text") + "\n"
+                # Usa 'dict' para acessar propriedades da fonte (negrito)
+                blocks = page.get_text("dict", flags=11)["blocks"]
+                for b in blocks:
+                    for l in b.get("lines", []):
+                        for s in l.get("spans", []):
+                            content = s["text"]
+                            # Flag 16 geralmente é negrito, ou busca 'bold'/'black' no nome da fonte
+                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower() or "black" in s["font"].lower()
+                            if is_bold:
+                                text += f"<b>{content}</b>"
+                            else:
+                                text += content
+                        text += "\n"
+                    text += "\n"
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
             for para in doc.paragraphs: 
-                text += para.text + "\n"
+                for run in para.runs:
+                    if run.bold:
+                        text += f"<b>{run.text}</b>"
+                    else:
+                        text += run.text
+                text += "\n"
         return text
     except: return ""
 
@@ -154,7 +172,7 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 50 or len(t_mkt) < 50:
                 st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # PROMPT DE EXTRAÇÃO PURA (SEM ANÁLISE)
+            # PROMPT DE EXTRAÇÃO PURA (COM INSTRUÇÃO DE NEGRITO)
             prompt = f"""
             Você é um Extrator de Dados Literais.
             
@@ -165,7 +183,7 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. Localize as seções da lista abaixo nos dois textos.
             2. Extraia o conteúdo LIMPO. Junte linhas quebradas para formar frases contínuas.
-            3. **IMPORTANTE:** Copie o texto fielmente. Não corrija nada.
+            3. **IMPORTANTE:** Copie o texto fielmente. Não corrija nada. Mantenha as tags <b> e </b> onde houver negrito no original.
             4. **NÃO COMPARE:** Apenas me entregue o texto extraído de cada lado.
             
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
