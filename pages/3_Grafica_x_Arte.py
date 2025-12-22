@@ -23,7 +23,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-MODELO_FIXO = "models/gemini-flash-latest" 
+MODELO_FIXO = "models/gemini-1.5-flash" 
 SECOES = ["APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", "DIZERES LEGAIS"]
 
 def process_file(up):
@@ -41,6 +41,11 @@ def process_file(up):
             return ["\n".join([p.text for p in doc.paragraphs])]
     except: return []
 
+def reparar_json(t):
+    t = t.replace("```json", "").replace("```", "").strip()
+    try: return json.loads(t)
+    except: return None
+
 st.title("💊 Gráfica x Arte")
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("Arte", type=["pdf", "jpg", "png", "docx"])
@@ -52,7 +57,8 @@ if st.button("🚀 Validar"):
     if not valid: st.stop()
     
     if f1 and f2:
-        with st.spinner("Analisando..."):
+        status = st.status("Processando imagens...", expanded=True)
+        try:
             f1.seek(0); f2.seek(0)
             c1_content = process_file(f1)
             c2_content = process_file(f2)
@@ -62,25 +68,26 @@ if st.button("🚀 Validar"):
             LISTA: {json.dumps(SECOES, ensure_ascii=False)}
             REGRAS:
             1. COPIE O TEXTO VISUAL EXATO E COMPLETO.
-            2. Se uma seção for longa, copie até o fim. Não resuma.
-            3. Ignore pontilhados "....".
-            4. Use <b> para negrito.
+            2. Ignore pontilhados "....". Use <b> para negrito.
             JSON: {{"data_anvisa_ref": "...", "data_anvisa_grafica": "...", "secoes": [{{"titulo": "...", "texto_arte": "...", "texto_grafica": "...", "status": "CONFORME"}}]}}
             """
             
             pl = [p, "=== ARTE ==="] + c1_content + ["=== GRAFICA ==="] + c2_content
             
             res = None
+            cfg = {"response_mime_type": "application/json", "temperature": 0.0, "max_output_tokens": 8192}
+
             for k in valid:
                 try:
                     genai.configure(api_key=k)
-                    m = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
+                    m = genai.GenerativeModel(MODELO_FIXO, generation_config=cfg)
                     r = m.generate_content(pl)
-                    res = json.loads(r.text.replace("```json", "").replace("```", ""))
-                    break
+                    res = reparar_json(r.text)
+                    if res: break
                 except: continue
                 
             if res:
+                status.update(label="Pronto!", state="complete", expanded=False)
                 st.markdown("### Resultado")
                 colA, colB = st.columns(2)
                 colA.metric("Ref", res.get("data_anvisa_ref"))
@@ -93,17 +100,17 @@ if st.button("🚀 Validar"):
                     blindada = any(x in t.upper() for x in isentas)
                     
                     if blindada:
-                        status = "CONFORME"
+                        stt = "CONFORME"
                         css = "border-info"
                         ab = False
                     else:
-                        status = i.get("status", "CONFORME")
-                        css = "border-warn" if status == "DIVERGENTE" else "border-ok"
-                        ab = (status == "DIVERGENTE")
+                        stt = i.get("status", "CONFORME")
+                        css = "border-warn" if stt == "DIVERGENTE" else "border-ok"
+                        ab = (stt == "DIVERGENTE")
                     
                     if "DIZERES" in t.upper(): icon="⚖️"
                     elif blindada: icon="📋"
-                    elif status == "DIVERGENTE": icon="⚠️"
+                    elif stt == "DIVERGENTE": icon="⚠️"
                     else: icon="✅"
 
                     with st.expander(f"{icon} {t}", expanded=ab):
@@ -115,5 +122,7 @@ if st.button("🚀 Validar"):
                             ta = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', ta)
                             tb = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', tb)
                         
-                        ca.markdown(f'<div class="texto-box {css}">{ta}</div>', unsafe_allow_html=True)
-                        cb.markdown(f'<div class="texto-box {css}">{tb}</div>', unsafe_allow_html=True)
+                        ca.markdown(f'<div class="texto-box {css}">{ta.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+                        cb.markdown(f'<div class="texto-box {css}">{tb.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+        except Exception as e:
+            st.error(str(e))
