@@ -142,8 +142,8 @@ f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key=
 
 if st.button("🚀 Processar Conferência"):
     
-    # Tenta pegar as chaves do secrets
-    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    # Tenta pegar as chaves do secrets (COM A KEY 3 ADICIONADA)
+    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
     if not keys_validas:
