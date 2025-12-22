@@ -6,7 +6,6 @@ import docx  # Para ler DOCX
 import io
 import json
 import re
-import time
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
@@ -49,15 +48,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. SEUS MODELOS (MANUALMENTE SELECIONADOS) -----------------
+# ----------------- 2. SEUS MODELOS (COM FALLBACK DE SEGURANÇA) -----------------
 MODELOS_POSSIVEIS = [
-    "models/gemini-flash-latest", 
-    "models/gemini-2.5-flash",        # Solicitado (Experimental)
-    "models/gemini-1.5-flash-latest", # Fallback seguro
-    "models/gemini-1.5-pro-latest"    # Fallback potente
+    "models/gemini-2.5-flash",        # Sua preferência
+    "models/gemini-flash-latest",     # Sua preferência
+    "models/gemini-1.5-flash-latest", # Backup rápido
+    "models/gemini-1.5-pro-latest"    # Backup POTENTE (lento, mas não erra)
 ]
 
-# ----------------- 3. CONFIGURAÇÃO DE SEGURANÇA (TOTALMENTE ABERTA) -----------------
+# ----------------- 3. CONFIGURAÇÃO DE SEGURANÇA (ABERTA) -----------------
 SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -119,17 +118,14 @@ def reparar_json_quebrado(texto_json):
                 return json.loads(texto_limpo + t, strict=False)
             except: continue
     
-    # 3. Se falhar tudo, tenta achar o último objeto válido dentro da lista "secoes"
-    # Isso salva o que a IA escreveu antes de cortar
+    # 3. Tentativa desesperada de recuperar objetos válidos
     try:
-        match = re.search(r'"secoes"\s*:\s*\[(.*)', texto_limpo, re.DOTALL)
-        if match:
-            conteudo_lista = match.group(1)
-            # Tenta pegar objetos completos { ... }
-            objetos = re.findall(r'\{[^{}]+\}', conteudo_lista)
-            if objetos:
-                json_reconstruido = '{"secoes": [' + ','.join(objetos) + ']}'
-                return json.loads(json_reconstruido, strict=False)
+        # Pega tudo que parece um objeto de seção
+        objetos = re.findall(r'\{[^{}]*"titulo"[^{}]*\}', texto_limpo, re.DOTALL)
+        if objetos:
+            # Reconstrói um JSON válido com o que achou
+            novo_json = '{"secoes": [' + ','.join(objetos) + ']}'
+            return json.loads(novo_json, strict=False)
     except:
         pass
 
@@ -153,7 +149,7 @@ if st.button("🚀 Validar"):
 
     if f1 and f2:
         status_box = st.empty()
-        status_box.info("Lendo arquivos e iniciando IA...")
+        status_box.info("Lendo arquivos...")
 
         f1.seek(0)
         f2.seek(0)
@@ -166,7 +162,7 @@ if st.button("🚀 Validar"):
         TAREFA: Extrair texto e comparar ARTE (Referência) vs GRÁFICA (Prova).
         
         REGRAS RÍGIDAS:
-        1. Transcreva o texto COMPLETO de cada seção encontrada.
+        1. Transcreva o texto COMPLETO de cada seção.
         2. Se houver negrito visual, use tags <b>...</b>.
         3. Ignore linhas pontilhadas ("...."), substitua por " ".
         4. Marque divergências na GRÁFICA com <span class='highlight-yellow'>...</span>.
@@ -188,18 +184,17 @@ if st.button("🚀 Validar"):
         
         payload = [prompt_base, "=== ARTE ==="] + conteudo1 + ["=== GRÁFICA ==="] + conteudo2
         
-        response = None
-        sucesso = False
-        modelo_usado = ""
-        erros_acumulados = []
+        final_result = None
+        modelo_vencedor = ""
+        historico_erros = []
 
-        # LOOP DE TENTATIVA (RETRY)
+        # --- LOOP INTELIGENTE DE MODELOS ---
         for api_key in keys_validas:
             genai.configure(api_key=api_key)
             
             for model_name in MODELOS_POSSIVEIS:
                 try:
-                    status_box.text(f"Processando com: {model_name}...")
+                    status_box.text(f"Tentando modelo: {model_name}...")
                     
                     model = genai.GenerativeModel(
                         model_name, 
@@ -211,49 +206,46 @@ if st.button("🚀 Validar"):
                         }
                     )
                     
-                    temp_response = model.generate_content(payload)
+                    response = model.generate_content(payload)
                     
-                    # Validação de resposta vazia
-                    if not temp_response.candidates or not temp_response.candidates[0].content.parts:
-                        erros_acumulados.append(f"{model_name}: Bloqueio de segurança (conteúdo vazio).")
+                    # 1. Verifica se bloqueou
+                    if not response.candidates or not response.candidates[0].content.parts:
+                        historico_erros.append(f"{model_name}: Bloqueio de segurança.")
                         continue 
+
+                    # 2. Tenta extrair e limpar JSON
+                    texto_raw = response.text.replace("```json", "").replace("```", "")
+                    match = re.search(r'\{.*\}', texto_raw, re.DOTALL)
+                    if match: texto_raw = match.group(0)
+
+                    resultado_temp = reparar_json_quebrado(texto_raw)
+                    secoes_temp = resultado_temp.get("secoes", [])
+
+                    # 3. VERIFICAÇÃO CRÍTICA: Se achou 0 seções, o modelo falhou!
+                    if not secoes_temp:
+                        historico_erros.append(f"{model_name}: Retornou 0 seções (Conteúdo vazio).")
+                        continue # Tenta o próximo modelo
                     
-                    response = temp_response
-                    modelo_usado = model_name
-                    sucesso = True
-                    break 
+                    # Se chegou aqui, temos dados válidos!
+                    final_result = resultado_temp
+                    modelo_vencedor = model_name
+                    break # Sai do loop de modelos
 
                 except Exception as e:
-                    erros_acumulados.append(f"{model_name}: Erro {str(e)}")
+                    historico_erros.append(f"{model_name}: Erro técnico ({str(e)})")
                     continue
             
-            if sucesso: break
+            if final_result: break # Sai do loop de chaves
 
         status_box.empty()
 
-        if sucesso and response:
+        if final_result:
             try:
-                # Limpeza do texto para JSON
-                texto_raw = response.text.replace("```json", "").replace("```", "")
-                match = re.search(r'\{.*\}', texto_raw, re.DOTALL)
-                if match: texto_raw = match.group(0)
+                data_ref = final_result.get("data_anvisa_ref", "---")
+                data_graf = final_result.get("data_anvisa_grafica", "---")
+                secoes = final_result.get("secoes", [])
 
-                resultado = reparar_json_quebrado(texto_raw)
-                
-                # --- AQUI ESTA O PULO DO GATO ---
-                # Verifica se realmente tem conteúdo
-                secoes = resultado.get("secoes", [])
-                
-                if not secoes:
-                    st.error(f"❌ O modelo {modelo_usado} retornou uma resposta vazia ou inválida.")
-                    with st.expander("🛠️ Ver Resposta Bruta da IA (Debug)"):
-                        st.code(response.text)
-                    st.stop() # Para aqui para não mostrar "Tudo Conforme" falso
-
-                data_ref = resultado.get("data_anvisa_ref", "---")
-                data_graf = resultado.get("data_anvisa_grafica", "---")
-
-                st.markdown(f"### 📊 Resultado (Modelo: `{modelo_usado}`)")
+                st.markdown(f"### 📊 Resultado (Gerado por: `{modelo_vencedor}`)")
                 
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Data Ref", data_ref)
@@ -262,13 +254,16 @@ if st.button("🚀 Validar"):
 
                 div_count = sum(1 for s in secoes if s.get('status') != 'CONFORME')
                 
-                if div_count == 0:
+                # SÓ MOSTRA VERDE SE TIVER SEÇÕES E ZERO ERROS
+                if len(secoes) > 0 and div_count == 0:
                     st.success("✅ **Tudo Conforme!**")
+                elif len(secoes) == 0:
+                     st.error("❌ **Nenhuma seção foi encontrada.** Verifique se o arquivo é legível.")
                 else:
                     st.warning(f"⚠️ **{div_count} Divergências Encontradas**")
                 
-                if resultado.get("erro_parse"):
-                    st.warning("⚠️ Nota: O texto foi cortado no final (limite da IA), mas recuperamos o início.")
+                if final_result.get("erro_parse"):
+                    st.warning("⚠️ Nota: O texto foi longo demais para a IA, mas recuperamos o início.")
 
                 st.divider()
 
@@ -288,14 +283,12 @@ if st.button("🚀 Validar"):
                             st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.error("❌ Erro fatal ao processar o JSON.")
+                st.error("❌ Erro ao exibir resultados.")
                 st.write(e)
-                with st.expander("Ver texto bruto"):
-                    st.code(response.text)
         else:
-             st.error("❌ Falha em todos os modelos. O conteúdo foi bloqueado ou a conexão falhou.")
-             with st.expander("Ver detalhes dos erros"):
-                 for erro in erros_acumulados:
+             st.error("❌ Falha crítica: Nenhum modelo conseguiu ler o documento.")
+             with st.expander("Ver detalhes dos erros (Debug)"):
+                 for erro in historico_erros:
                      st.write(erro)
 
     else:
