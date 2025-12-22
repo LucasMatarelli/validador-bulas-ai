@@ -211,4 +211,63 @@ if st.button("🚀 Processar Conferência"):
 
                     for item in dados_secoes:
                         titulo = item.get('titulo', '')
-                        txt_ref = item.get('texto_anvisa', '').strip
+                        txt_ref = item.get('texto_anvisa', '').strip()
+                        txt_mkt = item.get('texto_mkt', '').strip()
+                        
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            padrao_data = r"(\d{2}/\d{2}/\d{4})"
+                            txt_ref = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_ref)
+                            txt_mkt = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_mkt)
+
+                        html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
+                        
+                        if teve_diff:
+                            status = "DIVERGENTE"
+                            divergentes_count += 1
+                        else:
+                            status = "CONFORME"
+                        
+                        secoes_finais.append({
+                            "titulo": titulo,
+                            "texto_anvisa": txt_ref,
+                            "texto_mkt": html_mkt,
+                            "status": status
+                        })
+
+                    st.markdown("### 📊 Resumo da Conferência")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Ref.", data_ref)
+                    c2.metric("MKT", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
+                    c3.metric("Seções", len(secoes_finais))
+
+                    sub1, sub2 = st.columns(2)
+                    sub1.info(f"✅ **Conformes:** {len(secoes_finais) - divergentes_count}")
+                    if divergentes_count > 0: sub2.warning(f"⚠️ **Divergentes:** {divergentes_count}")
+                    else: sub2.success("✨ **Divergências:** 0")
+
+                    st.divider()
+
+                    for item in secoes_finais:
+                        status = item['status']
+                        titulo = item['titulo']
+                        
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            icon = "⚖️"; css = "border-info"; aberto = True
+                        elif status == "CONFORME":
+                            icon = "✅"; css = "border-ok"; aberto = False
+                        else:
+                            icon = "⚠️"; css = "border-warn"; aberto = True
+
+                        with st.expander(f"{icon} {titulo}", expanded=aberto):
+                            col_esq, col_dir = st.columns(2)
+                            with col_esq:
+                                st.caption("📜 Referência")
+                                st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
+                            with col_dir:
+                                st.caption("🎨 Validado")
+                                st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"Erro JSON: {e}")
+    else:
+        st.warning("Adicione os arquivos.")
