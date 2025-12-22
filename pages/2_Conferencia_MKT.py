@@ -13,9 +13,7 @@ st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide
 st.markdown("""
 <style>
     /* --- ESCONDER MENU SUPERIOR --- */
-    [data-testid="stHeader"] {
-        visibility: hidden;
-    }
+    [data-testid="stHeader"] { visibility: hidden; }
 
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
@@ -31,7 +29,6 @@ st.markdown("""
         text-align: justify;
     }
     
-    /* Highlight Amarelo (Diferenças) */
     .highlight-yellow { background-color: #fff9c4; color: #000; padding: 2px 0; border: 1px solid #fbc02d; font-weight: bold; }
     .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 4px; font-weight: bold; }
     
@@ -40,11 +37,7 @@ st.markdown("""
     .border-info { border-left: 6px solid #2196f3 !important; }
 
     div[data-testid="stMetric"] {
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
-        padding: 10px;
-        border-radius: 5px;
-        text-align: center;
+        background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -54,29 +47,20 @@ MODELO_FIXO = "models/gemini-1.5-flash"
 
 # ----------------- 3. FUNÇÃO DE COMPARAÇÃO INTELIGENTE -----------------
 def normalizar_para_comparacao(texto):
-    """Remove caracteres invisíveis e padroniza, mas MANTÉM erros visuais."""
     if not texto: return ""
-    # Normaliza unicode (ex: ã vira a + ~), mas mantemos para a comparação funcionar
     texto = unicodedata.normalize('NFKD', texto)
-    # Remove apenas caracteres de controle que não são imprimíveis, mas mantém pontuação
     return texto
 
 def gerar_diff_html(texto_ref, texto_novo):
-    """
-    Compara palavra por palavra.
-    """
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
 
-    # Normaliza minimamente
     ref_norm = normalizar_para_comparacao(texto_ref)
     novo_norm = normalizar_para_comparacao(texto_novo)
 
-    # Quebra em palavras
     a = ref_norm.split()
     b = novo_norm.split()
     
-    # autojunk=False é essencial para textos repetitivos (como bulas)
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     
     html_output = []
@@ -94,30 +78,22 @@ def gerar_diff_html(texto_ref, texto_novo):
             html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
             eh_divergente = True
         elif tag == 'delete':
-            # Texto deletado não é mostrado para limpar o visual, mas conta como erro
             eh_divergente = True 
             
     return " ".join(html_output), eh_divergente
 
-# ----------------- 4. EXTRAÇÃO DE TEXTO PURO (SEM FORMATAÇÃO) -----------------
+# ----------------- 4. EXTRAÇÃO DE TEXTO PURO -----------------
 def extract_text_from_file(uploaded_file):
-    """Extrai texto puro para evitar problemas com tags de negrito quebrando palavras."""
     try:
         text = ""
-        # PDF
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
-                # .get_text("text") extrai na ordem visual e ignora formatação,
-                # o que ajuda a pegar erros como "*actose" juntos.
                 text += page.get_text("text") + "\n"
-        
-        # DOCX
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
             for para in doc.paragraphs: 
                 text += para.text + "\n"
-                
         return text
     except Exception as e:
         return ""
@@ -142,7 +118,7 @@ f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key=
 
 if st.button("🚀 Processar Conferência"):
     
-    # Tenta pegar as chaves do secrets (COM A KEY 3 ADICIONADA)
+    # 3 CHAVES API
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -159,9 +135,9 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 50 or len(t_mkt) < 50:
                 st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # PROMPT REFORÇADO PARA NÃO CORRIGIR ERROS
+            # PROMPT EXTREMO PARA CÓPIA SEM MODIFICAÇÃO
             prompt = f"""
-            Você é um Extrator de Dados Literais e "Burro" (no sentido de não corrigir nada).
+            Você é um Extrator de Dados Literais e "Burro" (no sentido de NÃO PENSAR, apenas COPIAR).
             
             INPUT:
             TEXTO 1 (REF): {t_anvisa[:100000]}
@@ -170,10 +146,14 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. Localize as seções da lista abaixo nos dois textos.
             2. Extraia o conteúdo EXATAMENTE como está escrito.
-            3. **IMPORTANTE:** Se o texto tiver erros de digitação, letras trocadas, símbolos estranhos (ex: "*actose", "Iactose", "*1"), MANTENHA O ERRO. 
-            4. NÃO CORRIJA O PORTUGUÊS. NÃO REMOVA SÍMBOLOS ESTRANHOS.
-            5. Copie o texto puro, sem formatação (sem tags HTML).
             
+            REGRA DE OURO - LEIA COM ATENÇÃO:
+            - **PROIBIDO CORRIGIR O PORTUGUÊS.**
+            - **PROIBIDO MUDAR PONTUAÇÃO.**
+            - **SE O TEXTO TIVER ERROS DE DIGITAÇÃO, MANTENHA O ERRO.**
+            - Exemplo: Se estiver escrito "Atençao" (sem til), copie "Atençao". Se estiver escrito "*actose", copie "*actose".
+            - Retorne o texto PURO, original e cru.
+
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
             SAÍDA JSON:
@@ -183,8 +163,8 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Conteúdo extraído da referência",
-                        "texto_mkt": "Conteúdo extraído do mkt (COM ERROS SE HOUVER)"
+                        "texto_anvisa": "Conteúdo original e não modificado",
+                        "texto_mkt": "Conteúdo original e não modificado (COM ERROS SE HOUVER)"
                     }}
                 ]
             }}
@@ -196,7 +176,6 @@ if st.button("🚀 Processar Conferência"):
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
-                    # Temperatura 0 para reduzir criatividade/alucinação
                     model = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
                     response = model.generate_content(prompt, request_options={'retry': None})
                     break 
@@ -220,13 +199,11 @@ if st.button("🚀 Processar Conferência"):
                         txt_ref = item.get('texto_anvisa', '').strip()
                         txt_mkt = item.get('texto_mkt', '').strip()
                         
-                        # Marca Data em Azul nos Dizeres Legais
                         if "DIZERES LEGAIS" in titulo.upper():
                             padrao_data = r"(\d{2}/\d{2}/\d{4})"
                             txt_ref = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_ref)
                             txt_mkt = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_mkt)
 
-                        # Comparação Matemática
                         html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         
                         if teve_diff:
@@ -242,7 +219,6 @@ if st.button("🚀 Processar Conferência"):
                             "status": status
                         })
 
-                    # --- EXIBIÇÃO ---
                     st.markdown("### 📊 Resumo da Conferência")
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Ref.", data_ref)
