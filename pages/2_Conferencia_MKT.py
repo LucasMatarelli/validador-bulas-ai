@@ -18,22 +18,37 @@ st.markdown("""
         font-family: 'Segoe UI', sans-serif;
         font-size: 0.95rem;
         line-height: 1.6;
-        color: #333;
+        color: #212529;
         background-color: #ffffff;
-        padding: 18px;
+        padding: 20px;
         border-radius: 8px;
-        border: 1px solid #e0e0e0;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        white-space: pre-wrap; 
-        text-align: justify;
+        border: 1px solid #ced4da;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        white-space: pre-wrap; /* ESSENCIAL PARA MANTER QUEBRA DE LINHA */
+        text-align: left;
     }
     
-    .highlight-yellow { background-color: #fff9c4; color: #000; padding: 2px 0; border: 1px solid #fbc02d; font-weight: bold; }
-    .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 4px; font-weight: bold; }
+    .highlight-yellow { 
+        background-color: #fff3cd; 
+        color: #856404; 
+        padding: 2px 4px; 
+        border-radius: 4px; 
+        border: 1px solid #ffeeba; 
+        font-weight: bold;
+    }
     
-    .border-ok { border-left: 6px solid #4caf50 !important; }
-    .border-warn { border-left: 6px solid #ff9800 !important; } 
-    .border-info { border-left: 6px solid #2196f3 !important; }
+    .highlight-blue { 
+        background-color: #d1ecf1; 
+        color: #0c5460; 
+        padding: 2px 4px; 
+        border-radius: 4px; 
+        border: 1px solid #bee5eb; 
+        font-weight: bold;
+    }
+    
+    .border-ok { border-left: 6px solid #28a745 !important; }
+    .border-warn { border-left: 6px solid #ffc107 !important; } 
+    .border-info { border-left: 6px solid #17a2b8 !important; }
 
     div[data-testid="stMetric"] {
         background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
@@ -42,9 +57,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
-MODELO_FIXO = "models/gemini-flash-latest"
+MODELO_FIXO = "models/gemini-1.5-flash"
 
-# ----------------- 3. FUNÇÕES AUXILIARES -----------------
+# ----------------- 3. FUNÇÕES AUXILIARES DE LIMPEZA E COMPARAÇÃO -----------------
+
+def limpar_ruido_visual(texto):
+    """Remove linhas pontilhadas longas (....) que atrapalham a comparação."""
+    if not texto: return ""
+    # Substitui sequências de 3 ou mais pontos/underlines por um espaço simples
+    texto = re.sub(r'[\._]{3,}', ' ', texto)
+    # Remove excesso de espaços
+    texto = re.sub(r'[ \t]+', ' ', texto)
+    return texto.strip()
+
 def normalizar_para_comparacao(texto):
     if not texto: return ""
     return unicodedata.normalize('NFKD', texto)
@@ -53,11 +78,16 @@ def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # Normalização leve
-    ref_norm = normalizar_para_comparacao(texto_ref)
-    novo_norm = normalizar_para_comparacao(texto_novo)
+    # TRUQUE: Substituir quebras de linha por um token especial para o diff não ignorá-las
+    TOKEN_QUEBRA = " [[BREAK]] "
+    
+    ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
+    novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
+    
+    # Normalização
+    ref_norm = normalizar_para_comparacao(ref_limpo)
+    novo_norm = normalizar_para_comparacao(novo_limpo)
 
-    # Split por espaços, mantendo a estrutura
     a = ref_norm.split()
     b = novo_norm.split()
     
@@ -66,30 +96,48 @@ def gerar_diff_html(texto_ref, texto_novo):
     eh_divergente = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        trecho_novo = " ".join(b[j1:j2])
+        trecho = b[j1:j2]
+        
+        # Reconstrói o texto
+        texto_trecho = " ".join(trecho)
+        
+        # Restaura a quebra de linha visual para o HTML
+        texto_trecho = texto_trecho.replace("[[BREAK]]", "\n")
         
         if tag == 'equal':
-            html_output.append(trecho_novo)
+            html_output.append(texto_trecho)
         elif tag == 'replace':
-            html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
-            eh_divergente = True
+            # Evita marcar apenas quebras de linha como erro
+            if texto_trecho.strip(): 
+                html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
+                eh_divergente = True
+            else:
+                html_output.append(texto_trecho)
         elif tag == 'insert':
-            html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
-            eh_divergente = True
+            if texto_trecho.strip():
+                html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
+                eh_divergente = True
+            else:
+                html_output.append(texto_trecho)
         elif tag == 'delete':
+            # Texto deletado conta como divergência, mas não mostramos para não poluir
             eh_divergente = True 
             
-    return " ".join(html_output), eh_divergente
+    # Junta tudo e garante que espaçamento fique bom
+    resultado_final = " ".join(html_output)
+    # Limpeza final de espaços ao redor das quebras HTML
+    resultado_final = resultado_final.replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
+    
+    return resultado_final, eh_divergente
 
-# ----------------- 4. EXTRAÇÃO DE TEXTO ESTRUTURADA (ATUALIZADA) -----------------
+# ----------------- 4. EXTRAÇÃO DE TEXTO -----------------
 def extract_text_from_file(uploaded_file):
-    """Extrai texto mantendo Negrito (<b>) e quebras de linha (\n) corretas."""
+    """Extrai texto preservando estrutura de listas."""
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
-                # Extração detalhada por blocos
                 blocks = page.get_text("dict", flags=11)["blocks"]
                 for b in blocks:
                     for l in b.get("lines", []):
@@ -97,13 +145,17 @@ def extract_text_from_file(uploaded_file):
                         for s in l.get("spans", []):
                             content = s["text"]
                             # Detecta negrito
-                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower() or "black" in s["font"].lower()
+                            font_props = s["font"].lower()
+                            is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
+                            
                             if is_bold:
                                 line_txt += f"<b>{content}</b>"
                             else:
                                 line_txt += content
-                        text += line_txt + "\n" # Quebra de linha visual
-                    text += "\n" # Quebra de parágrafo
+                        # Adiciona a linha ao texto com quebra
+                        text += line_txt + "\n"
+                    # Adiciona quebra extra entre blocos para separar parágrafos
+                    text += "\n"
                     
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
@@ -146,7 +198,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Extraindo textos e comparando..."):
+        with st.spinner("Extraindo textos e comparando com precisão..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
@@ -154,9 +206,9 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # Prompt ajustado para respeitar a formatação que acabamos de extrair
+            # PROMPT MELHORADO PARA LIMPEZA E ESTRUTURA
             prompt = f"""
-            Você é um Extrator de Dados Literais.
+            Você é um Extrator de Dados Farmacêuticos de Alta Precisão.
             
             INPUT TEXTO 1 (REF): 
             {t_anvisa[:120000]}
@@ -166,9 +218,10 @@ if st.button("🚀 Processar Conferência"):
 
             SUA MISSÃO:
             1. Localize as seções nos dois textos.
-            2. Extraia o conteúdo EXATAMENTE como está no input (com as tags <b> e quebras de linha).
-            3. NÃO CORRIJA O PORTUGUÊS. Mantenha erros, se houver.
-            4. Em listas, mantenha cada item em uma linha.
+            2. Extraia o conteúdo MANTENDO A ESTRUTURA VISUAL (quebras de linha).
+            3. Ignore linhas pontilhadas excessivas ("....") que servem apenas para alinhar preços ou colunas.
+            4. NÃO CORRIJA O PORTUGUÊS. Mantenha erros de digitação se houver.
+            5. Importante: Se houver uma lista (ex: Ingredientes, Dosagens), mantenha cada item em uma linha separada.
 
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
@@ -179,8 +232,8 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Texto fiel ao input com tags <b>",
-                        "texto_mkt": "Texto fiel ao input com tags <b>"
+                        "texto_anvisa": "Texto estruturado com tags <b> e \\n",
+                        "texto_mkt": "Texto estruturado com tags <b> e \\n"
                     }}
                 ]
             }}
@@ -214,10 +267,8 @@ if st.button("🚀 Processar Conferência"):
                         txt_ref = item.get('texto_anvisa', '').strip()
                         txt_mkt = item.get('texto_mkt', '').strip()
                         
-                        if "DIZERES LEGAIS" in titulo.upper():
-                            padrao_data = r"(\d{2}/\d{2}/\d{4})"
-                            txt_ref = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_ref)
-                            txt_mkt = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_mkt)
+                        # Removemos o highlight de data antigo para não conflitar com o diff novo
+                        # A data será comparada como texto normal agora, garantindo fidelidade
 
                         html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         
@@ -229,8 +280,8 @@ if st.button("🚀 Processar Conferência"):
                         
                         secoes_finais.append({
                             "titulo": titulo,
-                            "texto_anvisa": txt_ref,
-                            "texto_mkt": html_mkt,
+                            "texto_anvisa": txt_ref.replace('\n', '<br>'), # Para exibição correta no lado esquerdo também
+                            "texto_mkt": html_mkt.replace('\n', '<br>'),
                             "status": status
                         })
 
@@ -262,12 +313,15 @@ if st.button("🚀 Processar Conferência"):
                             col_esq, col_dir = st.columns(2)
                             with col_esq:
                                 st.caption("📜 Referência")
-                                st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
+                                # Usamos replace \n por <br> para garantir que o HTML obedeça a quebra
+                                txt_exibicao_ref = item["texto_anvisa"].replace("\n", "<br>")
+                                st.markdown(f'<div class="texto-box {css}">{txt_exibicao_ref}</div>', unsafe_allow_html=True)
                             with col_dir:
                                 st.caption("🎨 Validado")
-                                st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
+                                txt_exibicao_mkt = item["texto_mkt"].replace("\n", "<br>")
+                                st.markdown(f'<div class="texto-box {css}">{txt_exibicao_mkt}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"Erro JSON: {e}")
+                    st.error(f"Erro ao processar JSON: {e}")
     else:
         st.warning("Adicione os arquivos.")
