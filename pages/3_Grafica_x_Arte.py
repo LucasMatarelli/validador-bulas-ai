@@ -57,14 +57,13 @@ if st.button("🚀 Validar"):
             c1_content = process_file(f1)
             c2_content = process_file(f2)
             
-            # PROMPT PASSIVO
             prompt = f"""
-            ATUE COMO UM SOFTWARE DE OCR BURRO.
+            ATUE COMO OCR BURRO.
             LISTA: {json.dumps(SECOES, ensure_ascii=False)}
             REGRAS:
             1. COPIE O TEXTO VISUAL EXATO.
-            2. NÃO INVENTE PALAVRAS. Se não entender, escreva [ILEGIVEL].
-            3. Ignore pontilhados de tabelas ("....").
+            2. NÃO INVENTE PALAVRAS. Se não tiver nada, deixe vazio.
+            3. Ignore pontilhados "....".
             4. Use <b> para negrito.
             JSON: {{"data_anvisa_ref": "...", "data_anvisa_grafica": "...", "secoes": [{{"titulo": "...", "texto_arte": "...", "texto_grafica": "...", "status": "CONFORME"}}]}}
             """
@@ -92,7 +91,7 @@ if st.button("🚀 Validar"):
                 for i in res.get("secoes", []):
                     titulo = i.get('titulo', '')
                     
-                    # BLINDAGEM VISUAL: FORÇA CONFORME E TIRA ERROS
+                    # BLINDAGEM DE STATUS VISUAL
                     eh_isenta = any(x in titulo.upper() for x in secoes_isentas)
                     
                     if eh_isenta:
@@ -115,7 +114,6 @@ if st.button("🚀 Validar"):
                         ta = i.get("texto_arte", "")
                         tb = i.get("texto_grafica", "")
 
-                        # DATA AZUL SOMENTE EM DIZERES
                         if "DIZERES LEGAIS" in titulo.upper():
                             ta = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', ta)
                             tb = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', tb)
