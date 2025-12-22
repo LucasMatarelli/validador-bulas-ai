@@ -40,14 +40,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-MODELO_FIXO = "models/gemini-flash-latest"
+MODELO_FIXO = "models/gemini-1.5-flash"
 
 # ----------------- 2. FUNÇÕES -----------------
 def limpar_texto_profundo(texto):
     if not texto: return ""
     texto = unicodedata.normalize('NFKD', texto)
     texto = texto.replace('\u00a0', ' ').replace('\r', '')
-    texto = re.sub(r'[\._]{3,}', ' ', texto) 
+    # Remove pontilhados de tabelas
+    texto = re.sub(r'[\._]{4,}', ' ', texto) 
     texto = re.sub(r'[ \t]+', ' ', texto)
     return texto.strip()
 
@@ -64,15 +65,13 @@ def gerar_diff_html_red(texto_ref, texto_novo):
     ref_limpo = limpar_texto_profundo(texto_ref).replace('\n', TOKEN)
     novo_limpo = limpar_texto_profundo(texto_novo).replace('\n', TOKEN)
     
-    a = ref_limpo.split()
-    b = novo_limpo.split()
-    
-    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    # Compara palavra por palavra
+    matcher = difflib.SequenceMatcher(None, ref_limpo.split(), novo_limpo.split(), autojunk=False)
     output = []
     eh_divergente = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        trecho = " ".join(b[j1:j2]).replace("[[BR]]", "\n")
+        trecho = " ".join(novo_limpo.split()[j1:j2]).replace(TOKEN, "\n")
         
         if tag == 'equal':
             output.append(trecho)
@@ -86,6 +85,7 @@ def gerar_diff_html_red(texto_ref, texto_novo):
             eh_divergente = True
             
     final_html = " ".join(output).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
+    # Aplica Data Azul nas datas que sobraram no texto
     final_html = destacar_datas(final_html)
     return final_html, eh_divergente
 
@@ -95,6 +95,7 @@ def extract_text_from_file(uploaded_file):
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc:
+                # sort=True organiza colunas
                 blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
                 for b in blocks:
                     block_txt = ""
@@ -102,7 +103,9 @@ def extract_text_from_file(uploaded_file):
                         line_txt = ""
                         for s in l.get("spans", []):
                             c = s["text"]
-                            if (s["flags"] & 16) or "bold" in s["font"].lower(): line_txt += f"<b>{c}</b>"
+                            # Detecta negrito
+                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower()
+                            if is_bold: line_txt += f"<b>{c}</b>"
                             else: line_txt += c
                         block_txt += line_txt + " "
                     text += block_txt + "\n"
@@ -148,27 +151,30 @@ f1 = c1.file_uploader("📂 Referência", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📂 BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
+    # 3 CHAVES API
     keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     valid_keys = [k for k in keys if k]
     if not valid_keys: st.error("Sem chaves API."); st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando..."):
+        with st.spinner("Lendo arquivos e extraindo texto fiel..."):
             f1.seek(0); f2.seek(0)
             t_ref = extract_text_from_file(f1)
             t_bel = extract_text_from_file(f2)
 
             if len(t_ref) < 20: st.error("Arquivo Ref vazio."); st.stop()
 
+            # PROMPT DE OCR LITERAL
             prompt = f"""
-            Você é um Auditor Farmacêutico Rígido.
-            INPUT REF: {t_ref[:150000]}
-            INPUT BEL: {t_bel[:150000]}
+            Você é um SOFTWARE DE OCR LITERAL.
+            INPUT REF: {t_ref[:500000]}
+            INPUT BEL: {t_bel[:500000]}
             
             TAREFA:
-            1. Extraia o texto COMPLETO das seções abaixo. NÃO RESUMA.
-            2. Mantenha formatação (negrito <b>, quebras de linha).
-            3. Ignore pontilhados (....).
+            1. Extraia o texto COMPLETO das seções abaixo.
+            2. COPIE EXATAMENTE O QUE LÊ. Não invente palavras. Não corrija erros.
+            3. Mantenha as tags <b> (negrito) onde houver.
+            4. Se houver listas, mantenha quebra de linha.
             
             SEÇÕES: {secoes_ativas}
             
@@ -181,13 +187,18 @@ if st.button("🚀 Processar Conferência"):
             """
 
             resp = None
-            for k in valid_keys:
+            # Tenta as 3 chaves
+            for i, k in enumerate(valid_keys):
                 try:
                     genai.configure(api_key=k)
-                    model = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json"})
+                    model = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
                     resp = model.generate_content(prompt)
                     break
-                except: continue
+                except Exception as e:
+                    if i == len(valid_keys) - 1:
+                        st.error(f"Todas as chaves falharam: {e}")
+                        st.stop()
+                    continue
             
             if resp:
                 try:
@@ -203,27 +214,25 @@ if st.button("🚀 Processar Conferência"):
 
                     for item in lista:
                         tit = item.get("titulo", "").strip()
-                        tit_upper = tit.upper()
                         tr = item.get("texto_ref", "").strip()
                         tb = item.get("texto_belfar", "").strip()
                         
-                        eh_isenta = any(x in tit_upper for x in secoes_isentas)
+                        eh_isenta = any(x in tit.upper() for x in secoes_isentas)
                         
                         if eh_isenta:
-                            # Se é isenta, status sempre CONFORME e não roda diff vermelho
+                            # BLINDAGEM: SEMPRE CONFORME
                             status = "CONFORME"
                             
-                            # Tratamento para Dizeres Legais (Azul na data)
-                            if "DIZERES LEGAIS" in tit_upper:
+                            # Formatação apenas visual (sem vermelho)
+                            if "DIZERES LEGAIS" in tit.upper():
                                 html_ref = destacar_datas(tr.replace('\n', '<br>'))
                                 html_bel = destacar_datas(tb.replace('\n', '<br>'))
                             else:
-                                # Outras isentas (Apresentações/Composição): Texto puro limpo
                                 html_ref = tr.replace('\n', '<br>')
                                 html_bel = tb.replace('\n', '<br>')
                                 
                         else:
-                            # Seções normais: Roda o Diff Vermelho
+                            # SEÇÕES NORMAIS: DIFF VERMELHO
                             html_bel, is_diff = gerar_diff_html_red(tr, tb)
                             html_ref = destacar_datas(tr.replace('\n', '<br>'))
                             status = "DIVERGENTE" if is_diff else "CONFORME"
@@ -242,15 +251,11 @@ if st.button("🚀 Processar Conferência"):
                     c_b.metric("BELFAR", data_bel)
                     c_c.metric("Seções", len(final_list))
                     
-                    if err_count == 0: st.success("✅ Tudo Conforme")
-                    else: st.error(f"🚨 {err_count} Divergências Encontradas (Exceto Isentas)")
-
                     st.divider()
                     for it in final_list:
                         status = it["status"]
                         tit_show = it["titulo"]
                         
-                        # Definição de Ícones e Cores
                         if "DIZERES LEGAIS" in tit_show.upper():
                             icon = "⚖️"; css = "border-info"; aberto = False
                         elif any(x in tit_show.upper() for x in ["APRESENTAÇÕES", "COMPOSIÇÃO"]):
@@ -265,5 +270,5 @@ if st.button("🚀 Processar Conferência"):
                             cL.markdown(f'<div class="texto-box {css}">{it["ref_html"]}</div>', unsafe_allow_html=True)
                             cR.markdown(f'<div class="texto-box {css}">{it["bel_html"]}</div>', unsafe_allow_html=True)
 
-                except Exception as e: st.error(f"Erro JSON: {e}")
+                except Exception as e: st.error(f"Erro ao ler JSON: {e}")
     else: st.warning("Envie os arquivos.")
