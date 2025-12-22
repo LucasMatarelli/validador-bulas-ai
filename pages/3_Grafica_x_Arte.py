@@ -5,7 +5,7 @@ import fitz  # PyMuPDF
 import docx  # Para ler DOCX
 import io
 import json
-import re  # IMPORTANTE: Para limpeza de texto
+import re  # Para limpeza de texto
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
@@ -50,7 +50,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-flash-latest"
+MODELO_FIXO = "models/gemini-1.5-flash" # Forçando versão específica para garantir limite alto
 
 # ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
 def process_file_content(uploaded_file):
@@ -112,14 +112,13 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando... Lendo parágrafos completos e negritos..."):
+        with st.spinner("Processando textos longos... Isso pode levar alguns segundos..."):
             f1.seek(0)
             f2.seek(0)
             
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # --- PROMPT REFORÇADO PARA COMPLETUDE E NEGRITO ---
             prompt = f"""
             Você é um EXTRATOR FORENSE DE TEXTO FARMACÊUTICO.
             
@@ -127,18 +126,17 @@ if st.button("🚀 Validar"):
             TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}
 
             ⚠️ PROTOCOLO DE EXTRAÇÃO (CRUCIAL):
-            1. **INTEGRIDADE TOTAL:** Extraia TODO o texto de cada seção. Se o texto for longo, vá até o último ponto final. NÃO RESUMA. NÃO CORTE.
-            2. **NEGRITO VISUAL:** Se houver texto em **negrito** (headers, avisos, nomes), envolva-o na tag `<b>` e `</b>`.
-               - Exemplo: "<b>Hipertensão:</b> a dose inicial..."
+            1. **INTEGRIDADE TOTAL:** Extraia TODO o texto de cada seção. NÃO RESUMA. NÃO CORTE.
+            2. **NEGRITO VISUAL:** Se houver texto em **negrito** (headers, avisos), envolva-o na tag `<b>` e `</b>`.
             3. **LAYOUT PONTILHADO:** Ignore linhas de pontinhos longas (ex: "Cloridrato .......... 5mg"). Transcreva apenas "Cloridrato 5mg".
 
             ⚠️ PROTOCOLO DE JSON E ASPAS:
-            - NUNCA use aspas duplas (") dentro do conteúdo do texto sem escapá-las (\").
+            - NUNCA use aspas duplas (") dentro do texto sem escapá-las (\").
             - Para tags HTML, use aspas simples: <span class='highlight-yellow'>.
 
             🚨 COMPARAÇÃO:
-            - Se a Arte diz "X" e a Gráfica diz "Y", marque "Y" com <span class='highlight-yellow'>Y</span>.
-            - Se a Gráfica tiver palavras extras que não existem na Arte, marque as palavras extras.
+            - Compare ARTE vs GRÁFICA.
+            - Marque divergências na GRÁFICA com <span class='highlight-yellow'>TEXTO ERRADO</span>.
 
             SAÍDA JSON OBRIGATÓRIA:
             {{
@@ -147,8 +145,8 @@ if st.button("🚀 Validar"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto COMPLETO da arte (com <b>negritos</b>)",
-                        "texto_grafica": "Texto COMPLETO da gráfica (com <b>negritos</b> e <span class='highlight-yellow'>erros</span>)",
+                        "texto_arte": "Texto COMPLETO da arte",
+                        "texto_grafica": "Texto COMPLETO da gráfica",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
@@ -163,9 +161,14 @@ if st.button("🚀 Validar"):
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
+                    # --- CORREÇÃO AQUI: MAX OUTPUT TOKENS AUMENTADO PARA 16.000 ---
                     model = genai.GenerativeModel(
                         MODELO_FIXO, 
-                        generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                        generation_config={
+                            "response_mime_type": "application/json", 
+                            "temperature": 0.0,
+                            "max_output_tokens": 16000 # Isso impede que o texto corte no meio
+                        }
                     )
                     response = model.generate_content(payload)
                     break 
@@ -173,13 +176,17 @@ if st.button("🚀 Validar"):
                     ultimo_erro = str(e)
                     if i < len(keys_validas) - 1: continue
                     else:
-                        st.error(f"❌ Erro fatal: {ultimo_erro}")
+                        st.error(f"❌ Erro na API: {ultimo_erro}")
                         st.stop()
             
             if response:
                 try:
+                    # Verifica se o modelo parou por "Segurança" ou "Outros erros" antes de tentar ler
+                    if not response.parts:
+                        st.error(f"A IA bloqueou a resposta. Motivo: {response.prompt_feedback}")
+                        st.stop()
+
                     texto_limpo = response.text.replace("```json", "").replace("```", "").strip()
-                    # Remove excesso de pontinhos que trava o JSON
                     texto_limpo = re.sub(r'\.{4,}', '...', texto_limpo)
 
                     resultado = json.loads(texto_limpo, strict=False)
@@ -231,10 +238,10 @@ if st.button("🚀 Validar"):
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except json.JSONDecodeError as e:
-                    st.error(f"Erro JSON: {e}")
-                    st.warning("O documento é muito complexo. Tente novamente.")
+                    st.error("Erro: A resposta foi cortada ou veio inválida.")
+                    st.warning("Tente validar uma seção por vez se o documento for gigante.")
                 except Exception as e:
-                    st.error(f"Erro visual: {e}")
+                    st.error(f"Erro no processamento: {e}")
 
     else:
         st.warning("Adicione os arquivos.")
