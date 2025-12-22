@@ -43,7 +43,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-1.5-flash"
+MODELO_FIXO = "models/gemini-flash-latest"
 
 # ----------------- 3. FUNÇÃO DE COMPARAÇÃO INTELIGENTE -----------------
 def normalizar_para_comparacao(texto):
