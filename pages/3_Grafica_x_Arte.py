@@ -5,18 +5,15 @@ import fitz  # PyMuPDF
 import docx  # Para ler DOCX
 import io
 import json
+import re
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
-    /* --- ESCONDER MENU SUPERIOR (CONFORME SOLICITADO) --- */
-    [data-testid="stHeader"] {
-        visibility: hidden;
-    }
-
-    /* Caixas de Texto */
+    [data-testid="stHeader"] { visibility: hidden; }
+    
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
         font-size: 0.95rem;
@@ -28,30 +25,18 @@ st.markdown("""
         border: 1px solid #ced4da;
         height: 100%; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; /* Mantém parágrafos */
+        white-space: pre-wrap; 
         text-align: justify;
     }
 
-    /* Destaques Precisos */
-    .highlight-yellow { 
-        background-color: #fff3cd; color: #856404; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
-    }
-    .highlight-red { 
-        background-color: #f8d7da; color: #721c24; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; font-weight: bold; 
-    }
-    .highlight-blue { 
-        background-color: #d1ecf1; color: #0c5460; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
-    }
+    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
+    .highlight-red { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; font-weight: bold; }
+    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; }
 
-    /* Status das Bordas */
-    .border-ok { border-left: 6px solid #28a745 !important; }   /* Verde */
-    .border-warn { border-left: 6px solid #ffc107 !important; } /* Amarelo */
-    .border-info { border-left: 6px solid #17a2b8 !important; } /* Azul */
+    .border-ok { border-left: 6px solid #28a745 !important; }   
+    .border-warn { border-left: 6px solid #ffc107 !important; } 
+    .border-info { border-left: 6px solid #17a2b8 !important; } 
 
-    /* Métricas no Topo */
     div[data-testid="stMetric"] {
         background-color: #f8f9fa;
         border: 1px solid #dee2e6;
@@ -62,17 +47,35 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-flash-latest"
+# ----------------- 2. CONFIGURAÇÃO MODELO E SCHEMA -----------------
+# Fixar no 1.5 Flash para garantir suporte ao Schema
+MODELO_FIXO = "models/gemini-1.5-flash"
+
+# Definição estrita do JSON para evitar "Unterminated String"
+RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "data_anvisa_ref": {"type": "STRING"},
+        "data_anvisa_grafica": {"type": "STRING"},
+        "secoes": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "titulo": {"type": "STRING"},
+                    "texto_arte": {"type": "STRING"},
+                    "texto_grafica": {"type": "STRING"},
+                    "status": {"type": "STRING"}
+                },
+                "required": ["titulo", "texto_arte", "texto_grafica", "status"]
+            }
+        }
+    },
+    "required": ["data_anvisa_ref", "data_anvisa_grafica", "secoes"]
+}
 
 # ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
 def process_file_content(uploaded_file):
-    """
-    Lógica Híbrida:
-    1. Tenta extrair TEXTO puro do PDF.
-    2. Se não tiver texto (scan), converte para IMAGEM.
-    3. Se for DOCX, extrai texto direto.
-    """
     try:
         filename = uploaded_file.name.lower()
 
@@ -80,7 +83,6 @@ def process_file_content(uploaded_file):
         if filename.endswith(".pdf"):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             
-            # Tenta pegar texto digital primeiro
             full_text = ""
             has_digital_text = False
             
@@ -90,11 +92,8 @@ def process_file_content(uploaded_file):
                     has_digital_text = True
                 full_text += text + "\n"
             
-            # SE TIVER TEXTO DIGITAL
             if has_digital_text:
                 return [full_text]
-            
-            # SE NÃO TIVER TEXTO (É SCAN/IMAGEM)
             else:
                 images = []
                 for page in doc:
@@ -144,56 +143,31 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando... Priorizando texto original para evitar alucinações..."):
+        with st.spinner("Analisando documentos e validando textos..."):
             f1.seek(0)
             f2.seek(0)
             
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT FORENSE (ANTI-ALUCINAÇÃO)
             prompt = f"""
-            Você é um EXTRATOR FORENSE DE TEXTO. Sua função NÃO é interpretar, é TRANSCREVER E COMPARAR.
+            Você é um EXTRATOR FORENSE DE TEXTO.
             
             INPUT: Documentos farmacêuticos (Texto Digital ou Imagens).
             TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}
 
-            ⚠️ PROTOCOLO DE TOLERÂNCIA ZERO PARA ALUCINAÇÃO:
-            1. **VERBATIM (IPSIS LITTERIS):** Copie as palavras EXATAMENTE como estão.
-               - Se está escrito "fabricação", ESCREVA "fabricação". NÃO troque por "validade".
-               - Se está escrito "cirurgião", ESCREVA "cirurgião". NÃO adicione "do".
-            
-            2. **PROIBIDO CORRIGIR:** Não corrija gramática, não expanda abreviações, não adicione conectivos que não existem visualmente.
-            
-            3. **IGNORAR FORMATAÇÃO:** Ignore quebras de linha (`\\n`) ou espaços duplos. O foco é a SEQUÊNCIA DE PALAVRAS.
+            ⚠️ PROTOCOLO ANT-ALUCINAÇÃO:
+            1. COPIE O TEXTO EXATAMENTE COMO ESTÁ (IPSIS LITTERIS).
+            2. NÃO corrija erros de português encontrados na imagem.
+            3. Em "DIZERES LEGAIS", envolva a data da bula em <span class="highlight-blue">DATA</span> se encontrar.
 
-            🚨 REGRAS DE STATUS POR GRUPO:
+            REGRAS DE COMPARAÇÃO:
+            - Seções BLINDADAS (Status OBRIGATÓRIO "CONFORME"): "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS".
+            - Demais seções: Compare palavra por palavra.
+            - Divergência Real: Marque com <span class="highlight-yellow">TEXTO ERRADO</span>.
+            - Quebras de linha ou formatação não são divergências.
 
-            >>> GRUPO BLINDADO (SEM DIVERGÊNCIAS): 
-            [ "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS" ]
-            - Status OBRIGATÓRIO: "CONFORME".
-            - PROIBIDO usar highlight amarelo nestas seções.
-            - Apenas transcreva o texto original limpo.
-            - Exceção: Em "DIZERES LEGAIS", se encontrar uma data, envolva em <span class="highlight-blue">DATA</span>.
-
-            >>> GRUPO PADRÃO (TODAS AS OUTRAS SEÇÕES):
-            - Compare palavra por palavra.
-            - Diferença REAL (palavra trocada, número errado)? Marque <span class="highlight-yellow">TEXTO ERRADO</span>.
-            - Se a diferença for apenas layout/quebra de linha, considere IGUAL.
-
-            SAÍDA JSON:
-            {{
-                "data_anvisa_ref": "dd/mm/aaaa" (ou "Não encontrada"),
-                "data_anvisa_grafica": "dd/mm/aaaa" (ou "Não encontrada"),
-                "secoes": [
-                    {{
-                        "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto EXATO da arte",
-                        "texto_grafica": "Texto EXATO da gráfica (com highlights APENAS se permitido)",
-                        "status": "CONFORME" ou "DIVERGENTE"
-                    }}
-                ]
-            }}
+            IMPORTANTE: Retorne APENAS o JSON preenchido conforme o schema solicitado. Sem markdown, sem ```json.
             """
             
             payload = [prompt, "--- ARTE (REFERÊNCIA) ---"] + conteudo1 + ["--- GRÁFICA (VALIDAÇÃO) ---"] + conteudo2
@@ -201,13 +175,17 @@ if st.button("🚀 Validar"):
             response = None
             ultimo_erro = ""
 
-            # Loop de Chaves (Failover)
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
+                    # Configuração com SCHEMA para garantir JSON válido
                     model = genai.GenerativeModel(
                         MODELO_FIXO, 
-                        generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                        generation_config={
+                            "response_mime_type": "application/json", 
+                            "response_schema": RESPONSE_SCHEMA, # AQUI ESTÁ A CORREÇÃO
+                            "temperature": 0.0
+                        }
                     )
                     
                     response = model.generate_content(payload)
@@ -216,20 +194,20 @@ if st.button("🚀 Validar"):
                 except Exception as e:
                     ultimo_erro = str(e)
                     if i < len(keys_validas) - 1:
-                        st.warning(f"⚠️ Chave {i+1} falhou. Trocando para Chave {i+2}...")
                         continue
                     else:
-                        st.error(f"❌ Erro fatal: {ultimo_erro}")
+                        st.error(f"❌ Erro na API: {ultimo_erro}")
                         st.stop()
             
             if response:
                 try:
-                    # --- CORREÇÃO DO ERRO DE JSON AQUI ---
-                    # Remove blocos markdown caso a IA coloque ```json ... ```
-                    texto_limpo = response.text.replace("```json", "").replace("```", "").strip()
+                    # O response.text com schema já vem limpo, mas garantimos:
+                    texto_limpo = response.text.strip()
+                    # Remove possíveis sobras de markdown se o modelo ignorar (raro com schema)
+                    if texto_limpo.startswith("```json"):
+                        texto_limpo = texto_limpo[7:-3]
                     
-                    # strict=False é o segredo para aceitar caracteres de controle
-                    resultado = json.loads(texto_limpo, strict=False)
+                    resultado = json.loads(texto_limpo)
                     
                     data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
                     data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
@@ -279,9 +257,13 @@ if st.button("🚀 Validar"):
                                 st.caption("Validação (Gráfica)")
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
+                except json.JSONDecodeError as e:
+                    st.error(f"Erro ao interpretar o JSON retornado: {e}")
+                    # Mostra o texto cru para debug se der erro
+                    with st.expander("Ver JSON cru (Debug)"):
+                        st.code(response.text)
                 except Exception as e:
-                    st.error(f"Erro no processamento: {e}")
-                    st.warning("Tente novamente.")
+                    st.error(f"Erro no processamento dos dados: {e}")
 
     else:
         st.warning("Adicione os arquivos.")
