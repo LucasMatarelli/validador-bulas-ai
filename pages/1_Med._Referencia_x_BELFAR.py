@@ -10,10 +10,8 @@ st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", lay
 
 st.markdown("""
 <style>
-    /* --- ESCONDER MENU SUPERIOR (CONFORME SOLICITADO) --- */
-    [data-testid="stHeader"] {
-        visibility: hidden;
-    }
+    /* --- ESCONDER MENU SUPERIOR --- */
+    [data-testid="stHeader"] { visibility: hidden; }
 
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
@@ -37,11 +35,7 @@ st.markdown("""
     .border-info { border-left: 6px solid #2196f3 !important; }
     
     div[data-testid="stMetric"] {
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
-        padding: 10px;
-        border-radius: 5px;
-        text-align: center;
+        background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -57,13 +51,11 @@ def extract_text_from_file(uploaded_file):
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc:
-                # Usa 'dict' para acessar spans e fontes
                 blocks = page.get_text("dict", flags=11)["blocks"]
                 for b in blocks:
                     for l in b.get("lines", []):
                         for s in l.get("spans", []):
                             content = s["text"]
-                            # Detecta negrito via flag (16) ou nome da fonte
                             is_bold = (s["flags"] & 16) or "bold" in s["font"].lower() or "black" in s["font"].lower()
                             if is_bold:
                                 text += f"<b>{content}</b>"
@@ -115,12 +107,11 @@ lista_secoes_ativa = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROF
 st.divider()
 
 c1, c2 = st.columns(2)
-# Agora aceita PDF e DOCX
 f1 = c1.file_uploader("📂 Arquivo Referência", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📂 Arquivo BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    # ADICIONADA A KEY 3 AQUI
+    # 3 CHAVES API
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -130,21 +121,18 @@ if st.button("🚀 Processar Conferência"):
 
     if f1 and f2:
         with st.spinner("Processando Inteligência Artificial..."):
-            # Reseta ponteiros
             f1.seek(0)
             f2.seek(0)
             
-            # Chama a função nova que lê os dois tipos com negrito
             t_ref = extract_text_from_file(f1)
             t_belfar = extract_text_from_file(f2)
 
             if len(t_ref) < 50 or len(t_belfar) < 50:
-                st.error("Erro: Arquivo vazio ou ilegível (talvez seja imagem sem OCR ou DOCX corrompido).")
-                st.stop()
+                st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # --- PROMPT MANTIDO (COM PEQUENA ADIÇÃO PARA MANTER TAGS) ---
+            # --- PROMPT REFORÇADO PARA MANTER CONTEÚDO ORIGINAL ---
             prompt = f"""
-            Você é um Auditor de Qualidade Farmacêutica Rígido, mas justo.
+            Você é um Auditor de Qualidade Farmacêutica Rígido.
             
             INPUT TEXTO REFERÊNCIA:
             {t_ref} 
@@ -152,13 +140,11 @@ if st.button("🚀 Processar Conferência"):
             INPUT TEXTO BELFAR:
             {t_belfar}
 
-            SUA TAREFA:
-            1. Para cada seção listada, extraia o texto correspondente.
-            2. **REGRA DE OURO (ANTI-ALUCINAÇÃO):** O arquivo original pode ter quebras de linha (`\\n`) em lugares diferentes do novo (especialmente se um for DOCX e outro PDF). Isso NÃO é uma diferença.
-               - Antes de comparar, remova mentalmente todas as quebras de linha e espaços extras.
-               - Se a SEQUÊNCIA DE PALAVRAS for a mesma, o texto é **CONFORME**.
-               - Só marque DIVERGENTE se houver palavras diferentes, números diferentes ou frases faltando.
-            3. **IMPORTANTE:** Se houver tags HTML de negrito (<b>...</b>) no texto extraído, MANTENHA-AS na saída JSON para que o usuário veja o negrito.
+            SUA TAREFA PRINCIPAL: EXTRAÇÃO FIEL E ORIGINAL.
+            1. Para cada seção listada, extraia o texto.
+            2. **PROIBIDO ALTERAR O TEXTO.** Não corrija gramática, não mude palavras, não altere números.
+            3. Se o arquivo original tiver erros, O TEXTO EXTRAÍDO DEVE TER OS MESMOS ERROS.
+            4. Se houver tags HTML de negrito (<b>...</b>), MANTENHA-AS na saída.
 
             LISTA DE SEÇÕES: {lista_secoes_ativa}
 
@@ -166,15 +152,14 @@ if st.button("🚀 Processar Conferência"):
             
             CASO 1: Seções "APRESENTAÇÕES", "COMPOSIÇÃO" e "DIZERES LEGAIS":
                - Status SEMPRE "CONFORME".
-               - NÃO use highlight amarelo.
-               - Apenas transcreva o texto limpo (parágrafos unidos).
+               - Apenas transcreva o texto limpo, SEM MODIFICAÇÕES.
                - Exceção: Destaque a Data da Anvisa em "DIZERES LEGAIS" com <span class="highlight-blue">DATA</span>.
 
             CASO 2: TODAS AS OUTRAS SEÇÕES:
                - Compare a sequência de palavras.
-               - Se for IDÊNTICO (ignorando quebra de linha): Status "CONFORME", sem highlight.
-               - Se for DIFERENTE: Status "DIVERGENTE". Use <span class="highlight-yellow">TRECHO NOVO/ALTERADO</span> apenas na parte que mudou.
-               - Erros graves de PT: <span class="highlight-red">ERRO</span>.
+               - Se for IDÊNTICO (ignorando quebra de linha): Status "CONFORME".
+               - Se for DIFERENTE: Status "DIVERGENTE". Use <span class="highlight-yellow">TRECHO NOVO/ALTERADO</span>.
+               - Mantenha o texto extraído original, mesmo se tiver erros de português.
 
             SAÍDA JSON OBRIGATÓRIA:
             {{
@@ -183,8 +168,8 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_ref": "Texto completo da Referência (sem cortar o final)",
-                        "texto_belfar": "Texto completo da Belfar",
+                        "texto_ref": "Texto completo original e sem correções",
+                        "texto_belfar": "Texto completo original e sem correções",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
