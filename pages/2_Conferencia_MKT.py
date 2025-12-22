@@ -27,13 +27,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-MODELO_FIXO = "models/gemini-flash-latest"
+MODELO_FIXO = "models/gemini-1.5-flash"
 
 def limpar_texto(texto):
     if not texto: return ""
     texto = unicodedata.normalize('NFKD', texto)
     texto = texto.replace('\u00a0', ' ').replace('\r', '')
-    texto = re.sub(r'[\._]{3,}', ' ', texto) 
+    texto = re.sub(r'[\._]{4,}', ' ', texto) 
     texto = re.sub(r'[ \t]+', ' ', texto)
     return texto.strip()
 
@@ -113,20 +113,21 @@ if st.button("🚀 Processar"):
             
             prompt = f"""
             Você é um Auditor.
-            INPUT 1: {tr[:150000]}
-            INPUT 2: {tm[:150000]}
-            TAREFA: Extraia o texto COMPLETO das seções abaixo. NÃO RESUMA.
+            INPUT 1: {tr[:500000]}
+            INPUT 2: {tm[:500000]}
+            TAREFA: Extraia o texto COMPLETO (OCR literal). Mantenha negrito e estrutura.
             SEÇÕES: ["APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", "DIZERES LEGAIS"]
             JSON: {{"data_anvisa_ref": "...", "data_anvisa_mkt": "...", "secoes": [{{"titulo": "...", "texto_anvisa": "...", "texto_mkt": "..."}}]}}
             """
             
-            for k in valid:
+            res = None
+            for i, k in enumerate(valid):
                 try:
                     genai.configure(api_key=k)
                     mod = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json"})
                     res = mod.generate_content(prompt)
                     break
-                except: continue
+                except Exception as e: continue
                 
             if res:
                 try:
@@ -179,3 +180,4 @@ if st.button("🚀 Processar"):
                             ca.markdown(f'<div class="texto-box {css}">{i["tr"]}</div>', unsafe_allow_html=True)
                             cb.markdown(f'<div class="texto-box {css}">{i["tm"]}</div>', unsafe_allow_html=True)
                 except Exception as e: st.error(str(e))
+    else: st.warning("Envie arquivos.")
