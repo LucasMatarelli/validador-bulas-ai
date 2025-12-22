@@ -57,7 +57,6 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
 ]
 
-# A LISTA EXATA QUE VOCÊ PEDIU
 SECOES_OBRIGATORIAS = [
     "APRESENTAÇÕES", 
     "COMPOSIÇÃO", 
@@ -113,7 +112,6 @@ def reparar_json_quebrado(texto_json):
                 try: return json.loads(texto_limpo + t, strict=False)
                 except: continue
         
-        # Tentativa de recuperar objetos parciais (Regex para salvar o que deu pra ler)
         objetos = re.findall(r'\{[^{}]*"titulo"[^{}]*\}', texto_limpo, re.DOTALL)
         if objetos:
             novo_json = '{"secoes": [' + ','.join(objetos) + ']}'
@@ -131,7 +129,7 @@ f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png", "docx"
 
 if st.button("🚀 Validar"):
     
-    # ADICIONADA A KEY 3 AQUI
+    # 3 CHAVES API
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -149,7 +147,7 @@ if st.button("🚀 Validar"):
         conteudo1 = process_file_content(f1)
         conteudo2 = process_file_content(f2)
         
-        # --- PROMPT "ANTI-PREGUIÇA" ---
+        # --- PROMPT REFORÇADO PARA CÓPIA EXATA ---
         prompt_base = f"""
         ATUE COMO UM AUDITOR FARMACÊUTICO RÍGIDO.
         
@@ -158,12 +156,18 @@ if st.button("🚀 Validar"):
         VOCÊ É OBRIGADO A ITERAR SOBRE ESTA LISTA DE SEÇÕES, UMA POR UMA. NÃO PULE NENHUMA:
         {json.dumps(SECOES_OBRIGATORIAS, ensure_ascii=False)}
 
+        REGRAS ABSOLUTAS DE EXTRAÇÃO (IMPORTANTE):
+        1. EXTRAIA O TEXTO ORIGINAL EXATAMENTE COMO ESTÁ NOS DOCUMENTOS.
+        2. NÃO CORRIJA ERROS DE PORTUGUÊS.
+        3. NÃO CORRIJA PONTUAÇÃO.
+        4. NÃO MODIFIQUE NADA. COPIE "IPSIS LITTERIS" (LETRA POR LETRA).
+        5. Se houver um erro no texto original, MANTENHA O ERRO NO JSON.
+        6. NÃO RESUMA.
+
         REGRAS DE EXECUÇÃO:
         1. Para CADA item da lista acima, procure o texto correspondente nos documentos.
-        2. Se encontrar o título (ex: "COMPOSIÇÃO"), copie TODO o texto abaixo dele até o próximo título.
-        3. Se não encontrar uma seção específica, você DEVE retornar um objeto com status "NÃO ENCONTRADO".
-        4. NÃO RESUMA. Copie ipsis litteris.
-        5. Ignore linhas pontilhadas ("....").
+        2. Copie TODO o texto abaixo do título até o próximo.
+        3. Se não encontrar uma seção específica, retorne status "NÃO ENCONTRADO".
         
         SAÍDA JSON OBRIGATÓRIA:
         {{
@@ -172,8 +176,8 @@ if st.button("🚀 Validar"):
             "secoes": [
                 {{
                     "titulo": "NOME DA SEÇÃO DA LISTA",
-                    "texto_arte": "Texto completo...",
-                    "texto_grafica": "Texto completo...",
+                    "texto_arte": "Cópia exata e sem modificações...",
+                    "texto_grafica": "Cópia exata e sem modificações...",
                     "status": "CONFORME" ou "DIVERGENTE" ou "NÃO ENCONTRADO"
                 }}
             ]
@@ -216,7 +220,6 @@ if st.button("🚀 Validar"):
                     resultado = reparar_json_quebrado(texto_raw)
                     secoes = resultado.get("secoes", [])
 
-                    # TRAVA DE SEGURANÇA: Se retornou menos de 3 seções, o modelo foi preguiçoso. Tenta o próximo.
                     if len(secoes) < 3: 
                         erros_log.append(f"{model_name}: Retornou apenas {len(secoes)} seções (Incompleto).")
                         continue 
@@ -246,7 +249,6 @@ if st.button("🚀 Validar"):
                 k2.metric("Data Gráfica", data_graf)
                 k3.metric("Seções Encontradas", len(secoes))
 
-                # Contagem real de divergências
                 div_count = sum(1 for s in secoes if s.get('status') not in ['CONFORME', 'NÃO ENCONTRADO'])
                 
                 if div_count == 0:
