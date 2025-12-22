@@ -65,7 +65,8 @@ def gerar_diff_red(ref, novo):
         elif tag == 'delete': diff = True
             
     final = " ".join(out).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
-    return destacar_datas(final), diff
+    final = destacar_datas(final)
+    return final, diff
 
 def extract_text(uploaded):
     try:
@@ -132,11 +133,30 @@ if st.button("🚀 Processar"):
                     j = json.loads(res.text)
                     final = []
                     errs = 0
+                    secoes_isentas = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+
                     for s in j.get("secoes", []):
-                        hr, diff = gerar_diff_red(s["texto_anvisa"], s["texto_mkt"])
-                        status = "DIVERGENTE" if diff else "CONFORME"
-                        if diff: errs += 1
-                        final.append({"t": s["titulo"], "tr": destacar_datas(s["texto_anvisa"].replace('\n', '<br>')), "tm": hr.replace('\n', '<br>'), "s": status})
+                        tit = s["titulo"]
+                        txt_r = s["texto_anvisa"]
+                        txt_m = s["texto_mkt"]
+                        
+                        eh_isenta = any(x in tit.upper() for x in secoes_isentas)
+                        
+                        if eh_isenta:
+                            status = "CONFORME"
+                            if "DIZERES LEGAIS" in tit.upper():
+                                html_r = destacar_datas(txt_r.replace('\n', '<br>'))
+                                html_m = destacar_datas(txt_m.replace('\n', '<br>'))
+                            else:
+                                html_r = txt_r.replace('\n', '<br>')
+                                html_m = txt_m.replace('\n', '<br>')
+                        else:
+                            html_m, diff = gerar_diff_red(txt_r, txt_m)
+                            html_r = destacar_datas(txt_r.replace('\n', '<br>'))
+                            status = "DIVERGENTE" if diff else "CONFORME"
+                            if diff: errs += 1
+                        
+                        final.append({"t": tit, "tr": html_r, "tm": html_m.replace('\n', '<br>'), "s": status})
                     
                     st.markdown("### Resumo")
                     c_x, c_y, c_z = st.columns(3)
@@ -145,8 +165,16 @@ if st.button("🚀 Processar"):
                     c_z.metric("Erros", errs)
                     
                     for i in final:
-                        css = "border-warn" if i["s"] == "DIVERGENTE" else "border-ok"
-                        with st.expander(f"{'⚠️' if i['s']=='DIVERGENTE' else '✅'} {i['t']}", expanded=(i["s"]=="DIVERGENTE")):
+                        if "DIZERES LEGAIS" in i['t'].upper():
+                             css = "border-info"; icon = "⚖️"; ab = False
+                        elif any(x in i['t'].upper() for x in ["APRESENTAÇÕES", "COMPOSIÇÃO"]):
+                             css = "border-info"; icon = "📋"; ab = False
+                        elif i["s"] == "DIVERGENTE":
+                             css = "border-warn"; icon = "⚠️"; ab = True
+                        else:
+                             css = "border-ok"; icon = "✅"; ab = False
+
+                        with st.expander(f"{icon} {i['t']}", expanded=ab):
                             ca, cb = st.columns(2)
                             ca.markdown(f'<div class="texto-box {css}">{i["tr"]}</div>', unsafe_allow_html=True)
                             cb.markdown(f'<div class="texto-box {css}">{i["tm"]}</div>', unsafe_allow_html=True)
