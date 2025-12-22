@@ -27,14 +27,11 @@ st.markdown("""
         white-space: pre-wrap;
         text-align: justify;
     }
-    /* MUDANÇA: Divergência agora é VERMELHA */
     .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 4px; border: 1px solid #e57373; font-weight: bold; }
-    
-    /* MUDANÇA: Data Azul */
     .highlight-blue { background-color: #e3f2fd; color: #0d47a1; padding: 2px 6px; border-radius: 12px; border: 1px solid #2196f3; font-weight: bold; }
     
     .border-ok { border-left: 6px solid #4caf50 !important; }
-    .border-warn { border-left: 6px solid #f44336 !important; } /* Vermelho para alerta */
+    .border-warn { border-left: 6px solid #f44336 !important; }
     .border-info { border-left: 6px solid #2196f3 !important; }
     
     div[data-testid="stMetric"] {
@@ -45,32 +42,24 @@ st.markdown("""
 
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 2. FUNÇÕES DE LIMPEZA E COMPARAÇÃO -----------------
-
+# ----------------- 2. FUNÇÕES -----------------
 def limpar_texto_profundo(texto):
-    """Remove caracteres invisíveis que causam falsos positivos."""
     if not texto: return ""
-    # Normaliza unicode
     texto = unicodedata.normalize('NFKD', texto)
-    # Remove espaços não quebráveis e pontilhados
     texto = texto.replace('\u00a0', ' ').replace('\r', '')
-    texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove .... e ____
-    texto = re.sub(r'[ \t]+', ' ', texto) # Remove espaços duplos
+    texto = re.sub(r'[\._]{3,}', ' ', texto) 
+    texto = re.sub(r'[ \t]+', ' ', texto)
     return texto.strip()
 
 def destacar_datas(html_texto):
-    """Pinta datas de azul, mas CUIDADO para não quebrar tags HTML já existentes."""
-    # Regex busca datas dd/mm/aaaa que NÃO estejam dentro de tags HTML
-    # Simplificação: Aplicamos apenas se o texto não for um diff complexo
+    """Pinta datas de azul."""
     padrao = r'(?<!\d)(\d{2}/\d{2}/\d{4})(?!\d)'
     return re.sub(padrao, r'<span class="highlight-blue">\1</span>', html_texto)
 
 def gerar_diff_html_red(texto_ref, texto_novo):
-    """Gera diff com destaque VERMELHO para erros."""
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # Truque do Token de Quebra para manter parágrafos
     TOKEN = " [[BR]] "
     ref_limpo = limpar_texto_profundo(texto_ref).replace('\n', TOKEN)
     novo_limpo = limpar_texto_profundo(texto_novo).replace('\n', TOKEN)
@@ -87,42 +76,34 @@ def gerar_diff_html_red(texto_ref, texto_novo):
         
         if tag == 'equal':
             output.append(trecho)
-        elif tag == 'replace' or tag == 'insert':
+        elif tag in ['replace', 'insert']:
             if trecho.strip():
-                # AQUI: MUDANÇA PARA RED
                 output.append(f'<span class="highlight-red">{trecho}</span>')
                 eh_divergente = True
             else:
                 output.append(trecho)
         elif tag == 'delete':
-            eh_divergente = True # Texto faltando conta como erro
+            eh_divergente = True
             
     final_html = " ".join(output).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
-    
-    # Aplica o azul nas datas DEPOIS do diff (apenas nas partes "equal" ou "replace")
     final_html = destacar_datas(final_html)
-    
     return final_html, eh_divergente
 
-# ----------------- 3. EXTRAÇÃO (COLUNAS + LIMPEZA) -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc:
-                # sort=True é CRUCIAL para ler colunas corretamente
                 blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
                 for b in blocks:
                     block_txt = ""
                     for l in b.get("lines", []):
                         line_txt = ""
                         for s in l.get("spans", []):
-                            content = s["text"]
-                            font = s["font"].lower()
-                            is_bold = (s["flags"] & 16) or "bold" in font or "black" in font
-                            if is_bold: line_txt += f"<b>{content}</b>"
-                            else: line_txt += content
+                            c = s["text"]
+                            if (s["flags"] & 16) or "bold" in s["font"].lower(): line_txt += f"<b>{c}</b>"
+                            else: line_txt += c
                         block_txt += line_txt + " "
                     text += block_txt + "\n"
         elif uploaded_file.name.lower().endswith('.docx'):
@@ -136,7 +117,7 @@ def extract_text_from_file(uploaded_file):
         return limpar_texto_profundo(text)
     except: return ""
 
-# ----------------- 4. CONFIGURAÇÃO -----------------
+# ----------------- 3. CONFIGURAÇÃO SEÇÕES -----------------
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -155,7 +136,7 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-# ----------------- 5. UI PRINCIPAL -----------------
+# ----------------- 4. UI PRINCIPAL -----------------
 st.title("💊 Med. Referência x BELFAR")
 
 tipo = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True)
@@ -218,22 +199,41 @@ if st.button("🚀 Processar Conferência"):
                     final_list = []
                     err_count = 0
 
+                    secoes_isentas = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+
                     for item in lista:
-                        tit = item.get("titulo", "")
+                        tit = item.get("titulo", "").strip()
+                        tit_upper = tit.upper()
                         tr = item.get("texto_ref", "").strip()
                         tb = item.get("texto_belfar", "").strip()
-
-                        # Gera Diff com Vermelho e Data Azul
-                        html_bel, is_diff = gerar_diff_html_red(tr, tb)
                         
-                        # Data na referência também precisa ficar azul
-                        html_ref = destacar_datas(tr.replace('\n', '<br>'))
+                        eh_isenta = any(x in tit_upper for x in secoes_isentas)
                         
-                        status = "DIVERGENTE" if is_diff else "CONFORME"
-                        if is_diff: err_count += 1
+                        if eh_isenta:
+                            # Se é isenta, status sempre CONFORME e não roda diff vermelho
+                            status = "CONFORME"
+                            
+                            # Tratamento para Dizeres Legais (Azul na data)
+                            if "DIZERES LEGAIS" in tit_upper:
+                                html_ref = destacar_datas(tr.replace('\n', '<br>'))
+                                html_bel = destacar_datas(tb.replace('\n', '<br>'))
+                            else:
+                                # Outras isentas (Apresentações/Composição): Texto puro limpo
+                                html_ref = tr.replace('\n', '<br>')
+                                html_bel = tb.replace('\n', '<br>')
+                                
+                        else:
+                            # Seções normais: Roda o Diff Vermelho
+                            html_bel, is_diff = gerar_diff_html_red(tr, tb)
+                            html_ref = destacar_datas(tr.replace('\n', '<br>'))
+                            status = "DIVERGENTE" if is_diff else "CONFORME"
+                            if is_diff: err_count += 1
                         
                         final_list.append({
-                            "titulo": tit, "ref_html": html_ref, "bel_html": html_bel.replace('\n', '<br>'), "status": status
+                            "titulo": tit, 
+                            "ref_html": html_ref, 
+                            "bel_html": html_bel.replace('\n', '<br>'), 
+                            "status": status
                         })
 
                     st.markdown("### 📊 Resumo")
@@ -243,15 +243,24 @@ if st.button("🚀 Processar Conferência"):
                     c_c.metric("Seções", len(final_list))
                     
                     if err_count == 0: st.success("✅ Tudo Conforme")
-                    else: st.error(f"🚨 {err_count} Divergências Encontradas")
+                    else: st.error(f"🚨 {err_count} Divergências Encontradas (Exceto Isentas)")
 
                     st.divider()
                     for it in final_list:
-                        css = "border-warn" if it["status"] == "DIVERGENTE" else "border-ok"
-                        icon = "⚠️" if it["status"] == "DIVERGENTE" else "✅"
-                        if "DIZERES" in it["titulo"].upper(): css = "border-info"; icon = "⚖️"
+                        status = it["status"]
+                        tit_show = it["titulo"]
+                        
+                        # Definição de Ícones e Cores
+                        if "DIZERES LEGAIS" in tit_show.upper():
+                            icon = "⚖️"; css = "border-info"; aberto = False
+                        elif any(x in tit_show.upper() for x in ["APRESENTAÇÕES", "COMPOSIÇÃO"]):
+                            icon = "📋"; css = "border-info"; aberto = False
+                        elif status == "DIVERGENTE":
+                            icon = "⚠️"; css = "border-warn"; aberto = True
+                        else:
+                            icon = "✅"; css = "border-ok"; aberto = False
 
-                        with st.expander(f"{icon} {it['titulo']}", expanded=(it["status"]=="DIVERGENTE")):
+                        with st.expander(f"{icon} {tit_show}", expanded=aberto):
                             cL, cR = st.columns(2)
                             cL.markdown(f'<div class="texto-box {css}">{it["ref_html"]}</div>', unsafe_allow_html=True)
                             cR.markdown(f'<div class="texto-box {css}">{it["bel_html"]}</div>', unsafe_allow_html=True)
