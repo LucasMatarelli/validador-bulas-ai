@@ -4,6 +4,8 @@ import fitz  # PyMuPDF
 import docx
 import json
 import re
+import unicodedata
+import difflib
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
@@ -25,11 +27,14 @@ st.markdown("""
         white-space: pre-wrap;
         text-align: justify;
     }
-    .highlight-yellow { background-color: #fff9c4; color: #000; padding: 2px 4px; border-radius: 4px; border: 1px solid #fbc02d; }
-    .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 4px; border-radius: 4px; border: 1px solid #1976d2; font-weight: bold; }
+    /* MUDANÇA: Divergência agora é VERMELHA */
+    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 4px; border: 1px solid #e57373; font-weight: bold; }
+    
+    /* MUDANÇA: Data Azul */
+    .highlight-blue { background-color: #e3f2fd; color: #0d47a1; padding: 2px 6px; border-radius: 12px; border: 1px solid #2196f3; font-weight: bold; }
     
     .border-ok { border-left: 6px solid #4caf50 !important; }
-    .border-warn { border-left: 6px solid #ff9800 !important; }
+    .border-warn { border-left: 6px solid #f44336 !important; } /* Vermelho para alerta */
     .border-info { border-left: 6px solid #2196f3 !important; }
     
     div[data-testid="stMetric"] {
@@ -38,62 +43,100 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO INTELIGENTE (COLUNAS E LIMPEZA) -----------------
-def clean_text_noise(text):
-    """Remove pontilhados (....) usados para tabulação em bulas."""
-    # Remove sequências de 3 ou mais pontos ou underlines
-    text = re.sub(r'\.{3,}', ' ', text)
-    text = re.sub(r'_{3,}', ' ', text)
-    return text
+# ----------------- 2. FUNÇÕES DE LIMPEZA E COMPARAÇÃO -----------------
 
+def limpar_texto_profundo(texto):
+    """Remove caracteres invisíveis que causam falsos positivos."""
+    if not texto: return ""
+    # Normaliza unicode
+    texto = unicodedata.normalize('NFKD', texto)
+    # Remove espaços não quebráveis e pontilhados
+    texto = texto.replace('\u00a0', ' ').replace('\r', '')
+    texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove .... e ____
+    texto = re.sub(r'[ \t]+', ' ', texto) # Remove espaços duplos
+    return texto.strip()
+
+def destacar_datas(html_texto):
+    """Pinta datas de azul, mas CUIDADO para não quebrar tags HTML já existentes."""
+    # Regex busca datas dd/mm/aaaa que NÃO estejam dentro de tags HTML
+    # Simplificação: Aplicamos apenas se o texto não for um diff complexo
+    padrao = r'(?<!\d)(\d{2}/\d{2}/\d{4})(?!\d)'
+    return re.sub(padrao, r'<span class="highlight-blue">\1</span>', html_texto)
+
+def gerar_diff_html_red(texto_ref, texto_novo):
+    """Gera diff com destaque VERMELHO para erros."""
+    if not texto_ref: texto_ref = ""
+    if not texto_novo: texto_novo = ""
+    
+    # Truque do Token de Quebra para manter parágrafos
+    TOKEN = " [[BR]] "
+    ref_limpo = limpar_texto_profundo(texto_ref).replace('\n', TOKEN)
+    novo_limpo = limpar_texto_profundo(texto_novo).replace('\n', TOKEN)
+    
+    a = ref_limpo.split()
+    b = novo_limpo.split()
+    
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    output = []
+    eh_divergente = False
+    
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        trecho = " ".join(b[j1:j2]).replace("[[BR]]", "\n")
+        
+        if tag == 'equal':
+            output.append(trecho)
+        elif tag == 'replace' or tag == 'insert':
+            if trecho.strip():
+                # AQUI: MUDANÇA PARA RED
+                output.append(f'<span class="highlight-red">{trecho}</span>')
+                eh_divergente = True
+            else:
+                output.append(trecho)
+        elif tag == 'delete':
+            eh_divergente = True # Texto faltando conta como erro
+            
+    final_html = " ".join(output).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
+    
+    # Aplica o azul nas datas DEPOIS do diff (apenas nas partes "equal" ou "replace")
+    final_html = destacar_datas(final_html)
+    
+    return final_html, eh_divergente
+
+# ----------------- 3. EXTRAÇÃO (COLUNAS + LIMPEZA) -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
-        # PDF: USAR sort=True É ESSENCIAL PARA LER COLUNAS NA ORDEM CERTA
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc:
-                # sort=True organiza a leitura por colunas (visual)
+                # sort=True é CRUCIAL para ler colunas corretamente
                 blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
                 for b in blocks:
-                    block_text = ""
+                    block_txt = ""
                     for l in b.get("lines", []):
-                        line_text = ""
+                        line_txt = ""
                         for s in l.get("spans", []):
                             content = s["text"]
-                            # Detecção de Negrito
-                            font_name = s["font"].lower()
-                            is_bold = (s["flags"] & 16) or "bold" in font_name or "black" in font_name
-                            
-                            if is_bold:
-                                line_text += f"<b>{content}</b>"
-                            else:
-                                line_text += content
-                        block_text += line_text + " " # Espaço entre palavras da mesma linha
-                    # Quebra de linha ao fim do bloco visual
-                    text += block_text.strip() + "\n"
-                text += "\n"
-        
-        # DOCX
+                            font = s["font"].lower()
+                            is_bold = (s["flags"] & 16) or "bold" in font or "black" in font
+                            if is_bold: line_txt += f"<b>{content}</b>"
+                            else: line_txt += content
+                        block_txt += line_txt + " "
+                    text += block_txt + "\n"
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
-            for para in doc.paragraphs:
-                para_text = ""
-                for run in para.runs:
-                    if run.bold:
-                        para_text += f"<b>{run.text}</b>"
-                    else:
-                        para_text += run.text
-                text += para_text + "\n\n"
-        
-        return clean_text_noise(text)
-    except Exception as e:
-        return f"Erro na leitura: {e}"
+            for p in doc.paragraphs:
+                p_txt = ""
+                for r in p.runs:
+                    if r.bold: p_txt += f"<b>{r.text}</b>"
+                    else: p_txt += r.text
+                text += p_txt + "\n\n"
+        return limpar_texto_profundo(text)
+    except: return ""
 
-# ----------------- 4. LISTAS DE SEÇÕES -----------------
+# ----------------- 4. CONFIGURAÇÃO -----------------
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -112,130 +155,106 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-# ----------------- 5. INTERFACE PRINCIPAL -----------------
+# ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Med. Referência x BELFAR")
 
-tipo_bula = st.radio("Selecione o tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
-lista_secoes_ativa = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
+tipo = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True)
+secoes_ativas = SECOES_PACIENTE if tipo == "Paciente" else SECOES_PROFISSIONAL
 
 st.divider()
-
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Arquivo Referência", type=["pdf", "docx"], key="f1")
-f2 = c2.file_uploader("📂 Arquivo BELFAR", type=["pdf", "docx"], key="f2")
+f1 = c1.file_uploader("📂 Referência", type=["pdf", "docx"], key="f1")
+f2 = c2.file_uploader("📂 BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
-    keys_validas = [k for k in keys_disponiveis if k]
-
-    if not keys_validas:
-        st.error("Nenhuma chave API encontrada nos Secrets.")
-        st.stop()
+    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
+    valid_keys = [k for k in keys if k]
+    if not valid_keys: st.error("Sem chaves API."); st.stop()
 
     if f1 and f2:
-        with st.spinner("Lendo arquivos (Ordenando Colunas)..."):
+        with st.spinner("Processando..."):
             f1.seek(0); f2.seek(0)
             t_ref = extract_text_from_file(f1)
-            t_belfar = extract_text_from_file(f2)
+            t_bel = extract_text_from_file(f2)
 
-            if len(t_ref) < 20 or len(t_belfar) < 20:
-                st.error("Erro: Arquivo ilegível ou vazio."); st.stop()
+            if len(t_ref) < 20: st.error("Arquivo Ref vazio."); st.stop()
 
-            # PROMPT PARA COMPLETUDE
             prompt = f"""
-            Você é um Auditor Farmacêutico.
+            Você é um Auditor Farmacêutico Rígido.
+            INPUT REF: {t_ref[:150000]}
+            INPUT BEL: {t_bel[:150000]}
             
-            INPUT REFERÊNCIA:
-            {t_ref[:150000]} 
+            TAREFA:
+            1. Extraia o texto COMPLETO das seções abaixo. NÃO RESUMA.
+            2. Mantenha formatação (negrito <b>, quebras de linha).
+            3. Ignore pontilhados (....).
             
-            INPUT BELFAR:
-            {t_belfar[:150000]}
-
-            SUA TAREFA:
-            1. Identifique as seções listadas.
-            2. Extraia o texto COMPLETO. **NÃO RESUMA.**
-            3. Se a seção for longa, traga todos os parágrafos.
-            4. Mantenha a formatação original (quebras de linha e tags <b>).
-            5. Ignore linhas pontilhadas ("....") que atrapalham a leitura.
-
-            LISTA DE SEÇÕES: {lista_secoes_ativa}
-
-            SAÍDA JSON:
+            SEÇÕES: {secoes_ativas}
+            
+            JSON:
             {{
                 "data_anvisa_ref": "dd/mm/aaaa",
                 "data_anvisa_belfar": "dd/mm/aaaa",
-                "secoes": [
-                    {{
-                        "titulo": "NOME DA SEÇÃO",
-                        "texto_ref": "Texto COMPLETO original",
-                        "texto_belfar": "Texto COMPLETO original",
-                        "status": "CONFORME" ou "DIVERGENTE"
-                    }}
-                ]
+                "secoes": [ {{"titulo": "...", "texto_ref": "...", "texto_belfar": "..."}} ]
             }}
             """
+
+            resp = None
+            for k in valid_keys:
+                try:
+                    genai.configure(api_key=k)
+                    model = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json"})
+                    resp = model.generate_content(prompt)
+                    break
+                except: continue
             
-            response = None
-            ultimo_erro = ""
-
-            for i, api_key in enumerate(keys_validas):
+            if resp:
                 try:
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
-                    response = model.generate_content(prompt, request_options={'retry': None})
-                    break 
-                except Exception as e:
-                    ultimo_erro = str(e)
-                    if i < len(keys_validas) - 1: continue
-                    else: st.error(f"Erro Fatal: {ultimo_erro}"); st.stop()
+                    res = json.loads(resp.text)
+                    data_ref = res.get("data_anvisa_ref", "-")
+                    data_bel = res.get("data_anvisa_belfar", "-")
+                    lista = res.get("secoes", [])
+                    
+                    final_list = []
+                    err_count = 0
 
-            if response:
-                try:
-                    resultado = json.loads(response.text)
-                    data_ref = resultado.get("data_anvisa_ref", "-")
-                    data_belfar = resultado.get("data_anvisa_belfar", "-")
-                    dados_secoes = resultado.get("secoes", [])
+                    for item in lista:
+                        tit = item.get("titulo", "")
+                        tr = item.get("texto_ref", "").strip()
+                        tb = item.get("texto_belfar", "").strip()
 
-                    divergentes_count = 0
-                    for item in dados_secoes:
-                        if 'highlight-yellow' in item.get('texto_belfar', '') or item.get('status') == 'DIVERGENTE':
-                            item['status'] = 'DIVERGENTE'
-                            divergentes_count += 1
-                        else:
-                            item['status'] = 'CONFORME'
+                        # Gera Diff com Vermelho e Data Azul
+                        html_bel, is_diff = gerar_diff_html_red(tr, tb)
+                        
+                        # Data na referência também precisa ficar azul
+                        html_ref = destacar_datas(tr.replace('\n', '<br>'))
+                        
+                        status = "DIVERGENTE" if is_diff else "CONFORME"
+                        if is_diff: err_count += 1
+                        
+                        final_list.append({
+                            "titulo": tit, "ref_html": html_ref, "bel_html": html_bel.replace('\n', '<br>'), "status": status
+                        })
 
-                    st.markdown("### 📊 Resumo da Conferência")
-                    c_d1, c_d2, c_d3 = st.columns(3)
-                    c_d1.metric("Ref.", data_ref)
-                    c_d2.metric("MKT", data_belfar)
-                    c_d3.metric("Seções", len(dados_secoes))
+                    st.markdown("### 📊 Resumo")
+                    c_a, c_b, c_c = st.columns(3)
+                    c_a.metric("Ref.", data_ref)
+                    c_b.metric("BELFAR", data_bel)
+                    c_c.metric("Seções", len(final_list))
+                    
+                    if err_count == 0: st.success("✅ Tudo Conforme")
+                    else: st.error(f"🚨 {err_count} Divergências Encontradas")
 
                     st.divider()
+                    for it in final_list:
+                        css = "border-warn" if it["status"] == "DIVERGENTE" else "border-ok"
+                        icon = "⚠️" if it["status"] == "DIVERGENTE" else "✅"
+                        if "DIZERES" in it["titulo"].upper(): css = "border-info"; icon = "⚖️"
 
-                    for item in dados_secoes:
-                        status = item.get('status', 'CONFORME')
-                        titulo = item.get('titulo', 'Seção')
-                        
-                        if "DIZERES LEGAIS" in titulo.upper():
-                            icon = "⚖️"; css = "border-info"; aberto = True
-                        elif status == "CONFORME":
-                            icon = "✅"; css = "border-ok"; aberto = False
-                        else:
-                            icon = "⚠️"; css = "border-warn"; aberto = True
+                        with st.expander(f"{icon} {it['titulo']}", expanded=(it["status"]=="DIVERGENTE")):
+                            cL, cR = st.columns(2)
+                            cL.markdown(f'<div class="texto-box {css}">{it["ref_html"]}</div>', unsafe_allow_html=True)
+                            cR.markdown(f'<div class="texto-box {css}">{it["bel_html"]}</div>', unsafe_allow_html=True)
 
-                        with st.expander(f"{icon} {titulo}", expanded=aberto):
-                            col_esq, col_dir = st.columns(2)
-                            with col_esq:
-                                st.caption("📜 Referência")
-                                # Replace \n por <br> para garantir quebra visual no HTML
-                                txt_show = item.get("texto_ref", "").replace("\n", "<br>")
-                                st.markdown(f'<div class="texto-box {css}">{txt_show}</div>', unsafe_allow_html=True)
-                            with col_dir:
-                                st.caption("💊 BELFAR")
-                                txt_show_bel = item.get("texto_belfar", "").replace("\n", "<br>")
-                                st.markdown(f'<div class="texto-box {css}">{txt_show_bel}</div>', unsafe_allow_html=True)
-
-                except Exception as e:
-                    st.error(f"Erro ao ler resposta da IA: {e}")
-    else:
-        st.warning("Envie os dois arquivos.")
+                except Exception as e: st.error(f"Erro JSON: {e}")
+    else: st.warning("Envie os arquivos.")
