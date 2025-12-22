@@ -110,7 +110,7 @@ SECOES_PACIENTE = [
 ]
 
 # ----------------- 5. UI PRINCIPAL -----------------
-st.title("💊 Conferência MKT - Validador de Texto Puro")
+st.title("💊 Conferência MKT")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], key="f1")
