@@ -6,6 +6,7 @@ import docx  # Para ler DOCX
 import io
 import json
 import re
+import time
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
@@ -48,14 +49,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELOS (SEUS PREFERIDOS) -----------------
-# Mantive exatamente os que você pediu.
-# Obs: O 2.5 ainda não existe publicamente, então adicionei o 1.5 como fallback de segurança no final
-# para garantir que você não fique na mão se o 2.5 der erro de conexão.
+# ----------------- 2. CONFIGURAÇÃO MODELOS (PRIORIDADE TOTAL AOS SEUS) -----------------
 MODELOS_POSSIVEIS = [
     "models/gemini-flash-latest", 
-    "models/gemini-2.5-flash", 
-    "models/gemini-1.5-flash"
+    "models/gemini-2.5-flash",        # O modelo que você pediu
+    "models/gemini-1.5-flash-latest", # Fallback de segurança se o 2.5 falhar na conexão
+    "models/gemini-1.5-pro-latest"    # Último recurso (mais lento, mas potente)
 ]
 
 # ----------------- 3. CONFIGURAÇÃO DE SEGURANÇA (TOTALMENTE ABERTA) -----------------
@@ -96,26 +95,21 @@ def reparar_json_quebrado(texto_json):
     """
     Tenta consertar JSONs cortados pela metade fechando aspas e chaves.
     """
+    if not texto_json: return {"secoes": [], "erro_parse": True}
+
     try:
         return json.loads(texto_json, strict=False)
     except:
         texto_limpo = texto_json.strip()
-        
-        # Se não termina com chave fechando json, tenta fechar
         if not texto_limpo.endswith("}"):
-            # Verifica se parou no meio de uma string (aspas abertas)
             conta_aspas = texto_limpo.count('"') - texto_limpo.count('\\"')
-            if conta_aspas % 2 != 0:
-                texto_limpo += '"' # Fecha a string
+            if conta_aspas % 2 != 0: texto_limpo += '"'
             
-            # Tenta fechar as estruturas
             tentativas = ["}", "]}", "] }", "}]}", "\"}]}"]
             for t in tentativas:
                 try:
                     return json.loads(texto_limpo + t, strict=False)
-                except:
-                    continue
-        
+                except: continue
         return {"secoes": [], "erro_parse": True}
 
 # ----------------- 5. UI PRINCIPAL -----------------
@@ -135,135 +129,147 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando..."):
-            f1.seek(0)
-            f2.seek(0)
-            
-            conteudo1 = process_file_content(f1)
-            conteudo2 = process_file_content(f2)
-            
-            prompt_base = """
-            ATUE COMO UM VALIDADOR DE BULAS FARMACÊUTICAS.
-            
-            TAREFA: Compare os textos da ARTE (Referência) com a GRÁFICA (Prova).
-            
-            REGRAS CRÍTICAS:
-            1. Transcreva o texto COMPLETO de cada seção.
-            2. Se houver negrito visual, use tags <b>...</b>.
-            3. Ignore linhas pontilhadas longas (ex: "......."), substitua por " ".
-            4. Compare palavra por palavra. Se houver erro na GRÁFICA, envolva o erro em <span class='highlight-yellow'>...</span>.
-            
-            FORMATO DE SAÍDA JSON:
-            {
-                "data_anvisa_ref": "dd/mm/aaaa",
-                "data_anvisa_grafica": "dd/mm/aaaa",
-                "secoes": [
-                    {
-                        "titulo": "TITULO DA SEÇÃO",
-                        "texto_arte": "Texto da arte...",
-                        "texto_grafica": "Texto da gráfica...",
-                        "status": "CONFORME"
-                    }
-                ]
-            }
-            """
-            
-            payload = [prompt_base, "=== ARTE ==="] + conteudo1 + ["=== GRÁFICA ==="] + conteudo2
-            
-            response = None
-            ultimo_erro = ""
-            modelo_usado = ""
+        # Placeholder para status dinâmico
+        status_box = st.empty()
+        status_box.info("Iniciando processamento...")
 
-            for api_key in keys_validas:
-                genai.configure(api_key=api_key)
-                for model_name in MODELOS_POSSIVEIS:
-                    try:
-                        # CONFIGURAÇÃO DE SEGURANÇA E TOKENS ALTOS
-                        model = genai.GenerativeModel(
-                            model_name, 
-                            safety_settings=SAFETY_SETTINGS,
-                            generation_config={
-                                "response_mime_type": "application/json", 
-                                "temperature": 0.0,
-                                "max_output_tokens": 8192 
-                            }
-                        )
-                        response = model.generate_content(payload)
-                        modelo_usado = model_name
-                        break 
-                    except Exception as e:
-                        ultimo_erro = str(e)
-                        continue 
-                if response: break
+        f1.seek(0)
+        f2.seek(0)
+        
+        conteudo1 = process_file_content(f1)
+        conteudo2 = process_file_content(f2)
+        
+        prompt_base = """
+        ATUE COMO UM VALIDADOR DE DOCUMENTOS TÉCNICOS.
+        TAREFA: Compare os textos da ARTE (Referência) com a GRÁFICA (Prova).
+        
+        REGRAS:
+        1. Transcreva o texto COMPLETO de cada seção.
+        2. Se houver negrito visual, use tags <b>...</b>.
+        3. Ignore linhas pontilhadas ("...."), substitua por " ".
+        4. Compare palavra por palavra.
+        
+        FORMATO JSON:
+        {
+            "data_anvisa_ref": "dd/mm/aaaa",
+            "data_anvisa_grafica": "dd/mm/aaaa",
+            "secoes": [
+                {
+                    "titulo": "TITULO",
+                    "texto_arte": "Texto da arte...",
+                    "texto_grafica": "Texto da gráfica...",
+                    "status": "CONFORME"
+                }
+            ]
+        }
+        """
+        
+        payload = [prompt_base, "=== ARTE ==="] + conteudo1 + ["=== GRÁFICA ==="] + conteudo2
+        
+        response = None
+        sucesso = False
+        modelo_usado = ""
+        erros_acumulados = []
 
-            # --- CORREÇÃO DO ERRO VALUE ERROR ---
-            if response:
+        # LOOP DE TENTATIVA (RETRY)
+        for api_key in keys_validas:
+            genai.configure(api_key=api_key)
+            
+            for model_name in MODELOS_POSSIVEIS:
                 try:
-                    # 1. Verifica se houve bloqueio de segurança
-                    if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
-                         # Se o bloqueio for alto, interrompe
-                         if "block_reason" in str(response.prompt_feedback):
-                             st.error(f"⚠️ A IA bloqueou a resposta por segurança (conteúdo médico). Tente novamente. Detalhe: {response.prompt_feedback}")
-                             st.stop()
-
-                    # 2. Verifica se a resposta tem partes válidas de texto
-                    if not response.candidates or not response.candidates[0].content.parts:
-                        st.error("⚠️ Resposta vazia da IA. Isso geralmente acontece por bloqueio de segurança silencioso.")
-                        st.stop()
-
-                    # 3. Só agora tenta ler o texto
-                    texto_raw = response.text.replace("```json", "").replace("```", "")
+                    status_box.text(f"Tentando modelo: {model_name}...")
                     
-                    # Regex para pegar o JSON
-                    match = re.search(r'\{.*\}', texto_raw, re.DOTALL)
-                    if match:
-                        texto_raw = match.group(0)
-
-                    resultado = reparar_json_quebrado(texto_raw)
+                    model = genai.GenerativeModel(
+                        model_name, 
+                        safety_settings=SAFETY_SETTINGS,
+                        generation_config={
+                            "response_mime_type": "application/json", 
+                            "temperature": 0.0,
+                            "max_output_tokens": 8192 
+                        }
+                    )
                     
-                    if resultado.get("erro_parse"):
-                        st.warning("⚠️ O texto gerado foi cortado, mas recuperamos o conteúdo parcial.")
-
-                    data_ref = resultado.get("data_anvisa_ref", "---")
-                    data_graf = resultado.get("data_anvisa_grafica", "---")
-                    secoes = resultado.get("secoes", [])
-
-                    st.markdown(f"### 📊 Resultado (Modelo: {modelo_usado})")
+                    # Tenta gerar
+                    temp_response = model.generate_content(payload)
                     
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("Data Ref", data_ref)
-                    k2.metric("Data Gráfica", data_graf)
-                    k3.metric("Seções", len(secoes))
+                    # VERIFICA SE A RESPOSTA É VÁLIDA (Sem tentar ler .text ainda)
+                    if not temp_response.candidates:
+                        erros_acumulados.append(f"{model_name}: Bloqueio de segurança total.")
+                        continue # Pula para o próximo modelo
 
-                    div_count = sum(1 for s in secoes if s.get('status') != 'CONFORME')
+                    if not temp_response.candidates[0].content.parts:
+                        erros_acumulados.append(f"{model_name}: Resposta vazia (conteúdo bloqueado).")
+                        continue # Pula para o próximo modelo
                     
-                    if div_count == 0:
-                        st.success("✅ **Tudo Conforme!**")
-                    else:
-                        st.warning(f"⚠️ **{div_count} Divergências Encontradas**")
-                    
-                    st.divider()
-
-                    for item in secoes:
-                        status = item.get('status', 'CONFORME')
-                        css = "border-ok" if status == "CONFORME" else "border-warn"
-                        icon = "✅" if status == "CONFORME" else "⚠️"
-                        
-                        aberto = status != "CONFORME"
-
-                        with st.expander(f"{icon} {item.get('titulo', 'Seção')}", expanded=aberto):
-                            cA, cB = st.columns(2)
-                            with cA:
-                                st.caption("Arte")
-                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
-                            with cB:
-                                st.caption("Gráfica")
-                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+                    # Se chegou aqui, tem texto!
+                    response = temp_response
+                    modelo_usado = model_name
+                    sucesso = True
+                    break # Sai do loop de modelos
 
                 except Exception as e:
-                    st.error("❌ Erro ao processar o resultado da IA.")
-            else:
-                 st.error(f"Erro de Conexão: {ultimo_erro}")
+                    erros_acumulados.append(f"{model_name}: Erro API ({str(e)})")
+                    continue
+            
+            if sucesso: break # Sai do loop de chaves
+
+        status_box.empty() # Limpa msg de status
+
+        if sucesso and response:
+            try:
+                # Limpeza do texto
+                texto_raw = response.text.replace("```json", "").replace("```", "")
+                match = re.search(r'\{.*\}', texto_raw, re.DOTALL)
+                if match: texto_raw = match.group(0)
+
+                resultado = reparar_json_quebrado(texto_raw)
+                
+                if resultado.get("erro_parse"):
+                    st.warning(f"⚠️ Aviso: O modelo {modelo_usado} cortou a resposta no final, mas recuperamos os dados.")
+
+                data_ref = resultado.get("data_anvisa_ref", "---")
+                data_graf = resultado.get("data_anvisa_grafica", "---")
+                secoes = resultado.get("secoes", [])
+
+                st.markdown(f"### 📊 Resultado (Gerado por: `{modelo_usado}`)")
+                
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Data Ref", data_ref)
+                k2.metric("Data Gráfica", data_graf)
+                k3.metric("Seções", len(secoes))
+
+                div_count = sum(1 for s in secoes if s.get('status') != 'CONFORME')
+                
+                if div_count == 0:
+                    st.success("✅ **Tudo Conforme!**")
+                else:
+                    st.warning(f"⚠️ **{div_count} Divergências Encontradas**")
+                
+                st.divider()
+
+                for item in secoes:
+                    status = item.get('status', 'CONFORME')
+                    css = "border-ok" if status == "CONFORME" else "border-warn"
+                    icon = "✅" if status == "CONFORME" else "⚠️"
+                    aberto = status != "CONFORME"
+
+                    with st.expander(f"{icon} {item.get('titulo', 'Seção')}", expanded=aberto):
+                        cA, cB = st.columns(2)
+                        with cA:
+                            st.caption("Arte")
+                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
+                        with cB:
+                            st.caption("Gráfica")
+                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+
+            except Exception as e:
+                st.error("❌ Erro ao ler o JSON final.")
+                st.code(response.text)
+        else:
+             st.error("❌ Falha em todos os modelos. Detalhes dos erros:")
+             for erro in erros_acumulados:
+                 st.write(erro)
+             st.warning("Dica: Tente validar apenas uma parte do documento se ele for muito grande.")
 
     else:
         st.warning("Adicione os arquivos.")
