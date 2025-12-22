@@ -43,7 +43,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
-MODELOS_POSSIVEIS = ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
+MODELOS_POSSIVEIS = "models/gemini-flash-latest"
 
 SECOES_OBRIGATORIAS = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", 
