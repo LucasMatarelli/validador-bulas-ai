@@ -12,7 +12,7 @@ st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
     .texto-box { 
-        font-family: 'Consolas', monospace; font-size: 0.9rem; line-height: 1.5; color: #212529;
+        font-family: 'Consolas', monospace; font-size: 0.95rem; line-height: 1.6; color: #212529;
         background-color: #ffffff; padding: 15px; border-radius: 8px; border: 1px solid #ced4da;
         white-space: pre-wrap; text-align: justify;
     }
@@ -26,14 +26,16 @@ st.markdown("""
 MODELO_FIXO = "models/gemini-1.5-flash" 
 SECOES = ["APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", "DIZERES LEGAIS"]
 
-def process_file(up):
+def process_file_otimizado(up):
     try:
         if up.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=up.read(), filetype="pdf")
             imgs = []
             for p in doc:
-                pix = p.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                imgs.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
+                # OTIMIZAÇÃO CRÍTICA: Matrix(1.0, 1.0) para não travar
+                pix = p.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
+                # Compressão JPEG Quality 80
+                imgs.append(Image.open(io.BytesIO(pix.tobytes("jpeg", quality=80))))
             return imgs
         elif up.name.lower().endswith(('.jpg', '.png')): return [Image.open(up)]
         elif up.name.lower().endswith('.docx'):
@@ -46,7 +48,7 @@ def reparar_json(t):
     try: return json.loads(t)
     except: return None
 
-st.title("💊 Gráfica x Arte")
+st.title("💊 Gráfica x Arte (Rápido)")
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("Arte", type=["pdf", "jpg", "png", "docx"])
 f2 = c2.file_uploader("Gráfica", type=["pdf", "jpg", "png", "docx"])
@@ -57,11 +59,11 @@ if st.button("🚀 Validar"):
     if not valid: st.stop()
     
     if f1 and f2:
-        status = st.status("Processando imagens...", expanded=True)
+        status = st.status("Otimizando e analisando...", expanded=True)
         try:
             f1.seek(0); f2.seek(0)
-            c1_content = process_file(f1)
-            c2_content = process_file(f2)
+            c1_content = process_file_otimizado(f1)
+            c2_content = process_file_otimizado(f2)
             
             p = f"""
             ATUE COMO OCR.
@@ -75,14 +77,14 @@ if st.button("🚀 Validar"):
             pl = [p, "=== ARTE ==="] + c1_content + ["=== GRAFICA ==="] + c2_content
             
             res = None
-            cfg = {"response_mime_type": "application/json", "temperature": 0.0, "max_output_tokens": 8192}
+            cfg = {"response_mime_type": "application/json", "temperature": 0.0}
 
             for k in valid:
                 try:
                     genai.configure(api_key=k)
                     m = genai.GenerativeModel(MODELO_FIXO, generation_config=cfg)
-                    r = m.generate_content(pl)
-                    res = reparar_json(r.text)
+                    resp = m.generate_content(pl)
+                    res = reparar_json(resp.text)
                     if res: break
                 except: continue
                 
@@ -124,5 +126,5 @@ if st.button("🚀 Validar"):
                         
                         ca.markdown(f'<div class="texto-box {css}">{ta.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
                         cb.markdown(f'<div class="texto-box {css}">{tb.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
-        except Exception as e:
-            st.error(str(e))
+            else: status.update(label="Erro", state="error"); st.error("Falha na API.")
+        except Exception as e: st.error(str(e))
