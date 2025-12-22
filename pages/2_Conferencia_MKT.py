@@ -12,9 +12,8 @@ st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide
 
 st.markdown("""
 <style>
-    /* --- ESCONDER MENU SUPERIOR --- */
     [data-testid="stHeader"] { visibility: hidden; }
-
+    
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
         font-size: 0.95rem;
@@ -42,27 +41,27 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-flash-latest"
+# ----------------- 2. CONFIGURAÇÃO -----------------
+MODELO_FIXO = "models/gemini-1.5-flash"
 
-# ----------------- 3. FUNÇÃO DE COMPARAÇÃO INTELIGENTE -----------------
+# ----------------- 3. FUNÇÕES AUXILIARES -----------------
 def normalizar_para_comparacao(texto):
     if not texto: return ""
-    texto = unicodedata.normalize('NFKD', texto)
-    return texto
+    return unicodedata.normalize('NFKD', texto)
 
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
-
+    
+    # Normalização leve
     ref_norm = normalizar_para_comparacao(texto_ref)
     novo_norm = normalizar_para_comparacao(texto_novo)
 
+    # Split por espaços, mantendo a estrutura
     a = ref_norm.split()
     b = novo_norm.split()
     
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
-    
     html_output = []
     eh_divergente = False
     
@@ -82,18 +81,40 @@ def gerar_diff_html(texto_ref, texto_novo):
             
     return " ".join(html_output), eh_divergente
 
-# ----------------- 4. EXTRAÇÃO DE TEXTO PURO -----------------
+# ----------------- 4. EXTRAÇÃO DE TEXTO ESTRUTURADA (ATUALIZADA) -----------------
 def extract_text_from_file(uploaded_file):
+    """Extrai texto mantendo Negrito (<b>) e quebras de linha (\n) corretas."""
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
-                text += page.get_text("text") + "\n"
+                # Extração detalhada por blocos
+                blocks = page.get_text("dict", flags=11)["blocks"]
+                for b in blocks:
+                    for l in b.get("lines", []):
+                        line_txt = ""
+                        for s in l.get("spans", []):
+                            content = s["text"]
+                            # Detecta negrito
+                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower() or "black" in s["font"].lower()
+                            if is_bold:
+                                line_txt += f"<b>{content}</b>"
+                            else:
+                                line_txt += content
+                        text += line_txt + "\n" # Quebra de linha visual
+                    text += "\n" # Quebra de parágrafo
+                    
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
             for para in doc.paragraphs: 
-                text += para.text + "\n"
+                para_txt = ""
+                for run in para.runs:
+                    if run.bold:
+                        para_txt += f"<b>{run.text}</b>"
+                    else:
+                        para_txt += run.text
+                text += para_txt + "\n\n"
         return text
     except Exception as e:
         return ""
@@ -117,13 +138,11 @@ f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], ke
 f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    
-    # 3 CHAVES API
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
     if not keys_validas:
-        st.error("Nenhuma chave API encontrada no st.secrets.")
+        st.error("Nenhuma chave API encontrada.")
         st.stop()
 
     if f1 and f2:
@@ -132,27 +151,24 @@ if st.button("🚀 Processar Conferência"):
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
 
-            if len(t_anvisa) < 50 or len(t_mkt) < 50:
+            if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # PROMPT EXTREMO PARA CÓPIA SEM MODIFICAÇÃO
+            # Prompt ajustado para respeitar a formatação que acabamos de extrair
             prompt = f"""
-            Você é um Extrator de Dados Literais e "Burro" (no sentido de NÃO PENSAR, apenas COPIAR).
+            Você é um Extrator de Dados Literais.
             
-            INPUT:
-            TEXTO 1 (REF): {t_anvisa[:100000]}
-            TEXTO 2 (MKT): {t_mkt[:100000]}
+            INPUT TEXTO 1 (REF): 
+            {t_anvisa[:120000]}
+            
+            INPUT TEXTO 2 (MKT): 
+            {t_mkt[:120000]}
 
             SUA MISSÃO:
-            1. Localize as seções da lista abaixo nos dois textos.
-            2. Extraia o conteúdo EXATAMENTE como está escrito.
-            
-            REGRA DE OURO - LEIA COM ATENÇÃO:
-            - **PROIBIDO CORRIGIR O PORTUGUÊS.**
-            - **PROIBIDO MUDAR PONTUAÇÃO.**
-            - **SE O TEXTO TIVER ERROS DE DIGITAÇÃO, MANTENHA O ERRO.**
-            - Exemplo: Se estiver escrito "Atençao" (sem til), copie "Atençao". Se estiver escrito "*actose", copie "*actose".
-            - Retorne o texto PURO, original e cru.
+            1. Localize as seções nos dois textos.
+            2. Extraia o conteúdo EXATAMENTE como está no input (com as tags <b> e quebras de linha).
+            3. NÃO CORRIJA O PORTUGUÊS. Mantenha erros, se houver.
+            4. Em listas, mantenha cada item em uma linha.
 
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
@@ -163,8 +179,8 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Conteúdo original e não modificado",
-                        "texto_mkt": "Conteúdo original e não modificado (COM ERROS SE HOUVER)"
+                        "texto_anvisa": "Texto fiel ao input com tags <b>",
+                        "texto_mkt": "Texto fiel ao input com tags <b>"
                     }}
                 ]
             }}
@@ -190,71 +206,9 @@ if st.button("🚀 Processar Conferência"):
                     data_ref = resultado.get("data_anvisa_ref", "-")
                     data_mkt = resultado.get("data_anvisa_mkt", "-")
                     dados_secoes = resultado.get("secoes", [])
-
                     secoes_finais = []
                     divergentes_count = 0
 
                     for item in dados_secoes:
                         titulo = item.get('titulo', '')
-                        txt_ref = item.get('texto_anvisa', '').strip()
-                        txt_mkt = item.get('texto_mkt', '').strip()
-                        
-                        if "DIZERES LEGAIS" in titulo.upper():
-                            padrao_data = r"(\d{2}/\d{2}/\d{4})"
-                            txt_ref = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_ref)
-                            txt_mkt = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_mkt)
-
-                        html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
-                        
-                        if teve_diff:
-                            status = "DIVERGENTE"
-                            divergentes_count += 1
-                        else:
-                            status = "CONFORME"
-                        
-                        secoes_finais.append({
-                            "titulo": titulo,
-                            "texto_anvisa": txt_ref,
-                            "texto_mkt": html_mkt,
-                            "status": status
-                        })
-
-                    st.markdown("### 📊 Resumo da Conferência")
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("Ref.", data_ref)
-                    c2.metric("MKT", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
-                    c3.metric("Seções", len(secoes_finais))
-
-                    sub1, sub2 = st.columns(2)
-                    sub1.info(f"✅ **Conformes:** {len(secoes_finais) - divergentes_count}")
-                    if divergentes_count > 0:
-                        sub2.warning(f"⚠️ **Divergentes:** {divergentes_count}")
-                    else:
-                        sub2.success("✨ **Divergências:** 0")
-
-                    st.divider()
-
-                    for item in secoes_finais:
-                        status = item['status']
-                        titulo = item['titulo']
-                        
-                        if "DIZERES LEGAIS" in titulo.upper():
-                            icon = "⚖️"; css = "border-info"; aberto = True
-                        elif status == "CONFORME":
-                            icon = "✅"; css = "border-ok"; aberto = False
-                        else:
-                            icon = "⚠️"; css = "border-warn"; aberto = True
-
-                        with st.expander(f"{icon} {titulo}", expanded=aberto):
-                            col_esq, col_dir = st.columns(2)
-                            with col_esq:
-                                st.caption("📜 Referência")
-                                st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
-                            with col_dir:
-                                st.caption("🎨 Validado")
-                                st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
-
-                except Exception as e:
-                    st.error(f"Erro ao processar JSON: {e}")
-    else:
-        st.warning("Adicione os arquivos para iniciar.")
+                        txt_ref = item.get('texto_anvisa', '').strip
