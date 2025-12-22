@@ -49,11 +49,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELOS (SEUS PREFERIDOS) -----------------
-# Mantive os que você pediu. Se o 2.5 falhar/não existir, ele tenta o próximo da lista.
+# Mantive exatamente os que você pediu.
+# Obs: O 2.5 ainda não existe publicamente, então adicionei o 1.5 como fallback de segurança no final
+# para garantir que você não fique na mão se o 2.5 der erro de conexão.
 MODELOS_POSSIVEIS = [
     "models/gemini-flash-latest", 
-    "models/gemini-2.5-flash",
-    "models/gemini-1.5-flash" # Backup caso o 2.5 seja typo
+    "models/gemini-2.5-flash", 
+    "models/gemini-1.5-flash"
 ]
 
 # ----------------- 3. CONFIGURAÇÃO DE SEGURANÇA (TOTALMENTE ABERTA) -----------------
@@ -170,6 +172,7 @@ if st.button("🚀 Validar"):
             
             response = None
             ultimo_erro = ""
+            modelo_usado = ""
 
             for api_key in keys_validas:
                 genai.configure(api_key=api_key)
@@ -186,26 +189,29 @@ if st.button("🚀 Validar"):
                             }
                         )
                         response = model.generate_content(payload)
+                        modelo_usado = model_name
                         break 
                     except Exception as e:
                         ultimo_erro = str(e)
                         continue 
                 if response: break
 
-            # --- AQUI ESTAVA O ERRO: VERIFICAÇÃO ANTES DE LER .TEXT ---
+            # --- CORREÇÃO DO ERRO VALUE ERROR ---
             if response:
                 try:
-                    # Verifica se a IA bloqueou a resposta antes de tentar ler
-                    if not response.candidates:
-                         st.error(f"⚠️ Resposta bloqueada ou vazia. Motivo: {response.prompt_feedback}")
-                         st.stop()
-                    
-                    # Verifica se há partes de texto válidas
-                    if not response.candidates[0].content.parts:
-                         st.error("⚠️ A IA retornou um bloqueio de segurança (conteúdo farmacêutico sensível detectado incorretamente). Tente novamente.")
-                         st.stop()
+                    # 1. Verifica se houve bloqueio de segurança
+                    if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
+                         # Se o bloqueio for alto, interrompe
+                         if "block_reason" in str(response.prompt_feedback):
+                             st.error(f"⚠️ A IA bloqueou a resposta por segurança (conteúdo médico). Tente novamente. Detalhe: {response.prompt_feedback}")
+                             st.stop()
 
-                    # Se passou, tenta ler o texto
+                    # 2. Verifica se a resposta tem partes válidas de texto
+                    if not response.candidates or not response.candidates[0].content.parts:
+                        st.error("⚠️ Resposta vazia da IA. Isso geralmente acontece por bloqueio de segurança silencioso.")
+                        st.stop()
+
+                    # 3. Só agora tenta ler o texto
                     texto_raw = response.text.replace("```json", "").replace("```", "")
                     
                     # Regex para pegar o JSON
@@ -222,7 +228,7 @@ if st.button("🚀 Validar"):
                     data_graf = resultado.get("data_anvisa_grafica", "---")
                     secoes = resultado.get("secoes", [])
 
-                    st.markdown("### 📊 Resultado")
+                    st.markdown(f"### 📊 Resultado (Modelo: {modelo_usado})")
                     
                     k1, k2, k3 = st.columns(3)
                     k1.metric("Data Ref", data_ref)
@@ -256,9 +262,6 @@ if st.button("🚀 Validar"):
 
                 except Exception as e:
                     st.error("❌ Erro ao processar o resultado da IA.")
-                    # Só mostra o debug se houver algo para mostrar
-                    if response and response.candidates and response.candidates[0].content.parts:
-                        st.code(response.text)
             else:
                  st.error(f"Erro de Conexão: {ultimo_erro}")
 
