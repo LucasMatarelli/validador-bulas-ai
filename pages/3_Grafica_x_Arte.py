@@ -5,7 +5,7 @@ import fitz  # PyMuPDF
 import docx  # Para ler DOCX
 import io
 import json
-import re  # IMPORTANTE: Adicionado para corrigir o erro dos pontos
+import re  # IMPORTANTE: Para limpeza de texto
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
@@ -13,9 +13,7 @@ st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layou
 st.markdown("""
 <style>
     /* --- ESCONDER MENU SUPERIOR --- */
-    [data-testid="stHeader"] {
-        visibility: hidden;
-    }
+    [data-testid="stHeader"] { visibility: hidden; }
 
     /* Caixas de Texto */
     .texto-box { 
@@ -29,36 +27,24 @@ st.markdown("""
         border: 1px solid #ced4da;
         height: 100%; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; /* Mantém parágrafos */
+        white-space: pre-wrap; 
         text-align: justify;
     }
 
     /* Destaques Precisos */
-    .highlight-yellow { 
-        background-color: #fff3cd; color: #856404; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
-    }
-    .highlight-red { 
-        background-color: #f8d7da; color: #721c24; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; font-weight: bold; 
-    }
-    .highlight-blue { 
-        background-color: #d1ecf1; color: #0c5460; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
-    }
+    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
+    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; }
+    
+    /* Negrito preservado */
+    b, strong { font-weight: 900; color: #000; }
 
     /* Status das Bordas */
-    .border-ok { border-left: 6px solid #28a745 !important; }    /* Verde */
-    .border-warn { border-left: 6px solid #ffc107 !important; } /* Amarelo */
-    .border-info { border-left: 6px solid #17a2b8 !important; } /* Azul */
+    .border-ok { border-left: 6px solid #28a745 !important; }
+    .border-warn { border-left: 6px solid #ffc107 !important; }
+    .border-info { border-left: 6px solid #17a2b8 !important; }
 
-    /* Métricas no Topo */
     div[data-testid="stMetric"] {
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
-        padding: 10px;
-        border-radius: 5px;
-        text-align: center;
+        background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -71,22 +57,16 @@ def process_file_content(uploaded_file):
     try:
         filename = uploaded_file.name.lower()
 
-        # --- PROCESSAMENTO DE PDF ---
         if filename.endswith(".pdf"):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            
-            # Tenta pegar texto digital primeiro
             full_text = ""
             has_digital_text = False
-            
             for page in doc:
                 text = page.get_text("text")
-                if len(text.strip()) > 50: 
-                    has_digital_text = True
+                if len(text.strip()) > 50: has_digital_text = True
                 full_text += text + "\n"
             
-            if has_digital_text:
-                return [full_text]
+            if has_digital_text: return [full_text]
             else:
                 images = []
                 for page in doc:
@@ -94,16 +74,12 @@ def process_file_content(uploaded_file):
                     images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
                 return images
         
-        # --- PROCESSAMENTO DE IMAGENS ---
         elif filename.endswith((".jpg", ".png", ".jpeg")):
             return [Image.open(uploaded_file)]
 
-        # --- PROCESSAMENTO DE DOCX ---
         elif filename.endswith(".docx"):
             doc = docx.Document(uploaded_file)
-            full_text = []
-            for para in doc.paragraphs:
-                full_text.append(para.text)
+            full_text = [para.text for para in doc.paragraphs]
             return ["\n".join(full_text)]
             
     except: return []
@@ -136,52 +112,44 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando... Priorizando texto original para evitar alucinações..."):
+        with st.spinner("Processando... Lendo parágrafos completos e negritos..."):
             f1.seek(0)
             f2.seek(0)
             
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # --- CORREÇÃO NO PROMPT: INSTRUÇÃO ANTI-PONTILHADO ---
+            # --- PROMPT REFORÇADO PARA COMPLETUDE E NEGRITO ---
             prompt = f"""
-            Você é um EXTRATOR FORENSE DE TEXTO.
+            Você é um EXTRATOR FORENSE DE TEXTO FARMACÊUTICO.
             
-            INPUT: Documentos farmacêuticos (Texto Digital ou Imagens).
+            INPUT: Documentos (Texto Digital ou Imagens).
             TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}
 
-            ⚠️ PROTOCOLO DE TOLERÂNCIA ZERO PARA ALUCINAÇÃO:
-            1. **VERBATIM:** Copie as palavras EXATAMENTE como estão.
-            2. **TRATAMENTO DE LAYOUT (CRUCIAL):** - Se houver linhas pontilhadas longas (ex: "Cloridrato ......... 5mg"), **NÃO REPRODUZA OS PONTOS**. 
-               - Substitua por um único espaço ou "..." curto.
-               - O excesso de pontos causa erro no sistema.
-            
-            3. **ESTRUTURA JSON SEGURA:** - Use ASPAS SIMPLES nas tags HTML (ex: class='highlight').
-               - Escape aspas duplas do texto original (\").
+            ⚠️ PROTOCOLO DE EXTRAÇÃO (CRUCIAL):
+            1. **INTEGRIDADE TOTAL:** Extraia TODO o texto de cada seção. Se o texto for longo, vá até o último ponto final. NÃO RESUMA. NÃO CORTE.
+            2. **NEGRITO VISUAL:** Se houver texto em **negrito** (headers, avisos, nomes), envolva-o na tag `<b>` e `</b>`.
+               - Exemplo: "<b>Hipertensão:</b> a dose inicial..."
+            3. **LAYOUT PONTILHADO:** Ignore linhas de pontinhos longas (ex: "Cloridrato .......... 5mg"). Transcreva apenas "Cloridrato 5mg".
 
-            🚨 REGRAS DE STATUS POR GRUPO:
+            ⚠️ PROTOCOLO DE JSON E ASPAS:
+            - NUNCA use aspas duplas (") dentro do conteúdo do texto sem escapá-las (\").
+            - Para tags HTML, use aspas simples: <span class='highlight-yellow'>.
 
-            >>> GRUPO BLINDADO (SEM DIVERGÊNCIAS): 
-            [ "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS" ]
-            - Status OBRIGATÓRIO: "CONFORME".
-            - PROIBIDO usar highlight.
-            - Apenas transcreva o texto original limpo.
-            - Exceção: Em "DIZERES LEGAIS", se encontrar uma data, envolva em <span class='highlight-blue'>DATA</span>.
+            🚨 COMPARAÇÃO:
+            - Se a Arte diz "X" e a Gráfica diz "Y", marque "Y" com <span class='highlight-yellow'>Y</span>.
+            - Se a Gráfica tiver palavras extras que não existem na Arte, marque as palavras extras.
 
-            >>> GRUPO PADRÃO (TODAS AS OUTRAS SEÇÕES):
-            - Compare palavra por palavra.
-            - Diferença REAL? Marque <span class='highlight-yellow'>TEXTO ERRADO</span>.
-
-            SAÍDA JSON:
+            SAÍDA JSON OBRIGATÓRIA:
             {{
                 "data_anvisa_ref": "dd/mm/aaaa",
                 "data_anvisa_grafica": "dd/mm/aaaa",
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto da arte",
-                        "texto_grafica": "Texto da gráfica",
-                        "status": "CONFORME"
+                        "texto_arte": "Texto COMPLETO da arte (com <b>negritos</b>)",
+                        "texto_grafica": "Texto COMPLETO da gráfica (com <b>negritos</b> e <span class='highlight-yellow'>erros</span>)",
+                        "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
             }}
@@ -203,9 +171,7 @@ if st.button("🚀 Validar"):
                     break 
                 except Exception as e:
                     ultimo_erro = str(e)
-                    if i < len(keys_validas) - 1:
-                        st.warning(f"⚠️ Chave {i+1} falhou. Tentando próxima...")
-                        continue
+                    if i < len(keys_validas) - 1: continue
                     else:
                         st.error(f"❌ Erro fatal: {ultimo_erro}")
                         st.stop()
@@ -213,10 +179,7 @@ if st.button("🚀 Validar"):
             if response:
                 try:
                     texto_limpo = response.text.replace("```json", "").replace("```", "").strip()
-                    
-                    # --- CORREÇÃO DE SEGURANÇA NO PYTHON ---
-                    # Remove excesso de pontos que a IA possa ter gerado (ex: "......")
-                    # Substitui qualquer sequência de mais de 3 pontos por "..."
+                    # Remove excesso de pontinhos que trava o JSON
                     texto_limpo = re.sub(r'\.{4,}', '...', texto_limpo)
 
                     resultado = json.loads(texto_limpo, strict=False)
@@ -242,10 +205,8 @@ if st.button("🚀 Validar"):
                     
                     b1, b2 = st.columns(2)
                     b1.success(f"✅ **Conformes: {ok_count}**")
-                    if div_count > 0:
-                        b2.warning(f"⚠️ **Divergentes: {div_count}**")
-                    else:
-                        b2.success("✨ **Divergentes: 0**")
+                    if div_count > 0: b2.warning(f"⚠️ **Divergentes: {div_count}**")
+                    else: b2.success("✨ **Divergentes: 0**")
                     
                     st.divider()
 
@@ -271,8 +232,7 @@ if st.button("🚀 Validar"):
 
                 except json.JSONDecodeError as e:
                     st.error(f"Erro JSON: {e}")
-                    st.warning("O documento contém caracteres complexos de layout. Tente novamente.")
-                    st.code(texto_limpo[:1000]) # Mostra o começo do erro para debug
+                    st.warning("O documento é muito complexo. Tente novamente.")
                 except Exception as e:
                     st.error(f"Erro visual: {e}")
 
