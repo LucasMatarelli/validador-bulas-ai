@@ -18,7 +18,7 @@ st.markdown("""
     }
     .border-ok { border-left: 6px solid #4caf50 !important; }
     .border-warn { border-left: 6px solid #f44336 !important; }
-    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 4px; font-weight: bold; }
+    .border-info { border-left: 6px solid #2196f3 !important; }
     .highlight-blue { background-color: #e3f2fd; color: #0d47a1; padding: 2px 6px; border-radius: 12px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
@@ -85,13 +85,39 @@ if st.button("🚀 Validar"):
                 colA.metric("Ref", res.get("data_anvisa_ref"))
                 colB.metric("Gráfica", res.get("data_anvisa_grafica"))
                 
+                secoes_isentas = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+
                 for i in res.get("secoes", []):
-                    css = "border-warn" if i.get("status") == "DIVERGENTE" else "border-ok"
-                    with st.expander(f"{i['titulo']}", expanded=(i.get("status")=="DIVERGENTE")):
+                    titulo = i.get('titulo', '')
+                    
+                    # BLINDAGEM DE STATUS
+                    eh_isenta = any(x in titulo.upper() for x in secoes_isentas)
+                    
+                    if eh_isenta:
+                        status = "CONFORME"
+                        css = "border-info"
+                        aberto = False
+                    else:
+                        status = i.get("status", "CONFORME")
+                        css = "border-warn" if status == "DIVERGENTE" else "border-ok"
+                        aberto = (status == "DIVERGENTE")
+                    
+                    # COR DA BORDA/ICONE
+                    if "DIZERES LEGAIS" in titulo.upper(): icon="⚖️"
+                    elif "APRESENTAÇÕES" in titulo.upper() or "COMPOSIÇÃO" in titulo.upper(): icon="📋"
+                    elif status == "DIVERGENTE": icon="⚠️"
+                    else: icon="✅"
+
+                    with st.expander(f"{icon} {titulo}", expanded=aberto):
                         ca, cb = st.columns(2)
-                        # Pinta datas de azul
-                        ta = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', i.get("texto_arte", ""))
-                        tb = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', i.get("texto_grafica", ""))
+                        
+                        ta = i.get("texto_arte", "")
+                        tb = i.get("texto_grafica", "")
+
+                        # DATA AZUL SOMENTE EM DIZERES
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            ta = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', ta)
+                            tb = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', tb)
                         
                         ca.markdown(f'<div class="texto-box {css}">{ta.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
                         cb.markdown(f'<div class="texto-box {css}">{tb.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
