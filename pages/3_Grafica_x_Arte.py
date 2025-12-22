@@ -49,12 +49,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELOS (PRIORIDADE TOTAL AOS SEUS) -----------------
+# ----------------- 2. SEUS MODELOS (MANUALMENTE SELECIONADOS) -----------------
 MODELOS_POSSIVEIS = [
     "models/gemini-flash-latest", 
-    "models/gemini-2.5-flash",        # O modelo que você pediu
-    "models/gemini-1.5-flash-latest", # Fallback de segurança se o 2.5 falhar na conexão
-    "models/gemini-1.5-pro-latest"    # Último recurso (mais lento, mas potente)
+    "models/gemini-2.5-flash",        # Solicitado (Experimental)
+    "models/gemini-1.5-flash-latest", # Fallback seguro
+    "models/gemini-1.5-pro-latest"    # Fallback potente
 ]
 
 # ----------------- 3. CONFIGURAÇÃO DE SEGURANÇA (TOTALMENTE ABERTA) -----------------
@@ -93,24 +93,47 @@ def process_file_content(uploaded_file):
 
 def reparar_json_quebrado(texto_json):
     """
-    Tenta consertar JSONs cortados pela metade fechando aspas e chaves.
+    Tenta consertar JSONs cortados ou mal formatados.
     """
     if not texto_json: return {"secoes": [], "erro_parse": True}
 
+    # 1. Tenta carregar direto
     try:
         return json.loads(texto_json, strict=False)
     except:
-        texto_limpo = texto_json.strip()
-        if not texto_limpo.endswith("}"):
-            conta_aspas = texto_limpo.count('"') - texto_limpo.count('\\"')
-            if conta_aspas % 2 != 0: texto_limpo += '"'
-            
-            tentativas = ["}", "]}", "] }", "}]}", "\"}]}"]
-            for t in tentativas:
-                try:
-                    return json.loads(texto_limpo + t, strict=False)
-                except: continue
-        return {"secoes": [], "erro_parse": True}
+        pass
+
+    # 2. Limpeza cirúrgica
+    texto_limpo = texto_json.strip()
+    
+    # Se não termina com chave/colchete fechando, tenta fechar na força bruta
+    if not (texto_limpo.endswith("}") or texto_limpo.endswith("]")):
+        # Verifica aspas abertas
+        conta_aspas = texto_limpo.count('"') - texto_limpo.count('\\"')
+        if conta_aspas % 2 != 0: texto_limpo += '"'
+        
+        # Tenta fechar estruturas comuns
+        tentativas = ["}", "]}", "] }", "}]}", "\"}]}"]
+        for t in tentativas:
+            try:
+                return json.loads(texto_limpo + t, strict=False)
+            except: continue
+    
+    # 3. Se falhar tudo, tenta achar o último objeto válido dentro da lista "secoes"
+    # Isso salva o que a IA escreveu antes de cortar
+    try:
+        match = re.search(r'"secoes"\s*:\s*\[(.*)', texto_limpo, re.DOTALL)
+        if match:
+            conteudo_lista = match.group(1)
+            # Tenta pegar objetos completos { ... }
+            objetos = re.findall(r'\{[^{}]+\}', conteudo_lista)
+            if objetos:
+                json_reconstruido = '{"secoes": [' + ','.join(objetos) + ']}'
+                return json.loads(json_reconstruido, strict=False)
+    except:
+        pass
+
+    return {"secoes": [], "erro_parse": True}
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Gráfica x Arte")
@@ -129,9 +152,8 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        # Placeholder para status dinâmico
         status_box = st.empty()
-        status_box.info("Iniciando processamento...")
+        status_box.info("Lendo arquivos e iniciando IA...")
 
         f1.seek(0)
         f2.seek(0)
@@ -140,22 +162,22 @@ if st.button("🚀 Validar"):
         conteudo2 = process_file_content(f2)
         
         prompt_base = """
-        ATUE COMO UM VALIDADOR DE DOCUMENTOS TÉCNICOS.
-        TAREFA: Compare os textos da ARTE (Referência) com a GRÁFICA (Prova).
+        ATUE COMO UM VALIDADOR DE BULAS FARMACÊUTICAS.
+        TAREFA: Extrair texto e comparar ARTE (Referência) vs GRÁFICA (Prova).
         
-        REGRAS:
-        1. Transcreva o texto COMPLETO de cada seção.
+        REGRAS RÍGIDAS:
+        1. Transcreva o texto COMPLETO de cada seção encontrada.
         2. Se houver negrito visual, use tags <b>...</b>.
         3. Ignore linhas pontilhadas ("...."), substitua por " ".
-        4. Compare palavra por palavra.
+        4. Marque divergências na GRÁFICA com <span class='highlight-yellow'>...</span>.
         
-        FORMATO JSON:
+        SAÍDA OBRIGATÓRIA (JSON PURO):
         {
             "data_anvisa_ref": "dd/mm/aaaa",
             "data_anvisa_grafica": "dd/mm/aaaa",
             "secoes": [
                 {
-                    "titulo": "TITULO",
+                    "titulo": "NOME DA SEÇÃO",
                     "texto_arte": "Texto da arte...",
                     "texto_grafica": "Texto da gráfica...",
                     "status": "CONFORME"
@@ -177,7 +199,7 @@ if st.button("🚀 Validar"):
             
             for model_name in MODELOS_POSSIVEIS:
                 try:
-                    status_box.text(f"Tentando modelo: {model_name}...")
+                    status_box.text(f"Processando com: {model_name}...")
                     
                     model = genai.GenerativeModel(
                         model_name, 
@@ -189,49 +211,49 @@ if st.button("🚀 Validar"):
                         }
                     )
                     
-                    # Tenta gerar
                     temp_response = model.generate_content(payload)
                     
-                    # VERIFICA SE A RESPOSTA É VÁLIDA (Sem tentar ler .text ainda)
-                    if not temp_response.candidates:
-                        erros_acumulados.append(f"{model_name}: Bloqueio de segurança total.")
-                        continue # Pula para o próximo modelo
-
-                    if not temp_response.candidates[0].content.parts:
-                        erros_acumulados.append(f"{model_name}: Resposta vazia (conteúdo bloqueado).")
-                        continue # Pula para o próximo modelo
+                    # Validação de resposta vazia
+                    if not temp_response.candidates or not temp_response.candidates[0].content.parts:
+                        erros_acumulados.append(f"{model_name}: Bloqueio de segurança (conteúdo vazio).")
+                        continue 
                     
-                    # Se chegou aqui, tem texto!
                     response = temp_response
                     modelo_usado = model_name
                     sucesso = True
-                    break # Sai do loop de modelos
+                    break 
 
                 except Exception as e:
-                    erros_acumulados.append(f"{model_name}: Erro API ({str(e)})")
+                    erros_acumulados.append(f"{model_name}: Erro {str(e)}")
                     continue
             
-            if sucesso: break # Sai do loop de chaves
+            if sucesso: break
 
-        status_box.empty() # Limpa msg de status
+        status_box.empty()
 
         if sucesso and response:
             try:
-                # Limpeza do texto
+                # Limpeza do texto para JSON
                 texto_raw = response.text.replace("```json", "").replace("```", "")
                 match = re.search(r'\{.*\}', texto_raw, re.DOTALL)
                 if match: texto_raw = match.group(0)
 
                 resultado = reparar_json_quebrado(texto_raw)
                 
-                if resultado.get("erro_parse"):
-                    st.warning(f"⚠️ Aviso: O modelo {modelo_usado} cortou a resposta no final, mas recuperamos os dados.")
+                # --- AQUI ESTA O PULO DO GATO ---
+                # Verifica se realmente tem conteúdo
+                secoes = resultado.get("secoes", [])
+                
+                if not secoes:
+                    st.error(f"❌ O modelo {modelo_usado} retornou uma resposta vazia ou inválida.")
+                    with st.expander("🛠️ Ver Resposta Bruta da IA (Debug)"):
+                        st.code(response.text)
+                    st.stop() # Para aqui para não mostrar "Tudo Conforme" falso
 
                 data_ref = resultado.get("data_anvisa_ref", "---")
                 data_graf = resultado.get("data_anvisa_grafica", "---")
-                secoes = resultado.get("secoes", [])
 
-                st.markdown(f"### 📊 Resultado (Gerado por: `{modelo_usado}`)")
+                st.markdown(f"### 📊 Resultado (Modelo: `{modelo_usado}`)")
                 
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Data Ref", data_ref)
@@ -245,6 +267,9 @@ if st.button("🚀 Validar"):
                 else:
                     st.warning(f"⚠️ **{div_count} Divergências Encontradas**")
                 
+                if resultado.get("erro_parse"):
+                    st.warning("⚠️ Nota: O texto foi cortado no final (limite da IA), mas recuperamos o início.")
+
                 st.divider()
 
                 for item in secoes:
@@ -263,13 +288,15 @@ if st.button("🚀 Validar"):
                             st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.error("❌ Erro ao ler o JSON final.")
-                st.code(response.text)
+                st.error("❌ Erro fatal ao processar o JSON.")
+                st.write(e)
+                with st.expander("Ver texto bruto"):
+                    st.code(response.text)
         else:
-             st.error("❌ Falha em todos os modelos. Detalhes dos erros:")
-             for erro in erros_acumulados:
-                 st.write(erro)
-             st.warning("Dica: Tente validar apenas uma parte do documento se ele for muito grande.")
+             st.error("❌ Falha em todos os modelos. O conteúdo foi bloqueado ou a conexão falhou.")
+             with st.expander("Ver detalhes dos erros"):
+                 for erro in erros_acumulados:
+                     st.write(erro)
 
     else:
         st.warning("Adicione os arquivos.")
