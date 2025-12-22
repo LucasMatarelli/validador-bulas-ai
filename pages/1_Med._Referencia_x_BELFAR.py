@@ -4,13 +4,13 @@ from google.api_core import retry
 import fitz  # PyMuPDF
 import docx  # Para ler arquivos Word
 import json
+import re
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
-    /* --- ESCONDER MENU SUPERIOR --- */
     [data-testid="stHeader"] { visibility: hidden; }
 
     .texto-box { 
@@ -27,7 +27,6 @@ st.markdown("""
         text-align: justify;
     }
     .highlight-yellow { background-color: #fff9c4; color: #000; padding: 2px 4px; border-radius: 4px; border: 1px solid #fbc02d; }
-    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 4px; border: 1px solid #b71c1c; font-weight: bold; }
     .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 4px; border-radius: 4px; border: 1px solid #1976d2; font-weight: bold; }
     
     .border-ok { border-left: 6px solid #4caf50 !important; }
@@ -41,43 +40,52 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-flash-latest"
+MODELO_FIXO = "models/gemini-1.5-flash"
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO (PDF E DOCX COM NEGRITO) -----------------
+# ----------------- 3. EXTRAÇÃO DE TEXTO APURADA (COM NEGRITO E FORMATACAO) -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
-        # Verifica se é PDF e extrai com formatação
+        # Verifica se é PDF e extrai mantendo a estrutura visual
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc:
+                # Usa 'dict' para pegar coordenadas e flags de fonte
                 blocks = page.get_text("dict", flags=11)["blocks"]
                 for b in blocks:
+                    block_text = ""
                     for l in b.get("lines", []):
+                        line_text = ""
                         for s in l.get("spans", []):
                             content = s["text"]
-                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower() or "black" in s["font"].lower()
+                            # Detecção de Negrito mais robusta
+                            font_name = s["font"].lower()
+                            is_bold = (s["flags"] & 16) or "bold" in font_name or "black" in font_name
+                            
                             if is_bold:
-                                text += f"<b>{content}</b>"
+                                line_text += f"<b>{content}</b>"
                             else:
-                                text += content
-                        text += "\n"
-                    text += "\n"
+                                line_text += content
+                        # Adiciona quebra de linha ao fim de cada linha visual
+                        block_text += line_text + "\n"
+                    # Adiciona quebra extra entre blocos de texto
+                    text += block_text + "\n"
         
-        # Verifica se é DOCX e extrai com formatação
+        # Verifica se é DOCX
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
             for para in doc.paragraphs:
+                para_text = ""
                 for run in para.runs:
                     if run.bold:
-                        text += f"<b>{run.text}</b>"
+                        para_text += f"<b>{run.text}</b>"
                     else:
-                        text += run.text
-                text += "\n"
+                        para_text += run.text
+                text += para_text + "\n\n"
         
         return text
     except Exception as e:
-        return ""
+        return f"Erro na leitura: {e}"
 
 # ----------------- 4. LISTAS DE SEÇÕES -----------------
 SECOES_PACIENTE = [
@@ -111,7 +119,6 @@ f1 = c1.file_uploader("📂 Arquivo Referência", type=["pdf", "docx"], key="f1"
 f2 = c2.file_uploader("📂 Arquivo BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    # 3 CHAVES API
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -121,16 +128,14 @@ if st.button("🚀 Processar Conferência"):
 
     if f1 and f2:
         with st.spinner("Processando Inteligência Artificial..."):
-            f1.seek(0)
-            f2.seek(0)
-            
+            f1.seek(0); f2.seek(0)
             t_ref = extract_text_from_file(f1)
             t_belfar = extract_text_from_file(f2)
 
-            if len(t_ref) < 50 or len(t_belfar) < 50:
-                st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
+            if len(t_ref) < 20 or len(t_belfar) < 20:
+                st.error("Erro: Arquivo ilegível ou vazio."); st.stop()
 
-            # --- PROMPT REFORÇADO PARA MANTER CONTEÚDO ORIGINAL ---
+            # --- PROMPT REFORÇADO PARA MANTER ESTRUTURA E NEGRITO ---
             prompt = f"""
             Você é um Auditor de Qualidade Farmacêutica Rígido.
             
@@ -140,36 +145,28 @@ if st.button("🚀 Processar Conferência"):
             INPUT TEXTO BELFAR:
             {t_belfar}
 
-            SUA TAREFA PRINCIPAL: EXTRAÇÃO FIEL E ORIGINAL.
-            1. Para cada seção listada, extraia o texto.
-            2. **PROIBIDO ALTERAR O TEXTO.** Não corrija gramática, não mude palavras, não altere números.
-            3. Se o arquivo original tiver erros, O TEXTO EXTRAÍDO DEVE TER OS MESMOS ERROS.
-            4. Se houver tags HTML de negrito (<b>...</b>), MANTENHA-AS na saída.
+            SUA TAREFA:
+            1. Identifique as seções listadas abaixo.
+            2. Extraia o texto MANTENDO A FORMATAÇÃO ORIGINAL (quebras de linha e tags <b>).
+            3. Se houver listas (bullet points), mantenha cada item em uma linha separada.
+            4. NÃO CORRIJA ERROS. Copie exatamente como está no texto extraído acima.
 
             LISTA DE SEÇÕES: {lista_secoes_ativa}
 
-            REGRAS DE FORMATAÇÃO DO OUTPUT:
-            
-            CASO 1: Seções "APRESENTAÇÕES", "COMPOSIÇÃO" e "DIZERES LEGAIS":
-               - Status SEMPRE "CONFORME".
-               - Apenas transcreva o texto limpo, SEM MODIFICAÇÕES.
-               - Exceção: Destaque a Data da Anvisa em "DIZERES LEGAIS" com <span class="highlight-blue">DATA</span>.
+            REGRAS DE OUTPUT:
+            - Seções "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS": Status "CONFORME". Apenas extraia.
+            - Outras Seções: Compare o texto. Se houver divergência, use <span class="highlight-yellow"> no trecho diferente.
+            - Destaque a Data da Anvisa nos "DIZERES LEGAIS" com <span class="highlight-blue">.
 
-            CASO 2: TODAS AS OUTRAS SEÇÕES:
-               - Compare a sequência de palavras.
-               - Se for IDÊNTICO (ignorando quebra de linha): Status "CONFORME".
-               - Se for DIFERENTE: Status "DIVERGENTE". Use <span class="highlight-yellow">TRECHO NOVO/ALTERADO</span>.
-               - Mantenha o texto extraído original, mesmo se tiver erros de português.
-
-            SAÍDA JSON OBRIGATÓRIA:
+            SAÍDA JSON:
             {{
                 "data_anvisa_ref": "dd/mm/aaaa",
                 "data_anvisa_belfar": "dd/mm/aaaa",
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_ref": "Texto completo original e sem correções",
-                        "texto_belfar": "Texto completo original e sem correções",
+                        "texto_ref": "Texto original com tags <b> e quebras de linha",
+                        "texto_belfar": "Texto original com tags <b> e quebras de linha",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
@@ -182,32 +179,22 @@ if st.button("🚀 Processar Conferência"):
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(
-                        MODELO_FIXO, 
-                        generation_config={"response_mime_type": "application/json", "temperature": 0.0}
-                    )
-                    
+                    model = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
                     response = model.generate_content(prompt, request_options={'retry': None})
                     break 
-
                 except Exception as e:
                     ultimo_erro = str(e)
-                    if i < len(keys_validas) - 1:
-                        st.warning(f"⚠️ Chave {i+1} instável. Trocando para Chave {i+2}...")
-                        continue
-                    else:
-                        st.error(f"❌ Todas as chaves falharam. Erro: {ultimo_erro}")
-                        st.stop()
+                    if i < len(keys_validas) - 1: continue
+                    else: st.error(f"Erro Fatal: {ultimo_erro}"); st.stop()
 
             if response:
                 try:
                     resultado = json.loads(response.text)
-                    
                     data_ref = resultado.get("data_anvisa_ref", "-")
                     data_belfar = resultado.get("data_anvisa_belfar", "-")
                     dados_secoes = resultado.get("secoes", [])
 
-                    # Correção de Status via Python
+                    # Correção forçada de status para garantir visualização
                     divergentes_count = 0
                     for item in dados_secoes:
                         if 'highlight-yellow' in item.get('texto_belfar', '') or item.get('status') == 'DIVERGENTE':
@@ -217,20 +204,15 @@ if st.button("🚀 Processar Conferência"):
                             item['status'] = 'CONFORME'
 
                     st.markdown("### 📊 Resumo da Conferência")
-                    
                     c_d1, c_d2, c_d3 = st.columns(3)
                     c_d1.metric("Data Ref.", data_ref)
                     c_d2.metric("Data BELFAR", data_belfar, delta="Igual" if data_ref == data_belfar else "Diferente")
-                    
-                    total = len(dados_secoes)
-                    c_d3.metric("Seções Analisadas", total)
+                    c_d3.metric("Seções", len(dados_secoes))
 
                     sub1, sub2 = st.columns(2)
-                    sub1.info(f"✅ **Conformes:** {total - divergentes_count}")
-                    if divergentes_count > 0:
-                        sub2.warning(f"⚠️ **Divergentes:** {divergentes_count}")
-                    else:
-                        sub2.success("✨ **Divergências:** 0")
+                    sub1.info(f"✅ **Conformes:** {len(dados_secoes) - divergentes_count}")
+                    if divergentes_count > 0: sub2.warning(f"⚠️ **Divergentes:** {divergentes_count}")
+                    else: sub2.success("✨ **Divergências:** 0")
 
                     st.divider()
 
@@ -257,4 +239,4 @@ if st.button("🚀 Processar Conferência"):
                 except Exception as e:
                     st.error(f"Erro ao ler resposta da IA: {e}")
     else:
-        st.warning("Por favor, envie os dois arquivos PDF ou DOCX.")
+        st.warning("Envie os dois arquivos.")
