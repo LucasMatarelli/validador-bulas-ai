@@ -40,7 +40,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-1.5-flash"
+MODELO_FIXO = "models/gemini-flash-latest"
 
 # ----------------- 3. EXTRAÇÃO DE TEXTO APURADA (COM NEGRITO E FORMATACAO) -----------------
 def extract_text_from_file(uploaded_file):
