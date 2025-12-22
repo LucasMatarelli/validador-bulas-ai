@@ -1,8 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
-import fitz  # PyMuPDF
-import docx  # Para ler DOCX
+import fitz
+import docx
 import io
 import json
 import re
@@ -42,8 +42,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO -----------------
-MODELOS_POSSIVEIS = "models/gemini-flash-latest"
+MODELO_FIXO = "models/gemini-flash-latest" 
 
 SECOES_OBRIGATORIAS = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", 
@@ -63,7 +62,6 @@ def process_file_content(uploaded_file):
         filename = uploaded_file.name.lower()
         if filename.endswith(".pdf"):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            # Tenta extrair imagens primeiro (melhor para layout complexo)
             images = []
             for page in doc:
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) 
@@ -100,7 +98,7 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Analisando visualmente..."):
+        with st.spinner("Analisando visualmente (Ignorando pontilhados)..."):
             f1.seek(0); f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
@@ -110,13 +108,14 @@ if st.button("🚀 Validar"):
             
             Compare as duas imagens/textos fornecidos (ARTE vs GRÁFICA).
             
-            LISTA DE SEÇÕES A VERIFICAR: {json.dumps(SECOES_OBRIGATORIAS, ensure_ascii=False)}
+            LISTA DE SEÇÕES: {json.dumps(SECOES_OBRIGATORIAS, ensure_ascii=False)}
 
             REGRAS DE EXTRAÇÃO:
-            1. Para cada seção, extraia o texto de AMBOS os documentos.
-            2. **MANTENHA A FORMATAÇÃO:** Se houver bullet points (listas), mantenha cada item em uma nova linha.
-            3. **MANTENHA O NEGRITO:** Use tags <b>...</b> onde houver negrito visualmente.
-            4. NÃO CORRIJA ERROS. Copie exatamente o que vê (OCR literal).
+            1. Extraia o texto COMPLETO. Não pare no meio da seção.
+            2. Se o texto estiver em colunas, leia na ordem correta.
+            3. IGNORE PONTILHADOS (".....") de formatação de tabela. Extraia apenas o texto.
+            4. Mantenha bullet points em linhas separadas.
+            5. Use <b> para negrito.
 
             SAÍDA JSON:
             {{
@@ -125,8 +124,8 @@ if st.button("🚀 Validar"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto com tags <b> e quebras de linha",
-                        "texto_grafica": "Texto com tags <b> e quebras de linha",
+                        "texto_arte": "Texto completo limpo",
+                        "texto_grafica": "Texto completo limpo",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
@@ -139,8 +138,7 @@ if st.button("🚀 Validar"):
             for api_key in keys_validas:
                 genai.configure(api_key=api_key)
                 try:
-                    # Usando modelo Flash que suporta muitas imagens e é rápido
-                    model = genai.GenerativeModel("models/gemini-1.5-flash", generation_config={"response_mime_type": "application/json"})
+                    model = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json"})
                     response = model.generate_content(payload)
                     final_result = reparar_json_quebrado(response.text)
                     break
@@ -150,7 +148,6 @@ if st.button("🚀 Validar"):
             if final_result and "secoes" in final_result:
                 secoes = final_result["secoes"]
                 
-                # Exibição
                 st.markdown("### 📊 Resultado da Análise Visual")
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Data Ref", final_result.get("data_anvisa_ref", "-"))
@@ -170,10 +167,10 @@ if st.button("🚀 Validar"):
                         cA, cB = st.columns(2)
                         with cA:
                             st.caption("Arte")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "").replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
                         with cB:
                             st.caption("Gráfica")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "").replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
             else:
                 st.error("Falha ao analisar documentos. Tente novamente.")
     else:
