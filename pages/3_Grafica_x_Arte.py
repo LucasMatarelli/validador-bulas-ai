@@ -42,27 +42,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. MODELOS E CONFIGURAÇÃO -----------------
-MODELOS_POSSIVEIS = [
-    "models/gemini-2.5-flash",        # Tenta o mais novo primeiro
-    "models/gemini-flash-latest",     # Seu preferido
-    "models/gemini-1.5-flash-latest", # Fallback
-    "models/gemini-1.5-pro-latest"    # Último recurso
-]
-
-SAFETY_SETTINGS = [
-    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-]
+# ----------------- 2. CONFIGURAÇÃO -----------------
+MODELOS_POSSIVEIS = ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
 
 SECOES_OBRIGATORIAS = [
-    "APRESENTAÇÕES", 
-    "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", 
-    "COMO ESTE MEDICAMENTO FUNCIONA?", 
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", 
+    "APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", 
+    "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", 
     "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
     "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", 
     "COMO DEVO USAR ESTE MEDICAMENTO?", 
@@ -78,19 +63,12 @@ def process_file_content(uploaded_file):
         filename = uploaded_file.name.lower()
         if filename.endswith(".pdf"):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            full_text = ""
-            has_digital_text = False
+            # Tenta extrair imagens primeiro (melhor para layout complexo)
+            images = []
             for page in doc:
-                text = page.get_text("text")
-                if len(text.strip()) > 50: has_digital_text = True
-                full_text += text + "\n"
-            if has_digital_text: return [full_text]
-            else:
-                images = []
-                for page in doc:
-                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) 
-                    images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
-                return images
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) 
+                images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
+            return images
         elif filename.endswith((".jpg", ".png", ".jpeg")):
             return [Image.open(uploaded_file)]
         elif filename.endswith(".docx"):
@@ -100,25 +78,11 @@ def process_file_content(uploaded_file):
 
 def reparar_json_quebrado(texto_json):
     if not texto_json: return {"secoes": [], "erro_parse": True}
+    texto_limpo = texto_json.strip().replace("```json", "").replace("```", "")
     try:
-        return json.loads(texto_json, strict=False)
+        return json.loads(texto_limpo)
     except:
-        texto_limpo = texto_json.strip()
-        if not (texto_limpo.endswith("}") or texto_limpo.endswith("]")):
-            conta_aspas = texto_limpo.count('"') - texto_limpo.count('\\"')
-            if conta_aspas % 2 != 0: texto_limpo += '"'
-            tentativas = ["}", "]}", "] }", "}]}", "\"}]}"]
-            for t in tentativas:
-                try: return json.loads(texto_limpo + t, strict=False)
-                except: continue
-        
-        objetos = re.findall(r'\{[^{}]*"titulo"[^{}]*\}', texto_limpo, re.DOTALL)
-        if objetos:
-            novo_json = '{"secoes": [' + ','.join(objetos) + ']}'
-            try: return json.loads(novo_json, strict=False)
-            except: pass
-
-    return {"secoes": [], "erro_parse": True}
+        return {"secoes": [], "erro_parse": True}
 
 # ----------------- 4. UI PRINCIPAL -----------------
 st.title("💊 Gráfica x Arte")
@@ -128,8 +92,6 @@ f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png", "docx"]
 f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png", "docx"])
 
 if st.button("🚀 Validar"):
-    
-    # 3 CHAVES API
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -138,156 +100,81 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        status_box = st.empty()
-        status_box.info("Lendo arquivos...")
-
-        f1.seek(0)
-        f2.seek(0)
-        
-        conteudo1 = process_file_content(f1)
-        conteudo2 = process_file_content(f2)
-        
-        # --- PROMPT REFORÇADO PARA CÓPIA EXATA ---
-        prompt_base = f"""
-        ATUE COMO UM AUDITOR FARMACÊUTICO RÍGIDO.
-        
-        Sua missão é extrair e comparar texto de DUAS fontes: ARTE (Referência) e GRÁFICA (Prova).
-        
-        VOCÊ É OBRIGADO A ITERAR SOBRE ESTA LISTA DE SEÇÕES, UMA POR UMA. NÃO PULE NENHUMA:
-        {json.dumps(SECOES_OBRIGATORIAS, ensure_ascii=False)}
-
-        REGRAS ABSOLUTAS DE EXTRAÇÃO (IMPORTANTE):
-        1. EXTRAIA O TEXTO ORIGINAL EXATAMENTE COMO ESTÁ NOS DOCUMENTOS.
-        2. NÃO CORRIJA ERROS DE PORTUGUÊS.
-        3. NÃO CORRIJA PONTUAÇÃO.
-        4. NÃO MODIFIQUE NADA. COPIE "IPSIS LITTERIS" (LETRA POR LETRA).
-        5. Se houver um erro no texto original, MANTENHA O ERRO NO JSON.
-        6. NÃO RESUMA.
-
-        REGRAS DE EXECUÇÃO:
-        1. Para CADA item da lista acima, procure o texto correspondente nos documentos.
-        2. Copie TODO o texto abaixo do título até o próximo.
-        3. Se não encontrar uma seção específica, retorne status "NÃO ENCONTRADO".
-        
-        SAÍDA JSON OBRIGATÓRIA:
-        {{
-            "data_anvisa_ref": "dd/mm/aaaa",
-            "data_anvisa_grafica": "dd/mm/aaaa",
-            "secoes": [
-                {{
-                    "titulo": "NOME DA SEÇÃO DA LISTA",
-                    "texto_arte": "Cópia exata e sem modificações...",
-                    "texto_grafica": "Cópia exata e sem modificações...",
-                    "status": "CONFORME" ou "DIVERGENTE" ou "NÃO ENCONTRADO"
-                }}
-            ]
-        }}
-        """
-        
-        payload = [prompt_base, "=== ARTE ==="] + conteudo1 + ["=== GRÁFICA ==="] + conteudo2
-        
-        final_result = None
-        modelo_vencedor = ""
-        erros_log = []
-
-        for api_key in keys_validas:
-            genai.configure(api_key=api_key)
+        with st.spinner("Analisando visualmente..."):
+            f1.seek(0); f2.seek(0)
+            conteudo1 = process_file_content(f1)
+            conteudo2 = process_file_content(f2)
             
-            for model_name in MODELOS_POSSIVEIS:
+            prompt_base = f"""
+            ATUE COMO UM AUDITOR FARMACÊUTICO.
+            
+            Compare as duas imagens/textos fornecidos (ARTE vs GRÁFICA).
+            
+            LISTA DE SEÇÕES A VERIFICAR: {json.dumps(SECOES_OBRIGATORIAS, ensure_ascii=False)}
+
+            REGRAS DE EXTRAÇÃO:
+            1. Para cada seção, extraia o texto de AMBOS os documentos.
+            2. **MANTENHA A FORMATAÇÃO:** Se houver bullet points (listas), mantenha cada item em uma nova linha.
+            3. **MANTENHA O NEGRITO:** Use tags <b>...</b> onde houver negrito visualmente.
+            4. NÃO CORRIJA ERROS. Copie exatamente o que vê (OCR literal).
+
+            SAÍDA JSON:
+            {{
+                "data_anvisa_ref": "dd/mm/aaaa",
+                "data_anvisa_grafica": "dd/mm/aaaa",
+                "secoes": [
+                    {{
+                        "titulo": "NOME DA SEÇÃO",
+                        "texto_arte": "Texto com tags <b> e quebras de linha",
+                        "texto_grafica": "Texto com tags <b> e quebras de linha",
+                        "status": "CONFORME" ou "DIVERGENTE"
+                    }}
+                ]
+            }}
+            """
+            
+            payload = [prompt_base, "=== ARTE (REF) ==="] + conteudo1 + ["=== GRÁFICA (PROVA) ==="] + conteudo2
+            
+            final_result = None
+            for api_key in keys_validas:
+                genai.configure(api_key=api_key)
                 try:
-                    status_box.text(f"Processando com: {model_name}...")
-                    
-                    model = genai.GenerativeModel(
-                        model_name, 
-                        safety_settings=SAFETY_SETTINGS,
-                        generation_config={
-                            "response_mime_type": "application/json", 
-                            "temperature": 0.0,
-                            "max_output_tokens": 8192 
-                        }
-                    )
-                    
+                    # Usando modelo Flash que suporta muitas imagens e é rápido
+                    model = genai.GenerativeModel("models/gemini-1.5-flash", generation_config={"response_mime_type": "application/json"})
                     response = model.generate_content(payload)
-                    
-                    if not response.candidates or not response.candidates[0].content.parts:
-                        erros_log.append(f"{model_name}: Bloqueio vazio.")
-                        continue
-
-                    texto_raw = response.text.replace("```json", "").replace("```", "")
-                    match = re.search(r'\{.*\}', texto_raw, re.DOTALL)
-                    if match: texto_raw = match.group(0)
-
-                    resultado = reparar_json_quebrado(texto_raw)
-                    secoes = resultado.get("secoes", [])
-
-                    if len(secoes) < 3: 
-                        erros_log.append(f"{model_name}: Retornou apenas {len(secoes)} seções (Incompleto).")
-                        continue 
-                    
-                    final_result = resultado
-                    modelo_vencedor = model_name
-                    break 
-
+                    final_result = reparar_json_quebrado(response.text)
+                    break
                 except Exception as e:
-                    erros_log.append(f"{model_name}: Erro {str(e)}")
                     continue
-            
-            if final_result: break
 
-        status_box.empty()
-
-        if final_result:
-            try:
-                data_ref = final_result.get("data_anvisa_ref", "---")
-                data_graf = final_result.get("data_anvisa_grafica", "---")
-                secoes = final_result.get("secoes", [])
-
-                st.markdown(f"### 📊 Resultado (Modelo: `{modelo_vencedor}`)")
+            if final_result and "secoes" in final_result:
+                secoes = final_result["secoes"]
                 
+                # Exibição
+                st.markdown("### 📊 Resultado da Análise Visual")
                 k1, k2, k3 = st.columns(3)
-                k1.metric("Data Ref", data_ref)
-                k2.metric("Data Gráfica", data_graf)
-                k3.metric("Seções Encontradas", len(secoes))
+                k1.metric("Data Ref", final_result.get("data_anvisa_ref", "-"))
+                k2.metric("Data Gráfica", final_result.get("data_anvisa_grafica", "-"))
+                k3.metric("Seções", len(secoes))
 
-                div_count = sum(1 for s in secoes if s.get('status') not in ['CONFORME', 'NÃO ENCONTRADO'])
-                
-                if div_count == 0:
-                    st.success("✅ **Tudo Conforme!**")
-                else:
-                    st.warning(f"⚠️ **{div_count} Divergências Encontradas**")
-                
                 st.divider()
 
                 for item in secoes:
                     status = item.get('status', 'CONFORME')
-                    
                     if status == "CONFORME":
                         css, icon, aberto = "border-ok", "✅", False
-                    elif status == "NÃO ENCONTRADO":
-                        css, icon, aberto = "border-info", "❓", True
                     else:
                         css, icon, aberto = "border-warn", "⚠️", True
 
-                    with st.expander(f"{icon} {item.get('titulo', 'Seção')}", expanded=aberto):
-                        if status == "NÃO ENCONTRADO":
-                            st.info("Esta seção não foi identificada no documento.")
-                        else:
-                            cA, cB = st.columns(2)
-                            with cA:
-                                st.caption("Arte")
-                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
-                            with cB:
-                                st.caption("Gráfica")
-                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
-
-            except Exception as e:
-                st.error("❌ Erro ao exibir os dados.")
-                st.write(e)
-        else:
-             st.error("❌ Falha crítica: Os modelos não conseguiram ler todas as seções.")
-             with st.expander("Ver log de erros"):
-                 for erro in erros_log:
-                     st.write(erro)
-
+                    with st.expander(f"{icon} {item.get('titulo')}", expanded=aberto):
+                        cA, cB = st.columns(2)
+                        with cA:
+                            st.caption("Arte")
+                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
+                        with cB:
+                            st.caption("Gráfica")
+                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+            else:
+                st.error("Falha ao analisar documentos. Tente novamente.")
     else:
         st.warning("Adicione os arquivos.")
