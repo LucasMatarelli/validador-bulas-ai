@@ -5,7 +5,7 @@ import fitz  # PyMuPDF
 import docx  # Para ler DOCX
 import io
 import json
-import re  # Para limpeza de texto
+import re  # Para limpeza cirúrgica
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
@@ -49,15 +49,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELOS (FAILOVER) -----------------
+# ----------------- 2. CONFIGURAÇÃO MODELOS -----------------
 MODELOS_POSSIVEIS = [
-    "models/gemini-1.5-flash",        # Mais atual e robusto
-    "models/gemini-flash-latest",     # Alternativa
-    "models/gemini-1.5-pro-latest"    # Último recurso
+    "models/gemini-1.5-flash",
+    "models/gemini-flash-latest",
+    "models/gemini-1.5-pro-latest"
 ]
 
-# ----------------- 3. CONFIGURAÇÃO DE SEGURANÇA (IMPORTANTE) -----------------
-# Desativa filtros para permitir termos médicos/farmacêuticos
+# ----------------- 3. CONFIGURAÇÃO DE SEGURANÇA -----------------
 SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -65,11 +64,10 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
 ]
 
-# ----------------- 4. PROCESSAMENTO INTELIGENTE -----------------
+# ----------------- 4. FUNÇÕES AUXILIARES -----------------
 def process_file_content(uploaded_file):
     try:
         filename = uploaded_file.name.lower()
-
         if filename.endswith(".pdf"):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             full_text = ""
@@ -78,7 +76,6 @@ def process_file_content(uploaded_file):
                 text = page.get_text("text")
                 if len(text.strip()) > 50: has_digital_text = True
                 full_text += text + "\n"
-            
             if has_digital_text: return [full_text]
             else:
                 images = []
@@ -86,27 +83,26 @@ def process_file_content(uploaded_file):
                     pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) 
                     images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
                 return images
-        
         elif filename.endswith((".jpg", ".png", ".jpeg")):
             return [Image.open(uploaded_file)]
-
         elif filename.endswith(".docx"):
             doc = docx.Document(uploaded_file)
-            full_text = [para.text for para in doc.paragraphs]
-            return ["\n".join(full_text)]
-            
+            return ["\n".join([para.text for para in doc.paragraphs])]
     except: return []
 
-SECOES_COMPLETAS = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
-    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
-    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
-    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
-    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
-    "DIZERES LEGAIS"
-]
+def limpar_json(texto):
+    """
+    Função cirúrgica para encontrar o JSON dentro da resposta da IA,
+    ignorando qualquer texto introdutório ou final.
+    """
+    # Remove blocos de código markdown
+    texto = texto.replace("```json", "").replace("```", "")
+    
+    # Regex para encontrar o primeiro '{' e o último '}'
+    match = re.search(r'\{.*\}', texto, re.DOTALL)
+    if match:
+        return match.group(0)
+    return texto
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Gráfica x Arte")
@@ -125,62 +121,50 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando... Lendo documentos complexos..."):
+        with st.spinner("Processando..."):
             f1.seek(0)
             f2.seek(0)
             
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # --- CONSTRUÇÃO DO PROMPT SEGURA (SEM F-STRING COMPLEXA) ---
-            intro_prompt = f"Você é um EXTRATOR FORENSE DE TEXTO FARMACÊUTICO.\nINPUT: Documentos.\nTAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}\n"
+            # Prompt simplificado para evitar conflito de sintaxe
+            prompt_base = """
+            ATUE COMO UM VALIDADOR DE BULAS FARMACÊUTICAS.
             
-            regras_prompt = """
-            ⚠️ PROTOCOLO DE EXTRAÇÃO (CRUCIAL):
-            1. **INTEGRIDADE TOTAL:** Extraia TODO o texto de cada seção. NÃO RESUMA. NÃO CORTE. Vá até o último ponto final.
-            2. **NEGRITO VISUAL:** Se houver texto em **negrito**, envolva-o na tag <b> e </b>.
-            3. **LAYOUT PONTILHADO:** Ignore linhas de pontinhos longas (ex: "Cloridrato .......... 5mg"). Transcreva apenas "Cloridrato 5mg".
-            4. **NÃO ALUCINE:** Copie exatamente o que vê.
-
-            ⚠️ PROTOCOLO DE JSON E ASPAS:
-            - NUNCA use aspas duplas (") dentro do texto sem escapá-las (\").
-            - Para tags HTML, use aspas simples: <span class='highlight-yellow'>.
-
-            🚨 COMPARAÇÃO:
-            - Compare ARTE vs GRÁFICA.
-            - Marque divergências na GRÁFICA com <span class='highlight-yellow'>TEXTO ERRADO</span>.
-
-            SAÍDA JSON OBRIGATÓRIA:
+            TAREFA: Compare os textos da ARTE (Referência) com a GRÁFICA (Prova).
+            
+            REGRAS CRÍTICAS:
+            1. Transcreva o texto COMPLETO de cada seção. Não resume.
+            2. Se houver negrito visual, use tags <b>...</b>.
+            3. Ignore linhas pontilhadas longas (ex: "......."), substitua por " ".
+            4. Compare palavra por palavra. Se houver erro na GRÁFICA, envolva o erro em <span class='highlight-yellow'>...</span>.
+            
+            FORMATO DE SAÍDA JSON (ESTRITAMENTE ESTE FORMATO):
             {
                 "data_anvisa_ref": "dd/mm/aaaa",
                 "data_anvisa_grafica": "dd/mm/aaaa",
                 "secoes": [
                     {
-                        "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto COMPLETO da arte",
-                        "texto_grafica": "Texto COMPLETO da gráfica",
+                        "titulo": "TITULO DA SEÇÃO",
+                        "texto_arte": "Texto completo da arte...",
+                        "texto_grafica": "Texto completo da gráfica...",
                         "status": "CONFORME"
                     }
                 ]
             }
             """
             
-            # Junta as partes do prompt
-            final_prompt = intro_prompt + regras_prompt
-            
-            payload = [final_prompt, "--- ARTE (REFERÊNCIA) ---"] + conteudo1 + ["--- GRÁFICA (VALIDAÇÃO) ---"] + conteudo2
+            # Adiciona os conteúdos no payload
+            payload = [prompt_base, "=== ARTE ==="] + conteudo1 + ["=== GRÁFICA ==="] + conteudo2
             
             response = None
             ultimo_erro = ""
 
-            # Loop de Chaves
             for api_key in keys_validas:
                 genai.configure(api_key=api_key)
-                
-                # Loop de Modelos
                 for model_name in MODELOS_POSSIVEIS:
                     try:
-                        # CONFIGURAÇÃO DE SEGURANÇA E TOKENS
                         model = genai.GenerativeModel(
                             model_name, 
                             safety_settings=SAFETY_SETTINGS,
@@ -195,73 +179,61 @@ if st.button("🚀 Validar"):
                     except Exception as e:
                         ultimo_erro = str(e)
                         continue 
-                
                 if response: break
 
             if response:
                 try:
-                    if not response.parts:
-                        st.error(f"Erro: O modelo bloqueou a resposta. Detalhes: {response.prompt_feedback}")
-                        st.stop()
-
-                    texto_limpo = response.text.replace("```json", "").replace("```", "").strip()
-                    texto_limpo = re.sub(r'\.{4,}', '...', texto_limpo)
-
+                    # 1. Tenta limpar o JSON com Regex
+                    texto_raw = response.text
+                    texto_limpo = limpar_json(texto_raw)
+                    
+                    # 2. Carrega o JSON
                     resultado = json.loads(texto_limpo, strict=False)
                     
-                    data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
-                    data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
+                    # 3. Renderiza o Resultado
+                    data_ref = resultado.get("data_anvisa_ref", "---")
+                    data_graf = resultado.get("data_anvisa_grafica", "---")
                     secoes = resultado.get("secoes", [])
 
-                    st.markdown("### 📊 Resumo da Conferência")
+                    st.markdown("### 📊 Resultado")
                     
                     k1, k2, k3 = st.columns(3)
-                    k1.metric("Data Anvisa (Ref)", data_ref)
-                    
-                    cor_delta = "normal" if data_ref == data_graf and data_ref != "Não encontrada" else "inverse"
-                    msg_delta = "Vigência" if data_ref == data_graf else "Diferente"
-                    if data_graf == "Não encontrada": msg_delta = ""
-                    
-                    k2.metric("Data Anvisa (Gráfica)", data_graf, delta=msg_delta, delta_color=cor_delta)
-                    k3.metric("Seções Analisadas", len(secoes))
+                    k1.metric("Data Ref", data_ref)
+                    k2.metric("Data Gráfica", data_graf)
+                    k3.metric("Seções", len(secoes))
 
                     div_count = sum(1 for s in secoes if s.get('status') != 'CONFORME')
-                    ok_count = len(secoes) - div_count
                     
-                    b1, b2 = st.columns(2)
-                    b1.success(f"✅ **Conformes: {ok_count}**")
-                    if div_count > 0: b2.warning(f"⚠️ **Divergentes: {div_count}**")
-                    else: b2.success("✨ **Divergentes: 0**")
+                    if div_count == 0:
+                        st.success("✅ **Tudo Conforme!**")
+                    else:
+                        st.warning(f"⚠️ **{div_count} Divergências Encontradas**")
                     
                     st.divider()
 
                     for item in secoes:
                         status = item.get('status', 'CONFORME')
-                        titulo = item.get('titulo', 'Seção')
-                        
-                        if "DIZERES LEGAIS" in titulo.upper():
-                            icon, css, aberto = "📅", "border-info", True
-                        elif status == "CONFORME":
-                            icon, css, aberto = "✅", "border-ok", False
-                        else:
-                            icon, css, aberto = "⚠️", "border-warn", True
+                        css = "border-ok" if status == "CONFORME" else "border-warn"
+                        icon = "✅" if status == "CONFORME" else "⚠️"
+                        aberto = status != "CONFORME"
 
-                        with st.expander(f"{icon} {titulo}", expanded=aberto):
-                            col_esq, col_dir = st.columns(2)
-                            with col_esq:
-                                st.caption("Referência (Arte)")
+                        with st.expander(f"{icon} {item.get('titulo', 'Seção')}", expanded=aberto):
+                            cA, cB = st.columns(2)
+                            with cA:
+                                st.caption("Arte")
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
-                            with col_dir:
-                                st.caption("Validação (Gráfica)")
+                            with cB:
+                                st.caption("Gráfica")
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
-                except json.JSONDecodeError as e:
-                    st.error("Erro na leitura dos dados (JSON).")
-                    st.warning("O documento pode ser muito extenso ou conter caracteres inválidos.")
                 except Exception as e:
-                    st.error(f"Erro no processamento: {e}")
+                    st.error("❌ Erro ao ler o JSON da IA.")
+                    st.error(f"Detalhe do erro: {e}")
+                    
+                    with st.expander("🛠️ Ver resposta bruta da IA (Para Debug)"):
+                        st.code(response.text)
             else:
-                 st.error(f"Não foi possível conectar. Erro: {ultimo_erro}")
+                 st.error(f"Erro de Conexão: {ultimo_erro}")
 
     else:
         st.warning("Adicione os arquivos.")
