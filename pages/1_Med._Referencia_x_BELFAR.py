@@ -1,8 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
-from google.api_core import retry
 import fitz  # PyMuPDF
-import docx  # Para ler arquivos Word
+import docx
 import json
 import re
 
@@ -42,23 +41,30 @@ st.markdown("""
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO APURADA (COM NEGRITO E FORMATACAO) -----------------
+# ----------------- 3. EXTRAÇÃO DE TEXTO INTELIGENTE (COLUNAS E LIMPEZA) -----------------
+def clean_text_noise(text):
+    """Remove pontilhados (....) usados para tabulação em bulas."""
+    # Remove sequências de 3 ou mais pontos ou underlines
+    text = re.sub(r'\.{3,}', ' ', text)
+    text = re.sub(r'_{3,}', ' ', text)
+    return text
+
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
-        # Verifica se é PDF e extrai mantendo a estrutura visual
+        # PDF: USAR sort=True É ESSENCIAL PARA LER COLUNAS NA ORDEM CERTA
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc:
-                # Usa 'dict' para pegar coordenadas e flags de fonte
-                blocks = page.get_text("dict", flags=11)["blocks"]
+                # sort=True organiza a leitura por colunas (visual)
+                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
                 for b in blocks:
                     block_text = ""
                     for l in b.get("lines", []):
                         line_text = ""
                         for s in l.get("spans", []):
                             content = s["text"]
-                            # Detecção de Negrito mais robusta
+                            # Detecção de Negrito
                             font_name = s["font"].lower()
                             is_bold = (s["flags"] & 16) or "bold" in font_name or "black" in font_name
                             
@@ -66,12 +72,12 @@ def extract_text_from_file(uploaded_file):
                                 line_text += f"<b>{content}</b>"
                             else:
                                 line_text += content
-                        # Adiciona quebra de linha ao fim de cada linha visual
-                        block_text += line_text + "\n"
-                    # Adiciona quebra extra entre blocos de texto
-                    text += block_text + "\n"
+                        block_text += line_text + " " # Espaço entre palavras da mesma linha
+                    # Quebra de linha ao fim do bloco visual
+                    text += block_text.strip() + "\n"
+                text += "\n"
         
-        # Verifica se é DOCX
+        # DOCX
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
             for para in doc.paragraphs:
@@ -83,7 +89,7 @@ def extract_text_from_file(uploaded_file):
                         para_text += run.text
                 text += para_text + "\n\n"
         
-        return text
+        return clean_text_noise(text)
     except Exception as e:
         return f"Erro na leitura: {e}"
 
@@ -127,7 +133,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando Inteligência Artificial..."):
+        with st.spinner("Lendo arquivos (Ordenando Colunas)..."):
             f1.seek(0); f2.seek(0)
             t_ref = extract_text_from_file(f1)
             t_belfar = extract_text_from_file(f2)
@@ -135,28 +141,24 @@ if st.button("🚀 Processar Conferência"):
             if len(t_ref) < 20 or len(t_belfar) < 20:
                 st.error("Erro: Arquivo ilegível ou vazio."); st.stop()
 
-            # --- PROMPT REFORÇADO PARA MANTER ESTRUTURA E NEGRITO ---
+            # PROMPT PARA COMPLETUDE
             prompt = f"""
-            Você é um Auditor de Qualidade Farmacêutica Rígido.
+            Você é um Auditor Farmacêutico.
             
-            INPUT TEXTO REFERÊNCIA:
-            {t_ref} 
+            INPUT REFERÊNCIA:
+            {t_ref[:150000]} 
             
-            INPUT TEXTO BELFAR:
-            {t_belfar}
+            INPUT BELFAR:
+            {t_belfar[:150000]}
 
             SUA TAREFA:
-            1. Identifique as seções listadas abaixo.
-            2. Extraia o texto MANTENDO A FORMATAÇÃO ORIGINAL (quebras de linha e tags <b>).
-            3. Se houver listas (bullet points), mantenha cada item em uma linha separada.
-            4. NÃO CORRIJA ERROS. Copie exatamente como está no texto extraído acima.
+            1. Identifique as seções listadas.
+            2. Extraia o texto COMPLETO. **NÃO RESUMA.**
+            3. Se a seção for longa, traga todos os parágrafos.
+            4. Mantenha a formatação original (quebras de linha e tags <b>).
+            5. Ignore linhas pontilhadas ("....") que atrapalham a leitura.
 
             LISTA DE SEÇÕES: {lista_secoes_ativa}
-
-            REGRAS DE OUTPUT:
-            - Seções "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS": Status "CONFORME". Apenas extraia.
-            - Outras Seções: Compare o texto. Se houver divergência, use <span class="highlight-yellow"> no trecho diferente.
-            - Destaque a Data da Anvisa nos "DIZERES LEGAIS" com <span class="highlight-blue">.
 
             SAÍDA JSON:
             {{
@@ -165,8 +167,8 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_ref": "Texto original com tags <b> e quebras de linha",
-                        "texto_belfar": "Texto original com tags <b> e quebras de linha",
+                        "texto_ref": "Texto COMPLETO original",
+                        "texto_belfar": "Texto COMPLETO original",
                         "status": "CONFORME" ou "DIVERGENTE"
                     }}
                 ]
@@ -194,7 +196,6 @@ if st.button("🚀 Processar Conferência"):
                     data_belfar = resultado.get("data_anvisa_belfar", "-")
                     dados_secoes = resultado.get("secoes", [])
 
-                    # Correção forçada de status para garantir visualização
                     divergentes_count = 0
                     for item in dados_secoes:
                         if 'highlight-yellow' in item.get('texto_belfar', '') or item.get('status') == 'DIVERGENTE':
@@ -205,14 +206,9 @@ if st.button("🚀 Processar Conferência"):
 
                     st.markdown("### 📊 Resumo da Conferência")
                     c_d1, c_d2, c_d3 = st.columns(3)
-                    c_d1.metric("Data Ref.", data_ref)
-                    c_d2.metric("Data BELFAR", data_belfar, delta="Igual" if data_ref == data_belfar else "Diferente")
+                    c_d1.metric("Ref.", data_ref)
+                    c_d2.metric("MKT", data_belfar)
                     c_d3.metric("Seções", len(dados_secoes))
-
-                    sub1, sub2 = st.columns(2)
-                    sub1.info(f"✅ **Conformes:** {len(dados_secoes) - divergentes_count}")
-                    if divergentes_count > 0: sub2.warning(f"⚠️ **Divergentes:** {divergentes_count}")
-                    else: sub2.success("✨ **Divergências:** 0")
 
                     st.divider()
 
@@ -231,10 +227,13 @@ if st.button("🚀 Processar Conferência"):
                             col_esq, col_dir = st.columns(2)
                             with col_esq:
                                 st.caption("📜 Referência")
-                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_ref", "")}</div>', unsafe_allow_html=True)
+                                # Replace \n por <br> para garantir quebra visual no HTML
+                                txt_show = item.get("texto_ref", "").replace("\n", "<br>")
+                                st.markdown(f'<div class="texto-box {css}">{txt_show}</div>', unsafe_allow_html=True)
                             with col_dir:
                                 st.caption("💊 BELFAR")
-                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_belfar", "")}</div>', unsafe_allow_html=True)
+                                txt_show_bel = item.get("texto_belfar", "").replace("\n", "<br>")
+                                st.markdown(f'<div class="texto-box {css}">{txt_show_bel}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
                     st.error(f"Erro ao ler resposta da IA: {e}")
