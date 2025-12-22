@@ -57,13 +57,15 @@ if st.button("🚀 Validar"):
             c1_content = process_file(f1)
             c2_content = process_file(f2)
             
+            # PROMPT PASSIVO
             prompt = f"""
-            ATUE COMO AUDITOR.
+            ATUE COMO UM SOFTWARE DE OCR BURRO.
             LISTA: {json.dumps(SECOES, ensure_ascii=False)}
             REGRAS:
-            1. Extraia o texto COMPLETO. Não pare no meio.
-            2. Ignore pontilhados de tabelas ("....").
-            3. Use <b> para negrito.
+            1. COPIE O TEXTO VISUAL EXATO.
+            2. NÃO INVENTE PALAVRAS. Se não entender, escreva [ILEGIVEL].
+            3. Ignore pontilhados de tabelas ("....").
+            4. Use <b> para negrito.
             JSON: {{"data_anvisa_ref": "...", "data_anvisa_grafica": "...", "secoes": [{{"titulo": "...", "texto_arte": "...", "texto_grafica": "...", "status": "CONFORME"}}]}}
             """
             
@@ -73,7 +75,7 @@ if st.button("🚀 Validar"):
             for k in valid:
                 try:
                     genai.configure(api_key=k)
-                    m = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json"})
+                    m = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
                     r = m.generate_content(pl)
                     res = json.loads(r.text.replace("```json", "").replace("```", ""))
                     break
@@ -90,7 +92,7 @@ if st.button("🚀 Validar"):
                 for i in res.get("secoes", []):
                     titulo = i.get('titulo', '')
                     
-                    # BLINDAGEM DE STATUS
+                    # BLINDAGEM VISUAL: FORÇA CONFORME E TIRA ERROS
                     eh_isenta = any(x in titulo.upper() for x in secoes_isentas)
                     
                     if eh_isenta:
@@ -102,7 +104,6 @@ if st.button("🚀 Validar"):
                         css = "border-warn" if status == "DIVERGENTE" else "border-ok"
                         aberto = (status == "DIVERGENTE")
                     
-                    # COR DA BORDA/ICONE
                     if "DIZERES LEGAIS" in titulo.upper(): icon="⚖️"
                     elif "APRESENTAÇÕES" in titulo.upper() or "COMPOSIÇÃO" in titulo.upper(): icon="📋"
                     elif status == "DIVERGENTE": icon="⚠️"
