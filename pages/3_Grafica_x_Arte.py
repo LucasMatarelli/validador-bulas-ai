@@ -136,7 +136,8 @@ f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png", "docx"
 
 if st.button("🚀 Validar"):
     
-    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    # ADICIONADA A TERCEIRA CHAVE AQUI
+    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
     if not keys_validas:
@@ -160,8 +161,8 @@ if st.button("🚀 Validar"):
 
             ⚠️ PROTOCOLO DE TOLERÂNCIA ZERO PARA ALUCINAÇÃO:
             1. **VERBATIM (IPSIS LITTERIS):** Copie as palavras EXATAMENTE como estão.
-               - Se está escrito "fabricação", ESCREVA "fabricação". NÃO troque por "validade".
-               - Se está escrito "cirurgião", ESCREVA "cirurgião". NÃO adicione "do".
+                - Se está escrito "fabricação", ESCREVA "fabricação". NÃO troque por "validade".
+                - Se está escrito "cirurgião", ESCREVA "cirurgião". NÃO adicione "do".
             
             2. **PROIBIDO CORRIGIR:** Não corrija gramática, não expanda abreviações, não adicione conectivos que não existem visualmente.
             
