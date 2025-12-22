@@ -5,13 +5,14 @@ import fitz  # PyMuPDF
 import docx  # Para ler DOCX
 import io
 import json
+import re  # IMPORTANTE: Adicionado para corrigir o erro dos pontos
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
-    /* --- ESCONDER MENU SUPERIOR (CONFORME SOLICITADO) --- */
+    /* --- ESCONDER MENU SUPERIOR --- */
     [data-testid="stHeader"] {
         visibility: hidden;
     }
@@ -67,12 +68,6 @@ MODELO_FIXO = "models/gemini-flash-latest"
 
 # ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
 def process_file_content(uploaded_file):
-    """
-    Lógica Híbrida:
-    1. Tenta extrair TEXTO puro do PDF.
-    2. Se não tiver texto (scan), converte para IMAGEM.
-    3. Se for DOCX, extrai texto direto.
-    """
     try:
         filename = uploaded_file.name.lower()
 
@@ -90,11 +85,8 @@ def process_file_content(uploaded_file):
                     has_digital_text = True
                 full_text += text + "\n"
             
-            # SE TIVER TEXTO DIGITAL
             if has_digital_text:
                 return [full_text]
-            
-            # SE NÃO TIVER TEXTO (É SCAN/IMAGEM)
             else:
                 images = []
                 for page in doc:
@@ -102,7 +94,7 @@ def process_file_content(uploaded_file):
                     images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
                 return images
         
-        # --- PROCESSAMENTO DE IMAGENS DIRETAS ---
+        # --- PROCESSAMENTO DE IMAGENS ---
         elif filename.endswith((".jpg", ".png", ".jpeg")):
             return [Image.open(uploaded_file)]
 
@@ -151,48 +143,45 @@ if st.button("🚀 Validar"):
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT FORENSE (CORRIGIDO PARA EVITAR ERRO DE JSON)
-            # MUDANÇA PRINCIPAL: Instrução para usar aspas simples '' nas tags HTML
+            # --- CORREÇÃO NO PROMPT: INSTRUÇÃO ANTI-PONTILHADO ---
             prompt = f"""
-            Você é um EXTRATOR FORENSE DE TEXTO. Sua função NÃO é interpretar, é TRANSCREVER E COMPARAR.
+            Você é um EXTRATOR FORENSE DE TEXTO.
             
             INPUT: Documentos farmacêuticos (Texto Digital ou Imagens).
             TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}
 
             ⚠️ PROTOCOLO DE TOLERÂNCIA ZERO PARA ALUCINAÇÃO:
-            1. **VERBATIM (IPSIS LITTERIS):** Copie as palavras EXATAMENTE como estão.
-               - Se está escrito "fabricação", ESCREVA "fabricação". NÃO troque por "validade".
-               - Se está escrito "cirurgião", ESCREVA "cirurgião". NÃO adicione "do".
+            1. **VERBATIM:** Copie as palavras EXATAMENTE como estão.
+            2. **TRATAMENTO DE LAYOUT (CRUCIAL):** - Se houver linhas pontilhadas longas (ex: "Cloridrato ......... 5mg"), **NÃO REPRODUZA OS PONTOS**. 
+               - Substitua por um único espaço ou "..." curto.
+               - O excesso de pontos causa erro no sistema.
             
-            2. **PROIBIDO CORRIGIR:** Não corrija gramática, não expanda abreviações.
-            
-            3. **ESTRUTURA JSON SEGURA:** - Para as tags HTML solicitadas, USE ASPAS SIMPLES (ex: class='highlight').
-               - Se o texto original tiver aspas duplas ("), você DEVE escapá-las (escreva \") para não quebrar o JSON.
+            3. **ESTRUTURA JSON SEGURA:** - Use ASPAS SIMPLES nas tags HTML (ex: class='highlight').
+               - Escape aspas duplas do texto original (\").
 
             🚨 REGRAS DE STATUS POR GRUPO:
 
             >>> GRUPO BLINDADO (SEM DIVERGÊNCIAS): 
             [ "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS" ]
             - Status OBRIGATÓRIO: "CONFORME".
-            - PROIBIDO usar highlight nestas seções.
+            - PROIBIDO usar highlight.
             - Apenas transcreva o texto original limpo.
             - Exceção: Em "DIZERES LEGAIS", se encontrar uma data, envolva em <span class='highlight-blue'>DATA</span>.
 
             >>> GRUPO PADRÃO (TODAS AS OUTRAS SEÇÕES):
             - Compare palavra por palavra.
-            - Diferença REAL (palavra trocada, número errado)? Marque <span class='highlight-yellow'>TEXTO ERRADO</span>.
-            - Se a diferença for apenas layout/quebra de linha, considere IGUAL.
+            - Diferença REAL? Marque <span class='highlight-yellow'>TEXTO ERRADO</span>.
 
             SAÍDA JSON:
             {{
-                "data_anvisa_ref": "dd/mm/aaaa" (ou "Não encontrada"),
-                "data_anvisa_grafica": "dd/mm/aaaa" (ou "Não encontrada"),
+                "data_anvisa_ref": "dd/mm/aaaa",
+                "data_anvisa_grafica": "dd/mm/aaaa",
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto EXATO da arte",
-                        "texto_grafica": "Texto EXATO da gráfica (com highlights)",
-                        "status": "CONFORME" ou "DIVERGENTE"
+                        "texto_arte": "Texto da arte",
+                        "texto_grafica": "Texto da gráfica",
+                        "status": "CONFORME"
                     }}
                 ]
             }}
@@ -203,7 +192,6 @@ if st.button("🚀 Validar"):
             response = None
             ultimo_erro = ""
 
-            # Loop de Chaves (Failover)
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
@@ -211,25 +199,26 @@ if st.button("🚀 Validar"):
                         MODELO_FIXO, 
                         generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                     )
-                    
                     response = model.generate_content(payload)
                     break 
-
                 except Exception as e:
                     ultimo_erro = str(e)
                     if i < len(keys_validas) - 1:
-                        st.warning(f"⚠️ Chave {i+1} falhou. Trocando para Chave {i+2}...")
+                        st.warning(f"⚠️ Chave {i+1} falhou. Tentando próxima...")
                         continue
                     else:
-                        st.error(f"❌ Erro fatal na API: {ultimo_erro}")
+                        st.error(f"❌ Erro fatal: {ultimo_erro}")
                         st.stop()
             
             if response:
                 try:
-                    # --- LIMPEZA E TRATAMENTO DE ERRO JSON ---
                     texto_limpo = response.text.replace("```json", "").replace("```", "").strip()
                     
-                    # Carrega o JSON
+                    # --- CORREÇÃO DE SEGURANÇA NO PYTHON ---
+                    # Remove excesso de pontos que a IA possa ter gerado (ex: "......")
+                    # Substitui qualquer sequência de mais de 3 pontos por "..."
+                    texto_limpo = re.sub(r'\.{4,}', '...', texto_limpo)
+
                     resultado = json.loads(texto_limpo, strict=False)
                     
                     data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
@@ -281,12 +270,11 @@ if st.button("🚀 Validar"):
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except json.JSONDecodeError as e:
-                    st.error(f"Erro ao ler resposta da IA (JSON inválido): {e}")
-                    st.code(response.text, language="json") # Mostra o JSON quebrado para debug se precisar
-                    st.warning("Tente validar novamente. O texto extraído pode conter caracteres que confundiram o modelo.")
-                
+                    st.error(f"Erro JSON: {e}")
+                    st.warning("O documento contém caracteres complexos de layout. Tente novamente.")
+                    st.code(texto_limpo[:1000]) # Mostra o começo do erro para debug
                 except Exception as e:
-                    st.error(f"Erro no processamento visual: {e}")
+                    st.error(f"Erro visual: {e}")
 
     else:
         st.warning("Adicione os arquivos.")
