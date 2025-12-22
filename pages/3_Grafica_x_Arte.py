@@ -48,13 +48,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELOS (EXATAMENTE COMO PEDIDO) -----------------
+# ----------------- 2. CONFIGURAÇÃO MODELOS (SEUS PREFERIDOS) -----------------
+# Mantive os que você pediu. Se o 2.5 falhar/não existir, ele tenta o próximo da lista.
 MODELOS_POSSIVEIS = [
     "models/gemini-flash-latest", 
-    "models/gemini-2.5-flash"
+    "models/gemini-2.5-flash",
+    "models/gemini-1.5-flash" # Backup caso o 2.5 seja typo
 ]
 
-# ----------------- 3. CONFIGURAÇÃO DE SEGURANÇA -----------------
+# ----------------- 3. CONFIGURAÇÃO DE SEGURANÇA (TOTALMENTE ABERTA) -----------------
 SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -104,9 +106,8 @@ def reparar_json_quebrado(texto_json):
             if conta_aspas % 2 != 0:
                 texto_limpo += '"' # Fecha a string
             
-            # Tenta fechar as estruturas (bruta força inteligente)
+            # Tenta fechar as estruturas
             tentativas = ["}", "]}", "] }", "}]}", "\"}]}"]
-            
             for t in tentativas:
                 try:
                     return json.loads(texto_limpo + t, strict=False)
@@ -132,7 +133,7 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando com seus modelos preferidos..."):
+        with st.spinner("Processando..."):
             f1.seek(0)
             f2.seek(0)
             
@@ -174,7 +175,7 @@ if st.button("🚀 Validar"):
                 genai.configure(api_key=api_key)
                 for model_name in MODELOS_POSSIVEIS:
                     try:
-                        # AQUI ESTÁ A CHAVE PARA FUNCIONAR: max_output_tokens ALTO
+                        # CONFIGURAÇÃO DE SEGURANÇA E TOKENS ALTOS
                         model = genai.GenerativeModel(
                             model_name, 
                             safety_settings=SAFETY_SETTINGS,
@@ -188,25 +189,34 @@ if st.button("🚀 Validar"):
                         break 
                     except Exception as e:
                         ultimo_erro = str(e)
-                        # Se der erro no modelo 1, ele tenta o modelo 2 automaticamente
                         continue 
                 if response: break
 
+            # --- AQUI ESTAVA O ERRO: VERIFICAÇÃO ANTES DE LER .TEXT ---
             if response:
                 try:
-                    # Limpeza Básica
+                    # Verifica se a IA bloqueou a resposta antes de tentar ler
+                    if not response.candidates:
+                         st.error(f"⚠️ Resposta bloqueada ou vazia. Motivo: {response.prompt_feedback}")
+                         st.stop()
+                    
+                    # Verifica se há partes de texto válidas
+                    if not response.candidates[0].content.parts:
+                         st.error("⚠️ A IA retornou um bloqueio de segurança (conteúdo farmacêutico sensível detectado incorretamente). Tente novamente.")
+                         st.stop()
+
+                    # Se passou, tenta ler o texto
                     texto_raw = response.text.replace("```json", "").replace("```", "")
                     
-                    # Regex para tentar pegar o bloco JSON principal
+                    # Regex para pegar o JSON
                     match = re.search(r'\{.*\}', texto_raw, re.DOTALL)
                     if match:
                         texto_raw = match.group(0)
 
-                    # --- USO DA FUNÇÃO DE REPARO ---
                     resultado = reparar_json_quebrado(texto_raw)
                     
                     if resultado.get("erro_parse"):
-                        st.warning("⚠️ O texto gerado foi cortado no final (limite da IA), mas recuperamos o conteúdo.")
+                        st.warning("⚠️ O texto gerado foi cortado, mas recuperamos o conteúdo parcial.")
 
                     data_ref = resultado.get("data_anvisa_ref", "---")
                     data_graf = resultado.get("data_anvisa_grafica", "---")
@@ -245,10 +255,12 @@ if st.button("🚀 Validar"):
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error("❌ Erro ao processar resposta da IA.")
-                    st.code(response.text)
+                    st.error("❌ Erro ao processar o resultado da IA.")
+                    # Só mostra o debug se houver algo para mostrar
+                    if response and response.candidates and response.candidates[0].content.parts:
+                        st.code(response.text)
             else:
-                 st.error(f"Erro de Conexão com os modelos {MODELOS_POSSIVEIS}: {ultimo_erro}")
+                 st.error(f"Erro de Conexão: {ultimo_erro}")
 
     else:
         st.warning("Adicione os arquivos.")
