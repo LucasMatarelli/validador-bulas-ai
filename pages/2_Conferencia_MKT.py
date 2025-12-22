@@ -3,7 +3,7 @@ import google.generativeai as genai
 import fitz  # PyMuPDF
 import docx  # Para ler DOCX
 import json
-import difflib # Biblioteca matemática
+import difflib
 import re
 import unicodedata
 
@@ -12,7 +12,7 @@ st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide
 
 st.markdown("""
 <style>
-    /* --- ESCONDER MENU SUPERIOR (CONFORME SOLICITADO) --- */
+    /* --- ESCONDER MENU SUPERIOR --- */
     [data-testid="stHeader"] {
         visibility: hidden;
     }
@@ -31,7 +31,7 @@ st.markdown("""
         text-align: justify;
     }
     
-    /* Highlight Amarelo (Apenas diferenças reais) */
+    /* Highlight Amarelo (Diferenças) */
     .highlight-yellow { background-color: #fff9c4; color: #000; padding: 2px 0; border: 1px solid #fbc02d; font-weight: bold; }
     .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 4px; font-weight: bold; }
     
@@ -50,91 +50,77 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-flash-latest"
+MODELO_FIXO = "models/gemini-1.5-flash"
 
 # ----------------- 3. FUNÇÃO DE COMPARAÇÃO INTELIGENTE -----------------
 def normalizar_para_comparacao(texto):
-    """Remove caracteres invisíveis e padroniza o texto para evitar falso erro."""
+    """Remove caracteres invisíveis e padroniza, mas MANTÉM erros visuais."""
     if not texto: return ""
-    # Normaliza unicode (ex: ã vira ã padrão)
+    # Normaliza unicode (ex: ã vira a + ~), mas mantemos para a comparação funcionar
     texto = unicodedata.normalize('NFKD', texto)
-    # Remove caracteres de controle estranhos
-    texto = "".join([c for c in texto if not unicodedata.combining(c)])
+    # Remove apenas caracteres de controle que não são imprimíveis, mas mantém pontuação
     return texto
 
 def gerar_diff_html(texto_ref, texto_novo):
     """
-    Compara palavra por palavra com autojunk=False para não se perder.
+    Compara palavra por palavra.
     """
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
 
-    # Normaliza antes de quebrar
+    # Normaliza minimamente
     ref_norm = normalizar_para_comparacao(texto_ref)
     novo_norm = normalizar_para_comparacao(texto_novo)
 
-    # Quebra em palavras (split remove todos os espaços extras e quebras de linha)
+    # Quebra em palavras
     a = ref_norm.split()
     b = novo_norm.split()
     
-    # autojunk=False É O SEGREDO para ele não ignorar palavras comuns e não marcar tudo amarelo
+    # autojunk=False é essencial para textos repetitivos (como bulas)
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     
     html_output = []
     eh_divergente = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        # Reconstrói o texto usando as palavras da lista 'b' (novo)
         trecho_novo = " ".join(b[j1:j2])
         
         if tag == 'equal':
             html_output.append(trecho_novo)
         elif tag == 'replace':
-            # Diferença real
             html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
             eh_divergente = True
         elif tag == 'insert':
-            # Texto novo adicionado
             html_output.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
             eh_divergente = True
         elif tag == 'delete':
-            # Texto deletado (não mostramos para manter o visual limpo, mas conta como erro)
+            # Texto deletado não é mostrado para limpar o visual, mas conta como erro
             eh_divergente = True 
             
     return " ".join(html_output), eh_divergente
 
-# ----------------- 4. EXTRAÇÃO DE TEXTO (COM NEGRITO) -----------------
+# ----------------- 4. EXTRAÇÃO DE TEXTO PURO (SEM FORMATAÇÃO) -----------------
 def extract_text_from_file(uploaded_file):
+    """Extrai texto puro para evitar problemas com tags de negrito quebrando palavras."""
     try:
         text = ""
+        # PDF
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
-                # Usa 'dict' para acessar propriedades da fonte (negrito)
-                blocks = page.get_text("dict", flags=11)["blocks"]
-                for b in blocks:
-                    for l in b.get("lines", []):
-                        for s in l.get("spans", []):
-                            content = s["text"]
-                            # Flag 16 geralmente é negrito, ou busca 'bold'/'black' no nome da fonte
-                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower() or "black" in s["font"].lower()
-                            if is_bold:
-                                text += f"<b>{content}</b>"
-                            else:
-                                text += content
-                        text += "\n"
-                    text += "\n"
+                # .get_text("text") extrai na ordem visual e ignora formatação,
+                # o que ajuda a pegar erros como "*actose" juntos.
+                text += page.get_text("text") + "\n"
+        
+        # DOCX
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
             for para in doc.paragraphs: 
-                for run in para.runs:
-                    if run.bold:
-                        text += f"<b>{run.text}</b>"
-                    else:
-                        text += run.text
-                text += "\n"
+                text += para.text + "\n"
+                
         return text
-    except: return ""
+    except Exception as e:
+        return ""
 
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
@@ -148,7 +134,7 @@ SECOES_PACIENTE = [
 ]
 
 # ----------------- 5. UI PRINCIPAL -----------------
-st.title("💊 Conferência MKT")
+st.title("💊 Conferência MKT - Validador de Texto Puro")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], key="f1")
@@ -156,11 +142,12 @@ f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key=
 
 if st.button("🚀 Processar Conferência"):
     
+    # Tenta pegar as chaves do secrets
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
     keys_validas = [k for k in keys_disponiveis if k]
 
     if not keys_validas:
-        st.error("Nenhuma chave API encontrada.")
+        st.error("Nenhuma chave API encontrada no st.secrets.")
         st.stop()
 
     if f1 and f2:
@@ -172,9 +159,9 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 50 or len(t_mkt) < 50:
                 st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # PROMPT DE EXTRAÇÃO PURA (COM INSTRUÇÃO DE NEGRITO)
+            # PROMPT REFORÇADO PARA NÃO CORRIGIR ERROS
             prompt = f"""
-            Você é um Extrator de Dados Literais.
+            Você é um Extrator de Dados Literais e "Burro" (no sentido de não corrigir nada).
             
             INPUT:
             TEXTO 1 (REF): {t_anvisa[:100000]}
@@ -182,9 +169,10 @@ if st.button("🚀 Processar Conferência"):
 
             SUA MISSÃO:
             1. Localize as seções da lista abaixo nos dois textos.
-            2. Extraia o conteúdo LIMPO. Junte linhas quebradas para formar frases contínuas.
-            3. **IMPORTANTE:** Copie o texto fielmente. Não corrija nada. Mantenha as tags <b> e </b> onde houver negrito no original.
-            4. **NÃO COMPARE:** Apenas me entregue o texto extraído de cada lado.
+            2. Extraia o conteúdo EXATAMENTE como está escrito.
+            3. **IMPORTANTE:** Se o texto tiver erros de digitação, letras trocadas, símbolos estranhos (ex: "*actose", "Iactose", "*1"), MANTENHA O ERRO. 
+            4. NÃO CORRIJA O PORTUGUÊS. NÃO REMOVA SÍMBOLOS ESTRANHOS.
+            5. Copie o texto puro, sem formatação (sem tags HTML).
             
             LISTA DE SEÇÕES: {SECOES_PACIENTE}
 
@@ -196,7 +184,7 @@ if st.button("🚀 Processar Conferência"):
                     {{
                         "titulo": "NOME DA SEÇÃO",
                         "texto_anvisa": "Conteúdo extraído da referência",
-                        "texto_mkt": "Conteúdo extraído do mkt"
+                        "texto_mkt": "Conteúdo extraído do mkt (COM ERROS SE HOUVER)"
                     }}
                 ]
             }}
@@ -208,6 +196,7 @@ if st.button("🚀 Processar Conferência"):
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
+                    # Temperatura 0 para reduzir criatividade/alucinação
                     model = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
                     response = model.generate_content(prompt, request_options={'retry': None})
                     break 
@@ -237,18 +226,14 @@ if st.button("🚀 Processar Conferência"):
                             txt_ref = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_ref)
                             txt_mkt = re.sub(padrao_data, r'<span class="highlight-blue">\1</span>', txt_mkt)
 
-                        # Seções BLINDADAS
-                        if titulo in ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]:
-                            status = "CONFORME"
-                            html_mkt = txt_mkt 
+                        # Comparação Matemática
+                        html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
+                        
+                        if teve_diff:
+                            status = "DIVERGENTE"
+                            divergentes_count += 1
                         else:
-                            # Comparação Matemática com Autojunk=False
-                            html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
-                            if teve_diff:
-                                status = "DIVERGENTE"
-                                divergentes_count += 1
-                            else:
-                                status = "CONFORME"
+                            status = "CONFORME"
                         
                         secoes_finais.append({
                             "titulo": titulo,
@@ -296,4 +281,4 @@ if st.button("🚀 Processar Conferência"):
                 except Exception as e:
                     st.error(f"Erro ao processar JSON: {e}")
     else:
-        st.warning("Adicione os arquivos.")
+        st.warning("Adicione os arquivos para iniciar.")
