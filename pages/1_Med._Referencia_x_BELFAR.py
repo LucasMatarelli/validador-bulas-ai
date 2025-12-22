@@ -49,21 +49,39 @@ st.markdown("""
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO (PDF E DOCX) -----------------
+# ----------------- 3. EXTRAÇÃO DE TEXTO (PDF E DOCX COM NEGRITO) -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
-        # Verifica se é PDF
+        # Verifica se é PDF e extrai com formatação
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc:
-                text += page.get_text("text") + "\n"
+                # Usa 'dict' para acessar spans e fontes
+                blocks = page.get_text("dict", flags=11)["blocks"]
+                for b in blocks:
+                    for l in b.get("lines", []):
+                        for s in l.get("spans", []):
+                            content = s["text"]
+                            # Detecta negrito via flag (16) ou nome da fonte
+                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower() or "black" in s["font"].lower()
+                            if is_bold:
+                                text += f"<b>{content}</b>"
+                            else:
+                                text += content
+                        text += "\n"
+                    text += "\n"
         
-        # Verifica se é DOCX
+        # Verifica se é DOCX e extrai com formatação
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
             for para in doc.paragraphs:
-                text += para.text + "\n"
+                for run in para.runs:
+                    if run.bold:
+                        text += f"<b>{run.text}</b>"
+                    else:
+                        text += run.text
+                text += "\n"
         
         return text
     except Exception as e:
@@ -115,7 +133,7 @@ if st.button("🚀 Processar Conferência"):
             f1.seek(0)
             f2.seek(0)
             
-            # Chama a função nova que lê os dois tipos
+            # Chama a função nova que lê os dois tipos com negrito
             t_ref = extract_text_from_file(f1)
             t_belfar = extract_text_from_file(f2)
 
@@ -123,7 +141,7 @@ if st.button("🚀 Processar Conferência"):
                 st.error("Erro: Arquivo vazio ou ilegível (talvez seja imagem sem OCR ou DOCX corrompido).")
                 st.stop()
 
-            # --- PROMPT MANTIDO ---
+            # --- PROMPT MANTIDO (COM PEQUENA ADIÇÃO PARA MANTER TAGS) ---
             prompt = f"""
             Você é um Auditor de Qualidade Farmacêutica Rígido, mas justo.
             
@@ -139,6 +157,7 @@ if st.button("🚀 Processar Conferência"):
                - Antes de comparar, remova mentalmente todas as quebras de linha e espaços extras.
                - Se a SEQUÊNCIA DE PALAVRAS for a mesma, o texto é **CONFORME**.
                - Só marque DIVERGENTE se houver palavras diferentes, números diferentes ou frases faltando.
+            3. **IMPORTANTE:** Se houver tags HTML de negrito (<b>...</b>) no texto extraído, MANTENHA-AS na saída JSON para que o usuário veja o negrito.
 
             LISTA DE SEÇÕES: {lista_secoes_ativa}
 
