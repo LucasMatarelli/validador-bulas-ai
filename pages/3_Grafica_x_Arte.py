@@ -62,7 +62,7 @@ if st.button("🚀 Validar"):
             LISTA: {json.dumps(SECOES, ensure_ascii=False)}
             REGRAS:
             1. COPIE O TEXTO VISUAL EXATO E COMPLETO.
-            2. Se houver listas, uma linha por item.
+            2. Se uma seção for longa, copie até o fim. Não resuma.
             3. Ignore pontilhados "....".
             4. Use <b> para negrito.
             JSON: {{"data_anvisa_ref": "...", "data_anvisa_grafica": "...", "secoes": [{{"titulo": "...", "texto_arte": "...", "texto_grafica": "...", "status": "CONFORME"}}]}}
