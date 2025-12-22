@@ -1,130 +1,287 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
-import fitz
-import docx
+import fitz  # PyMuPDF
+import docx  # Para ler DOCX
 import io
 import json
-import re
 
-st.set_page_config(page_title="Validador Visual", page_icon="💊", layout="wide")
+# ----------------- 1. VISUAL & CSS -----------------
+st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
+
 st.markdown("""
 <style>
-    [data-testid="stHeader"] { visibility: hidden; }
-    .texto-box { 
-        font-family: 'Consolas', monospace; font-size: 0.95rem; line-height: 1.6; color: #212529;
-        background-color: #ffffff; padding: 15px; border-radius: 8px; border: 1px solid #ced4da;
-        white-space: pre-wrap; text-align: justify;
+    /* --- ESCONDER MENU SUPERIOR (CONFORME SOLICITADO) --- */
+    [data-testid="stHeader"] {
+        visibility: hidden;
     }
-    .border-ok { border-left: 5px solid #4caf50 !important; }
-    .border-warn { border-left: 5px solid #f44336 !important; }
-    .border-info { border-left: 5px solid #2196f3 !important; }
-    .highlight-blue { background-color: #e3f2fd; color: #0d47a1; padding: 2px 6px; border-radius: 12px; font-weight: bold; }
+
+    /* Caixas de Texto */
+    .texto-box { 
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 0.95rem;
+        line-height: 1.6;
+        color: #212529;
+        background-color: #ffffff;
+        padding: 20px;
+        border-radius: 8px;
+        border: 1px solid #ced4da;
+        height: 100%; 
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        white-space: pre-wrap; /* Mantém parágrafos */
+        text-align: justify;
+    }
+
+    /* Destaques Precisos */
+    .highlight-yellow { 
+        background-color: #fff3cd; color: #856404; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
+    }
+    .highlight-red { 
+        background-color: #f8d7da; color: #721c24; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; font-weight: bold; 
+    }
+    .highlight-blue { 
+        background-color: #d1ecf1; color: #0c5460; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
+    }
+
+    /* Status das Bordas */
+    .border-ok { border-left: 6px solid #28a745 !important; }   /* Verde */
+    .border-warn { border-left: 6px solid #ffc107 !important; } /* Amarelo */
+    .border-info { border-left: 6px solid #17a2b8 !important; } /* Azul */
+
+    /* Métricas no Topo */
+    div[data-testid="stMetric"] {
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        padding: 10px;
+        border-radius: 5px;
+        text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-MODELO_FIXO = "models/gemini-1.5-flash" 
-SECOES = ["APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", "DIZERES LEGAIS"]
+# ----------------- 2. CONFIGURAÇÃO MODELO -----------------
+MODELO_FIXO = "models/gemini-flash-latest"
 
-def process_file_otimizado(up):
+# ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
+def process_file_content(uploaded_file):
+    """
+    Lógica Híbrida:
+    1. Tenta extrair TEXTO puro do PDF.
+    2. Se não tiver texto (scan), converte para IMAGEM.
+    3. Se for DOCX, extrai texto direto.
+    """
     try:
-        if up.name.lower().endswith('.pdf'):
-            doc = fitz.open(stream=up.read(), filetype="pdf")
-            imgs = []
-            for p in doc:
-                # OTIMIZAÇÃO CRÍTICA: Matrix(1.0, 1.0) para não travar
-                pix = p.get_pixmap(matrix=fitz.Matrix(1.0, 1.0))
-                # Compressão JPEG Quality 80
-                imgs.append(Image.open(io.BytesIO(pix.tobytes("jpeg", quality=80))))
-            return imgs
-        elif up.name.lower().endswith(('.jpg', '.png')): return [Image.open(up)]
-        elif up.name.lower().endswith('.docx'):
-            doc = docx.Document(up)
-            return ["\n".join([p.text for p in doc.paragraphs])]
+        filename = uploaded_file.name.lower()
+
+        # --- PROCESSAMENTO DE PDF ---
+        if filename.endswith(".pdf"):
+            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+            
+            # Tenta pegar texto digital primeiro
+            full_text = ""
+            has_digital_text = False
+            
+            for page in doc:
+                text = page.get_text("text")
+                if len(text.strip()) > 50: 
+                    has_digital_text = True
+                full_text += text + "\n"
+            
+            # SE TIVER TEXTO DIGITAL
+            if has_digital_text:
+                return [full_text]
+            
+            # SE NÃO TIVER TEXTO (É SCAN/IMAGEM)
+            else:
+                images = []
+                for page in doc:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) 
+                    images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
+                return images
+        
+        # --- PROCESSAMENTO DE IMAGENS DIRETAS ---
+        elif filename.endswith((".jpg", ".png", ".jpeg")):
+            return [Image.open(uploaded_file)]
+
+        # --- PROCESSAMENTO DE DOCX ---
+        elif filename.endswith(".docx"):
+            doc = docx.Document(uploaded_file)
+            full_text = []
+            for para in doc.paragraphs:
+                full_text.append(para.text)
+            return ["\n".join(full_text)]
+            
     except: return []
 
-def reparar_json(t):
-    t = t.replace("```json", "").replace("```", "").strip()
-    try: return json.loads(t)
-    except: return None
+SECOES_COMPLETAS = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
+    "DIZERES LEGAIS"
+]
 
-st.title("💊 Gráfica x Arte (Rápido)")
+# ----------------- 4. UI PRINCIPAL -----------------
+st.title("💊 Gráfica x Arte")
+
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Arte", type=["pdf", "jpg", "png", "docx"])
-f2 = c2.file_uploader("Gráfica", type=["pdf", "jpg", "png", "docx"])
+f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png", "docx"])
+f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png", "docx"])
 
 if st.button("🚀 Validar"):
-    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
-    valid = [k for k in keys if k]
-    if not valid: st.stop()
     
+    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    keys_validas = [k for k in keys_disponiveis if k]
+
+    if not keys_validas:
+        st.error("Nenhuma chave API encontrada.")
+        st.stop()
+
     if f1 and f2:
-        status = st.status("Otimizando e analisando...", expanded=True)
-        try:
-            f1.seek(0); f2.seek(0)
-            c1_content = process_file_otimizado(f1)
-            c2_content = process_file_otimizado(f2)
+        with st.spinner("Processando... Priorizando texto original para evitar alucinações..."):
+            f1.seek(0)
+            f2.seek(0)
             
-            p = f"""
-            ATUE COMO OCR.
-            LISTA: {json.dumps(SECOES, ensure_ascii=False)}
-            REGRAS:
-            1. COPIE O TEXTO VISUAL EXATO E COMPLETO.
-            2. Ignore pontilhados "....". Use <b> para negrito.
-            JSON: {{"data_anvisa_ref": "...", "data_anvisa_grafica": "...", "secoes": [{{"titulo": "...", "texto_arte": "...", "texto_grafica": "...", "status": "CONFORME"}}]}}
+            conteudo1 = process_file_content(f1)
+            conteudo2 = process_file_content(f2)
+            
+            # PROMPT FORENSE (ANTI-ALUCINAÇÃO)
+            prompt = f"""
+            Você é um EXTRATOR FORENSE DE TEXTO. Sua função NÃO é interpretar, é TRANSCREVER E COMPARAR.
+            
+            INPUT: Documentos farmacêuticos (Texto Digital ou Imagens).
+            TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}
+
+            ⚠️ PROTOCOLO DE TOLERÂNCIA ZERO PARA ALUCINAÇÃO:
+            1. **VERBATIM (IPSIS LITTERIS):** Copie as palavras EXATAMENTE como estão.
+               - Se está escrito "fabricação", ESCREVA "fabricação". NÃO troque por "validade".
+               - Se está escrito "cirurgião", ESCREVA "cirurgião". NÃO adicione "do".
+            
+            2. **PROIBIDO CORRIGIR:** Não corrija gramática, não expanda abreviações, não adicione conectivos que não existem visualmente.
+            
+            3. **IGNORAR FORMATAÇÃO:** Ignore quebras de linha (`\\n`) ou espaços duplos. O foco é a SEQUÊNCIA DE PALAVRAS.
+
+            🚨 REGRAS DE STATUS POR GRUPO:
+
+            >>> GRUPO BLINDADO (SEM DIVERGÊNCIAS): 
+            [ "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS" ]
+            - Status OBRIGATÓRIO: "CONFORME".
+            - PROIBIDO usar highlight amarelo nestas seções.
+            - Apenas transcreva o texto original limpo.
+            - Exceção: Em "DIZERES LEGAIS", se encontrar uma data, envolva em <span class="highlight-blue">DATA</span>.
+
+            >>> GRUPO PADRÃO (TODAS AS OUTRAS SEÇÕES):
+            - Compare palavra por palavra.
+            - Diferença REAL (palavra trocada, número errado)? Marque <span class="highlight-yellow">TEXTO ERRADO</span>.
+            - Se a diferença for apenas layout/quebra de linha, considere IGUAL.
+
+            SAÍDA JSON:
+            {{
+                "data_anvisa_ref": "dd/mm/aaaa" (ou "Não encontrada"),
+                "data_anvisa_grafica": "dd/mm/aaaa" (ou "Não encontrada"),
+                "secoes": [
+                    {{
+                        "titulo": "NOME DA SEÇÃO",
+                        "texto_arte": "Texto EXATO da arte",
+                        "texto_grafica": "Texto EXATO da gráfica (com highlights APENAS se permitido)",
+                        "status": "CONFORME" ou "DIVERGENTE"
+                    }}
+                ]
+            }}
             """
             
-            pl = [p, "=== ARTE ==="] + c1_content + ["=== GRAFICA ==="] + c2_content
+            payload = [prompt, "--- ARTE (REFERÊNCIA) ---"] + conteudo1 + ["--- GRÁFICA (VALIDAÇÃO) ---"] + conteudo2
             
-            res = None
-            cfg = {"response_mime_type": "application/json", "temperature": 0.0}
+            response = None
+            ultimo_erro = ""
 
-            for k in valid:
+            # Loop de Chaves (Failover)
+            for i, api_key in enumerate(keys_validas):
                 try:
-                    genai.configure(api_key=k)
-                    m = genai.GenerativeModel(MODELO_FIXO, generation_config=cfg)
-                    resp = m.generate_content(pl)
-                    res = reparar_json(resp.text)
-                    if res: break
-                except: continue
-                
-            if res:
-                status.update(label="Pronto!", state="complete", expanded=False)
-                st.markdown("### Resultado")
-                colA, colB = st.columns(2)
-                colA.metric("Ref", res.get("data_anvisa_ref"))
-                colB.metric("Gráfica", res.get("data_anvisa_grafica"))
-                
-                isentas = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
-
-                for i in res.get("secoes", []):
-                    t = i.get('titulo', '')
-                    blindada = any(x in t.upper() for x in isentas)
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(
+                        MODELO_FIXO, 
+                        generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                    )
                     
-                    if blindada:
-                        stt = "CONFORME"
-                        css = "border-info"
-                        ab = False
+                    response = model.generate_content(payload)
+                    break 
+
+                except Exception as e:
+                    ultimo_erro = str(e)
+                    if i < len(keys_validas) - 1:
+                        st.warning(f"⚠️ Chave {i+1} falhou. Trocando para Chave {i+2}...")
+                        continue
                     else:
-                        stt = i.get("status", "CONFORME")
-                        css = "border-warn" if stt == "DIVERGENTE" else "border-ok"
-                        ab = (stt == "DIVERGENTE")
+                        st.error(f"❌ Erro fatal: {ultimo_erro}")
+                        st.stop()
+            
+            if response:
+                try:
+                    # --- CORREÇÃO DO ERRO DE JSON AQUI ---
+                    # Remove blocos markdown caso a IA coloque ```json ... ```
+                    texto_limpo = response.text.replace("```json", "").replace("```", "").strip()
                     
-                    if "DIZERES" in t.upper(): icon="⚖️"
-                    elif blindada: icon="📋"
-                    elif stt == "DIVERGENTE": icon="⚠️"
-                    else: icon="✅"
+                    # strict=False é o segredo para aceitar caracteres de controle
+                    resultado = json.loads(texto_limpo, strict=False)
+                    
+                    data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
+                    data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
+                    secoes = resultado.get("secoes", [])
 
-                    with st.expander(f"{icon} {t}", expanded=ab):
-                        ca, cb = st.columns(2)
-                        ta = i.get("texto_arte", "")
-                        tb = i.get("texto_grafica", "")
+                    st.markdown("### 📊 Resumo da Conferência")
+                    
+                    k1, k2, k3 = st.columns(3)
+                    k1.metric("Data Anvisa (Ref)", data_ref)
+                    
+                    cor_delta = "normal" if data_ref == data_graf and data_ref != "Não encontrada" else "inverse"
+                    msg_delta = "Vigência" if data_ref == data_graf else "Diferente"
+                    if data_graf == "Não encontrada": msg_delta = ""
+                    
+                    k2.metric("Data Anvisa (Gráfica)", data_graf, delta=msg_delta, delta_color=cor_delta)
+                    k3.metric("Seções Analisadas", len(secoes))
 
-                        if "DIZERES LEGAIS" in t.upper():
-                            ta = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', ta)
-                            tb = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', tb)
+                    div_count = sum(1 for s in secoes if s['status'] != 'CONFORME')
+                    ok_count = len(secoes) - div_count
+                    
+                    b1, b2 = st.columns(2)
+                    b1.success(f"✅ **Conformes: {ok_count}**")
+                    if div_count > 0:
+                        b2.warning(f"⚠️ **Divergentes: {div_count}**")
+                    else:
+                        b2.success("✨ **Divergentes: 0**")
+                    
+                    st.divider()
+
+                    for item in secoes:
+                        status = item.get('status', 'CONFORME')
+                        titulo = item.get('titulo', 'Seção')
                         
-                        ca.markdown(f'<div class="texto-box {css}">{ta.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
-                        cb.markdown(f'<div class="texto-box {css}">{tb.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
-            else: status.update(label="Erro", state="error"); st.error("Falha na API.")
-        except Exception as e: st.error(str(e))
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            icon, css, aberto = "📅", "border-info", True
+                        elif status == "CONFORME":
+                            icon, css, aberto = "✅", "border-ok", False
+                        else:
+                            icon, css, aberto = "⚠️", "border-warn", True
+
+                        with st.expander(f"{icon} {titulo}", expanded=aberto):
+                            col_esq, col_dir = st.columns(2)
+                            with col_esq:
+                                st.caption("Referência (Arte)")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
+                            with col_dir:
+                                st.caption("Validação (Gráfica)")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"Erro no processamento: {e}")
+                    st.warning("Tente novamente.")
+
+    else:
+        st.warning("Adicione os arquivos.")
