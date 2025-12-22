@@ -12,10 +12,8 @@ st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layou
 
 st.markdown("""
 <style>
-    /* --- ESCONDER MENU SUPERIOR --- */
     [data-testid="stHeader"] { visibility: hidden; }
 
-    /* Caixas de Texto */
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
         font-size: 0.95rem;
@@ -31,15 +29,11 @@ st.markdown("""
         text-align: justify;
     }
 
-    /* Status das Bordas */
     .border-ok { border-left: 6px solid #28a745 !important; }
     .border-warn { border-left: 6px solid #ffc107 !important; }
-    .border-info { border-left: 6px solid #17a2b8 !important; }
     
-    /* Highlight de Erros */
     .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     
-    /* Negrito */
     b { font-weight: bold; color: #000; }
 
     div[data-testid="stMetric"] {
@@ -48,15 +42,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. SEUS MODELOS (COM FALLBACK DE SEGURANÇA) -----------------
+# ----------------- 2. MODELOS E CONFIGURAÇÃO -----------------
 MODELOS_POSSIVEIS = [
-    "models/gemini-2.5-flash",        # Sua preferência
-    "models/gemini-flash-latest",     # Sua preferência
-    "models/gemini-1.5-flash-latest", # Backup rápido
-    "models/gemini-1.5-pro-latest"    # Backup POTENTE (lento, mas não erra)
+    "models/gemini-2.5-flash",        # Tenta o mais novo primeiro
+    "models/gemini-flash-latest",     # Seu preferido
+    "models/gemini-1.5-flash-latest", # Fallback
+    "models/gemini-1.5-pro-latest"    # Último recurso
 ]
 
-# ----------------- 3. CONFIGURAÇÃO DE SEGURANÇA (ABERTA) -----------------
 SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -64,7 +57,23 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
 ]
 
-# ----------------- 4. FUNÇÕES AUXILIARES -----------------
+# A LISTA EXATA QUE VOCÊ PEDIU
+SECOES_OBRIGATORIAS = [
+    "APRESENTAÇÕES", 
+    "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", 
+    "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", 
+    "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
+    "DIZERES LEGAIS"
+]
+
+# ----------------- 3. FUNÇÕES -----------------
 def process_file_content(uploaded_file):
     try:
         filename = uploaded_file.name.lower()
@@ -91,47 +100,29 @@ def process_file_content(uploaded_file):
     except: return []
 
 def reparar_json_quebrado(texto_json):
-    """
-    Tenta consertar JSONs cortados ou mal formatados.
-    """
     if not texto_json: return {"secoes": [], "erro_parse": True}
-
-    # 1. Tenta carregar direto
     try:
         return json.loads(texto_json, strict=False)
     except:
-        pass
-
-    # 2. Limpeza cirúrgica
-    texto_limpo = texto_json.strip()
-    
-    # Se não termina com chave/colchete fechando, tenta fechar na força bruta
-    if not (texto_limpo.endswith("}") or texto_limpo.endswith("]")):
-        # Verifica aspas abertas
-        conta_aspas = texto_limpo.count('"') - texto_limpo.count('\\"')
-        if conta_aspas % 2 != 0: texto_limpo += '"'
+        texto_limpo = texto_json.strip()
+        if not (texto_limpo.endswith("}") or texto_limpo.endswith("]")):
+            conta_aspas = texto_limpo.count('"') - texto_limpo.count('\\"')
+            if conta_aspas % 2 != 0: texto_limpo += '"'
+            tentativas = ["}", "]}", "] }", "}]}", "\"}]}"]
+            for t in tentativas:
+                try: return json.loads(texto_limpo + t, strict=False)
+                except: continue
         
-        # Tenta fechar estruturas comuns
-        tentativas = ["}", "]}", "] }", "}]}", "\"}]}"]
-        for t in tentativas:
-            try:
-                return json.loads(texto_limpo + t, strict=False)
-            except: continue
-    
-    # 3. Tentativa desesperada de recuperar objetos válidos
-    try:
-        # Pega tudo que parece um objeto de seção
+        # Tentativa de recuperar objetos parciais (Regex para salvar o que deu pra ler)
         objetos = re.findall(r'\{[^{}]*"titulo"[^{}]*\}', texto_limpo, re.DOTALL)
         if objetos:
-            # Reconstrói um JSON válido com o que achou
             novo_json = '{"secoes": [' + ','.join(objetos) + ']}'
-            return json.loads(novo_json, strict=False)
-    except:
-        pass
+            try: return json.loads(novo_json, strict=False)
+            except: pass
 
     return {"secoes": [], "erro_parse": True}
 
-# ----------------- 5. UI PRINCIPAL -----------------
+# ----------------- 4. UI PRINCIPAL -----------------
 st.title("💊 Gráfica x Arte")
 
 c1, c2 = st.columns(2)
@@ -157,44 +148,49 @@ if st.button("🚀 Validar"):
         conteudo1 = process_file_content(f1)
         conteudo2 = process_file_content(f2)
         
-        prompt_base = """
-        ATUE COMO UM VALIDADOR DE BULAS FARMACÊUTICAS.
-        TAREFA: Extrair texto e comparar ARTE (Referência) vs GRÁFICA (Prova).
+        # --- PROMPT "ANTI-PREGUIÇA" ---
+        prompt_base = f"""
+        ATUE COMO UM AUDITOR FARMACÊUTICO RÍGIDO.
         
-        REGRAS RÍGIDAS:
-        1. Transcreva o texto COMPLETO de cada seção.
-        2. Se houver negrito visual, use tags <b>...</b>.
-        3. Ignore linhas pontilhadas ("...."), substitua por " ".
-        4. Marque divergências na GRÁFICA com <span class='highlight-yellow'>...</span>.
+        Sua missão é extrair e comparar texto de DUAS fontes: ARTE (Referência) e GRÁFICA (Prova).
         
-        SAÍDA OBRIGATÓRIA (JSON PURO):
-        {
+        VOCÊ É OBRIGADO A ITERAR SOBRE ESTA LISTA DE SEÇÕES, UMA POR UMA. NÃO PULE NENHUMA:
+        {json.dumps(SECOES_OBRIGATORIAS, ensure_ascii=False)}
+
+        REGRAS DE EXECUÇÃO:
+        1. Para CADA item da lista acima, procure o texto correspondente nos documentos.
+        2. Se encontrar o título (ex: "COMPOSIÇÃO"), copie TODO o texto abaixo dele até o próximo título.
+        3. Se não encontrar uma seção específica, você DEVE retornar um objeto com status "NÃO ENCONTRADO".
+        4. NÃO RESUMA. Copie ipsis litteris.
+        5. Ignore linhas pontilhadas ("....").
+        
+        SAÍDA JSON OBRIGATÓRIA:
+        {{
             "data_anvisa_ref": "dd/mm/aaaa",
             "data_anvisa_grafica": "dd/mm/aaaa",
             "secoes": [
-                {
-                    "titulo": "NOME DA SEÇÃO",
-                    "texto_arte": "Texto da arte...",
-                    "texto_grafica": "Texto da gráfica...",
-                    "status": "CONFORME"
-                }
+                {{
+                    "titulo": "NOME DA SEÇÃO DA LISTA",
+                    "texto_arte": "Texto completo...",
+                    "texto_grafica": "Texto completo...",
+                    "status": "CONFORME" ou "DIVERGENTE" ou "NÃO ENCONTRADO"
+                }}
             ]
-        }
+        }}
         """
         
         payload = [prompt_base, "=== ARTE ==="] + conteudo1 + ["=== GRÁFICA ==="] + conteudo2
         
         final_result = None
         modelo_vencedor = ""
-        historico_erros = []
+        erros_log = []
 
-        # --- LOOP INTELIGENTE DE MODELOS ---
         for api_key in keys_validas:
             genai.configure(api_key=api_key)
             
             for model_name in MODELOS_POSSIVEIS:
                 try:
-                    status_box.text(f"Tentando modelo: {model_name}...")
+                    status_box.text(f"Processando com: {model_name}...")
                     
                     model = genai.GenerativeModel(
                         model_name, 
@@ -208,34 +204,31 @@ if st.button("🚀 Validar"):
                     
                     response = model.generate_content(payload)
                     
-                    # 1. Verifica se bloqueou
                     if not response.candidates or not response.candidates[0].content.parts:
-                        historico_erros.append(f"{model_name}: Bloqueio de segurança.")
-                        continue 
+                        erros_log.append(f"{model_name}: Bloqueio vazio.")
+                        continue
 
-                    # 2. Tenta extrair e limpar JSON
                     texto_raw = response.text.replace("```json", "").replace("```", "")
                     match = re.search(r'\{.*\}', texto_raw, re.DOTALL)
                     if match: texto_raw = match.group(0)
 
-                    resultado_temp = reparar_json_quebrado(texto_raw)
-                    secoes_temp = resultado_temp.get("secoes", [])
+                    resultado = reparar_json_quebrado(texto_raw)
+                    secoes = resultado.get("secoes", [])
 
-                    # 3. VERIFICAÇÃO CRÍTICA: Se achou 0 seções, o modelo falhou!
-                    if not secoes_temp:
-                        historico_erros.append(f"{model_name}: Retornou 0 seções (Conteúdo vazio).")
-                        continue # Tenta o próximo modelo
+                    # TRAVA DE SEGURANÇA: Se retornou menos de 3 seções, o modelo foi preguiçoso. Tenta o próximo.
+                    if len(secoes) < 3: 
+                        erros_log.append(f"{model_name}: Retornou apenas {len(secoes)} seções (Incompleto).")
+                        continue 
                     
-                    # Se chegou aqui, temos dados válidos!
-                    final_result = resultado_temp
+                    final_result = resultado
                     modelo_vencedor = model_name
-                    break # Sai do loop de modelos
+                    break 
 
                 except Exception as e:
-                    historico_erros.append(f"{model_name}: Erro técnico ({str(e)})")
+                    erros_log.append(f"{model_name}: Erro {str(e)}")
                     continue
             
-            if final_result: break # Sai do loop de chaves
+            if final_result: break
 
         status_box.empty()
 
@@ -245,50 +238,52 @@ if st.button("🚀 Validar"):
                 data_graf = final_result.get("data_anvisa_grafica", "---")
                 secoes = final_result.get("secoes", [])
 
-                st.markdown(f"### 📊 Resultado (Gerado por: `{modelo_vencedor}`)")
+                st.markdown(f"### 📊 Resultado (Modelo: `{modelo_vencedor}`)")
                 
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Data Ref", data_ref)
                 k2.metric("Data Gráfica", data_graf)
-                k3.metric("Seções", len(secoes))
+                k3.metric("Seções Encontradas", len(secoes))
 
-                div_count = sum(1 for s in secoes if s.get('status') != 'CONFORME')
+                # Contagem real de divergências
+                div_count = sum(1 for s in secoes if s.get('status') not in ['CONFORME', 'NÃO ENCONTRADO'])
                 
-                # SÓ MOSTRA VERDE SE TIVER SEÇÕES E ZERO ERROS
-                if len(secoes) > 0 and div_count == 0:
+                if div_count == 0:
                     st.success("✅ **Tudo Conforme!**")
-                elif len(secoes) == 0:
-                     st.error("❌ **Nenhuma seção foi encontrada.** Verifique se o arquivo é legível.")
                 else:
                     st.warning(f"⚠️ **{div_count} Divergências Encontradas**")
                 
-                if final_result.get("erro_parse"):
-                    st.warning("⚠️ Nota: O texto foi longo demais para a IA, mas recuperamos o início.")
-
                 st.divider()
 
                 for item in secoes:
                     status = item.get('status', 'CONFORME')
-                    css = "border-ok" if status == "CONFORME" else "border-warn"
-                    icon = "✅" if status == "CONFORME" else "⚠️"
-                    aberto = status != "CONFORME"
+                    
+                    if status == "CONFORME":
+                        css, icon, aberto = "border-ok", "✅", False
+                    elif status == "NÃO ENCONTRADO":
+                        css, icon, aberto = "border-info", "❓", True
+                    else:
+                        css, icon, aberto = "border-warn", "⚠️", True
 
                     with st.expander(f"{icon} {item.get('titulo', 'Seção')}", expanded=aberto):
-                        cA, cB = st.columns(2)
-                        with cA:
-                            st.caption("Arte")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
-                        with cB:
-                            st.caption("Gráfica")
-                            st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+                        if status == "NÃO ENCONTRADO":
+                            st.info("Esta seção não foi identificada no documento.")
+                        else:
+                            cA, cB = st.columns(2)
+                            with cA:
+                                st.caption("Arte")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
+                            with cB:
+                                st.caption("Gráfica")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.error("❌ Erro ao exibir resultados.")
+                st.error("❌ Erro ao exibir os dados.")
                 st.write(e)
         else:
-             st.error("❌ Falha crítica: Nenhum modelo conseguiu ler o documento.")
-             with st.expander("Ver detalhes dos erros (Debug)"):
-                 for erro in historico_erros:
+             st.error("❌ Falha crítica: Os modelos não conseguiram ler todas as seções.")
+             with st.expander("Ver log de erros"):
+                 for erro in erros_log:
                      st.write(erro)
 
     else:
