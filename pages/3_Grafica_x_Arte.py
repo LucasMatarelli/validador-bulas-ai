@@ -12,13 +12,13 @@ st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
     .texto-box { 
-        font-family: 'Segoe UI', sans-serif; font-size: 0.95rem; line-height: 1.6; color: #333;
-        background-color: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid #ced4da;
+        font-family: 'Consolas', monospace; font-size: 0.9rem; line-height: 1.5; color: #212529;
+        background-color: #ffffff; padding: 15px; border-radius: 8px; border: 1px solid #ced4da;
         white-space: pre-wrap; text-align: justify;
     }
-    .border-ok { border-left: 6px solid #4caf50 !important; }
-    .border-warn { border-left: 6px solid #f44336 !important; }
-    .border-info { border-left: 6px solid #2196f3 !important; }
+    .border-ok { border-left: 5px solid #4caf50 !important; }
+    .border-warn { border-left: 5px solid #f44336 !important; }
+    .border-info { border-left: 5px solid #2196f3 !important; }
     .highlight-blue { background-color: #e3f2fd; color: #0d47a1; padding: 2px 6px; border-radius: 12px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
@@ -57,18 +57,18 @@ if st.button("🚀 Validar"):
             c1_content = process_file(f1)
             c2_content = process_file(f2)
             
-            prompt = f"""
-            ATUE COMO OCR BURRO.
+            p = f"""
+            ATUE COMO OCR.
             LISTA: {json.dumps(SECOES, ensure_ascii=False)}
             REGRAS:
-            1. COPIE O TEXTO VISUAL EXATO.
-            2. NÃO INVENTE PALAVRAS. Se não tiver nada, deixe vazio.
+            1. COPIE O TEXTO VISUAL EXATO E COMPLETO.
+            2. Se houver listas, uma linha por item.
             3. Ignore pontilhados "....".
             4. Use <b> para negrito.
             JSON: {{"data_anvisa_ref": "...", "data_anvisa_grafica": "...", "secoes": [{{"titulo": "...", "texto_arte": "...", "texto_grafica": "...", "status": "CONFORME"}}]}}
             """
             
-            pl = [prompt, "=== ARTE ==="] + c1_content + ["=== GRAFICA ==="] + c2_content
+            pl = [p, "=== ARTE ==="] + c1_content + ["=== GRAFICA ==="] + c2_content
             
             res = None
             for k in valid:
@@ -86,37 +86,34 @@ if st.button("🚀 Validar"):
                 colA.metric("Ref", res.get("data_anvisa_ref"))
                 colB.metric("Gráfica", res.get("data_anvisa_grafica"))
                 
-                secoes_isentas = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+                isentas = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
                 for i in res.get("secoes", []):
-                    titulo = i.get('titulo', '')
+                    t = i.get('titulo', '')
+                    blindada = any(x in t.upper() for x in isentas)
                     
-                    # BLINDAGEM DE STATUS VISUAL
-                    eh_isenta = any(x in titulo.upper() for x in secoes_isentas)
-                    
-                    if eh_isenta:
+                    if blindada:
                         status = "CONFORME"
                         css = "border-info"
-                        aberto = False
+                        ab = False
                     else:
                         status = i.get("status", "CONFORME")
                         css = "border-warn" if status == "DIVERGENTE" else "border-ok"
-                        aberto = (status == "DIVERGENTE")
+                        ab = (status == "DIVERGENTE")
                     
-                    if "DIZERES LEGAIS" in titulo.upper(): icon="⚖️"
-                    elif "APRESENTAÇÕES" in titulo.upper() or "COMPOSIÇÃO" in titulo.upper(): icon="📋"
+                    if "DIZERES" in t.upper(): icon="⚖️"
+                    elif blindada: icon="📋"
                     elif status == "DIVERGENTE": icon="⚠️"
                     else: icon="✅"
 
-                    with st.expander(f"{icon} {titulo}", expanded=aberto):
+                    with st.expander(f"{icon} {t}", expanded=ab):
                         ca, cb = st.columns(2)
-                        
                         ta = i.get("texto_arte", "")
                         tb = i.get("texto_grafica", "")
 
-                        if "DIZERES LEGAIS" in titulo.upper():
+                        if "DIZERES LEGAIS" in t.upper():
                             ta = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', ta)
                             tb = re.sub(r'(\d{2}/\d{2}/\d{4})', r'<span class="highlight-blue">\1</span>', tb)
                         
-                        ca.markdown(f'<div class="texto-box {css}">{ta.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
-                        cb.markdown(f'<div class="texto-box {css}">{tb.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+                        ca.markdown(f'<div class="texto-box {css}">{ta}</div>', unsafe_allow_html=True)
+                        cb.markdown(f'<div class="texto-box {css}">{tb}</div>', unsafe_allow_html=True)
