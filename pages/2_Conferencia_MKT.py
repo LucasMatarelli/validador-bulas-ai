@@ -296,14 +296,14 @@ if st.button("🚀 Processar Conferência"):
                             # Lógica BLINDADA: Sem comparação, sem highlight amarelo
                             status = "CONFORME"
                             
-                            # DIZERES LEGAIS: Highlight AZUL apenas nas datas
+                            # DIZERES LEGAIS: Highlight AZUL apenas nas datas (NOS DOIS ARQUIVOS)
                             if "DIZERES LEGAIS" in titulo_upper:
                                 html_mkt = destacar_datas(txt_mkt)
+                                html_ref = destacar_datas(txt_ref) # APLICADO AQUI TAMBÉM AGORA
                             else:
                                 html_mkt = txt_mkt 
+                                html_ref = txt_ref
                             
-                            html_ref = txt_ref 
-
                         else:
                             # Lógica PADRÃO: Compara tudo, com proteção contra falso positivo
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
