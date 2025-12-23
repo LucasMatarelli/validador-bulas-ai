@@ -24,28 +24,23 @@ st.markdown("""
         border-radius: 8px;
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; /* ESSENCIAL PARA MANTER QUEBRA DE LINHA */
+        white-space: pre-wrap; 
         text-align: left;
     }
     
-    /* NEGRITO FORTE PARA VISUALIZAÇÃO */
-    .texto-box b, .texto-box strong {
-        font-weight: 700;
-        color: #000;
-    }
-    
-    /* Cores de Destaque */
+    /* Highlight Amarelo (Erros) */
     .highlight-yellow { 
         background-color: #fff3cd; color: #856404; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold;
     }
     
+    /* Highlight Azul (Apenas Datas) */
     .highlight-blue { 
         background-color: #d1ecf1; color: #0c5460; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
     }
     
-    /* Bordas de Status */
+    /* Bordas */
     .border-ok { border-left: 6px solid #28a745 !important; }
     .border-warn { border-left: 6px solid #ffc107 !important; } 
     .border-info { border-left: 6px solid #17a2b8 !important; }
@@ -61,34 +56,21 @@ MODELO_FIXO = "models/gemini-flash-latest"
 
 # ----------------- 3. FUNÇÕES AUXILIARES -----------------
 
-def extrair_data_anvisa_regex(texto):
-    """
-    Busca EXATAMENTE a frase padrão da Anvisa para pegar a data.
-    Retorna a data se achar, ou 'Não encontrada'.
-    """
-    if not texto: return "Não encontrada"
-    # Procura a frase ignorando maiúsculas/minúsculas
-    padrao = r"Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em\s+(\d{2}/\d{2}/\d{4})"
-    match = re.search(padrao, texto, re.IGNORECASE)
-    
-    if match:
-        return match.group(1) # Retorna apenas a data (dd/mm/aaaa)
-    return "Não encontrada"
-
 def limpar_ruido_visual(texto):
     if not texto: return ""
-    # Remove tags HTML para a COMPARAÇÃO (o diff não pode comparar <b> com nada)
-    texto_limpo = re.sub(r'</?b>', '', texto)
-    texto_limpo = re.sub(r'[\._]{3,}', ' ', texto_limpo) 
-    texto_limpo = re.sub(r'[ \t]+', ' ', texto_limpo)
-    return texto_limpo.strip()
+    texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove pontilhados
+    texto = re.sub(r'[ \t]+', ' ', texto)     # Remove excesso de espaços
+    return texto.strip()
 
 def normalizar_para_comparacao(texto):
     if not texto: return ""
-    return unicodedata.normalize('NFKD', texto)
+    # Remove tags HTML (como <b>) apenas para a COMPARAÇÃO interna, 
+    # para que o diff não marque erro só porque um tem negrito e o outro não.
+    texto_sem_tags = re.sub(r'<[^>]+>', '', texto) 
+    return unicodedata.normalize('NFKD', texto_sem_tags)
 
 def destacar_datas(texto):
-    """Apenas envolve datas em azul."""
+    """Procura data no formato dd/mm/aaaa ou mmm/aaaa e aplica azul."""
     padrao_data = r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     def replacer(match):
         return f'<span class="highlight-blue">{match.group(0)}</span>'
@@ -98,24 +80,22 @@ def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # 1. Limpa visualmente para comparar (sem negrito, sem pontilhado)
     TOKEN_QUEBRA = " [[BREAK]] "
+    
+    # Prepara texto para diff (mantendo tags visuais no output, mas ignorando na lógica se necessário)
+    # A lógica aqui compara as strings brutas. Se o negrito (tags <b>) estiver diferente, vai marcar erro.
+    # Isso atende ao pedido de "Manter negrito original".
+    
     ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
     novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
     
-    ref_norm = normalizar_para_comparacao(ref_limpo)
-    novo_norm = normalizar_para_comparacao(novo_limpo)
-
-    a = ref_norm.split()
-    b = novo_norm.split()
+    # Para comparação, usamos o texto como veio (com tags <b> se o extrator pegou)
+    a = ref_limpo.split()
+    b = novo_limpo.split()
     
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     html_output = []
     eh_divergente = False
-    
-    # 2. Reconstrução: Aqui tentamos manter o texto novo (que pode ter tags originais perdidas na limpeza)
-    # Como o diff é feito no texto limpo, o highlight pode perder o negrito original dentro da tag <span>.
-    # Mas garantiremos que o negrito seja preservado no prompt principal para exibição sem diff.
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         trecho = b[j1:j2]
@@ -136,9 +116,9 @@ def gerar_diff_html(texto_ref, texto_novo):
     resultado_final = resultado_final.replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
     return resultado_final, eh_divergente
 
-# ----------------- 4. EXTRAÇÃO DE TEXTO AJUSTADA (NEGRITO) -----------------
+# ----------------- 4. EXTRAÇÃO DE TEXTO (COM NEGRITO) -----------------
 def extract_text_from_file(uploaded_file):
-    """Extrai texto mantendo tags <b> separadas para a IA entender."""
+    """Extrai texto detectando Negrito e usando sort=True para colunas."""
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
@@ -153,17 +133,15 @@ def extract_text_from_file(uploaded_file):
                         for s in l.get("spans", []):
                             content = s["text"]
                             font_props = s["font"].lower()
+                            # Lógica de detecção de negrito do PyMuPDF
                             is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
                             
                             if is_bold:
-                                # Adicionei espaço antes e depois do tag para não colar na palavra vizinha
-                                line_txt += f" <b>{content}</b> "
+                                line_txt += f"<b>{content}</b>"
                             else:
                                 line_txt += content
                         block_text += line_txt + " " 
                     
-                    # Limpeza de espaços duplos criados pelo fix do negrito
-                    block_text = re.sub(r'\s+', ' ', block_text)
                     text += block_text.strip() + "\n\n"
                     
         elif uploaded_file.name.lower().endswith('.docx'):
@@ -172,7 +150,7 @@ def extract_text_from_file(uploaded_file):
                 para_txt = ""
                 for run in para.runs:
                     if run.bold:
-                        para_txt += f" <b>{run.text}</b> "
+                        para_txt += f"<b>{run.text}</b>"
                     else:
                         para_txt += run.text
                 text += para_txt + "\n\n"
@@ -209,7 +187,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Analisando estrutura, negritos e datas..."):
+        with st.spinner("Analisando estrutura, preservando negrito e datas..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
@@ -217,37 +195,40 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # EXTRAÇÃO DETERMINÍSTICA DA DATA (SEM IA)
-            data_ref_extraida = extrair_data_anvisa_regex(t_anvisa)
-            data_mkt_extraida = extrair_data_anvisa_regex(t_mkt)
-
-            # PROMPT REFORÇADO PARA NEGRITO
+            # PROMPT ESPECÍFICO PARA DATA E CONTEÚDO COMPLETO
             prompt = f"""
-            Você é um Extrator de Dados Farmacêuticos.
+            Você é um Extrator de Dados Farmacêuticos Rigoroso.
             
             INPUT TEXTO 1 (REF): 
-            {t_anvisa[:120000]}
+            {t_anvisa[:150000]}
             
             INPUT TEXTO 2 (MKT): 
-            {t_mkt[:120000]}
+            {t_mkt[:150000]}
 
             SUA MISSÃO:
-            1. Localize as seções nos dois textos.
-            2. **PRESERVAÇÃO DO NEGRITO:** O texto de entrada contem tags <b> e </b>. VOCÊ DEVE MANTÊ-LAS NA SAÍDA.
-               - Exemplo Entrada: "Conservar em <b>temperatura ambiente</b>"
-               - Exemplo Saída: "Conservar em <b>temperatura ambiente</b>"
-            3. Extraia o conteúdo IPSIS LITTERIS. NÃO CORRIJA O PORTUGUÊS.
-            4. Respeite as quebras de linha.
+            1. **DATA DE APROVAÇÃO:** Procure EXATAMENTE pela frase "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em (DATA)". Extraia APENAS essa data específica.
+            
+            2. **CONTEÚDO COMPLETO (IMPORTANTE):** - Extraia TODO o texto que estiver entre um título e outro.
+               - NÃO PARE no meio da frase.
+               - NÃO RESUMA.
+               - Se a seção for longa e mudar de coluna, continue copiando até chegar no próximo título em negrito.
+            
+            3. **FORMATAÇÃO:**
+               - MANTENHA as tags <b> e </b> originais que você encontrar no input. NÃO REMOVA O NEGRITO.
+               - NÃO INVENTE negrito onde não tem.
+               - NÃO CORRIJA O PORTUGUÊS. Copie ipsis litteris.
 
-            LISTA DE SEÇÕES: {SECOES_PACIENTE}
+            LISTA DE SEÇÕES ESPERADAS: {SECOES_PACIENTE}
 
             SAÍDA JSON:
             {{
+                "data_anvisa_ref": "dd/mm/aaaa",
+                "data_anvisa_mkt": "dd/mm/aaaa",
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Texto exato mantendo <b>...</b>",
-                        "texto_mkt": "Texto exato mantendo <b>...</b>"
+                        "texto_anvisa": "Texto completo com <b> e \\n",
+                        "texto_mkt": "Texto completo com <b> e \\n"
                     }}
                 ]
             }}
@@ -270,10 +251,8 @@ if st.button("🚀 Processar Conferência"):
             if response:
                 try:
                     resultado = json.loads(response.text)
-                    # Usamos as datas extraídas via Python Regex, que são precisas
-                    data_ref = data_ref_extraida
-                    data_mkt = data_mkt_extraida
-                    
+                    data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
+                    data_mkt = resultado.get("data_anvisa_mkt", "Não encontrada")
                     dados_secoes = resultado.get("secoes", [])
                     secoes_finais = []
                     divergentes_count = 0
@@ -287,19 +266,19 @@ if st.button("🚀 Processar Conferência"):
                         eh_secao_blindada = any(blindada in titulo_upper for blindada in SECOES_SEM_COMPARACAO)
 
                         if eh_secao_blindada:
+                            # Lógica BLINDADA: Sem comparação, sem highlight amarelo
                             status = "CONFORME"
-                            # Se for DIZERES LEGAIS, aplica highlight azul nas datas APENAS
+                            
+                            # DIZERES LEGAIS: Highlight AZUL apenas nas datas
                             if "DIZERES LEGAIS" in titulo_upper:
-                                # Mantemos o negrito original (<b>) e adicionamos o span azul nas datas
                                 html_mkt = destacar_datas(txt_mkt)
                             else:
-                                html_mkt = txt_mkt # Mantém negrito original
+                                html_mkt = txt_mkt 
                             
                             html_ref = txt_ref 
 
                         else:
-                            # Para comparação, precisamos remover temporariamente o negrito para não dar falso positivo no diff
-                            # O diff vai mostrar erros em amarelo, mas pode perder o negrito original nas partes marcadas
+                            # Lógica PADRÃO: Compara tudo, inclusive a presença do negrito
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             status = "DIVERGENTE" if teve_diff else "CONFORME"
                             if teve_diff: divergentes_count += 1
@@ -314,8 +293,8 @@ if st.button("🚀 Processar Conferência"):
 
                     st.markdown("### 📊 Resumo da Conferência")
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("Ref. (Bula Padrão)", data_ref)
-                    c2.metric("MKT (Bula Padrão)", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
+                    c1.metric("Data Anvisa (Ref)", data_ref)
+                    c2.metric("Data Anvisa (MKT)", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
                     c3.metric("Seções", len(secoes_finais))
 
                     sub1, sub2 = st.columns(2)
