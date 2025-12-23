@@ -1,18 +1,19 @@
 import streamlit as st
 import google.generativeai as genai
+from google.api_core import retry
 import fitz  # PyMuPDF
-import docx
+import docx  # Para ler arquivos Word
 import json
-import re
-import unicodedata
-import difflib
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
-    [data-testid="stHeader"] { visibility: hidden; }
+    /* --- ESCONDER MENU SUPERIOR (CONFORME SOLICITADO) --- */
+    [data-testid="stHeader"] {
+        visibility: hidden;
+    }
 
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
@@ -27,100 +28,66 @@ st.markdown("""
         white-space: pre-wrap;
         text-align: justify;
     }
-    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 4px; border: 1px solid #e57373; font-weight: bold; }
-    .highlight-blue { background-color: #e3f2fd; color: #0d47a1; padding: 2px 6px; border-radius: 12px; border: 1px solid #2196f3; font-weight: bold; }
+    .highlight-yellow { background-color: #fff9c4; color: #000; padding: 2px 4px; border-radius: 4px; border: 1px solid #fbc02d; }
+    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 4px; border: 1px solid #b71c1c; font-weight: bold; }
+    .highlight-blue { background-color: #bbdefb; color: #0d47a1; padding: 2px 4px; border-radius: 4px; border: 1px solid #1976d2; font-weight: bold; }
     
     .border-ok { border-left: 6px solid #4caf50 !important; }
-    .border-warn { border-left: 6px solid #f44336 !important; }
+    .border-warn { border-left: 6px solid #ff9800 !important; }
     .border-info { border-left: 6px solid #2196f3 !important; }
     
     div[data-testid="stMetric"] {
-        background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        padding: 10px;
+        border-radius: 5px;
+        text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
 
+# ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 2. FUNÇÕES -----------------
-def limpar_texto_profundo(texto):
-    if not texto: return ""
-    texto = unicodedata.normalize('NFKD', texto)
-    texto = texto.replace('\u00a0', ' ').replace('\r', '')
-    # Remove pontilhados de tabelas
-    texto = re.sub(r'[\._]{4,}', ' ', texto) 
-    texto = re.sub(r'[ \t]+', ' ', texto)
-    return texto.strip()
-
-def destacar_datas(html_texto):
-    """Pinta datas de azul."""
-    padrao = r'(?<!\d)(\d{2}/\d{2}/\d{4})(?!\d)'
-    return re.sub(padrao, r'<span class="highlight-blue">\1</span>', html_texto)
-
-def gerar_diff_html_red(texto_ref, texto_novo):
-    if not texto_ref: texto_ref = ""
-    if not texto_novo: texto_novo = ""
-    
-    TOKEN = " [[BR]] "
-    ref_limpo = limpar_texto_profundo(texto_ref).replace('\n', TOKEN)
-    novo_limpo = limpar_texto_profundo(texto_novo).replace('\n', TOKEN)
-    
-    # Compara palavra por palavra
-    matcher = difflib.SequenceMatcher(None, ref_limpo.split(), novo_limpo.split(), autojunk=False)
-    output = []
-    eh_divergente = False
-    
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        trecho = " ".join(novo_limpo.split()[j1:j2]).replace(TOKEN, "\n")
-        
-        if tag == 'equal':
-            output.append(trecho)
-        elif tag in ['replace', 'insert']:
-            if trecho.strip():
-                output.append(f'<span class="highlight-red">{trecho}</span>')
-                eh_divergente = True
-            else:
-                output.append(trecho)
-        elif tag == 'delete':
-            eh_divergente = True
-            
-    final_html = " ".join(output).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
-    # Aplica Data Azul nas datas que sobraram no texto
-    final_html = destacar_datas(final_html)
-    return final_html, eh_divergente
-
+# ----------------- 3. EXTRAÇÃO DE TEXTO (PDF E DOCX COM NEGRITO) -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
+        # Verifica se é PDF e extrai com formatação
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc:
-                # sort=True organiza colunas
-                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
+                # Usa 'dict' para acessar spans e fontes
+                blocks = page.get_text("dict", flags=11)["blocks"]
                 for b in blocks:
-                    block_txt = ""
                     for l in b.get("lines", []):
-                        line_txt = ""
                         for s in l.get("spans", []):
-                            c = s["text"]
-                            # Detecta negrito
-                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower()
-                            if is_bold: line_txt += f"<b>{c}</b>"
-                            else: line_txt += c
-                        block_txt += line_txt + " "
-                    text += block_txt + "\n"
+                            content = s["text"]
+                            # Detecta negrito via flag (16) ou nome da fonte
+                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower() or "black" in s["font"].lower()
+                            if is_bold:
+                                text += f"<b>{content}</b>"
+                            else:
+                                text += content
+                        text += "\n"
+                    text += "\n"
+        
+        # Verifica se é DOCX e extrai com formatação
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
-            for p in doc.paragraphs:
-                p_txt = ""
-                for r in p.runs:
-                    if r.bold: p_txt += f"<b>{r.text}</b>"
-                    else: p_txt += r.text
-                text += p_txt + "\n\n"
-        return limpar_texto_profundo(text)
-    except: return ""
+            for para in doc.paragraphs:
+                for run in para.runs:
+                    if run.bold:
+                        text += f"<b>{run.text}</b>"
+                    else:
+                        text += run.text
+                text += "\n"
+        
+        return text
+    except Exception as e:
+        return ""
 
-# ----------------- 3. CONFIGURAÇÃO SEÇÕES -----------------
+# ----------------- 4. LISTAS DE SEÇÕES -----------------
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -139,136 +106,169 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
 ]
 
-# ----------------- 4. UI PRINCIPAL -----------------
+# ----------------- 5. INTERFACE PRINCIPAL -----------------
 st.title("💊 Med. Referência x BELFAR")
 
-tipo = st.radio("Tipo:", ["Paciente", "Profissional"], horizontal=True)
-secoes_ativas = SECOES_PACIENTE if tipo == "Paciente" else SECOES_PROFISSIONAL
+tipo_bula = st.radio("Selecione o tipo de Bula:", ["Paciente", "Profissional"], horizontal=True)
+lista_secoes_ativa = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
 
 st.divider()
+
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Referência", type=["pdf", "docx"], key="f1")
-f2 = c2.file_uploader("📂 BELFAR", type=["pdf", "docx"], key="f2")
+# Agora aceita PDF e DOCX
+f1 = c1.file_uploader("📂 Arquivo Referência", type=["pdf", "docx"], key="f1")
+f2 = c2.file_uploader("📂 Arquivo BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    # 3 CHAVES API
-    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
-    valid_keys = [k for k in keys if k]
-    if not valid_keys: st.error("Sem chaves API."); st.stop()
+    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    keys_validas = [k for k in keys_disponiveis if k]
+
+    if not keys_validas:
+        st.error("Nenhuma chave API encontrada nos Secrets.")
+        st.stop()
 
     if f1 and f2:
-        with st.spinner("Lendo arquivos e extraindo texto fiel..."):
-            f1.seek(0); f2.seek(0)
+        with st.spinner("Processando Inteligência Artificial..."):
+            # Reseta ponteiros
+            f1.seek(0)
+            f2.seek(0)
+            
+            # Chama a função nova que lê os dois tipos com negrito
             t_ref = extract_text_from_file(f1)
-            t_bel = extract_text_from_file(f2)
+            t_belfar = extract_text_from_file(f2)
 
-            if len(t_ref) < 20: st.error("Arquivo Ref vazio."); st.stop()
+            if len(t_ref) < 50 or len(t_belfar) < 50:
+                st.error("Erro: Arquivo vazio ou ilegível (talvez seja imagem sem OCR ou DOCX corrompido).")
+                st.stop()
 
-            # PROMPT DE OCR LITERAL
+            # --- PROMPT MANTIDO (COM PEQUENA ADIÇÃO PARA MANTER TAGS) ---
             prompt = f"""
-            Você é um SOFTWARE DE OCR LITERAL.
-            INPUT REF: {t_ref[:500000]}
-            INPUT BEL: {t_bel[:500000]}
+            Você é um Auditor de Qualidade Farmacêutica Rígido, mas justo.
             
-            TAREFA:
-            1. Extraia o texto COMPLETO das seções abaixo.
-            2. COPIE EXATAMENTE O QUE LÊ. Não invente palavras. Não corrija erros.
-            3. Mantenha as tags <b> (negrito) onde houver.
-            4. Se houver listas, mantenha quebra de linha.
+            INPUT TEXTO REFERÊNCIA:
+            {t_ref} 
             
-            SEÇÕES: {secoes_ativas}
+            INPUT TEXTO BELFAR:
+            {t_belfar}
+
+            SUA TAREFA:
+            1. Para cada seção listada, extraia o texto correspondente.
+            2. **REGRA DE OURO (ANTI-ALUCINAÇÃO):** O arquivo original pode ter quebras de linha (`\\n`) em lugares diferentes do novo (especialmente se um for DOCX e outro PDF). Isso NÃO é uma diferença.
+               - Antes de comparar, remova mentalmente todas as quebras de linha e espaços extras.
+               - Se a SEQUÊNCIA DE PALAVRAS for a mesma, o texto é **CONFORME**.
+               - Só marque DIVERGENTE se houver palavras diferentes, números diferentes ou frases faltando.
+            3. **IMPORTANTE:** Se houver tags HTML de negrito (<b>...</b>) no texto extraído, MANTENHA-AS na saída JSON para que o usuário veja o negrito.
+
+            LISTA DE SEÇÕES: {lista_secoes_ativa}
+
+            REGRAS DE FORMATAÇÃO DO OUTPUT:
             
-            JSON:
+            CASO 1: Seções "APRESENTAÇÕES", "COMPOSIÇÃO" e "DIZERES LEGAIS":
+               - Status SEMPRE "CONFORME".
+               - NÃO use highlight amarelo.
+               - Apenas transcreva o texto limpo (parágrafos unidos).
+               - Exceção: Destaque a Data da Anvisa em "DIZERES LEGAIS" com <span class="highlight-blue">DATA</span>.
+
+            CASO 2: TODAS AS OUTRAS SEÇÕES:
+               - Compare a sequência de palavras.
+               - Se for IDÊNTICO (ignorando quebra de linha): Status "CONFORME", sem highlight.
+               - Se for DIFERENTE: Status "DIVERGENTE". Use <span class="highlight-yellow">TRECHO NOVO/ALTERADO</span> apenas na parte que mudou.
+               - Erros graves de PT: <span class="highlight-red">ERRO</span>.
+
+            SAÍDA JSON OBRIGATÓRIA:
             {{
                 "data_anvisa_ref": "dd/mm/aaaa",
                 "data_anvisa_belfar": "dd/mm/aaaa",
-                "secoes": [ {{"titulo": "...", "texto_ref": "...", "texto_belfar": "..."}} ]
+                "secoes": [
+                    {{
+                        "titulo": "NOME DA SEÇÃO",
+                        "texto_ref": "Texto completo da Referência (sem cortar o final)",
+                        "texto_belfar": "Texto completo da Belfar",
+                        "status": "CONFORME" ou "DIVERGENTE"
+                    }}
+                ]
             }}
             """
-
-            resp = None
-            # Tenta as 3 chaves
-            for i, k in enumerate(valid_keys):
-                try:
-                    genai.configure(api_key=k)
-                    model = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
-                    resp = model.generate_content(prompt)
-                    break
-                except Exception as e:
-                    if i == len(valid_keys) - 1:
-                        st.error(f"Todas as chaves falharam: {e}")
-                        st.stop()
-                    continue
             
-            if resp:
+            response = None
+            ultimo_erro = ""
+
+            for i, api_key in enumerate(keys_validas):
                 try:
-                    res = json.loads(resp.text)
-                    data_ref = res.get("data_anvisa_ref", "-")
-                    data_bel = res.get("data_anvisa_belfar", "-")
-                    lista = res.get("secoes", [])
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(
+                        MODELO_FIXO, 
+                        generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                    )
                     
-                    final_list = []
-                    err_count = 0
+                    response = model.generate_content(prompt, request_options={'retry': None})
+                    break 
 
-                    secoes_isentas = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+                except Exception as e:
+                    ultimo_erro = str(e)
+                    if i < len(keys_validas) - 1:
+                        st.warning(f"⚠️ Chave {i+1} instável. Trocando para Chave {i+2}...")
+                        continue
+                    else:
+                        st.error(f"❌ Todas as chaves falharam. Erro: {ultimo_erro}")
+                        st.stop()
 
-                    for item in lista:
-                        tit = item.get("titulo", "").strip()
-                        tr = item.get("texto_ref", "").strip()
-                        tb = item.get("texto_belfar", "").strip()
-                        
-                        eh_isenta = any(x in tit.upper() for x in secoes_isentas)
-                        
-                        if eh_isenta:
-                            # BLINDAGEM: SEMPRE CONFORME
-                            status = "CONFORME"
-                            
-                            # Formatação apenas visual (sem vermelho)
-                            if "DIZERES LEGAIS" in tit.upper():
-                                html_ref = destacar_datas(tr.replace('\n', '<br>'))
-                                html_bel = destacar_datas(tb.replace('\n', '<br>'))
-                            else:
-                                html_ref = tr.replace('\n', '<br>')
-                                html_bel = tb.replace('\n', '<br>')
-                                
+            if response:
+                try:
+                    resultado = json.loads(response.text)
+                    
+                    data_ref = resultado.get("data_anvisa_ref", "-")
+                    data_belfar = resultado.get("data_anvisa_belfar", "-")
+                    dados_secoes = resultado.get("secoes", [])
+
+                    # Correção de Status via Python
+                    divergentes_count = 0
+                    for item in dados_secoes:
+                        if 'highlight-yellow' in item.get('texto_belfar', '') or item.get('status') == 'DIVERGENTE':
+                            item['status'] = 'DIVERGENTE'
+                            divergentes_count += 1
                         else:
-                            # SEÇÕES NORMAIS: DIFF VERMELHO
-                            html_bel, is_diff = gerar_diff_html_red(tr, tb)
-                            html_ref = destacar_datas(tr.replace('\n', '<br>'))
-                            status = "DIVERGENTE" if is_diff else "CONFORME"
-                            if is_diff: err_count += 1
-                        
-                        final_list.append({
-                            "titulo": tit, 
-                            "ref_html": html_ref, 
-                            "bel_html": html_bel.replace('\n', '<br>'), 
-                            "status": status
-                        })
+                            item['status'] = 'CONFORME'
 
-                    st.markdown("### 📊 Resumo")
-                    c_a, c_b, c_c = st.columns(3)
-                    c_a.metric("Ref.", data_ref)
-                    c_b.metric("BELFAR", data_bel)
-                    c_c.metric("Seções", len(final_list))
+                    st.markdown("### 📊 Resumo da Conferência")
                     
+                    c_d1, c_d2, c_d3 = st.columns(3)
+                    c_d1.metric("Data Ref.", data_ref)
+                    c_d2.metric("Data BELFAR", data_belfar, delta="Igual" if data_ref == data_belfar else "Diferente")
+                    
+                    total = len(dados_secoes)
+                    c_d3.metric("Seções Analisadas", total)
+
+                    sub1, sub2 = st.columns(2)
+                    sub1.info(f"✅ **Conformes:** {total - divergentes_count}")
+                    if divergentes_count > 0:
+                        sub2.warning(f"⚠️ **Divergentes:** {divergentes_count}")
+                    else:
+                        sub2.success("✨ **Divergências:** 0")
+
                     st.divider()
-                    for it in final_list:
-                        status = it["status"]
-                        tit_show = it["titulo"]
+
+                    for item in dados_secoes:
+                        status = item.get('status', 'CONFORME')
+                        titulo = item.get('titulo', 'Seção')
                         
-                        if "DIZERES LEGAIS" in tit_show.upper():
-                            icon = "⚖️"; css = "border-info"; aberto = False
-                        elif any(x in tit_show.upper() for x in ["APRESENTAÇÕES", "COMPOSIÇÃO"]):
-                            icon = "📋"; css = "border-info"; aberto = False
-                        elif status == "DIVERGENTE":
-                            icon = "⚠️"; css = "border-warn"; aberto = True
-                        else:
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            icon = "⚖️"; css = "border-info"; aberto = True
+                        elif status == "CONFORME":
                             icon = "✅"; css = "border-ok"; aberto = False
+                        else:
+                            icon = "⚠️"; css = "border-warn"; aberto = True
 
-                        with st.expander(f"{icon} {tit_show}", expanded=aberto):
-                            cL, cR = st.columns(2)
-                            cL.markdown(f'<div class="texto-box {css}">{it["ref_html"]}</div>', unsafe_allow_html=True)
-                            cR.markdown(f'<div class="texto-box {css}">{it["bel_html"]}</div>', unsafe_allow_html=True)
+                        with st.expander(f"{icon} {titulo}", expanded=aberto):
+                            col_esq, col_dir = st.columns(2)
+                            with col_esq:
+                                st.caption("📜 Referência")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_ref", "")}</div>', unsafe_allow_html=True)
+                            with col_dir:
+                                st.caption("💊 BELFAR")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_belfar", "")}</div>', unsafe_allow_html=True)
 
-                except Exception as e: st.error(f"Erro ao ler JSON: {e}")
-    else: st.warning("Envie os arquivos.")
+                except Exception as e:
+                    st.error(f"Erro ao ler resposta da IA: {e}")
+    else:
+        st.warning("Por favor, envie os dois arquivos PDF ou DOCX.")
