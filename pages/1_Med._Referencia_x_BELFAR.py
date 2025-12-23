@@ -189,7 +189,7 @@ SECOES_PACIENTE = [
 SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 5. UI PRINCIPAL -----------------
-st.title("💊 Conferência MKT")
+st.title("💊 Med. Referência x BELFAR")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], key="f1")
