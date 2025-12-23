@@ -26,8 +26,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-MODELO_FIXO = "models/gemini-1.5-flash"
-
+MODELO_FIXO = "models/gemini-flash-latest"
 def limpar(txt):
     if not txt: return ""
     txt = unicodedata.normalize('NFKD', txt)
