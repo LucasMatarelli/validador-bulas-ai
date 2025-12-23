@@ -191,7 +191,7 @@ if st.button("🚀 Validar"):
                         "titulo": "NOME DA SEÇÃO",
                         "texto_arte": "Texto EXATO da arte",
                         "texto_grafica": "Texto EXATO da gráfica (com highlights APENAS se permitido)",
-                        "status": "CONFORME" ou "DIVERGENTE"
+                        "status": "CONFORME" or "DIVERGENTE"
                     }}
                 ]
             }}
@@ -226,10 +226,16 @@ if st.button("🚀 Validar"):
             if response:
                 try:
                     # --- CORREÇÃO DO ERRO DE JSON AQUI ---
-                    # Remove blocos markdown caso a IA coloque ```json ... ```
-                    texto_limpo = response.text.replace("```json", "").replace("```", "").strip()
+                    # 1. Limpa blocos de código markdown
+                    texto_bruto = response.text
+                    if "```json" in texto_bruto:
+                        texto_bruto = texto_bruto.split("```json")[1].split("```")[0]
+                    elif "```" in texto_bruto:
+                        texto_bruto = texto_bruto.split("```")[1].split("```")[0]
                     
-                    # strict=False é o segredo para aceitar caracteres de controle
+                    texto_limpo = texto_bruto.strip()
+                    
+                    # 2. strict=False permite quebras de linha e caracteres especiais dentro da string
                     resultado = json.loads(texto_limpo, strict=False)
                     
                     data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
@@ -281,8 +287,9 @@ if st.button("🚀 Validar"):
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"Erro no processamento: {e}")
-                    st.warning("Tente novamente.")
+                    st.error(f"Erro no processamento do JSON: {e}")
+                    st.text("Resposta bruta do modelo:")
+                    st.code(response.text)
 
     else:
         st.warning("Adicione os arquivos.")
