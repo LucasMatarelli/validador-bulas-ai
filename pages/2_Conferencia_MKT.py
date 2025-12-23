@@ -58,22 +58,20 @@ MODELO_FIXO = "models/gemini-flash-latest"
 
 def limpar_ruido_visual(texto):
     if not texto: return ""
-    # REMOVE CARACTERES INVISÍVEIS QUE CAUSAM FALSO POSITIVO
-    texto = texto.replace(u'\xa0', u' ')  # Espaço não separável
-    texto = texto.replace(u'\xad', u'')   # Hífen de quebra de linha (soft hyphen)
-    texto = texto.replace(u'‐', u'-').replace(u'‑', u'-') # Normaliza hífens
+    # --- CORREÇÃO AQUI: Normaliza caracteres invisíveis que causam erro falso ---
+    texto = texto.replace(u'\xa0', u' ')  # Espaço não separável vira espaço comum
+    texto = texto.replace(u'\xad', u'')   # Remove hífen "mole" (quebra de linha invisível)
+    texto = texto.replace(u'‐', u'-').replace(u'‑', u'-') # Hífens diferentes viram hífen padrão
     
-    texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove pontilhados de sumário
+    texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove pontilhados
     texto = re.sub(r'[ \t]+', ' ', texto)     # Remove excesso de espaços
     return texto.strip()
 
 def normalizar_para_comparacao(texto):
-    """Limpa tudo para o comparador decidir se é erro ou não."""
     if not texto: return ""
-    # Remove tags HTML
+    # Remove tags HTML para comparar apenas o conteúdo textual
     texto_sem_tags = re.sub(r'<[^>]+>', '', texto) 
-    # Remove pontuação fina para evitar erro por ponto final colado
-    # Mas MATÉM letras e números
+    # Remove pontuação fina para evitar erro por causa de um ponto final colado ou separado
     texto_limpo = re.sub(r'[^\w\s]', '', texto_sem_tags)
     return unicodedata.normalize('NFKD', texto_limpo).lower().strip()
 
@@ -109,13 +107,14 @@ def gerar_diff_html(texto_ref, texto_novo):
             html_output.append(texto_trecho)
         
         elif tag == 'replace':
-            # --- LÓGICA ANTI-FALSO POSITIVO ---
+            # --- CORREÇÃO DE FALSO POSITIVO ---
+            # Verifica o que era o texto antigo
             trecho_antigo = a[i1:i2]
             texto_antigo = " ".join(trecho_antigo).replace("[[BREAK]]", "\n")
             
-            # Se a versão "pura" (sem acento/pontuação/invisíveis) for igual, IGNORA O ERRO
+            # Se a versão normalizada (sem pontuação e minúscula) for igual, NÃO MARCA AMARELO
             if normalizar_para_comparacao(texto_trecho) == normalizar_para_comparacao(texto_antigo):
-                html_output.append(texto_trecho) 
+                html_output.append(texto_trecho) # Considera igual
             elif texto_trecho.strip():
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
@@ -129,11 +128,10 @@ def gerar_diff_html(texto_ref, texto_novo):
             else:
                 html_output.append(texto_trecho)
         elif tag == 'delete':
-            # Deletado conta como erro, mas não mostramos
+            # Apenas marca que houve divergência, mas não exibe texto deletado
             eh_divergente = True 
             
     resultado_final = " ".join(html_output)
-    # Ajuste fino de espaços pós-processamento
     resultado_final = resultado_final.replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
     return resultado_final, eh_divergente
 
@@ -145,7 +143,6 @@ def extract_text_from_file(uploaded_file):
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
-                # sort=True ESSENCIAL para ler colunas na ordem certa
                 blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
                 
                 for b in blocks:
@@ -155,6 +152,7 @@ def extract_text_from_file(uploaded_file):
                         for s in l.get("spans", []):
                             content = s["text"]
                             font_props = s["font"].lower()
+                            # Lógica de detecção de negrito do PyMuPDF
                             is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
                             
                             if is_bold:
@@ -208,7 +206,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Extraindo conteúdo completo (incluindo quebras de página)..."):
+        with st.spinner("Analisando estrutura, preservando negrito e ignorando falsos positivos..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
@@ -216,7 +214,7 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # PROMPT REFORÇADO PARA NÃO CORTAR TEXTO
+            # PROMPT ESPECÍFICO PARA DATA E CONTEÚDO COMPLETO
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
             
@@ -226,21 +224,18 @@ if st.button("🚀 Processar Conferência"):
             INPUT TEXTO 2 (MKT): 
             {t_mkt[:150000]}
 
-            SUA MISSÃO CRÍTICA:
-            1. **EXTRAÇÃO COMPLETA (SEM CORTES):**
-               - Seu objetivo é extrair TODO o texto entre um Título da lista e o Próximo Título da lista.
-               - **CRITÉRIO DE PARADA:** Você só para de copiar o texto de uma seção quando encontrar o **TÍTULO DA PRÓXIMA SEÇÃO** em negrito/caixa alta.
-               - **IGNORAR INTERRUPÇÕES:** Se encontrar números de página (ex: "Página 1 de 9"), cabeçalhos repetidos ou quebras de coluna no meio do texto, **IGNORE** o cabeçalho mas **CONTINUE** copiando o texto da seção logo em seguida. Não pare!
-               - **SUBTÍTULOS:** Se houver subtítulos dentro da seção (ex: "Informações ao Paciente"), **INCLUA** esse conteúdo. Ele faz parte da seção.
-
-            2. **DATA DE APROVAÇÃO:** - Procure EXATAMENTE por: "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em (DATA)". Extraia a data.
+            SUA MISSÃO:
+            1. **DATA DE APROVAÇÃO:** Procure EXATAMENTE pela frase "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em (DATA)". Extraia APENAS essa data específica.
             
-            3. **FORMATAÇÃO VISUAL:**
-               - MANTENHA as tags <b> e </b> originais.
-               - NÃO INVENTE negrito.
-               - NÃO CORRIJA O PORTUGUÊS. Copie letra por letra.
+            2. **CONTEÚDO COMPLETO:** - Extraia TODO o texto entre um título e outro.
+               - NÃO PARE no meio. NÃO RESUMA.
+            
+            3. **FORMATAÇÃO:**
+               - MANTENHA as tags <b> e </b> originais. NÃO REMOVA O NEGRITO.
+               - NÃO INVENTE negrito onde não tem.
+               - NÃO CORRIJA O PORTUGUÊS. Copie ipsis litteris.
 
-            LISTA DE TÍTULOS DE SEÇÃO (USE COMO GUIAS DE CORTE): {SECOES_PACIENTE}
+            LISTA DE SEÇÕES ESPERADAS: {SECOES_PACIENTE}
 
             SAÍDA JSON:
             {{
@@ -249,8 +244,8 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Texto COMPLETO até o próximo título",
-                        "texto_mkt": "Texto COMPLETO até o próximo título"
+                        "texto_anvisa": "Texto completo com <b> e \\n",
+                        "texto_mkt": "Texto completo com <b> e \\n"
                     }}
                 ]
             }}
@@ -288,9 +283,10 @@ if st.button("🚀 Processar Conferência"):
                         eh_secao_blindada = any(blindada in titulo_upper for blindada in SECOES_SEM_COMPARACAO)
 
                         if eh_secao_blindada:
-                            # BLINDADO: Sem comparação de erro, apenas exibição
+                            # Lógica BLINDADA: Sem comparação, sem highlight amarelo
                             status = "CONFORME"
                             
+                            # DIZERES LEGAIS: Highlight AZUL apenas nas datas
                             if "DIZERES LEGAIS" in titulo_upper:
                                 html_mkt = destacar_datas(txt_mkt)
                             else:
@@ -299,7 +295,7 @@ if st.button("🚀 Processar Conferência"):
                             html_ref = txt_ref 
 
                         else:
-                            # PADRÃO: Compara tudo (agora ignorando falsos positivos de caracteres ocultos)
+                            # Lógica PADRÃO: Compara tudo, com proteção contra falso positivo
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             status = "DIVERGENTE" if teve_diff else "CONFORME"
                             if teve_diff: divergentes_count += 1
