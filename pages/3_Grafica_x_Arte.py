@@ -132,8 +132,8 @@ SECOES_COMPLETAS = [
 st.title("💊 Gráfica x Arte")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png", "docx"])
-f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png", "docx"])
+f1 = c1.file_uploader("📂 Arte Vigente", type=["pdf", "jpg", "png", "docx"])
+f2 = c2.file_uploader("📂 Arquivo Gráfica", type=["pdf", "jpg", "png", "docx"])
 
 if st.button("🚀 Validar"):
     
