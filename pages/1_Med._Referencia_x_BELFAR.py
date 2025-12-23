@@ -27,7 +27,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-MODELO_FIXO = "models/gemini-1.5-flash"
+MODELO_FIXO = "models/gemini-flash-latest"
 
 # ----------------- 2. FUNÇÕES -----------------
 def limpar_texto(txt):
