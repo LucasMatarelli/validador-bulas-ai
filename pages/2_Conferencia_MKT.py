@@ -34,7 +34,7 @@ st.markdown("""
         padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold;
     }
     
-    /* Highlight Azul (Apenas Datas na Anvisa) */
+    /* Highlight Azul (Apenas Datas) */
     .highlight-blue { 
         background-color: #d1ecf1; color: #0c5460; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
@@ -74,18 +74,18 @@ def normalizar_para_comparacao(texto):
 def destacar_datas(texto):
     """
     Marca a data APENAS se ela vier após a frase exata.
-    O Regex usa [\s\\n]+ para garantir que encontra a frase mesmo quebrada em várias linhas.
+    O Regex usa [\s\\n]+ para garantir que encontra a frase mesmo se houver quebras de linha entre as palavras.
     """
     if not texto: return ""
 
-    # Regex robusta: Procura a frase palavra por palavra, ignorando quebras de linha entre elas
-    padrao = r'(Esta[\s\n]+bula[\s\n]+foi[\s\n]+atualizada[\s\n]+conforme[\s\n]+Bula[\s\n]+Padrão[\s\n]+aprovada[\s\n]+pela[\s\n]+Anvisa[\s\n]+em[\s\n]*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    # Regex robusta: \s+ pega espaços ou quebras de linha entre cada palavra
+    padrao = r'(Esta\s+bula\s+foi\s+atualizada\s+conforme\s+Bula\s+Padrão\s+aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     
     def replacer(match):
         # Retorna: Frase (original) + Data (com highlight azul)
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     
-    # Flags=re.IGNORECASE garante que ache mesmo se estiver maiúsculo/minúsculo misturado
+    # Flags=re.IGNORECASE e re.DOTALL garantem robustez
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE)
 
 def gerar_diff_html(texto_ref, texto_novo):
@@ -281,8 +281,8 @@ if st.button("🚀 Processar Conferência"):
                             
                             # DIZERES LEGAIS: Highlight AZUL nas datas em AMBOS os textos
                             if "DIZERES LEGAIS" in titulo_upper:
-                                html_ref = destacar_datas(txt_ref) # Aplica no texto da esquerda (Ref)
-                                html_mkt = destacar_datas(txt_mkt) # Aplica no texto da direita (Mkt)
+                                html_ref = destacar_datas(txt_ref) # <--- Aplica na ESQUERDA
+                                html_mkt = destacar_datas(txt_mkt) # <--- Aplica na DIREITA
                             else:
                                 html_ref = txt_ref
                                 html_mkt = txt_mkt 
