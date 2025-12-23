@@ -34,7 +34,7 @@ st.markdown("""
         padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold;
     }
     
-    /* Highlight Azul (Apenas Datas) */
+    /* Highlight Azul (Apenas Datas na Anvisa) */
     .highlight-blue { 
         background-color: #d1ecf1; color: #0c5460; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
@@ -58,30 +58,28 @@ MODELO_FIXO = "models/gemini-flash-latest"
 
 def limpar_ruido_visual(texto):
     if not texto: return ""
-    # --- CORREÇÃO AQUI: Normaliza caracteres invisíveis que causam erro falso ---
-    texto = texto.replace(u'\xa0', u' ')  # Espaço não separável vira espaço comum
-    texto = texto.replace(u'\xad', u'')   # Remove hífen "mole" (quebra de linha invisível)
-    texto = texto.replace(u'‐', u'-').replace(u'‑', u'-') # Hífens diferentes viram hífen padrão
-    
-    texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove pontilhados
-    texto = re.sub(r'[ \t]+', ' ', texto)     # Remove excesso de espaços
+    texto = texto.replace(u'\xa0', u' ')
+    texto = texto.replace(u'\xad', u'')
+    texto = texto.replace(u'‐', u'-').replace(u'‑', u'-')
+    texto = re.sub(r'[\._]{3,}', ' ', texto)
+    texto = re.sub(r'[ \t]+', ' ', texto)
     return texto.strip()
 
 def normalizar_para_comparacao(texto):
     if not texto: return ""
-    # Remove tags HTML para comparar apenas o conteúdo textual
     texto_sem_tags = re.sub(r'<[^>]+>', '', texto) 
-    # Remove pontuação fina para evitar erro por causa de um ponto final colado ou separado
     texto_limpo = re.sub(r'[^\w\s]', '', texto_sem_tags)
     return unicodedata.normalize('NFKD', texto_limpo).lower().strip()
 
 def destacar_datas(texto):
     """
     Marca a data APENAS se ela vier após a frase exata.
-    O Regex agora usa \s+ entre as palavras para ignorar quebras de linha que o PDF cria.
+    O Regex usa [\s\\n]+ para garantir que encontra a frase mesmo quebrada em várias linhas.
     """
-    # Regex robusta: \s+ significa "um ou mais espaços/quebras de linha"
-    padrao = r'(Esta\s+bula\s+foi\s+atualizada\s+conforme\s+Bula\s+Padrão\s+aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    if not texto: return ""
+
+    # Regex robusta: Procura a frase palavra por palavra, ignorando quebras de linha entre elas
+    padrao = r'(Esta[\s\n]+bula[\s\n]+foi[\s\n]+atualizada[\s\n]+conforme[\s\n]+Bula[\s\n]+Padrão[\s\n]+aprovada[\s\n]+pela[\s\n]+Anvisa[\s\n]+em[\s\n]*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     
     def replacer(match):
         # Retorna: Frase (original) + Data (com highlight azul)
@@ -96,7 +94,6 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     TOKEN_QUEBRA = " [[BREAK]] "
     
-    # Prepara texto para diff
     ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
     novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
     
@@ -113,22 +110,17 @@ def gerar_diff_html(texto_ref, texto_novo):
         
         if tag == 'equal':
             html_output.append(texto_trecho)
-        
         elif tag == 'replace':
-            # --- CORREÇÃO DE FALSO POSITIVO ---
-            # Verifica o que era o texto antigo
             trecho_antigo = a[i1:i2]
             texto_antigo = " ".join(trecho_antigo).replace("[[BREAK]]", "\n")
             
-            # Se a versão normalizada (sem pontuação e minúscula) for igual, NÃO MARCA AMARELO
             if normalizar_para_comparacao(texto_trecho) == normalizar_para_comparacao(texto_antigo):
-                html_output.append(texto_trecho) # Considera igual
+                html_output.append(texto_trecho)
             elif texto_trecho.strip():
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
             else:
                 html_output.append(texto_trecho)
-
         elif tag == 'insert':
             if texto_trecho.strip():
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
@@ -136,23 +128,20 @@ def gerar_diff_html(texto_ref, texto_novo):
             else:
                 html_output.append(texto_trecho)
         elif tag == 'delete':
-            # Apenas marca que houve divergência, mas não exibe texto deletado
             eh_divergente = True 
             
     resultado_final = " ".join(html_output)
     resultado_final = resultado_final.replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
     return resultado_final, eh_divergente
 
-# ----------------- 4. EXTRAÇÃO DE TEXTO (COM NEGRITO) -----------------
+# ----------------- 4. EXTRAÇÃO DE TEXTO -----------------
 def extract_text_from_file(uploaded_file):
-    """Extrai texto detectando Negrito e usando sort=True para colunas."""
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
                 blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
-                
                 for b in blocks:
                     block_text = ""
                     for l in b.get("lines", []):
@@ -160,15 +149,12 @@ def extract_text_from_file(uploaded_file):
                         for s in l.get("spans", []):
                             content = s["text"]
                             font_props = s["font"].lower()
-                            # Lógica de detecção de negrito do PyMuPDF
                             is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
-                            
                             if is_bold:
                                 line_txt += f"<b>{content}</b>"
                             else:
                                 line_txt += content
                         block_text += line_txt + " " 
-                    
                     text += block_text.strip() + "\n\n"
                     
         elif uploaded_file.name.lower().endswith('.docx'):
@@ -222,7 +208,6 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
 
-            # PROMPT ESPECÍFICO PARA DATA E CONTEÚDO COMPLETO
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
             
@@ -291,19 +276,19 @@ if st.button("🚀 Processar Conferência"):
                         eh_secao_blindada = any(blindada in titulo_upper for blindada in SECOES_SEM_COMPARACAO)
 
                         if eh_secao_blindada:
-                            # Lógica BLINDADA: Sem comparação, sem highlight amarelo
+                            # Seção BLINDADA: Status sempre Conforme
                             status = "CONFORME"
                             
-                            # DIZERES LEGAIS: Highlight AZUL apenas nas datas (NOS DOIS ARQUIVOS)
+                            # DIZERES LEGAIS: Highlight AZUL nas datas em AMBOS os textos
                             if "DIZERES LEGAIS" in titulo_upper:
-                                html_mkt = destacar_datas(txt_mkt)
-                                html_ref = destacar_datas(txt_ref) # APLICADO AQUI TAMBÉM
+                                html_ref = destacar_datas(txt_ref) # Aplica no texto da esquerda (Ref)
+                                html_mkt = destacar_datas(txt_mkt) # Aplica no texto da direita (Mkt)
                             else:
-                                html_mkt = txt_mkt 
                                 html_ref = txt_ref
+                                html_mkt = txt_mkt 
                             
                         else:
-                            # Lógica PADRÃO: Compara tudo, com proteção contra falso positivo
+                            # Lógica PADRÃO (Comparação normal)
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             status = "DIVERGENTE" if teve_diff else "CONFORME"
                             if teve_diff: divergentes_count += 1
