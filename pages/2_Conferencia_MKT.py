@@ -28,7 +28,7 @@ st.markdown("""
         text-align: left;
     }
     
-    /* Highlight Amarelo (Erros) */
+    /* Highlight Amarelo (Apenas erros reais) */
     .highlight-yellow { 
         background-color: #fff3cd; color: #856404; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold;
@@ -58,16 +58,22 @@ MODELO_FIXO = "models/gemini-flash-latest"
 
 def limpar_ruido_visual(texto):
     if not texto: return ""
+    # --- CORREÇÃO AQUI: Normaliza caracteres invisíveis que causam erro falso ---
+    texto = texto.replace(u'\xa0', u' ')  # Espaço não separável vira espaço comum
+    texto = texto.replace(u'\xad', u'')   # Remove hífen "mole" (quebra de linha invisível)
+    texto = texto.replace(u'‐', u'-').replace(u'‑', u'-') # Hífens diferentes viram hífen padrão
+    
     texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove pontilhados
     texto = re.sub(r'[ \t]+', ' ', texto)     # Remove excesso de espaços
     return texto.strip()
 
 def normalizar_para_comparacao(texto):
     if not texto: return ""
-    # Remove tags HTML (como <b>) apenas para a COMPARAÇÃO interna, 
-    # para que o diff não marque erro só porque um tem negrito e o outro não.
+    # Remove tags HTML para comparar apenas o conteúdo textual
     texto_sem_tags = re.sub(r'<[^>]+>', '', texto) 
-    return unicodedata.normalize('NFKD', texto_sem_tags)
+    # Remove pontuação fina para evitar erro por causa de um ponto final colado ou separado
+    texto_limpo = re.sub(r'[^\w\s]', '', texto_sem_tags)
+    return unicodedata.normalize('NFKD', texto_limpo).lower().strip()
 
 def destacar_datas(texto):
     """Procura data no formato dd/mm/aaaa ou mmm/aaaa e aplica azul."""
@@ -82,14 +88,10 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     TOKEN_QUEBRA = " [[BREAK]] "
     
-    # Prepara texto para diff (mantendo tags visuais no output, mas ignorando na lógica se necessário)
-    # A lógica aqui compara as strings brutas. Se o negrito (tags <b>) estiver diferente, vai marcar erro.
-    # Isso atende ao pedido de "Manter negrito original".
-    
+    # Prepara texto para diff
     ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
     novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
     
-    # Para comparação, usamos o texto como veio (com tags <b> se o extrator pegou)
     a = ref_limpo.split()
     b = novo_limpo.split()
     
@@ -103,13 +105,30 @@ def gerar_diff_html(texto_ref, texto_novo):
         
         if tag == 'equal':
             html_output.append(texto_trecho)
-        elif tag == 'replace' or tag == 'insert':
+        
+        elif tag == 'replace':
+            # --- CORREÇÃO DE FALSO POSITIVO ---
+            # Verifica o que era o texto antigo
+            trecho_antigo = a[i1:i2]
+            texto_antigo = " ".join(trecho_antigo).replace("[[BREAK]]", "\n")
+            
+            # Se a versão normalizada (sem pontuação e minúscula) for igual, NÃO MARCA AMARELO
+            if normalizar_para_comparacao(texto_trecho) == normalizar_para_comparacao(texto_antigo):
+                html_output.append(texto_trecho) # Considera igual
+            elif texto_trecho.strip():
+                html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
+                eh_divergente = True
+            else:
+                html_output.append(texto_trecho)
+
+        elif tag == 'insert':
             if texto_trecho.strip():
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
             else:
                 html_output.append(texto_trecho)
         elif tag == 'delete':
+            # Apenas marca que houve divergência, mas não exibe texto deletado
             eh_divergente = True 
             
     resultado_final = " ".join(html_output)
@@ -187,7 +206,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Analisando estrutura, preservando negrito e datas..."):
+        with st.spinner("Analisando estrutura, preservando negrito e ignorando falsos positivos..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
@@ -208,13 +227,11 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. **DATA DE APROVAÇÃO:** Procure EXATAMENTE pela frase "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em (DATA)". Extraia APENAS essa data específica.
             
-            2. **CONTEÚDO COMPLETO (IMPORTANTE):** - Extraia TODO o texto que estiver entre um título e outro.
-               - NÃO PARE no meio da frase.
-               - NÃO RESUMA.
-               - Se a seção for longa e mudar de coluna, continue copiando até chegar no próximo título em negrito.
+            2. **CONTEÚDO COMPLETO:** - Extraia TODO o texto entre um título e outro.
+               - NÃO PARE no meio. NÃO RESUMA.
             
             3. **FORMATAÇÃO:**
-               - MANTENHA as tags <b> e </b> originais que você encontrar no input. NÃO REMOVA O NEGRITO.
+               - MANTENHA as tags <b> e </b> originais. NÃO REMOVA O NEGRITO.
                - NÃO INVENTE negrito onde não tem.
                - NÃO CORRIJA O PORTUGUÊS. Copie ipsis litteris.
 
@@ -278,7 +295,7 @@ if st.button("🚀 Processar Conferência"):
                             html_ref = txt_ref 
 
                         else:
-                            # Lógica PADRÃO: Compara tudo, inclusive a presença do negrito
+                            # Lógica PADRÃO: Compara tudo, com proteção contra falso positivo
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             status = "DIVERGENTE" if teve_diff else "CONFORME"
                             if teve_diff: divergentes_count += 1
