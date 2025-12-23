@@ -74,20 +74,22 @@ def normalizar_para_comparacao(texto):
 def destacar_datas(texto):
     """
     Marca a data se ela vier após a frase chave.
-    REGEX MELHORADO:
-    1. Usa Padr.o para aceitar 'Padrão', 'Padrao' ou erro de encoding.
-    2. Usa [\s\n]+ para aceitar quebras de linha no meio da frase.
+    REGEX 'NUCLEAR':
+    Usa '.*?' entre as palavras chave. Isso ignora qualquer coisa que esteja no meio:
+    - Espaços duplos
+    - Tags HTML (ex: <b>Anvisa</b>)
+    - Quebras de linha
     """
     if not texto: return ""
 
-    # Regex mais flexível: "aprovada pela Anvisa em" é o gatilho principal
-    # O trecho "Padr.o" aceita qualquer caractere no lugar do "ã"
-    padrao = r'(aprovada[\s\n]+pela[\s\n]+Anvisa[\s\n]+em[\s\n]*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    # Procura: "aprovada" ... (qualquer coisa) ... "pela" ... (qualquer coisa) ... "Anvisa" ... "em" ... DATA
+    padrao = r'(aprovada.*?pela.*?Anvisa.*?em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     
     def replacer(match):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     
-    return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE)
+    # DOTALL permite que o ponto (.) pegue quebras de linha também
+    return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
@@ -279,10 +281,10 @@ if st.button("🚀 Processar Conferência"):
                         if eh_secao_blindada:
                             status = "CONFORME"
                             
-                            # DIZERES LEGAIS: Aplica highlight AZUL nos DOIS arquivos
+                            # DIZERES LEGAIS: Highlight AZUL nos DOIS arquivos
                             if "DIZERES LEGAIS" in titulo_upper:
-                                html_ref = destacar_datas(txt_ref) 
-                                html_mkt = destacar_datas(txt_mkt)
+                                html_ref = destacar_datas(txt_ref) # <--- Aplica na esquerda
+                                html_mkt = destacar_datas(txt_mkt) # <--- Aplica na direita
                             else:
                                 html_ref = txt_ref
                                 html_mkt = txt_mkt 
