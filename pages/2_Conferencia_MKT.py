@@ -76,11 +76,21 @@ def normalizar_para_comparacao(texto):
     return unicodedata.normalize('NFKD', texto_limpo).lower().strip()
 
 def destacar_datas(texto):
-    """Procura data no formato dd/mm/aaaa ou mmm/aaaa e aplica azul."""
-    padrao_data = r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    """
+    Marca a data APENAS se ela vier após a frase exata:
+    'Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em'
+    """
+    # Regex explicada:
+    # Grupo 1: A frase exata (com flexibilidade para espaços \s+)
+    # Grupo 2: A data (dd/mm/aaaa ou mm/aaaa)
+    padrao = r'(Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    
     def replacer(match):
-        return f'<span class="highlight-blue">{match.group(0)}</span>'
-    return re.sub(padrao_data, replacer, texto)
+        # Retorna: Frase (original) + Data (com highlight azul)
+        return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
+    
+    # count=1 garante que marque apenas a primeira ocorrência encontrada no texto
+    return re.sub(padrao, replacer, texto, count=1)
 
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
