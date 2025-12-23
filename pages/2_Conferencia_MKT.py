@@ -77,20 +77,18 @@ def normalizar_para_comparacao(texto):
 
 def destacar_datas(texto):
     """
-    Marca a data APENAS se ela vier após a frase exata:
-    'Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em'
+    Marca a data APENAS se ela vier após a frase exata.
+    O Regex agora usa \s+ entre as palavras para ignorar quebras de linha que o PDF cria.
     """
-    # Regex explicada:
-    # Grupo 1: A frase exata (com flexibilidade para espaços \s+)
-    # Grupo 2: A data (dd/mm/aaaa ou mm/aaaa)
-    padrao = r'(Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    # Regex robusta: \s+ significa "um ou mais espaços/quebras de linha"
+    padrao = r'(Esta\s+bula\s+foi\s+atualizada\s+conforme\s+Bula\s+Padrão\s+aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     
     def replacer(match):
         # Retorna: Frase (original) + Data (com highlight azul)
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     
-    # count=1 garante que marque apenas a primeira ocorrência encontrada no texto
-    return re.sub(padrao, replacer, texto, count=1)
+    # Flags=re.IGNORECASE garante que ache mesmo se estiver maiúsculo/minúsculo misturado
+    return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE)
 
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
@@ -299,7 +297,7 @@ if st.button("🚀 Processar Conferência"):
                             # DIZERES LEGAIS: Highlight AZUL apenas nas datas (NOS DOIS ARQUIVOS)
                             if "DIZERES LEGAIS" in titulo_upper:
                                 html_mkt = destacar_datas(txt_mkt)
-                                html_ref = destacar_datas(txt_ref) # APLICADO AQUI TAMBÉM AGORA
+                                html_ref = destacar_datas(txt_ref) # APLICADO AQUI TAMBÉM
                             else:
                                 html_mkt = txt_mkt 
                                 html_ref = txt_ref
