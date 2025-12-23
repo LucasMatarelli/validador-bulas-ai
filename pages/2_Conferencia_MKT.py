@@ -34,7 +34,7 @@ st.markdown("""
         padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold;
     }
     
-    /* Highlight Azul (Apenas Datas no MKT) */
+    /* Highlight Azul (Datas da Anvisa) */
     .highlight-blue { 
         background-color: #d1ecf1; color: #0c5460; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
@@ -73,16 +73,18 @@ def normalizar_para_comparacao(texto):
 
 def destacar_datas(texto):
     """
-    Marca a data APENAS se ela vier após a frase exata.
-    O Regex usa [\s\\n]+ para garantir que encontra a frase mesmo quebrada em várias linhas.
+    Marca a data se ela vier após a frase chave.
+    REGEX MELHORADO:
+    1. Usa Padr.o para aceitar 'Padrão', 'Padrao' ou erro de encoding.
+    2. Usa [\s\n]+ para aceitar quebras de linha no meio da frase.
     """
     if not texto: return ""
 
-    # Regex robusta: Encontra a frase e captura a data seguinte
-    padrao = r'(Esta[\s\n]+bula[\s\n]+foi[\s\n]+atualizada[\s\n]+conforme[\s\n]+Bula[\s\n]+Padrão[\s\n]+aprovada[\s\n]+pela[\s\n]+Anvisa[\s\n]+em[\s\n]*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    # Regex mais flexível: "aprovada pela Anvisa em" é o gatilho principal
+    # O trecho "Padr.o" aceita qualquer caractere no lugar do "ã"
+    padrao = r'(aprovada[\s\n]+pela[\s\n]+Anvisa[\s\n]+em[\s\n]*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     
     def replacer(match):
-        # Retorna: Frase (original) + Data (com highlight azul)
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE)
@@ -275,19 +277,17 @@ if st.button("🚀 Processar Conferência"):
                         eh_secao_blindada = any(blindada in titulo_upper for blindada in SECOES_SEM_COMPARACAO)
 
                         if eh_secao_blindada:
-                            # Seção BLINDADA: Status sempre Conforme
                             status = "CONFORME"
                             
-                            # DIZERES LEGAIS: Highlight AZUL apenas no MKT
+                            # DIZERES LEGAIS: Aplica highlight AZUL nos DOIS arquivos
                             if "DIZERES LEGAIS" in titulo_upper:
-                                html_ref = txt_ref  # Mantém original (sem azul)
-                                html_mkt = destacar_datas(txt_mkt) # Aplica azul
+                                html_ref = destacar_datas(txt_ref) 
+                                html_mkt = destacar_datas(txt_mkt)
                             else:
                                 html_ref = txt_ref
                                 html_mkt = txt_mkt 
                             
                         else:
-                            # Lógica PADRÃO (Comparação normal)
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             status = "DIVERGENTE" if teve_diff else "CONFORME"
                             if teve_diff: divergentes_count += 1
