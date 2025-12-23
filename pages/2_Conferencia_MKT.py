@@ -28,7 +28,7 @@ st.markdown("""
         text-align: left;
     }
     
-    /* Highlight Amarelo (Apenas erros reais) */
+    /* Highlight Amarelo (Apenas divergências reais de texto) */
     .highlight-yellow { 
         background-color: #fff3cd; color: #856404; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold;
@@ -65,30 +65,31 @@ def limpar_ruido_visual(texto):
     texto = re.sub(r'[ \t]+', ' ', texto)
     return texto.strip()
 
-def normalizar_para_comparacao(texto):
+def normalizar_rigorosa(texto):
+    """
+    Remove TUDO que não for letra ou número para comparação.
+    Ignora: Espaços, Enters, Pontos soltos, Tags HTML, Quebras de token.
+    Se sobrar 'medicamentoinforme' de um lado e 'medicamentoinforme' do outro, é IGUAL.
+    """
     if not texto: return ""
-    texto_sem_tags = re.sub(r'<[^>]+>', '', texto) 
-    texto_limpo = re.sub(r'[^\w\s]', '', texto_sem_tags)
-    return unicodedata.normalize('NFKD', texto_limpo).lower().strip()
+    # Remove tags HTML
+    txt = re.sub(r'<[^>]+>', '', texto)
+    # Remove o token interno de quebra
+    txt = txt.replace('[[BREAK]]', '')
+    # Remove TODOS os espaços em branco (espaço, tab, enter)
+    txt = re.sub(r'\s+', '', txt)
+    # Remove pontuação básica para evitar erro de OCR/Extração (opcional, mas recomendado)
+    # txt = re.sub(r'[^\w]', '', txt) 
+    return unicodedata.normalize('NFKD', txt).lower().strip()
 
 def destacar_datas(texto):
     """
-    Marca a data se ela vier após a frase chave.
-    REGEX 'NUCLEAR':
-    Usa '.*?' entre as palavras chave. Isso ignora qualquer coisa que esteja no meio:
-    - Espaços duplos
-    - Tags HTML (ex: <b>Anvisa</b>)
-    - Quebras de linha
+    REGEX NUCLEAR: Encontra a data independente do que estiver no meio da frase.
     """
     if not texto: return ""
-
-    # Procura: "aprovada" ... (qualquer coisa) ... "pela" ... (qualquer coisa) ... "Anvisa" ... "em" ... DATA
     padrao = r'(aprovada.*?pela.*?Anvisa.*?em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
-    
     def replacer(match):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
-    
-    # DOTALL permite que o ponto (.) pegue quebras de linha também
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def gerar_diff_html(texto_ref, texto_novo):
@@ -97,6 +98,7 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     TOKEN_QUEBRA = " [[BREAK]] "
     
+    # Prepara texto substituindo enter por token para manter estrutura visual
     ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
     novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
     
@@ -113,27 +115,42 @@ def gerar_diff_html(texto_ref, texto_novo):
         
         if tag == 'equal':
             html_output.append(texto_trecho)
+        
         elif tag == 'replace':
             trecho_antigo = a[i1:i2]
             texto_antigo = " ".join(trecho_antigo).replace("[[BREAK]]", "\n")
             
-            if normalizar_para_comparacao(texto_trecho) == normalizar_para_comparacao(texto_antigo):
-                html_output.append(texto_trecho)
+            # --- CORREÇÃO DO FALSO POSITIVO ---
+            # Se retirar espaços e enters o texto for igual, NÃO MARCA AMARELO.
+            if normalizar_rigorosa(texto_trecho) == normalizar_rigorosa(texto_antigo):
+                html_output.append(texto_trecho) # Considera igual
+            
             elif texto_trecho.strip():
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
             else:
                 html_output.append(texto_trecho)
+
         elif tag == 'insert':
-            if texto_trecho.strip():
+            # Verifica se o que foi inserido não é apenas uma quebra de linha ou espaço vazio
+            if normalizar_rigorosa(texto_trecho) == "":
+                html_output.append(texto_trecho) # É só formatação invisível, imprime normal
+            elif texto_trecho.strip():
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
             else:
                 html_output.append(texto_trecho)
+                
         elif tag == 'delete':
-            eh_divergente = True 
+            # Verifica se o que foi deletado era apenas formatação
+            trecho_deletado = a[i1:i2]
+            texto_deletado = " ".join(trecho_deletado).replace("[[BREAK]]", "\n")
+            
+            if normalizar_rigorosa(texto_deletado) != "":
+                eh_divergente = True 
             
     resultado_final = " ".join(html_output)
+    # Limpeza final de quebras duplas criadas pelo processo
     resultado_final = resultado_final.replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
     return resultado_final, eh_divergente
 
@@ -281,15 +298,15 @@ if st.button("🚀 Processar Conferência"):
                         if eh_secao_blindada:
                             status = "CONFORME"
                             
-                            # DIZERES LEGAIS: Highlight AZUL nos DOIS arquivos
                             if "DIZERES LEGAIS" in titulo_upper:
-                                html_ref = destacar_datas(txt_ref) # <--- Aplica na esquerda
-                                html_mkt = destacar_datas(txt_mkt) # <--- Aplica na direita
+                                html_ref = destacar_datas(txt_ref) 
+                                html_mkt = destacar_datas(txt_mkt) 
                             else:
                                 html_ref = txt_ref
                                 html_mkt = txt_mkt 
                             
                         else:
+                            # Chama a nova função com a verificação rigorosa
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             status = "DIVERGENTE" if teve_diff else "CONFORME"
                             if teve_diff: divergentes_count += 1
