@@ -58,12 +58,14 @@ MODELO_FIXO = "models/gemini-flash-latest"
 
 def limpar_ruido_visual(texto):
     if not texto: return ""
-    # Normaliza caracteres invisíveis que causam erro falso
-    texto = texto.replace(u'\xa0', u' ')
-    texto = texto.replace(u'\xad', u'')
-    texto = texto.replace(u'‐', u'-').replace(u'‑', u'-')
-    texto = re.sub(r'[\._]{3,}', ' ', texto)
-    texto = re.sub(r'[ \t]+', ' ', texto)
+    # --- LIMPEZA PROFUNDA DE CARACTERES INVISÍVEIS ---
+    texto = texto.replace(u'\xa0', u' ')   # Espaço não separável (HTML &nbsp;)
+    texto = texto.replace(u'\u200b', u'')  # Zero width space (comum em PDF)
+    texto = texto.replace(u'\xad', u'')    # Soft hyphen
+    texto = texto.replace(u'‐', u'-').replace(u'‑', u'-') # Normaliza hífens
+    
+    texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove linhas pontilhadas
+    texto = re.sub(r'[ \t]+', ' ', texto)     # Remove excesso de espaços
     return texto.strip()
 
 def normalizar_para_comparacao(texto):
@@ -76,11 +78,16 @@ def normalizar_para_comparacao(texto):
 
 def destacar_datas(texto):
     """
-    Marca a data APENAS se ela vier após a frase exata.
+    Marca a data se vier após:
+    1. "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em"
+    2. "Esta bula foi aprovada pela Anvisa em"
     """
-    padrao = r'(Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    # Regex flexível que pega as duas frases opcionais
+    padrao = r'(Esta bula foi (?:atualizada conforme Bula Padrão )?aprovada pela Anvisa em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    
     def replacer(match):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
+    
     return re.sub(padrao, replacer, texto, count=1)
 
 def gerar_diff_html(texto_ref, texto_novo):
@@ -89,7 +96,7 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     TOKEN_QUEBRA = " [[BREAK]] "
     
-    # Prepara texto para diff
+    # Prepara texto para diff limpando invisíveis antes
     ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
     novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
     
@@ -111,7 +118,7 @@ def gerar_diff_html(texto_ref, texto_novo):
             trecho_antigo = a[i1:i2]
             texto_antigo = " ".join(trecho_antigo).replace("[[BREAK]]", "\n")
             
-            # Se a versão normalizada for igual, NÃO MARCA AMARELO
+            # Se a versão normalizada for igual, IGNORA (não marca amarelo)
             if normalizar_para_comparacao(texto_trecho) == normalizar_para_comparacao(texto_antigo):
                 html_output.append(texto_trecho)
             elif texto_trecho.strip():
@@ -184,7 +191,7 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-# LISTA BLINDADA: Estas seções nunca mostrarão divergência (amarelo)
+# LISTA BLINDADA
 SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 5. UI PRINCIPAL -----------------
@@ -221,7 +228,7 @@ if st.button("🚀 Processar Conferência"):
             {t_mkt[:150000]}
 
             SUA MISSÃO:
-            1. **DATA DE APROVAÇÃO:** Procure EXATAMENTE pela frase "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em (DATA)". Extraia APENAS essa data específica.
+            1. **DATA DE APROVAÇÃO:** Procure EXATAMENTE por frases como "Esta bula foi aprovada pela Anvisa em (DATA)" ou "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em (DATA)". Extraia APENAS essa data específica.
             
             2. **CONTEÚDO COMPLETO:** - Extraia TODO o texto entre um título e outro.
                - NÃO PARE no meio. NÃO RESUMA.
@@ -280,7 +287,7 @@ if st.button("🚀 Processar Conferência"):
                         eh_secao_blindada = any(blindada in titulo_upper for blindada in SECOES_SEM_COMPARACAO)
 
                         if eh_secao_blindada:
-                            # Lógica BLINDADA: Sem comparação, sem highlight amarelo (Divergência Zero)
+                            # Lógica BLINDADA: Sem comparação, sem highlight amarelo
                             status = "CONFORME"
                             
                             # DIZERES LEGAIS: Highlight AZUL apenas nas datas (NOS DOIS ARQUIVOS)
@@ -288,13 +295,11 @@ if st.button("🚀 Processar Conferência"):
                                 html_mkt = destacar_datas(txt_mkt)
                                 html_ref = destacar_datas(txt_ref)
                             else:
-                                # APRESENTAÇÕES E COMPOSIÇÃO CAEM AQUI:
-                                # Texto original é mantido (com negrito), sem passar pelo diff
                                 html_mkt = txt_mkt 
                                 html_ref = txt_ref
                             
                         else:
-                            # Lógica PADRÃO: Compara tudo, com proteção contra falso positivo
+                            # Lógica PADRÃO: Compara tudo, com proteção contra falso positivo de invisíveis
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             status = "DIVERGENTE" if teve_diff else "CONFORME"
                             if teve_diff: divergentes_count += 1
@@ -327,7 +332,6 @@ if st.button("🚀 Processar Conferência"):
                         if "DIZERES LEGAIS" in titulo.upper():
                             icon = "⚖️"; css = "border-info"; aberto = True
                         elif any(b in titulo.upper() for b in SECOES_SEM_COMPARACAO):
-                            # Cadeado para indicar que é uma seção blindada (Apresentações/Composição)
                             icon = "🔒"; css = "border-ok"; aberto = False
                         elif status == "CONFORME":
                             icon = "✅"; css = "border-ok"; aberto = False
