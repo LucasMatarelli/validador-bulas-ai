@@ -1,183 +1,327 @@
 import streamlit as st
 import google.generativeai as genai
-import fitz
-import docx
+import fitz  # PyMuPDF
+import docx  # Para ler DOCX
 import json
 import difflib
 import re
 import unicodedata
 
+# ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
-    .texto-box { 
-        font-family: 'Segoe UI', sans-serif; font-size: 0.95rem; line-height: 1.6; color: #212529;
-        background-color: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid #ced4da;
-        white-space: pre-wrap; text-align: left;
-    }
-    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 4px; border: 1px solid #e57373; font-weight: bold; }
-    .highlight-blue { background-color: #e3f2fd; color: #0d47a1; padding: 2px 6px; border-radius: 12px; border: 1px solid #2196f3; font-weight: bold; }
     
-    .border-ok { border-left: 6px solid #4caf50 !important; }
-    .border-warn { border-left: 6px solid #f44336 !important; }
-    .border-info { border-left: 6px solid #2196f3 !important; }
-    div[data-testid="stMetric"] { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center; }
+    .texto-box { 
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 0.95rem;
+        line-height: 1.6;
+        color: #212529;
+        background-color: #ffffff;
+        padding: 20px;
+        border-radius: 8px;
+        border: 1px solid #ced4da;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        white-space: pre-wrap; /* ESSENCIAL PARA MANTER QUEBRA DE LINHA */
+        text-align: left;
+    }
+    
+    .highlight-yellow { 
+        background-color: #fff3cd; 
+        color: #856404; 
+        padding: 2px 4px; 
+        border-radius: 4px; 
+        border: 1px solid #ffeeba; 
+        font-weight: bold;
+    }
+    
+    .highlight-blue { 
+        background-color: #d1ecf1; 
+        color: #0c5460; 
+        padding: 2px 4px; 
+        border-radius: 4px; 
+        border: 1px solid #bee5eb; 
+        font-weight: bold;
+    }
+    
+    .border-ok { border-left: 6px solid #28a745 !important; }
+    .border-warn { border-left: 6px solid #ffc107 !important; } 
+    .border-info { border-left: 6px solid #17a2b8 !important; }
+
+    div[data-testid="stMetric"] {
+        background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-MODELO_FIXO = "models/gemini-flash-latest"
+# ----------------- 2. CONFIGURAÇÃO -----------------
+MODELO_FIXO = "models/gemini-1.5-flash"
 
-def limpar_texto(texto):
+# ----------------- 3. FUNÇÕES AUXILIARES DE LIMPEZA E COMPARAÇÃO -----------------
+
+def limpar_ruido_visual(texto):
+    """Remove linhas pontilhadas longas (....) que atrapalham a comparação."""
     if not texto: return ""
-    texto = unicodedata.normalize('NFKD', texto)
-    texto = texto.replace('\u00a0', ' ').replace('\r', '')
-    texto = re.sub(r'[\._]{4,}', ' ', texto) 
+    # Substitui sequências de 3 ou mais pontos/underlines por um espaço simples
+    texto = re.sub(r'[\._]{3,}', ' ', texto)
+    # Remove excesso de espaços
     texto = re.sub(r'[ \t]+', ' ', texto)
     return texto.strip()
 
-def destacar_datas(html):
-    return re.sub(r'(?<!\d)(\d{2}/\d{2}/\d{4})(?!\d)', r'<span class="highlight-blue">\1</span>', html)
+def normalizar_para_comparacao(texto):
+    if not texto: return ""
+    return unicodedata.normalize('NFKD', texto)
 
-def gerar_diff_red(ref, novo):
-    if not ref: ref = ""; 
-    if not novo: novo = ""
+def gerar_diff_html(texto_ref, texto_novo):
+    if not texto_ref: texto_ref = ""
+    if not texto_novo: texto_novo = ""
     
-    TOKEN = " [[BR]] "
-    ref_c = limpar_texto(ref).replace('\n', TOKEN)
-    nov_c = limpar_texto(novo).replace('\n', TOKEN)
+    # TRUQUE: Substituir quebras de linha por um token especial para o diff não ignorá-las
+    TOKEN_QUEBRA = " [[BREAK]] "
     
-    a = ref_c.split()
-    b = nov_c.split()
+    ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
+    novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
+    
+    # Normalização
+    ref_norm = normalizar_para_comparacao(ref_limpo)
+    novo_norm = normalizar_para_comparacao(novo_limpo)
+
+    a = ref_norm.split()
+    b = novo_norm.split()
+    
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
-    out = []
-    diff = False
+    html_output = []
+    eh_divergente = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        trecho = " ".join(b[j1:j2]).replace("[[BR]]", "\n")
-        if tag == 'equal': out.append(trecho)
-        elif tag in ['replace', 'insert']:
-            if trecho.strip():
-                out.append(f'<span class="highlight-red">{trecho}</span>')
-                diff = True
-            else: out.append(trecho)
-        elif tag == 'delete': diff = True
+        trecho = b[j1:j2]
+        
+        # Reconstrói o texto
+        texto_trecho = " ".join(trecho)
+        
+        # Restaura a quebra de linha visual para o HTML
+        texto_trecho = texto_trecho.replace("[[BREAK]]", "\n")
+        
+        if tag == 'equal':
+            html_output.append(texto_trecho)
+        elif tag == 'replace':
+            # Evita marcar apenas quebras de linha como erro
+            if texto_trecho.strip(): 
+                html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
+                eh_divergente = True
+            else:
+                html_output.append(texto_trecho)
+        elif tag == 'insert':
+            if texto_trecho.strip():
+                html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
+                eh_divergente = True
+            else:
+                html_output.append(texto_trecho)
+        elif tag == 'delete':
+            # Texto deletado conta como divergência, mas não mostramos para não poluir
+            eh_divergente = True 
             
-    final = " ".join(out).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
-    final = destacar_datas(final)
-    return final, diff
+    # Junta tudo e garante que espaçamento fique bom
+    resultado_final = " ".join(html_output)
+    # Limpeza final de espaços ao redor das quebras HTML
+    resultado_final = resultado_final.replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
+    
+    return resultado_final, eh_divergente
 
-def extract_text(uploaded):
+# ----------------- 4. EXTRAÇÃO DE TEXTO -----------------
+def extract_text_from_file(uploaded_file):
+    """Extrai texto preservando estrutura de listas."""
     try:
-        txt = ""
-        if uploaded.name.lower().endswith('.pdf'):
-            doc = fitz.open(stream=uploaded.read(), filetype="pdf")
-            for page in doc:
-                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
+        text = ""
+        if uploaded_file.name.lower().endswith('.pdf'):
+            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+            for page in doc: 
+                blocks = page.get_text("dict", flags=11)["blocks"]
                 for b in blocks:
                     for l in b.get("lines", []):
-                        ln = ""
+                        line_txt = ""
                         for s in l.get("spans", []):
-                            c = s["text"]
-                            if (s["flags"] & 16) or "bold" in s["font"].lower(): ln += f"<b>{c}</b>"
-                            else: ln += c
-                        txt += ln + " "
-                    txt += "\n"
-        elif uploaded.name.lower().endswith('.docx'):
-            doc = docx.Document(uploaded)
-            for p in doc.paragraphs:
-                ln = ""
-                for r in p.runs:
-                    if r.bold: ln += f"<b>{r.text}</b>"
-                    else: ln += r.text
-                txt += ln + "\n\n"
-        return limpar_texto(txt)
-    except: return ""
+                            content = s["text"]
+                            # Detecta negrito
+                            font_props = s["font"].lower()
+                            is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
+                            
+                            if is_bold:
+                                line_txt += f"<b>{content}</b>"
+                            else:
+                                line_txt += content
+                        # Adiciona a linha ao texto com quebra
+                        text += line_txt + "\n"
+                    # Adiciona quebra extra entre blocos para separar parágrafos
+                    text += "\n"
+                    
+        elif uploaded_file.name.lower().endswith('.docx'):
+            doc = docx.Document(uploaded_file)
+            for para in doc.paragraphs: 
+                para_txt = ""
+                for run in para.runs:
+                    if run.bold:
+                        para_txt += f"<b>{run.text}</b>"
+                    else:
+                        para_txt += run.text
+                text += para_txt + "\n\n"
+        return text
+    except Exception as e:
+        return ""
 
+SECOES_PACIENTE = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
+    "DIZERES LEGAIS"
+]
+
+# ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
-c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Ref", type=["pdf", "docx"], key="f1")
-f2 = c2.file_uploader("MKT", type=["pdf", "docx"], key="f2")
 
-if st.button("🚀 Processar"):
-    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
-    valid = [k for k in keys if k]
-    if not valid: st.stop()
-    
+c1, c2 = st.columns(2)
+f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], key="f1")
+f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key="f2")
+
+if st.button("🚀 Processar Conferência"):
+    keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
+    keys_validas = [k for k in keys_disponiveis if k]
+
+    if not keys_validas:
+        st.error("Nenhuma chave API encontrada.")
+        st.stop()
+
     if f1 and f2:
-        with st.spinner("Comparando..."):
+        with st.spinner("Extraindo textos e comparando com precisão..."):
             f1.seek(0); f2.seek(0)
-            tr = extract_text(f1)
-            tm = extract_text(f2)
-            
+            t_anvisa = extract_text_from_file(f1)
+            t_mkt = extract_text_from_file(f2)
+
+            if len(t_anvisa) < 20 or len(t_mkt) < 20:
+                st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
+
+            # PROMPT MELHORADO PARA LIMPEZA E ESTRUTURA
             prompt = f"""
-            Você é um Auditor.
-            INPUT 1: {tr[:500000]}
-            INPUT 2: {tm[:500000]}
-            TAREFA: Extraia o texto COMPLETO (OCR literal). Mantenha negrito e estrutura.
-            SEÇÕES: ["APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", "DIZERES LEGAIS"]
-            JSON: {{"data_anvisa_ref": "...", "data_anvisa_mkt": "...", "secoes": [{{"titulo": "...", "texto_anvisa": "...", "texto_mkt": "..."}}]}}
+            Você é um Extrator de Dados Farmacêuticos de Alta Precisão.
+            
+            INPUT TEXTO 1 (REF): 
+            {t_anvisa[:120000]}
+            
+            INPUT TEXTO 2 (MKT): 
+            {t_mkt[:120000]}
+
+            SUA MISSÃO:
+            1. Localize as seções nos dois textos.
+            2. Extraia o conteúdo MANTENDO A ESTRUTURA VISUAL (quebras de linha).
+            3. Ignore linhas pontilhadas excessivas ("....") que servem apenas para alinhar preços ou colunas.
+            4. NÃO CORRIJA O PORTUGUÊS. Mantenha erros de digitação se houver.
+            5. Importante: Se houver uma lista (ex: Ingredientes, Dosagens), mantenha cada item em uma linha separada.
+
+            LISTA DE SEÇÕES: {SECOES_PACIENTE}
+
+            SAÍDA JSON:
+            {{
+                "data_anvisa_ref": "dd/mm/aaaa",
+                "data_anvisa_mkt": "dd/mm/aaaa",
+                "secoes": [
+                    {{
+                        "titulo": "NOME DA SEÇÃO",
+                        "texto_anvisa": "Texto estruturado com tags <b> e \\n",
+                        "texto_mkt": "Texto estruturado com tags <b> e \\n"
+                    }}
+                ]
+            }}
             """
             
-            res = None
-            for i, k in enumerate(valid):
-                try:
-                    genai.configure(api_key=k)
-                    mod = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json"})
-                    res = mod.generate_content(prompt)
-                    break
-                except Exception as e: continue
-                
-            if res:
-                try:
-                    j = json.loads(res.text)
-                    final = []
-                    errs = 0
-                    secoes_isentas = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+            response = None
+            ultimo_erro = ""
 
-                    for s in j.get("secoes", []):
-                        tit = s["titulo"]
-                        txt_r = s["texto_anvisa"]
-                        txt_m = s["texto_mkt"]
+            for i, api_key in enumerate(keys_validas):
+                try:
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
+                    response = model.generate_content(prompt, request_options={'retry': None})
+                    break 
+                except Exception as e:
+                    ultimo_erro = str(e)
+                    if i < len(keys_validas) - 1: continue
+                    else: st.error(f"Erro Fatal: {ultimo_erro}"); st.stop()
+
+            if response:
+                try:
+                    resultado = json.loads(response.text)
+                    data_ref = resultado.get("data_anvisa_ref", "-")
+                    data_mkt = resultado.get("data_anvisa_mkt", "-")
+                    dados_secoes = resultado.get("secoes", [])
+                    secoes_finais = []
+                    divergentes_count = 0
+
+                    for item in dados_secoes:
+                        titulo = item.get('titulo', '')
+                        txt_ref = item.get('texto_anvisa', '').strip()
+                        txt_mkt = item.get('texto_mkt', '').strip()
                         
-                        eh_isenta = any(x in tit.upper() for x in secoes_isentas)
+                        # Removemos o highlight de data antigo para não conflitar com o diff novo
+                        # A data será comparada como texto normal agora, garantindo fidelidade
+
+                        html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         
-                        if eh_isenta:
+                        if teve_diff:
+                            status = "DIVERGENTE"
+                            divergentes_count += 1
+                        else:
                             status = "CONFORME"
-                            if "DIZERES LEGAIS" in tit.upper():
-                                html_r = destacar_datas(txt_r.replace('\n', '<br>'))
-                                html_m = destacar_datas(txt_m.replace('\n', '<br>'))
-                            else:
-                                html_r = txt_r.replace('\n', '<br>')
-                                html_m = txt_m.replace('\n', '<br>')
-                        else:
-                            html_m, diff = gerar_diff_red(txt_r, txt_m)
-                            html_r = destacar_datas(txt_r.replace('\n', '<br>'))
-                            status = "DIVERGENTE" if diff else "CONFORME"
-                            if diff: errs += 1
                         
-                        final.append({"t": tit, "tr": html_r, "tm": html_m.replace('\n', '<br>'), "s": status})
-                    
-                    st.markdown("### Resumo")
-                    c_x, c_y, c_z = st.columns(3)
-                    c_x.metric("Ref", j.get("data_anvisa_ref"))
-                    c_y.metric("MKT", j.get("data_anvisa_mkt"))
-                    c_z.metric("Erros", errs)
-                    
-                    for i in final:
-                        if "DIZERES LEGAIS" in i['t'].upper():
-                             css = "border-info"; icon = "⚖️"; ab = False
-                        elif any(x in i['t'].upper() for x in ["APRESENTAÇÕES", "COMPOSIÇÃO"]):
-                             css = "border-info"; icon = "📋"; ab = False
-                        elif i["s"] == "DIVERGENTE":
-                             css = "border-warn"; icon = "⚠️"; ab = True
-                        else:
-                             css = "border-ok"; icon = "✅"; ab = False
+                        secoes_finais.append({
+                            "titulo": titulo,
+                            "texto_anvisa": txt_ref.replace('\n', '<br>'), # Para exibição correta no lado esquerdo também
+                            "texto_mkt": html_mkt.replace('\n', '<br>'),
+                            "status": status
+                        })
 
-                        with st.expander(f"{icon} {i['t']}", expanded=ab):
-                            ca, cb = st.columns(2)
-                            ca.markdown(f'<div class="texto-box {css}">{i["tr"]}</div>', unsafe_allow_html=True)
-                            cb.markdown(f'<div class="texto-box {css}">{i["tm"]}</div>', unsafe_allow_html=True)
-                except Exception as e: st.error(str(e))
-    else: st.warning("Envie arquivos.")
+                    st.markdown("### 📊 Resumo da Conferência")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Ref.", data_ref)
+                    c2.metric("MKT", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
+                    c3.metric("Seções", len(secoes_finais))
+
+                    sub1, sub2 = st.columns(2)
+                    sub1.info(f"✅ **Conformes:** {len(secoes_finais) - divergentes_count}")
+                    if divergentes_count > 0: sub2.warning(f"⚠️ **Divergentes:** {divergentes_count}")
+                    else: sub2.success("✨ **Divergências:** 0")
+
+                    st.divider()
+
+                    for item in secoes_finais:
+                        status = item['status']
+                        titulo = item['titulo']
+                        
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            icon = "⚖️"; css = "border-info"; aberto = True
+                        elif status == "CONFORME":
+                            icon = "✅"; css = "border-ok"; aberto = False
+                        else:
+                            icon = "⚠️"; css = "border-warn"; aberto = True
+
+                        with st.expander(f"{icon} {titulo}", expanded=aberto):
+                            col_esq, col_dir = st.columns(2)
+                            with col_esq:
+                                st.caption("📜 Referência")
+                                # Usamos replace \n por <br> para garantir que o HTML obedeça a quebra
+                                txt_exibicao_ref = item["texto_anvisa"].replace("\n", "<br>")
+                                st.markdown(f'<div class="texto-box {css}">{txt_exibicao_ref}</div>', unsafe_allow_html=True)
+                            with col_dir:
+                                st.caption("🎨 Validado")
+                                txt_exibicao_mkt = item["texto_mkt"].replace("\n", "<br>")
+                                st.markdown(f'<div class="texto-box {css}">{txt_exibicao_mkt}</div>', unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"Erro ao processar JSON: {e}")
+    else:
+        st.warning("Adicione os arquivos.")
