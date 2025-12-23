@@ -85,7 +85,7 @@ def process_file_content(uploaded_file):
             has_digital_text = False
             
             for page in doc:
-                # --- ALTERAÇÃO AQUI: sort=True força a leitura por colunas ---
+                # --- ALTERAÇÃO AQUI: sort=True para ler coluna por coluna ---
                 text = page.get_text("text", sort=True)
                 if len(text.strip()) > 50: 
                     has_digital_text = True
@@ -153,7 +153,7 @@ if st.button("🚀 Validar"):
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT FORENSE (ANTI-ALUCINAÇÃO)
+            # PROMPT FORENSE (ANTI-ALUCINAÇÃO + COLUNAS)
             prompt = f"""
             Você é um EXTRATOR FORENSE DE TEXTO. Sua função NÃO é interpretar, é TRANSCREVER E COMPARAR.
             
