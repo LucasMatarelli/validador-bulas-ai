@@ -34,7 +34,7 @@ st.markdown("""
         padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold;
     }
     
-    /* Highlight Azul (Apenas Datas) */
+    /* Highlight Azul (Apenas Datas no MKT) */
     .highlight-blue { 
         background-color: #d1ecf1; color: #0c5460; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
@@ -74,18 +74,17 @@ def normalizar_para_comparacao(texto):
 def destacar_datas(texto):
     """
     Marca a data APENAS se ela vier após a frase exata.
-    O Regex usa [\s\\n]+ para garantir que encontra a frase mesmo se houver quebras de linha entre as palavras.
+    O Regex usa [\s\\n]+ para garantir que encontra a frase mesmo quebrada em várias linhas.
     """
     if not texto: return ""
 
-    # Regex robusta: \s+ pega espaços ou quebras de linha entre cada palavra
-    padrao = r'(Esta\s+bula\s+foi\s+atualizada\s+conforme\s+Bula\s+Padrão\s+aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    # Regex robusta: Encontra a frase e captura a data seguinte
+    padrao = r'(Esta[\s\n]+bula[\s\n]+foi[\s\n]+atualizada[\s\n]+conforme[\s\n]+Bula[\s\n]+Padrão[\s\n]+aprovada[\s\n]+pela[\s\n]+Anvisa[\s\n]+em[\s\n]*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     
     def replacer(match):
         # Retorna: Frase (original) + Data (com highlight azul)
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     
-    # Flags=re.IGNORECASE e re.DOTALL garantem robustez
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE)
 
 def gerar_diff_html(texto_ref, texto_novo):
@@ -200,7 +199,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Analisando estrutura, preservando negrito e ignorando falsos positivos..."):
+        with st.spinner("Analisando estrutura..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
@@ -279,10 +278,10 @@ if st.button("🚀 Processar Conferência"):
                             # Seção BLINDADA: Status sempre Conforme
                             status = "CONFORME"
                             
-                            # DIZERES LEGAIS: Highlight AZUL nas datas em AMBOS os textos
+                            # DIZERES LEGAIS: Highlight AZUL apenas no MKT
                             if "DIZERES LEGAIS" in titulo_upper:
-                                html_ref = destacar_datas(txt_ref) # <--- Aplica na ESQUERDA
-                                html_mkt = destacar_datas(txt_mkt) # <--- Aplica na DIREITA
+                                html_ref = txt_ref  # Mantém original (sem azul)
+                                html_mkt = destacar_datas(txt_mkt) # Aplica azul
                             else:
                                 html_ref = txt_ref
                                 html_mkt = txt_mkt 
