@@ -204,8 +204,8 @@ SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 st.title("💊 Conferência MKT")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📜 Bula Anvisa (Referência)", type=["pdf", "docx"], key="f1")
-f2 = c2.file_uploader("🎨 Arte MKT (Para Validar)", type=["pdf", "docx"], key="f2")
+f1 = c1.file_uploader("📜 Arquivo Anvisa", type=["pdf", "docx"], key="f1")
+f2 = c2.file_uploader("🎨 Arquivo MKT", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
