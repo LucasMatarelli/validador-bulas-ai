@@ -58,27 +58,44 @@ MODELO_FIXO = "models/gemini-flash-latest"
 
 def limpar_ruido_visual(texto):
     if not texto: return ""
-    # --- LIMPEZA PROFUNDA DE CARACTERES INVISÍVEIS ---
-    texto = texto.replace(u'\xa0', u' ')   # Espaço não separável
-    texto = texto.replace(u'\u200b', u'')  # Zero width space
-    texto = texto.replace(u'\xad', u'')    # Soft hyphen
-    texto = texto.replace(u'‐', u'-').replace(u'‑', u'-') # Normaliza hífens
+    # Remove todo tipo de caractere invisível que gera erro falso
+    texto = texto.replace(u'\xa0', u' ')
+    texto = texto.replace(u'\u200b', u'') 
+    texto = texto.replace(u'\xad', u'') 
+    texto = texto.replace(u'‐', u'-').replace(u'‑', u'-')
     
-    texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove pontilhados
-    texto = re.sub(r'[ \t]+', ' ', texto)     # Remove excesso de espaços
+    texto = re.sub(r'[\._]{3,}', ' ', texto) 
+    texto = re.sub(r'[ \t]+', ' ', texto) 
     return texto.strip()
+
+def contem_letra_ou_numero(texto):
+    """Verifica se há conteúdo real (letra ou número). Se for só pontuação/espaço, retorna False."""
+    return any(c.isalnum() for c in texto)
 
 def normalizar_para_comparacao(texto):
     if not texto: return ""
     texto_sem_tags = re.sub(r'<[^>]+>', '', texto) 
-    texto_limpo = re.sub(r'[^\w\s]', '', texto_sem_tags)
-    return unicodedata.normalize('NFKD', texto_limpo).lower().strip()
+    # Remove tudo que NÃO for letra ou número para a comparação estrita
+    texto_limpo = re.sub(r'[^\w]', '', texto_sem_tags)
+    return unicodedata.normalize('NFKD', texto_limpo).lower()
 
 def destacar_datas(texto):
-    padrao = r'(Esta bula foi (?:atualizada conforme Bula Padrão )?aprovada pela Anvisa em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    """
+    Regex robusta: Aceita quebras de linha (\s*) entre as palavras.
+    Cobre: "Esta bula foi atualizada..." E "Esta bula foi aprovada..."
+    """
+    # Explicando a Regex:
+    # (Esta bula foi ... Anvisa em) -> Grupo 1 (Frase gatilho, permitindo quebras de linha \s+)
+    # \s* -> Qualquer espaço ou enter entre o "em" e a data
+    # (\d{2}...) -> Grupo 2 (A Data)
+    padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padrão\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    
     def replacer(match):
+        # Reconstrói mantendo a formatação original da frase + Data Azul
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
-    return re.sub(padrao, replacer, texto, count=1)
+    
+    # flags=re.IGNORECASE | re.DOTALL garante que pegue mesmo com maiúsculas/minúsculas misturadas ou quebras de linha
+    return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
@@ -107,38 +124,37 @@ def gerar_diff_html(texto_ref, texto_novo):
             trecho_antigo = a[i1:i2]
             texto_antigo = " ".join(trecho_antigo).replace("[[BREAK]]", "\n")
             
-            # Se for igual visualmente, ignora
+            # Se for visualmente igual (ignorando pontuação/espaço), aceita
             if normalizar_para_comparacao(texto_trecho) == normalizar_para_comparacao(texto_antigo):
                 html_output.append(texto_trecho)
-            # SÓ MARCA ERRO SE TIVER CONTEÚDO VISÍVEL (não for só espaço)
-            elif texto_trecho.strip():
+            # SÓ MARCA SE TIVER LETRA/NÚMERO DIFERENTE
+            elif contem_letra_ou_numero(texto_trecho) or contem_letra_ou_numero(texto_antigo):
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
             else:
                 html_output.append(texto_trecho)
 
         elif tag == 'insert':
-            # SÓ MARCA ERRO SE O INSERIDO TIVER CONTEÚDO
-            if texto_trecho.strip():
+            # Só marca inserção se for texto relevante
+            if contem_letra_ou_numero(texto_trecho):
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
             else:
                 html_output.append(texto_trecho)
         
         elif tag == 'delete':
-            # --- CORREÇÃO DA DIVERGÊNCIA FANTASMA ---
-            # Só considera divergência se o texto deletado tinha letras/números
+            # Só marca deleção se o que sumiu era texto relevante
             trecho_deletado = a[i1:i2]
             texto_deletado = " ".join(trecho_deletado).replace("[[BREAK]]", "")
             
-            if texto_deletado.strip(): # Se tinha algo além de espaço vazio
+            if contem_letra_ou_numero(texto_deletado):
                 eh_divergente = True 
             
     resultado_final = " ".join(html_output)
     resultado_final = resultado_final.replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
     return resultado_final, eh_divergente
 
-# ----------------- 4. EXTRAÇÃO DE TEXTO (COM NEGRITO) -----------------
+# ----------------- 4. EXTRAÇÃO DE TEXTO -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
@@ -204,7 +220,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Analisando estrutura, preservando negrito e ignorando falsos positivos..."):
+        with st.spinner("Conferindo... (Ignorando espaços/pontos e buscando data flexível)..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
@@ -228,8 +244,7 @@ if st.button("🚀 Processar Conferência"):
                - NÃO PARE no meio. NÃO RESUMA.
             
             3. **FORMATAÇÃO:**
-               - MANTENHA as tags <b> e </b> originais. NÃO REMOVA O NEGRITO.
-               - NÃO INVENTE negrito onde não tem.
+               - MANTENHA as tags <b> e </b> originais.
                - NÃO CORRIJA O PORTUGUÊS. Copie ipsis litteris.
 
             LISTA DE SEÇÕES ESPERADAS: {SECOES_PACIENTE}
@@ -282,6 +297,7 @@ if st.button("🚀 Processar Conferência"):
                         if eh_secao_blindada:
                             status = "CONFORME"
                             if "DIZERES LEGAIS" in titulo_upper:
+                                # Aplica a data azul nos dois lados
                                 html_mkt = destacar_datas(txt_mkt)
                                 html_ref = destacar_datas(txt_ref)
                             else:
