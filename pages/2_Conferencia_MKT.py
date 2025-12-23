@@ -13,43 +13,49 @@ st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
     .texto-box { 
-        font-family: 'Consolas', monospace; font-size: 0.95rem; line-height: 1.6; color: #212529;
-        background-color: #ffffff; padding: 15px; border-radius: 8px; border: 1px solid #ced4da;
+        font-family: 'Segoe UI', sans-serif; font-size: 0.95rem; line-height: 1.6; color: #212529;
+        background-color: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid #ced4da;
         white-space: pre-wrap; text-align: left;
     }
-    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px; border-radius: 3px; font-weight: bold; }
-    .highlight-blue { background-color: #e3f2fd; color: #0d47a1; padding: 2px 6px; border-radius: 12px; font-weight: bold; }
-    .border-ok { border-left: 5px solid #4caf50 !important; }
-    .border-warn { border-left: 5px solid #f44336 !important; }
-    .border-info { border-left: 5px solid #2196f3 !important; }
-    div[data-testid="stMetric"] { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; }
+    .highlight-red { background-color: #ffcdd2; color: #b71c1c; padding: 2px 4px; border-radius: 4px; border: 1px solid #e57373; font-weight: bold; }
+    .highlight-blue { background-color: #e3f2fd; color: #0d47a1; padding: 2px 6px; border-radius: 12px; border: 1px solid #2196f3; font-weight: bold; }
+    
+    .border-ok { border-left: 6px solid #4caf50 !important; }
+    .border-warn { border-left: 6px solid #f44336 !important; }
+    .border-info { border-left: 6px solid #2196f3 !important; }
+    div[data-testid="stMetric"] { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
-MODELO_FIXO = "models/gemini-flash-latest"
-def limpar(txt):
-    if not txt: return ""
-    txt = unicodedata.normalize('NFKD', txt)
-    txt = txt.replace('\u00a0', ' ').replace('\r', '')
-    txt = re.sub(r'(?m)^\s*[\._-]{3,}\s*$', '', txt)
-    txt = re.sub(r'\.{4,}', ' ', txt)
-    txt = re.sub(r'[ \t]+', ' ', txt)
-    return txt.strip()
+MODELO_FIXO = "models/gemini-1.5-flash"
 
-def datas_azuis(html):
+def limpar_texto(texto):
+    if not texto: return ""
+    texto = unicodedata.normalize('NFKD', texto)
+    texto = texto.replace('\u00a0', ' ').replace('\r', '')
+    texto = re.sub(r'[\._]{4,}', ' ', texto) 
+    texto = re.sub(r'[ \t]+', ' ', texto)
+    return texto.strip()
+
+def destacar_datas(html):
     return re.sub(r'(?<!\d)(\d{2}/\d{2}/\d{4})(?!\d)', r'<span class="highlight-blue">\1</span>', html)
 
-def diff_html(r, n):
-    if not r: r = ""; 
-    if not n: n = ""
-    TOK = "🔨"
-    rt = limpar(r).replace('\n', f' {TOK} ')
-    nt = limpar(n).replace('\n', f' {TOK} ')
-    matcher = difflib.SequenceMatcher(None, rt.split(), nt.split(), autojunk=False)
+def gerar_diff_red(ref, novo):
+    if not ref: ref = ""; 
+    if not novo: novo = ""
+    
+    TOKEN = " [[BR]] "
+    ref_c = limpar_texto(ref).replace('\n', TOKEN)
+    nov_c = limpar_texto(novo).replace('\n', TOKEN)
+    
+    a = ref_c.split()
+    b = nov_c.split()
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     out = []
     diff = False
+    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        trecho = " ".join(nt.split()[j1:j2]).replace(TOK, "\n")
+        trecho = " ".join(b[j1:j2]).replace("[[BR]]", "\n")
         if tag == 'equal': out.append(trecho)
         elif tag in ['replace', 'insert']:
             if trecho.strip():
@@ -57,15 +63,18 @@ def diff_html(r, n):
                 diff = True
             else: out.append(trecho)
         elif tag == 'delete': diff = True
-    return " ".join(out).replace(" \n ", "\n").replace("\n ", "\n"), diff
+            
+    final = " ".join(out).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
+    final = destacar_datas(final)
+    return final, diff
 
-def extrair(up):
+def extract_text(uploaded):
     try:
         txt = ""
-        if up.name.lower().endswith('.pdf'):
-            doc = fitz.open(stream=up.read(), filetype="pdf")
-            for p in doc:
-                blocks = p.get_text("dict", flags=11, sort=True)["blocks"]
+        if uploaded.name.lower().endswith('.pdf'):
+            doc = fitz.open(stream=uploaded.read(), filetype="pdf")
+            for page in doc:
+                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
                 for b in blocks:
                     for l in b.get("lines", []):
                         ln = ""
@@ -75,23 +84,16 @@ def extrair(up):
                             else: ln += c
                         txt += ln + " "
                     txt += "\n"
-        elif up.name.lower().endswith('.docx'):
-            doc = docx.Document(up)
+        elif uploaded.name.lower().endswith('.docx'):
+            doc = docx.Document(uploaded)
             for p in doc.paragraphs:
                 ln = ""
                 for r in p.runs:
-                    if r.bold: ln+=f"<b>{r.text}</b>"
-                    else: ln+=r.text
+                    if r.bold: ln += f"<b>{r.text}</b>"
+                    else: ln += r.text
                 txt += ln + "\n\n"
-        return limpar(txt)
+        return limpar_texto(txt)
     except: return ""
-
-def reparar_json(t):
-    t = t.replace("```json", "").replace("```", "").strip()
-    try: return json.loads(t)
-    except:
-        try: return json.loads(t + '"]}]}')
-        except: return None
 
 st.title("💊 Conferência MKT")
 c1, c2 = st.columns(2)
@@ -99,73 +101,83 @@ f1 = c1.file_uploader("Ref", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("MKT", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar"):
-    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2")]
+    keys = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     valid = [k for k in keys if k]
     if not valid: st.stop()
     
     if f1 and f2:
-        with st.spinner("Processando..."):
+        with st.spinner("Comparando..."):
             f1.seek(0); f2.seek(0)
-            tr = extrair(f1)
-            tm = extrair(f2)
+            tr = extract_text(f1)
+            tm = extract_text(f2)
             
-            p = f"""
-            ATUE COMO EXTRATOR LITERAL.
-            IN1: {tr[:500000]}
-            IN2: {tm[:500000]}
-            TAREFA:
-            1. Extraia o texto COMPLETO E EXATO.
-            2. Não invente palavras. Não corrija.
-            SECOES: ["APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", "DIZERES LEGAIS"]
+            prompt = f"""
+            Você é um Auditor.
+            INPUT 1: {tr[:500000]}
+            INPUT 2: {tm[:500000]}
+            TAREFA: Extraia o texto COMPLETO (OCR literal). Mantenha negrito e estrutura.
+            SEÇÕES: ["APRESENTAÇÕES", "COMPOSIÇÃO", "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", "DIZERES LEGAIS"]
             JSON: {{"data_anvisa_ref": "...", "data_anvisa_mkt": "...", "secoes": [{{"titulo": "...", "texto_anvisa": "...", "texto_mkt": "..."}}]}}
             """
             
             res = None
-            cfg = {"response_mime_type": "application/json", "temperature": 0.0}
-            
-            for k in valid:
+            for i, k in enumerate(valid):
                 try:
                     genai.configure(api_key=k)
-                    mod = genai.GenerativeModel(MODELO_FIXO, generation_config=cfg)
-                    resp = mod.generate_content(p)
-                    res = reparar_json(resp.text)
-                    if res: break
-                except: continue
+                    mod = genai.GenerativeModel(MODELO_FIXO, generation_config={"response_mime_type": "application/json"})
+                    res = mod.generate_content(prompt)
+                    break
+                except Exception as e: continue
                 
             if res:
-                final = []
-                err = 0
-                isentas = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
-                
-                for s in res.get("secoes", []):
-                    t = s["titulo"]
-                    tr = s["texto_anvisa"]
-                    tm = s["texto_mkt"]
+                try:
+                    j = json.loads(res.text)
+                    final = []
+                    errs = 0
+                    secoes_isentas = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+
+                    for s in j.get("secoes", []):
+                        tit = s["titulo"]
+                        txt_r = s["texto_anvisa"]
+                        txt_m = s["texto_mkt"]
+                        
+                        eh_isenta = any(x in tit.upper() for x in secoes_isentas)
+                        
+                        if eh_isenta:
+                            status = "CONFORME"
+                            if "DIZERES LEGAIS" in tit.upper():
+                                html_r = destacar_datas(txt_r.replace('\n', '<br>'))
+                                html_m = destacar_datas(txt_m.replace('\n', '<br>'))
+                            else:
+                                html_r = txt_r.replace('\n', '<br>')
+                                html_m = txt_m.replace('\n', '<br>')
+                        else:
+                            html_m, diff = gerar_diff_red(txt_r, txt_m)
+                            html_r = destacar_datas(txt_r.replace('\n', '<br>'))
+                            status = "DIVERGENTE" if diff else "CONFORME"
+                            if diff: errs += 1
+                        
+                        final.append({"t": tit, "tr": html_r, "tm": html_m.replace('\n', '<br>'), "s": status})
                     
-                    if any(x in t.upper() for x in isentas):
-                        stt = "CONFORME"
-                        hr = datas_azuis(tr) if "DIZERES" in t.upper() else tr
-                        hm = datas_azuis(tm) if "DIZERES" in t.upper() else tm
-                    else:
-                        hm, df = diff_html(tr, tm)
-                        hr = datas_azuis(tr)
-                        stt = "DIVERGENTE" if df else "CONFORME"
-                        if df: err += 1
-                    final.append({"t":t, "tr":hr, "tm":hm, "s":stt})
-                
-                st.markdown("### Resumo")
-                cx, cy, cz = st.columns(3)
-                cx.metric("Ref", res.get("data_anvisa_ref"))
-                cy.metric("MKT", res.get("data_anvisa_mkt"))
-                cz.metric("Divergências", err)
-                
-                for i in final:
-                    if "DIZERES" in i['t'].upper(): css="border-info"; ic="⚖️"; ex=False
-                    elif any(x in i['t'].upper() for x in ["APRESENTAÇÕES", "COMPOSIÇÃO"]): css="border-info"; ic="📋"; ex=False
-                    elif i['s'] == "DIVERGENTE": css="border-warn"; ic="⚠️"; ex=True
-                    else: css="border-ok"; ic="✅"; ex=False
-                    with st.expander(f"{ic} {i['t']}", expanded=ex):
-                        ca, cb = st.columns(2)
-                        ca.markdown(f'<div class="texto-box {css}">{i["tr"].replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
-                        cb.markdown(f'<div class="texto-box {css}">{i["tm"].replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
-            else: st.error("Falha na API.")
+                    st.markdown("### Resumo")
+                    c_x, c_y, c_z = st.columns(3)
+                    c_x.metric("Ref", j.get("data_anvisa_ref"))
+                    c_y.metric("MKT", j.get("data_anvisa_mkt"))
+                    c_z.metric("Erros", errs)
+                    
+                    for i in final:
+                        if "DIZERES LEGAIS" in i['t'].upper():
+                             css = "border-info"; icon = "⚖️"; ab = False
+                        elif any(x in i['t'].upper() for x in ["APRESENTAÇÕES", "COMPOSIÇÃO"]):
+                             css = "border-info"; icon = "📋"; ab = False
+                        elif i["s"] == "DIVERGENTE":
+                             css = "border-warn"; icon = "⚠️"; ab = True
+                        else:
+                             css = "border-ok"; icon = "✅"; ab = False
+
+                        with st.expander(f"{icon} {i['t']}", expanded=ab):
+                            ca, cb = st.columns(2)
+                            ca.markdown(f'<div class="texto-box {css}">{i["tr"]}</div>', unsafe_allow_html=True)
+                            cb.markdown(f'<div class="texto-box {css}">{i["tm"]}</div>', unsafe_allow_html=True)
+                except Exception as e: st.error(str(e))
+    else: st.warning("Envie arquivos.")
