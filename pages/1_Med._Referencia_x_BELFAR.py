@@ -59,35 +59,25 @@ MODELO_FIXO = "models/gemini-flash-latest"
 def limpar_ruido_visual(texto):
     if not texto: return ""
     # --- LIMPEZA PROFUNDA DE CARACTERES INVISÍVEIS ---
-    texto = texto.replace(u'\xa0', u' ')   # Espaço não separável (HTML &nbsp;)
-    texto = texto.replace(u'\u200b', u'')  # Zero width space (comum em PDF)
+    texto = texto.replace(u'\xa0', u' ')   # Espaço não separável
+    texto = texto.replace(u'\u200b', u'')  # Zero width space
     texto = texto.replace(u'\xad', u'')    # Soft hyphen
     texto = texto.replace(u'‐', u'-').replace(u'‑', u'-') # Normaliza hífens
     
-    texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove linhas pontilhadas
+    texto = re.sub(r'[\._]{3,}', ' ', texto) # Remove pontilhados
     texto = re.sub(r'[ \t]+', ' ', texto)     # Remove excesso de espaços
     return texto.strip()
 
 def normalizar_para_comparacao(texto):
     if not texto: return ""
-    # Remove tags HTML para comparar apenas o conteúdo textual
     texto_sem_tags = re.sub(r'<[^>]+>', '', texto) 
-    # Remove pontuação fina
     texto_limpo = re.sub(r'[^\w\s]', '', texto_sem_tags)
     return unicodedata.normalize('NFKD', texto_limpo).lower().strip()
 
 def destacar_datas(texto):
-    """
-    Marca a data se vier após:
-    1. "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em"
-    2. "Esta bula foi aprovada pela Anvisa em"
-    """
-    # Regex flexível que pega as duas frases opcionais
     padrao = r'(Esta bula foi (?:atualizada conforme Bula Padrão )?aprovada pela Anvisa em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
-    
     def replacer(match):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
-    
     return re.sub(padrao, replacer, texto, count=1)
 
 def gerar_diff_html(texto_ref, texto_novo):
@@ -96,7 +86,6 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     TOKEN_QUEBRA = " [[BREAK]] "
     
-    # Prepara texto para diff limpando invisíveis antes
     ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
     novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
     
@@ -118,9 +107,10 @@ def gerar_diff_html(texto_ref, texto_novo):
             trecho_antigo = a[i1:i2]
             texto_antigo = " ".join(trecho_antigo).replace("[[BREAK]]", "\n")
             
-            # Se a versão normalizada for igual, IGNORA (não marca amarelo)
+            # Se for igual visualmente, ignora
             if normalizar_para_comparacao(texto_trecho) == normalizar_para_comparacao(texto_antigo):
                 html_output.append(texto_trecho)
+            # SÓ MARCA ERRO SE TIVER CONTEÚDO VISÍVEL (não for só espaço)
             elif texto_trecho.strip():
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
@@ -128,13 +118,21 @@ def gerar_diff_html(texto_ref, texto_novo):
                 html_output.append(texto_trecho)
 
         elif tag == 'insert':
+            # SÓ MARCA ERRO SE O INSERIDO TIVER CONTEÚDO
             if texto_trecho.strip():
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
             else:
                 html_output.append(texto_trecho)
+        
         elif tag == 'delete':
-            eh_divergente = True 
+            # --- CORREÇÃO DA DIVERGÊNCIA FANTASMA ---
+            # Só considera divergência se o texto deletado tinha letras/números
+            trecho_deletado = a[i1:i2]
+            texto_deletado = " ".join(trecho_deletado).replace("[[BREAK]]", "")
+            
+            if texto_deletado.strip(): # Se tinha algo além de espaço vazio
+                eh_divergente = True 
             
     resultado_final = " ".join(html_output)
     resultado_final = resultado_final.replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
@@ -142,14 +140,12 @@ def gerar_diff_html(texto_ref, texto_novo):
 
 # ----------------- 4. EXTRAÇÃO DE TEXTO (COM NEGRITO) -----------------
 def extract_text_from_file(uploaded_file):
-    """Extrai texto detectando Negrito e usando sort=True para colunas."""
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
                 blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
-                
                 for b in blocks:
                     block_text = ""
                     for l in b.get("lines", []):
@@ -158,7 +154,6 @@ def extract_text_from_file(uploaded_file):
                             content = s["text"]
                             font_props = s["font"].lower()
                             is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
-                            
                             if is_bold:
                                 line_txt += f"<b>{content}</b>"
                             else:
@@ -191,7 +186,6 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-# LISTA BLINDADA
 SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 5. UI PRINCIPAL -----------------
@@ -283,14 +277,10 @@ if st.button("🚀 Processar Conferência"):
                         txt_mkt = item.get('texto_mkt', '').strip()
                         
                         titulo_upper = titulo.upper()
-                        # Verifica se a seção atual está na lista de "sem comparação"
                         eh_secao_blindada = any(blindada in titulo_upper for blindada in SECOES_SEM_COMPARACAO)
 
                         if eh_secao_blindada:
-                            # Lógica BLINDADA: Sem comparação, sem highlight amarelo
                             status = "CONFORME"
-                            
-                            # DIZERES LEGAIS: Highlight AZUL apenas nas datas (NOS DOIS ARQUIVOS)
                             if "DIZERES LEGAIS" in titulo_upper:
                                 html_mkt = destacar_datas(txt_mkt)
                                 html_ref = destacar_datas(txt_ref)
@@ -299,7 +289,6 @@ if st.button("🚀 Processar Conferência"):
                                 html_ref = txt_ref
                             
                         else:
-                            # Lógica PADRÃO: Compara tudo, com proteção contra falso positivo de invisíveis
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             status = "DIVERGENTE" if teve_diff else "CONFORME"
                             if teve_diff: divergentes_count += 1
