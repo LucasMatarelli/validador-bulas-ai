@@ -138,7 +138,11 @@ def extract_text_from_file(uploaded_file):
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
-                blocks = page.get_text("dict", flags=11)["blocks"]
+                # --- ALTERAÇÃO NO BACKEND AQUI ---
+                # sort=True ordena os blocos pela posição visual (coluna 1, depois coluna 2)
+                # Isso impede que ele leia a linha horizontalmente cruzando as colunas.
+                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
+                
                 for b in blocks:
                     for l in b.get("lines", []):
                         line_txt = ""
