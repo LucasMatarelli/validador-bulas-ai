@@ -76,12 +76,10 @@ def normalizar_rigorosa(texto):
     # 1. Remove tags HTML e tokens internos
     txt = re.sub(r'<[^>]+>', '', texto).replace('[[BREAK]]', '')
     
-    # 2. Normaliza para minúsculas e remove acentos (opcional, mas ajuda na robustez)
-    # NFKD separa o acento da letra, e o encode/decode remove o acento solto.
+    # 2. Normaliza para minúsculas e remove acentos
     txt = unicodedata.normalize('NFKD', txt).encode('ASCII', 'ignore').decode('ASCII').lower()
     
     # 3. O SEGREDO: Remove TUDO que não for letra (a-z) ou número (0-9)
-    # Isso apaga: • - . , ; : / ( ) [ ] e espaços
     txt = re.sub(r'[^a-z0-9]', '', txt)
     
     return txt
@@ -111,7 +109,6 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     TOKEN_QUEBRA = " [[BREAK]] "
     
-    # Prepara os dois textos
     ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
     novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
     
@@ -120,38 +117,32 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     
-    html_output_ref = []  # Saída para a coluna da Esquerda (Anvisa)
-    html_output_novo = [] # Saída para a coluna da Direita (MKT)
+    html_output_ref = []  # Lado Esquerdo
+    html_output_novo = [] # Lado Direito
     eh_divergente = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        # Texto do lado A (Referência)
         trecho_a = a[i1:i2]
         texto_a = " ".join(trecho_a).replace("[[BREAK]]", "\n")
         
-        # Texto do lado B (Novo)
         trecho_b = b[j1:j2]
         texto_b = " ".join(trecho_b).replace("[[BREAK]]", "\n")
         
         if tag == 'equal':
-            # Se for igual, adiciona normal nos dois
             html_output_ref.append(texto_a)
             html_output_novo.append(texto_b)
         
         elif tag == 'replace':
-            # Se a normalização rigorosa disser que são iguais (ex: pontuação), não marca
             if normalizar_rigorosa(texto_a) == normalizar_rigorosa(texto_b):
                 html_output_ref.append(texto_a)
                 html_output_novo.append(texto_b)
             else:
-                # Se for diferente mesmo, marca amarelo nos dois lados
-                # Lado Ref: Mostra o que era
+                # Diferente: Marca nos dois lados
                 if eh_conteudo_visivel(texto_a):
                     html_output_ref.append(f'<span class="highlight-yellow">{texto_a}</span>')
                 else:
                     html_output_ref.append(texto_a)
                 
-                # Lado Novo: Mostra o que virou
                 if eh_conteudo_visivel(texto_b):
                     html_output_novo.append(f'<span class="highlight-yellow">{texto_b}</span>')
                     eh_divergente = True
@@ -159,8 +150,7 @@ def gerar_diff_html(texto_ref, texto_novo):
                     html_output_novo.append(texto_b)
 
         elif tag == 'delete':
-            # Apagou do Ref: Marca amarelo no Ref (para mostrar o que sumiu)
-            # No Novo não adiciona nada (pois sumiu)
+            # Apagou da referência: Marca amarelo na referência
             if eh_conteudo_visivel(texto_a):
                 html_output_ref.append(f'<span class="highlight-yellow">{texto_a}</span>')
                 eh_divergente = True
@@ -168,15 +158,13 @@ def gerar_diff_html(texto_ref, texto_novo):
                 html_output_ref.append(texto_a)
         
         elif tag == 'insert':
-            # Inseriu no Novo: Marca amarelo no Novo
-            # No Ref não adiciona nada (pois não existia)
+            # Novo texto: Marca amarelo no novo
             if eh_conteudo_visivel(texto_b):
                 html_output_novo.append(f'<span class="highlight-yellow">{texto_b}</span>')
                 eh_divergente = True
             else:
                 html_output_novo.append(texto_b)
             
-    # Reconstrói as strings finais
     final_ref = " ".join(html_output_ref).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
     final_novo = " ".join(html_output_novo).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
     
@@ -335,7 +323,7 @@ if st.button("🚀 Processar Conferência"):
                             
                         else:
                             # Chama a nova função (agora atualizada)
-                            html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
+                            html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             status = "DIVERGENTE" if teve_diff else "CONFORME"
                             if teve_diff: divergentes_count += 1
                             html_ref = txt_ref
