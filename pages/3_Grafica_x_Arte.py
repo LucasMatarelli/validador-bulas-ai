@@ -1,5 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from PIL import Image
 import fitz  # PyMuPDF
 import docx  # Para ler DOCX
@@ -126,7 +127,15 @@ if st.button("🚀 Validar"):
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # --- PROMPT OTIMIZADO PARA EVITAR CORTE DE JSON ---
+            # --- CONFIGURAÇÃO DE SEGURANÇA (CRÍTICO PARA BULAS) ---
+            # Libera a IA para ler sobre "drogas", "medicamentos" e "riscos" sem bloquear
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
             prompt = f"""
             Você é um EXTRATOR FORENSE DE TEXTO.
             
@@ -183,10 +192,20 @@ if st.button("🚀 Validar"):
                             "response_mime_type": "application/json", 
                             "temperature": 0.0,
                             "max_output_tokens": 8192
-                        }
+                        },
+                        # APLICA AS CONFIGURAÇÕES DE SEGURANÇA AQUI
+                        safety_settings=safety_settings
                     )
                     
                     response = model.generate_content(payload)
+                    
+                    # Teste rápido se a resposta foi bloqueada
+                    try:
+                        _ = response.text 
+                    except ValueError:
+                        # Se der erro aqui, é porque foi bloqueado
+                        raise Exception(f"Bloqueio de Segurança/Safety. Finish Reason: {response.candidates[0].finish_reason}")
+                        
                     break 
 
                 except Exception as e:
@@ -196,6 +215,9 @@ if st.button("🚀 Validar"):
                         continue
                     else:
                         st.error(f"❌ Erro fatal: {ultimo_erro}")
+                        # Tenta mostrar detalhes do bloqueio se existir
+                        if response and response.candidates:
+                            st.warning(f"Detalhe do bloqueio: {response.candidates[0].finish_reason}")
                         st.stop()
             
             if response:
@@ -259,8 +281,12 @@ if st.button("🚀 Validar"):
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"Erro no JSON: {e}")
-                    st.text("Resposta incompleta do modelo:")
-                    st.code(response.text)
+                    st.error(f"Erro no processamento: {e}")
+                    # Verificação segura antes de chamar .text
+                    try:
+                        st.text("Resposta parcial:")
+                        st.code(response.text)
+                    except:
+                        st.warning("O modelo bloqueou a saída do texto (Conteúdo considerado sensível).")
     else:
         st.warning("Adicione os arquivos.")
