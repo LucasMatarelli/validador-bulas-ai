@@ -64,7 +64,7 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 # ATUALIZADO PARA O MODELO SOLICITADO
-MODELO_FIXO = "models/gemini-2.5-flash"
+MODELO_FIXO = "models/gemini-flash-latest""
 
 # ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
 def process_file_content(uploaded_file):
