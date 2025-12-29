@@ -9,7 +9,7 @@ import json
 import time
 
 # ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
-st.set_page_config(page_title="Validador Farmacêutico (Multi-Model)", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Validador Farmacêutico (Blindado)", page_icon="🛡️", layout="wide")
 
 st.markdown("""
 <style>
@@ -43,14 +43,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. LISTA DE MODELOS (FAILOVER) -----------------
-# Se o primeiro der 404, ele tenta o segundo, e assim por diante.
-# Fugimos dos experimentais que estão com cota zero.
+# O sistema tentará estes nomes em ordem até um funcionar.
+# Isso resolve o erro 404 (nome errado) e o erro 429 (cota).
 MODELOS_DISPONIVEIS = [
-    "models/gemini-1.5-flash-latest",  # Nome mais atual
-    "models/gemini-1.5-flash-001",     # Versão estável
-    "models/gemini-1.5-flash",         # Apelido genérico
-    "models/gemini-1.5-pro-latest",    # Plano B (Pro)
-    "models/gemini-1.5-pro-001"        # Plano C (Pro estável)
+    "gemini-1.5-flash-latest",   # Tentativa 1: Versão mais recente
+    "gemini-1.5-flash-001",      # Tentativa 2: Versão estável 001
+    "gemini-1.5-flash-002",      # Tentativa 3: Versão estável 002
+    "gemini-1.5-flash",          # Tentativa 4: Apelido genérico
+    "gemini-1.5-flash-8b",       # Tentativa 5: Versão leve
+    "gemini-1.5-pro-latest",     # Tentativa 6: Pro (se o Flash falhar tudo)
+    "gemini-1.5-pro-001"         # Tentativa 7: Pro estável
 ]
 
 # ----------------- 3. PROCESSAMENTO -----------------
@@ -96,8 +98,8 @@ SECOES_PADRAO = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("🛡️ Validador Farmacêutico (Auto-Repair)")
-st.caption("Sistema inteligente que busca o modelo ativo automaticamente.")
+st.title("🛡️ Validador Farmacêutico (Sistema Anti-Falha)")
+st.caption("Auto-Repair ativado: Testando múltiplas versões do Gemini automaticamente.")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📂 Arte (Referência)", type=["pdf", "jpg", "png", "docx"])
@@ -118,30 +120,32 @@ if st.button("🔍 Validar Texto Integral"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner(f"Lendo arquivos..."):
+        with st.spinner(f"Iniciando varredura de modelos compatíveis..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
+            # PROMPT RIGOROSO (FORÇA A TRANSCRIÇÃO COMPLETA)
             prompt = f"""
-            ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO FORENSE.
+            ATUE COMO UM SOFTWARE DE COMPARAÇÃO FORENSE DE TEXTO.
             
-            SUA TAREFA É MECÂNICA:
+            SUA TAREFA:
             1. Ler o texto dos arquivos.
             2. Comparar Arte vs Gráfica.
             
             LISTA DE TÍTULOS OBRIGATÓRIA: {SECOES_PADRAO}
 
-            ⚠️ INSTRUÇÕES ANTI-ALUCINAÇÃO:
-            - **PROIBIDO RESUMIR.** Transcreva o texto COMPLETO, caractere por caractere.
+            ⚠️ INSTRUÇÕES:
+            - **NÃO RESUMA.** Transcreva o texto COMPLETO, caractere por caractere.
             - **TÍTULOS:** Se o título no arquivo for diferente do gabarito (ex: "Apresentação" vs "APRESENTAÇÕES"), MARQUE COMO DIVERGENTE.
+            - Se o texto for longo, continue até o fim.
 
             SAÍDA JSON:
             {{
                 "secoes": [
                     {{
-                        "titulo_padrao": "Do gabarito acima",
+                        "titulo_padrao": "Do gabarito",
                         "titulo_encontrado_arte": "Leitura Arte",
                         "titulo_encontrado_grafica": "Leitura Grafica",
                         "texto_arte": "Texto INTEGRAL...",
@@ -162,23 +166,21 @@ if st.button("🔍 Validar Texto Integral"):
 
             response = None
             ultimo_erro = ""
-            modelo_usado = ""
-
-            # --- LOOP INTELIGENTE (MODELO + CHAVE) ---
-            # Tenta encontrar uma combinação que funcione (Modelo X + Chave Y)
+            modelo_conectado = ""
             sucesso = False
             
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            status_placeholder = st.empty()
 
-            for idx_m, modelo_atual in enumerate(MODELOS_DISPONIVEIS):
+            # --- LOOP DUPLO: TENTA TODOS OS MODELOS X TODAS AS CHAVES ---
+            for modelo_atual in MODELOS_DISPONIVEIS:
                 if sucesso: break
                 
                 for idx_k, api_key in enumerate(keys_validas):
                     try:
-                        status_text.text(f"Testando: {modelo_atual} | Chave {idx_k+1}...")
+                        status_placeholder.text(f"Testando conexão: {modelo_atual} (Chave {idx_k+1})...")
                         
                         genai.configure(api_key=api_key)
+                        # Sem o prefixo 'models/' que às vezes causa erro em versões novas da lib
                         model = genai.GenerativeModel(
                             modelo_atual, 
                             generation_config={
@@ -192,31 +194,31 @@ if st.button("🔍 Validar Texto Integral"):
                         # Tenta gerar
                         response = model.generate_content(payload=[prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2)
                         
-                        # Se não deu erro, sucesso!
+                        # Se passou daqui, funcionou!
                         sucesso = True
-                        modelo_usado = modelo_atual
-                        status_text.text(f"✅ Conectado! Modelo: {modelo_atual}")
-                        progress_bar.progress(100)
+                        modelo_conectado = modelo_atual
+                        status_placeholder.success(f"✅ Conectado com sucesso ao modelo: {modelo_atual}")
                         break 
 
                     except Exception as e:
                         err = str(e)
-                        # Se for 404 (Modelo não encontrado), tenta o próximo modelo imediatamente
+                        # Se for 404 ou Not Found, tenta o próximo modelo (break no loop de chaves)
                         if "404" in err or "not found" in err.lower():
-                            # st.warning(f"Modelo {modelo_atual} não encontrado. Tentando próximo...")
-                            break # Sai do loop de chaves e vai para o próximo modelo
+                            break 
                         
-                        # Se for 429 (Quota), tenta a próxima chave com o mesmo modelo
+                        # Se for 429 (Quota), tenta a próxima chave no mesmo modelo
                         elif "429" in err or "quota" in err.lower():
                             time.sleep(1)
                             continue 
                         
+                        # Outros erros, salva e tenta próximo
                         else:
                             ultimo_erro = err
                             continue
             
             if not sucesso:
-                st.error("❌ Todos os modelos e chaves falharam.")
+                st.error("❌ Falha crítica: Nenhum modelo do Google respondeu.")
+                st.write("Isso geralmente indica que a biblioteca `google-generativeai` precisa ser atualizada no servidor ou o Google está instável.")
                 st.code(ultimo_erro)
                 st.stop()
             
@@ -234,7 +236,7 @@ if st.button("🔍 Validar Texto Integral"):
                     divs = sum(1 for s in secoes if s['status'] != 'CONFORME')
                     oks = total - divs
 
-                    st.markdown(f"### 📊 Resultado ({modelo_usado})")
+                    st.markdown(f"### 📊 Resultado ({modelo_conectado})")
                     c1, c2 = st.columns(2)
                     c1.metric("Conformes", oks)
                     c2.metric("Divergentes", divs, delta_color="inverse")
