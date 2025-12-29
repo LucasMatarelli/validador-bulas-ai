@@ -9,7 +9,7 @@ import json
 import time
 
 # ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
-st.set_page_config(page_title="Validador Farmacêutico (Blindado)", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Validador Farmacêutico Rigoroso", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -42,16 +42,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. LISTA DE MODELOS (FAILOVER AUTOMÁTICO) -----------------
-# O código testará um por um até conectar.
-MODELOS_DISPONIVEIS = [
-    "gemini-1.5-flash",          # Mais rápido e estável (costuma ter cota)
-    "gemini-1.5-flash-latest",   # Variação de nome
-    "gemini-1.5-pro",            # Mais potente
-    "gemini-1.5-pro-latest",     # Variação de nome
-    "gemini-2.0-flash-exp",      # Experimental (se a cota voltar)
-    "gemini-exp-1206"            # Experimental alternativo
-]
+# ----------------- 2. MODELO (Gemini 2.0 Flash) -----------------
+# Mantendo estritamente o modelo que você pediu
+MODELO_FIXO = "models/gemini-2.0-flash-exp"
 
 # ----------------- 3. PROCESSAMENTO -----------------
 def process_file_content(uploaded_file):
@@ -96,8 +89,7 @@ SECOES_PADRAO = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("🛡️ Validador Farmacêutico (Sistema Anti-Falha)")
-st.caption("Auto-Repair ativado: Testando múltiplas versões do Gemini automaticamente.")
+st.title("⚖️ Validador Rigoroso (Gemini 2.0)")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📂 Arte (Referência)", type=["pdf", "jpg", "png", "docx"])
@@ -111,49 +103,55 @@ if st.button("🔍 Validar Texto Integral"):
         st.secrets.get("GEMINI_API_KEY2"), 
         st.secrets.get("GEMINI_API_KEY3")
     ]
+    # Filtra chaves vazias
     keys_validas = [k for k in keys_raw if k and len(k) > 10]
 
     if not keys_validas:
-        st.error("Nenhuma chave API válida encontrada.")
+        st.error("Nenhuma chave API válida encontrada nos Segredos.")
         st.stop()
 
     if f1 and f2:
-        with st.spinner(f"Iniciando varredura de modelos compatíveis..."):
+        with st.spinner(f"Iniciando análise com {len(keys_validas)} chaves disponíveis..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT RIGOROSO
             prompt = f"""
-            ATUE COMO UM SOFTWARE DE COMPARAÇÃO FORENSE DE TEXTO.
+            Você é um Auditor de Qualidade Documental.
             
-            SUA TAREFA:
-            1. Ler o texto dos arquivos.
+            SUA MISSÃO: 
+            1. Extrair o texto EXATAMENTE como está nos arquivos (letra por letra).
             2. Comparar Arte vs Gráfica.
-            
-            LISTA DE TÍTULOS OBRIGATÓRIA: {SECOES_PADRAO}
+            3. Validar rigorosamente os TÍTULOS.
 
-            ⚠️ INSTRUÇÕES:
-            - **NÃO RESUMA.** Transcreva o texto COMPLETO, caractere por caractere.
-            - **TÍTULOS:** Se o título no arquivo for diferente do gabarito (ex: "Apresentação" vs "APRESENTAÇÕES"), MARQUE COMO DIVERGENTE.
-            - Se o texto for longo, continue até o fim.
+            LISTA DE TÍTULOS PADRÃO: {SECOES_PADRAO}
+
+            ⚠️ REGRAS DE VALIDAÇÃO:
+            1. **TÍTULOS:** Comparação EXATA (Case Sensitive). 
+               - Ex: "Apresentação" != "APRESENTAÇÕES" -> DIVERGENTE.
+            
+            2. **TEXTO:** - Transcreva o texto CORPO ipsis litteris.
+               - NÃO mude pontuação. NÃO corrija erros.
+               - Diferença? Status "DIVERGENTE".
 
             SAÍDA JSON:
             {{
                 "secoes": [
                     {{
-                        "titulo_padrao": "Do gabarito",
-                        "titulo_encontrado_arte": "Leitura Arte",
-                        "titulo_encontrado_grafica": "Leitura Grafica",
-                        "texto_arte": "Texto INTEGRAL...",
-                        "texto_grafica": "Texto INTEGRAL...",
-                        "status": "CONFORME" or "DIVERGENTE",
-                        "obs": "Divergência"
+                        "titulo_padrao": "ESPERADO",
+                        "titulo_encontrado_arte": "ENCONTRADO ARTE",
+                        "titulo_encontrado_grafica": "ENCONTRADO GRAFICA",
+                        "texto_arte": "Texto completo...",
+                        "texto_grafica": "Texto completo...",
+                        "status": "CONFORME" ou "DIVERGENTE",
+                        "obs": "Explicação do erro"
                     }}
                 ]
             }}
             """
+            
+            payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
             
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -164,64 +162,52 @@ if st.button("🔍 Validar Texto Integral"):
 
             response = None
             ultimo_erro = ""
-            modelo_conectado = ""
             sucesso = False
-            
-            status_placeholder = st.empty()
-            
-            # Prepara o conteúdo corretamente (CORREÇÃO DO ERRO 'PAYLOAD')
-            conteudo_final = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
 
-            # --- LOOP DUPLO: TENTA TODOS OS MODELOS X TODAS AS CHAVES ---
-            for modelo_atual in MODELOS_DISPONIVEIS:
-                if sucesso: break
-                
-                for idx_k, api_key in enumerate(keys_validas):
-                    try:
-                        status_placeholder.text(f"Testando conexão: {modelo_atual} (Chave {idx_k+1})...")
-                        
-                        genai.configure(api_key=api_key)
-                        model = genai.GenerativeModel(
-                            modelo_atual, 
-                            generation_config={
-                                "response_mime_type": "application/json", 
-                                "temperature": 0.0,
-                                "max_output_tokens": 8192
-                            },
-                            safety_settings=safety_settings
-                        )
-                        
-                        # --- CORREÇÃO AQUI: PASSANDO ARGUMENTO POSICIONAL, NÃO KEYWORD ---
-                        response = model.generate_content(conteudo_final)
-                        
-                        # Se passou daqui, funcionou!
-                        sucesso = True
-                        modelo_conectado = modelo_atual
-                        status_placeholder.success(f"✅ Conectado com sucesso ao modelo: {modelo_atual}")
-                        break 
+            # --- LOOP ROBUSTO DE TENTATIVAS ---
+            for i, api_key in enumerate(keys_validas):
+                try:
+                    # Mensagem de progresso visual
+                    st.toast(f"Tentativa com Chave {i+1} de {len(keys_validas)}...")
+                    
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(
+                        MODELO_FIXO, 
+                        generation_config={
+                            "response_mime_type": "application/json", 
+                            "temperature": 0.0,
+                            "max_output_tokens": 8192
+                        },
+                        safety_settings=safety_settings
+                    )
+                    
+                    # Chamada à API
+                    response = model.generate_content(payload)
+                    
+                    # Se chegou aqui, funcionou!
+                    sucesso = True
+                    st.success(f"Conectado com sucesso usando a Chave {i+1}!")
+                    break 
 
-                    except Exception as e:
-                        err = str(e)
-                        # Se for 404 (Modelo não encontrado), tenta o próximo modelo imediatamente
-                        if "404" in err or "not found" in err.lower():
-                            break 
-                        
-                        # Se for 429 (Quota), tenta a próxima chave no mesmo modelo
-                        elif "429" in err or "quota" in err.lower():
-                            time.sleep(1)
-                            continue 
-                        
-                        # Outros erros (ex: internal error), salva e tenta próximo
-                        else:
-                            ultimo_erro = err
-                            continue
+                except Exception as e:
+                    ultimo_erro = str(e)
+                    st.warning(f"⚠️ Chave {i+1} falhou. Aguardando 5 segundos para trocar...")
+                    
+                    # 5 SEGUNDOS DE ESPERA PARA EVITAR BLOQUEIO IMEDIATO NA PRÓXIMA
+                    time.sleep(5) 
+                    continue 
             
+            # --- VERIFICAÇÃO FINAL ---
             if not sucesso:
-                st.error("❌ Falha crítica: Nenhum modelo do Google respondeu.")
-                st.code(ultimo_erro)
+                st.error("❌ FALHA TOTAL: Todas as chaves foram rejeitadas pelo Google.")
+                st.code(f"Último erro retornado: {ultimo_erro}")
+                st.markdown("""
+                **Dica:** O erro `429 limit: 0` no modelo experimental significa que o Google bloqueou temporariamente o acesso a este modelo na sua conta.
+                Tente novamente em alguns minutos ou verifique se suas chaves não são do mesmo Projeto no Google Cloud.
+                """)
                 st.stop()
             
-            # --- EXIBIÇÃO ---
+            # --- EXIBIÇÃO DOS DADOS ---
             if response:
                 try:
                     texto = response.text
@@ -235,13 +221,13 @@ if st.button("🔍 Validar Texto Integral"):
                     divs = sum(1 for s in secoes if s['status'] != 'CONFORME')
                     oks = total - divs
 
-                    st.markdown(f"### 📊 Resultado ({modelo_conectado})")
+                    st.markdown("### 📊 Resultado da Análise")
                     c1, c2 = st.columns(2)
                     c1.metric("Conformes", oks)
                     c2.metric("Divergentes", divs, delta_color="inverse")
 
                     if divs > 0:
-                        st.error(f"❌ {divs} Divergências.")
+                        st.error(f"❌ {divs} Divergências encontradas.")
                     else:
                         st.success("✅ Tudo Conforme.")
 
@@ -263,7 +249,7 @@ if st.button("🔍 Validar Texto Integral"):
                             if titulo_arte != titulo_padrao or titulo_graf != titulo_padrao:
                                 st.markdown(f"""
                                 <div style="background-color: #f8d7da; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #721c24;">
-                                    <strong>❌ TÍTULO INCORRETO:</strong><br>
+                                    <strong>❌ ERRO DE TÍTULO:</strong><br>
                                     Esperado: <code>{titulo_padrao}</code><br>
                                     Arte: <code>{titulo_arte}</code> | Gráfica: <code>{titulo_graf}</code>
                                 </div>
@@ -280,7 +266,7 @@ if st.button("🔍 Validar Texto Integral"):
                                 st.markdown(f'<div class="texto-box {css}">{s.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error("Erro ao ler JSON.")
+                    st.error("Erro ao processar o JSON retornado.")
                     st.code(response.text)
     else:
         st.warning("Adicione os arquivos.")
