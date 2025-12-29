@@ -29,7 +29,7 @@ st.markdown("""
     }
 
     .border-ok { border-left: 6px solid #28a745 !important; }
-    .border-warn { border-left: 6px solid #dc3545 !important; } /* Vermelho para erro */
+    .border-warn { border-left: 6px solid #dc3545 !important; }
     
     div[data-testid="stMetric"] {
         background-color: #ffffff;
@@ -43,6 +43,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. MODELO (Gemini 2.0 Flash) -----------------
+# Mantendo estritamente o modelo que você pediu
 MODELO_FIXO = "models/gemini-2.0-flash-exp"
 
 # ----------------- 3. PROCESSAMENTO -----------------
@@ -88,7 +89,7 @@ SECOES_PADRAO = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("⚖️ Validador Rigoroso (Multi-Key)")
+st.title("⚖️ Validador Rigoroso (Gemini 2.0)")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📂 Arte (Referência)", type=["pdf", "jpg", "png", "docx"])
@@ -96,21 +97,21 @@ f2 = c2.file_uploader("📂 Gráfica (Validação)", type=["pdf", "jpg", "png", 
 
 if st.button("🔍 Validar Texto Integral"):
     
-    # CARREGAMENTO EXPLÍCITO DAS 3 CHAVES
+    # --- CARREGAMENTO DE CHAVES ---
     keys_raw = [
         st.secrets.get("GEMINI_API_KEY"), 
         st.secrets.get("GEMINI_API_KEY2"), 
         st.secrets.get("GEMINI_API_KEY3")
     ]
-    # Filtra apenas as chaves que existem (não nulas)
-    keys_validas = [k for k in keys_raw if k]
+    # Filtra chaves vazias
+    keys_validas = [k for k in keys_raw if k and len(k) > 10]
 
     if not keys_validas:
-        st.error("Nenhuma chave API encontrada nos Segredos.")
+        st.error("Nenhuma chave API válida encontrada nos Segredos.")
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando... se uma chave falhar, tentaremos a próxima automaticamente..."):
+        with st.spinner(f"Iniciando análise com {len(keys_validas)} chaves disponíveis..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
@@ -127,9 +128,8 @@ if st.button("🔍 Validar Texto Integral"):
             LISTA DE TÍTULOS PADRÃO: {SECOES_PADRAO}
 
             ⚠️ REGRAS DE VALIDAÇÃO:
-            1. **TÍTULOS:** A comparação deve ser EXATA. 
-               - "Apresentação" != "APRESENTAÇÕES" -> DIVERGENTE.
-               - "COMPOSICAO" != "COMPOSIÇÃO" -> DIVERGENTE.
+            1. **TÍTULOS:** Comparação EXATA (Case Sensitive). 
+               - Ex: "Apresentação" != "APRESENTAÇÕES" -> DIVERGENTE.
             
             2. **TEXTO:** - Transcreva o texto CORPO ipsis litteris.
                - NÃO mude pontuação. NÃO corrija erros.
@@ -164,10 +164,12 @@ if st.button("🔍 Validar Texto Integral"):
             ultimo_erro = ""
             sucesso = False
 
-            # --- LOOP DE ROTAÇÃO DE CHAVES ---
+            # --- LOOP ROBUSTO DE TENTATIVAS ---
             for i, api_key in enumerate(keys_validas):
                 try:
-                    st.toast(f"Tentando Chave {i+1}...")
+                    # Mensagem de progresso visual
+                    st.toast(f"Tentativa com Chave {i+1} de {len(keys_validas)}...")
+                    
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(
                         MODELO_FIXO, 
@@ -179,24 +181,33 @@ if st.button("🔍 Validar Texto Integral"):
                         safety_settings=safety_settings
                     )
                     
+                    # Chamada à API
                     response = model.generate_content(payload)
+                    
+                    # Se chegou aqui, funcionou!
                     sucesso = True
-                    st.toast(f"✅ Sucesso com Chave {i+1}!")
-                    break  # SE DEU CERTO, SAI DO LOOP
+                    st.success(f"Conectado com sucesso usando a Chave {i+1}!")
+                    break 
 
                 except Exception as e:
                     ultimo_erro = str(e)
-                    # Se for o erro de quota (429) ou qualquer outro, avisa e continua
-                    st.warning(f"⚠️ Chave {i+1} falhou (Quota ou Erro). Trocando para a próxima...")
-                    time.sleep(1) # Espera 1 segundo para não travar a requisição
-                    continue # VAI PARA A PRÓXIMA CHAVE
+                    st.warning(f"⚠️ Chave {i+1} falhou. Aguardando 5 segundos para trocar...")
+                    
+                    # 5 SEGUNDOS DE ESPERA PARA EVITAR BLOQUEIO IMEDIATO NA PRÓXIMA
+                    time.sleep(5) 
+                    continue 
             
-            # SE ACABOU O LOOP E NENHUMA FUNCIONOU
+            # --- VERIFICAÇÃO FINAL ---
             if not sucesso:
-                st.error(f"❌ Todas as {len(keys_validas)} chaves falharam. Detalhe do último erro: {ultimo_erro}")
+                st.error("❌ FALHA TOTAL: Todas as chaves foram rejeitadas pelo Google.")
+                st.code(f"Último erro retornado: {ultimo_erro}")
+                st.markdown("""
+                **Dica:** O erro `429 limit: 0` no modelo experimental significa que o Google bloqueou temporariamente o acesso a este modelo na sua conta.
+                Tente novamente em alguns minutos ou verifique se suas chaves não são do mesmo Projeto no Google Cloud.
+                """)
                 st.stop()
             
-            # --- PROCESSAMENTO DA RESPOSTA (SÓ CHEGA AQUI SE UMA CHAVE FUNCIONAR) ---
+            # --- EXIBIÇÃO DOS DADOS ---
             if response:
                 try:
                     texto = response.text
@@ -210,7 +221,7 @@ if st.button("🔍 Validar Texto Integral"):
                     divs = sum(1 for s in secoes if s['status'] != 'CONFORME')
                     oks = total - divs
 
-                    st.markdown("### 📊 Resultado")
+                    st.markdown("### 📊 Resultado da Análise")
                     c1, c2 = st.columns(2)
                     c1.metric("Conformes", oks)
                     c2.metric("Divergentes", divs, delta_color="inverse")
@@ -255,7 +266,7 @@ if st.button("🔍 Validar Texto Integral"):
                                 st.markdown(f'<div class="texto-box {css}">{s.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error("Erro ao ler JSON da resposta.")
+                    st.error("Erro ao processar o JSON retornado.")
                     st.code(response.text)
     else:
         st.warning("Adicione os arquivos.")
