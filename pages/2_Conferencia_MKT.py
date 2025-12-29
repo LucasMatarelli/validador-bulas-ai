@@ -68,16 +68,23 @@ def limpar_ruido_visual(texto):
 def normalizar_rigorosa(texto):
     """
     Remove TUDO que não for letra ou número para comparação.
-    Ignora: Espaços, Enters, Pontos soltos, Tags HTML, Quebras de token.
+    Ignora: Pontos, traços, bullets (•), vírgulas, acentos, espaços e enters.
+    Transforma '• infecções' e '- Infecções' na mesma coisa: 'infeccoes'.
     """
     if not texto: return ""
-    # Remove tags HTML
-    txt = re.sub(r'<[^>]+>', '', texto)
-    # Remove o token interno de quebra se houver
-    txt = txt.replace('[[BREAK]]', '')
-    # Remove TODOS os espaços em branco (espaço, tab, enter)
-    txt = re.sub(r'\s+', '', txt)
-    return unicodedata.normalize('NFKD', txt).lower().strip()
+    
+    # 1. Remove tags HTML e tokens internos
+    txt = re.sub(r'<[^>]+>', '', texto).replace('[[BREAK]]', '')
+    
+    # 2. Normaliza para minúsculas e remove acentos (opcional, mas ajuda na robustez)
+    # NFKD separa o acento da letra, e o encode/decode remove o acento solto.
+    txt = unicodedata.normalize('NFKD', txt).encode('ASCII', 'ignore').decode('ASCII').lower()
+    
+    # 3. O SEGREDO: Remove TUDO que não for letra (a-z) ou número (0-9)
+    # Isso apaga: • - . , ; : / ( ) [ ] e espaços
+    txt = re.sub(r'[^a-z0-9]', '', txt)
+    
+    return txt
 
 def eh_conteudo_visivel(texto):
     """
