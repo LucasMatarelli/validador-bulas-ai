@@ -63,8 +63,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-# ATUALIZADO PARA O MODELO SOLICITADO
-MODELO_FIXO = "models/gemini-flash-latest""
+# CORRIGIDO: Removida a aspas extra no final
+MODELO_FIXO = "models/gemini-flash-latest"
 
 # ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
 def process_file_content(uploaded_file):
