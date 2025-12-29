@@ -3,7 +3,7 @@ import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from PIL import Image
 import fitz  # PyMuPDF
-import docx  # Para ler DOCX
+import docx
 import io
 import json
 
@@ -12,10 +12,8 @@ st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layou
 
 st.markdown("""
 <style>
-    /* --- ESCONDER MENU SUPERIOR --- */
     [data-testid="stHeader"] { visibility: hidden; }
-
-    /* Caixas de Texto */
+    
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
         font-size: 0.95rem;
@@ -31,17 +29,13 @@ st.markdown("""
         text-align: justify;
     }
 
-    /* Destaques Precisos */
     .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     .highlight-red { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; font-weight: bold; }
     .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; }
-
-    /* Status das Bordas */
     .border-ok { border-left: 6px solid #28a745 !important; }
     .border-warn { border-left: 6px solid #ffc107 !important; }
     .border-info { border-left: 6px solid #17a2b8 !important; }
 
-    /* Métricas */
     div[data-testid="stMetric"] {
         background-color: #f8f9fa;
         border: 1px solid #dee2e6;
@@ -59,37 +53,27 @@ MODELO_FIXO = "models/gemini-flash-latest"
 def process_file_content(uploaded_file):
     try:
         filename = uploaded_file.name.lower()
-
         if filename.endswith(".pdf"):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             full_text = ""
             has_digital_text = False
-            
             for page in doc:
                 text = page.get_text("text", sort=True)
-                if len(text.strip()) > 50: 
-                    has_digital_text = True
+                if len(text.strip()) > 50: has_digital_text = True
                 full_text += text + "\n"
             
-            if has_digital_text:
-                return [full_text]
+            if has_digital_text: return [full_text]
             else:
                 images = []
                 for page in doc:
                     pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) 
                     images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
                 return images
-        
         elif filename.endswith((".jpg", ".png", ".jpeg")):
             return [Image.open(uploaded_file)]
-
         elif filename.endswith(".docx"):
             doc = docx.Document(uploaded_file)
-            full_text = []
-            for para in doc.paragraphs:
-                full_text.append(para.text)
-            return ["\n".join(full_text)]
-            
+            return ["\n".join([p.text for p in doc.paragraphs])]
     except: return []
 
 SECOES_COMPLETAS = [
@@ -111,7 +95,6 @@ f1 = c1.file_uploader("📂 Arte Vigente", type=["pdf", "jpg", "png", "docx"])
 f2 = c2.file_uploader("📂 Arquivo Gráfica", type=["pdf", "jpg", "png", "docx"])
 
 if st.button("🚀 Validar"):
-    
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -120,45 +103,26 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando... Priorizando texto original e leitura correta de colunas..."):
+        with st.spinner("Processando..."):
             f1.seek(0)
             f2.seek(0)
-            
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # --- CONFIGURAÇÃO DE SEGURANÇA (CRÍTICO PARA BULAS) ---
-            # Libera a IA para ler sobre "drogas", "medicamentos" e "riscos" sem bloquear
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-
+            # Prompt OTIMIZADO para economizar tokens
             prompt = f"""
-            Você é um EXTRATOR FORENSE DE TEXTO.
-            
-            INPUT: Documentos farmacêuticos (Bulas com múltiplas colunas).
-            TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}
+            Você é um EXTRATOR FORENSE.
+            TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS} das bulas.
 
-            ⚠️ PROTOCOLO DE SEGURANÇA JSON (CRÍTICO):
-            1. **NÃO USE PONTILHADOS:** Em tabelas ou composições, JAMAIS transcreva linhas de pontos (ex: "......."). Substitua por um único espaço. Isso evita que o texto fique gigante e corte o JSON.
-            2. **SEM QUEBRA DE PÁGINA:** Ignore numeração de página ou cabeçalhos repetidos.
+            ⚠️ REGRA CRÍTICA DE ECONOMIA:
+            1. **REMOVA PONTILHADOS:** Em tabelas/composição, se houver "..............", substitua por UM espaço. NÃO gaste tokens repetindo pontos.
+            2. **SEM FORMATAÇÃO VISUAL:** Não tente replicar o layout visual, foque apenas no TEXTO.
 
-            ⚠️ PROTOCOLO DE LEITURA (COLUNAS):
-            1. **FLUXO VERTICAL:** Leia a primeira coluna INTEIRA, depois a próxima. Não misture linhas.
-
-            ⚠️ PROTOCOLO DE TOLERÂNCIA ZERO PARA ALUCINAÇÃO:
-            1. **VERBATIM (IPSIS LITTERIS):** Copie as palavras EXATAMENTE como estão, mas REMOVA excesso de pontuação visual (pontilhados de tabulação).
-            2. **PROIBIDO CORRIGIR:** Não corrija gramática.
-            
             🚨 REGRAS DE STATUS:
             >>> GRUPO BLINDADO ("APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"):
             - Status OBRIGATÓRIO: "CONFORME".
-            - PROIBIDO highlight amarelo. Apenas transcreva o texto limpo (sem os pontinhos "....").
-            - Dizeres Legais: Destaque data em <span class="highlight-blue">DATA</span>.
-
+            - Transcreva o texto limpo (sem pontinhos excessivos).
+            
             >>> GRUPO PADRÃO (OUTROS):
             - Compare palavra por palavra.
             - Divergência real? <span class="highlight-yellow">TEXTO ERRADO</span>.
@@ -170,8 +134,8 @@ if st.button("🚀 Validar"):
                 "secoes": [
                     {{
                         "titulo": "NOME SEÇÃO",
-                        "texto_arte": "Texto sem pontilhados longos...",
-                        "texto_grafica": "Texto sem pontilhados longos...",
+                        "texto_arte": "Texto da arte...",
+                        "texto_grafica": "Texto da gráfica...",
                         "status": "CONFORME" or "DIVERGENTE"
                     }}
                 ]
@@ -180,6 +144,14 @@ if st.button("🚀 Validar"):
             
             payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
             
+            # --- CONFIGURAÇÃO DE SEGURANÇA (LIBERAR TUDO) ---
+            safe = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
             response = None
             ultimo_erro = ""
 
@@ -191,21 +163,12 @@ if st.button("🚀 Validar"):
                         generation_config={
                             "response_mime_type": "application/json", 
                             "temperature": 0.0,
-                            "max_output_tokens": 8192
+                            "max_output_tokens": 8192 # MÁXIMO PERMITIDO PELO MODELO
                         },
-                        # APLICA AS CONFIGURAÇÕES DE SEGURANÇA AQUI
-                        safety_settings=safety_settings
+                        safety_settings=safe # APLICANDO A LIBERAÇÃO DE SEGURANÇA
                     )
                     
                     response = model.generate_content(payload)
-                    
-                    # Teste rápido se a resposta foi bloqueada
-                    try:
-                        _ = response.text 
-                    except ValueError:
-                        # Se der erro aqui, é porque foi bloqueado
-                        raise Exception(f"Bloqueio de Segurança/Safety. Finish Reason: {response.candidates[0].finish_reason}")
-                        
                     break 
 
                 except Exception as e:
@@ -215,15 +178,18 @@ if st.button("🚀 Validar"):
                         continue
                     else:
                         st.error(f"❌ Erro fatal: {ultimo_erro}")
-                        # Tenta mostrar detalhes do bloqueio se existir
-                        if response and response.candidates:
-                            st.warning(f"Detalhe do bloqueio: {response.candidates[0].finish_reason}")
                         st.stop()
             
             if response:
                 try:
-                    texto_bruto = response.text
-                    # Limpeza de Markdown
+                    # Tenta pegar o texto de forma segura
+                    try:
+                        texto_bruto = response.text
+                    except ValueError:
+                        # Se der erro aqui, é porque o modelo bloqueou ou retornou vazio
+                        motivo = response.candidates[0].finish_reason if response.candidates else "Desconhecido"
+                        raise Exception(f"Modelo bloqueou a resposta. Motivo: {motivo}")
+
                     if "```json" in texto_bruto:
                         texto_bruto = texto_bruto.split("```json")[1].split("```")[0]
                     elif "```" in texto_bruto:
@@ -232,6 +198,7 @@ if st.button("🚀 Validar"):
                     texto_limpo = texto_bruto.strip()
                     resultado = json.loads(texto_limpo, strict=False)
                     
+                    # Extração segura
                     data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
                     data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
                     secoes = resultado.get("secoes", [])
@@ -272,21 +239,21 @@ if st.button("🚀 Validar"):
                             icon, css, aberto = "⚠️", "border-warn", True
 
                         with st.expander(f"{icon} {titulo}", expanded=aberto):
-                            col_esq, col_dir = st.columns(2)
-                            with col_esq:
-                                st.caption("Referência (Arte)")
+                            c_esq, c_dir = st.columns(2)
+                            with c_esq:
+                                st.caption("Arte")
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
-                            with col_dir:
-                                st.caption("Validação (Gráfica)")
+                            with c_dir:
+                                st.caption("Gráfica")
                                 st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
                     st.error(f"Erro no processamento: {e}")
-                    # Verificação segura antes de chamar .text
+                    st.text("Detalhes do erro:")
+                    # Proteção extra ao exibir o erro
                     try:
-                        st.text("Resposta parcial:")
-                        st.code(response.text)
+                        st.code(response.candidates[0].content.parts[0].text if response.candidates else "Sem resposta")
                     except:
-                        st.warning("O modelo bloqueou a saída do texto (Conteúdo considerado sensível).")
+                        st.code("Não foi possível recuperar o texto gerado.")
     else:
         st.warning("Adicione os arquivos.")
