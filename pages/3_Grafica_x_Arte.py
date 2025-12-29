@@ -42,17 +42,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. LISTA DE MODELOS (FAILOVER) -----------------
-# O sistema tentará estes nomes em ordem até um funcionar.
-# Isso resolve o erro 404 (nome errado) e o erro 429 (cota).
+# ----------------- 2. LISTA DE MODELOS (FAILOVER AUTOMÁTICO) -----------------
+# O código testará um por um até conectar.
 MODELOS_DISPONIVEIS = [
-    "gemini-1.5-flash-latest",   # Tentativa 1: Versão mais recente
-    "gemini-1.5-flash-001",      # Tentativa 2: Versão estável 001
-    "gemini-1.5-flash-002",      # Tentativa 3: Versão estável 002
-    "gemini-1.5-flash",          # Tentativa 4: Apelido genérico
-    "gemini-1.5-flash-8b",       # Tentativa 5: Versão leve
-    "gemini-1.5-pro-latest",     # Tentativa 6: Pro (se o Flash falhar tudo)
-    "gemini-1.5-pro-001"         # Tentativa 7: Pro estável
+    "gemini-1.5-flash",          # Mais rápido e estável (costuma ter cota)
+    "gemini-1.5-flash-latest",   # Variação de nome
+    "gemini-1.5-pro",            # Mais potente
+    "gemini-1.5-pro-latest",     # Variação de nome
+    "gemini-2.0-flash-exp",      # Experimental (se a cota voltar)
+    "gemini-exp-1206"            # Experimental alternativo
 ]
 
 # ----------------- 3. PROCESSAMENTO -----------------
@@ -126,7 +124,7 @@ if st.button("🔍 Validar Texto Integral"):
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT RIGOROSO (FORÇA A TRANSCRIÇÃO COMPLETA)
+            # PROMPT RIGOROSO
             prompt = f"""
             ATUE COMO UM SOFTWARE DE COMPARAÇÃO FORENSE DE TEXTO.
             
@@ -150,7 +148,7 @@ if st.button("🔍 Validar Texto Integral"):
                         "titulo_encontrado_grafica": "Leitura Grafica",
                         "texto_arte": "Texto INTEGRAL...",
                         "texto_grafica": "Texto INTEGRAL...",
-                        "status": "CONFORME" ou "DIVERGENTE",
+                        "status": "CONFORME" or "DIVERGENTE",
                         "obs": "Divergência"
                     }}
                 ]
@@ -170,6 +168,9 @@ if st.button("🔍 Validar Texto Integral"):
             sucesso = False
             
             status_placeholder = st.empty()
+            
+            # Prepara o conteúdo corretamente (CORREÇÃO DO ERRO 'PAYLOAD')
+            conteudo_final = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
 
             # --- LOOP DUPLO: TENTA TODOS OS MODELOS X TODAS AS CHAVES ---
             for modelo_atual in MODELOS_DISPONIVEIS:
@@ -180,7 +181,6 @@ if st.button("🔍 Validar Texto Integral"):
                         status_placeholder.text(f"Testando conexão: {modelo_atual} (Chave {idx_k+1})...")
                         
                         genai.configure(api_key=api_key)
-                        # Sem o prefixo 'models/' que às vezes causa erro em versões novas da lib
                         model = genai.GenerativeModel(
                             modelo_atual, 
                             generation_config={
@@ -191,8 +191,8 @@ if st.button("🔍 Validar Texto Integral"):
                             safety_settings=safety_settings
                         )
                         
-                        # Tenta gerar
-                        response = model.generate_content(payload=[prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2)
+                        # --- CORREÇÃO AQUI: PASSANDO ARGUMENTO POSICIONAL, NÃO KEYWORD ---
+                        response = model.generate_content(conteudo_final)
                         
                         # Se passou daqui, funcionou!
                         sucesso = True
@@ -202,7 +202,7 @@ if st.button("🔍 Validar Texto Integral"):
 
                     except Exception as e:
                         err = str(e)
-                        # Se for 404 ou Not Found, tenta o próximo modelo (break no loop de chaves)
+                        # Se for 404 (Modelo não encontrado), tenta o próximo modelo imediatamente
                         if "404" in err or "not found" in err.lower():
                             break 
                         
@@ -211,14 +211,13 @@ if st.button("🔍 Validar Texto Integral"):
                             time.sleep(1)
                             continue 
                         
-                        # Outros erros, salva e tenta próximo
+                        # Outros erros (ex: internal error), salva e tenta próximo
                         else:
                             ultimo_erro = err
                             continue
             
             if not sucesso:
                 st.error("❌ Falha crítica: Nenhum modelo do Google respondeu.")
-                st.write("Isso geralmente indica que a biblioteca `google-generativeai` precisa ser atualizada no servidor ou o Google está instável.")
                 st.code(ultimo_erro)
                 st.stop()
             
