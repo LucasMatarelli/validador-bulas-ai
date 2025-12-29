@@ -69,18 +69,24 @@ def normalizar_rigorosa(texto):
     """
     Remove TUDO que não for letra ou número para comparação.
     Ignora: Espaços, Enters, Pontos soltos, Tags HTML, Quebras de token.
-    Se sobrar 'medicamentoinforme' de um lado e 'medicamentoinforme' do outro, é IGUAL.
     """
     if not texto: return ""
     # Remove tags HTML
     txt = re.sub(r'<[^>]+>', '', texto)
-    # Remove o token interno de quebra
+    # Remove o token interno de quebra se houver
     txt = txt.replace('[[BREAK]]', '')
     # Remove TODOS os espaços em branco (espaço, tab, enter)
     txt = re.sub(r'\s+', '', txt)
-    # Remove pontuação básica para evitar erro de OCR/Extração (opcional, mas recomendado)
-    # txt = re.sub(r'[^\w]', '', txt) 
     return unicodedata.normalize('NFKD', txt).lower().strip()
+
+def eh_conteudo_visivel(texto):
+    """
+    Verifica se o texto contém conteúdo real visível (não é só formatação/espaço).
+    Necessário para o novo gerar_diff_html funcionar.
+    """
+    if not texto: return False
+    # Se a normalização rigorosa retornar algo, é visível.
+    return normalizar_rigorosa(texto) != ""
 
 def destacar_datas(texto):
     """
@@ -98,13 +104,13 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     TOKEN_QUEBRA = " [[BREAK]] "
     
-    # Prepara texto substituindo enter por token para manter estrutura visual
     ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
     novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
     
     a = ref_limpo.split()
     b = novo_limpo.split()
     
+    # AQUI É O MOTOR DE COMPARAÇÃO
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     html_output = []
     eh_divergente = False
@@ -117,40 +123,30 @@ def gerar_diff_html(texto_ref, texto_novo):
             html_output.append(texto_trecho)
         
         elif tag == 'replace':
-            trecho_antigo = a[i1:i2]
-            texto_antigo = " ".join(trecho_antigo).replace("[[BREAK]]", "\n")
-            
-            # --- CORREÇÃO DO FALSO POSITIVO ---
-            # Se retirar espaços e enters o texto for igual, NÃO MARCA AMARELO.
-            if normalizar_rigorosa(texto_trecho) == normalizar_rigorosa(texto_antigo):
-                html_output.append(texto_trecho) # Considera igual
-            
-            elif texto_trecho.strip():
+            # Se substituiu texto, checa se é visível para marcar divergência
+            if eh_conteudo_visivel(texto_trecho):
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
             else:
                 html_output.append(texto_trecho)
 
         elif tag == 'insert':
-            # Verifica se o que foi inserido não é apenas uma quebra de linha ou espaço vazio
-            if normalizar_rigorosa(texto_trecho) == "":
-                html_output.append(texto_trecho) # É só formatação invisível, imprime normal
-            elif texto_trecho.strip():
+            # Se inseriu texto novo
+            if eh_conteudo_visivel(texto_trecho):
                 html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
                 eh_divergente = True
             else:
                 html_output.append(texto_trecho)
-                
+        
         elif tag == 'delete':
-            # Verifica se o que foi deletado era apenas formatação
+            # Se apagou algo do original
             trecho_deletado = a[i1:i2]
-            texto_deletado = " ".join(trecho_deletado).replace("[[BREAK]]", "\n")
+            texto_deletado = " ".join(trecho_deletado).replace("[[BREAK]]", "")
             
-            if normalizar_rigorosa(texto_deletado) != "":
+            if eh_conteudo_visivel(texto_deletado):
                 eh_divergente = True 
             
     resultado_final = " ".join(html_output)
-    # Limpeza final de quebras duplas criadas pelo processo
     resultado_final = resultado_final.replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
     return resultado_final, eh_divergente
 
@@ -306,7 +302,7 @@ if st.button("🚀 Processar Conferência"):
                                 html_mkt = txt_mkt 
                             
                         else:
-                            # Chama a nova função com a verificação rigorosa
+                            # Chama a nova função (agora atualizada)
                             html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                             status = "DIVERGENTE" if teve_diff else "CONFORME"
                             if teve_diff: divergentes_count += 1
