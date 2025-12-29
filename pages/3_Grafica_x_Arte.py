@@ -9,7 +9,7 @@ import json
 import time
 
 # ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
-st.set_page_config(page_title="Validador Experimental 1206", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="Validador Estável (1.5 Flash)", page_icon="🛡️", layout="wide")
 
 st.markdown("""
 <style>
@@ -42,9 +42,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. MODELO ALTERNATIVO (Experimental 1206) -----------------
-# Fugindo do 1.5, 1.0 e do 2.0 (que está sem cota)
-MODELO_FIXO = "models/gemini-exp-1206"
+# ----------------- 2. MODELO (O ÚNICO DISPONÍVEL AGORA) -----------------
+# O Flash 1.5 é o único que não está com limit: 0 no momento
+MODELO_FIXO = "models/gemini-1.5-flash"
 
 # ----------------- 3. PROCESSAMENTO -----------------
 def process_file_content(uploaded_file):
@@ -89,7 +89,8 @@ SECOES_PADRAO = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("🧪 Validador (Modelo Experimental 1206)")
+st.title("🛡️ Validador de Texto (Modo Estável)")
+st.info("Usando Gemini 1.5 Flash com Prompt Rigoroso (Único modelo com cota disponível pelo Google no momento).")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📂 Arte (Referência)", type=["pdf", "jpg", "png", "docx"])
@@ -110,41 +111,38 @@ if st.button("🔍 Validar Texto Integral"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner(f"Processando com Gemini Experimental 1206..."):
+        with st.spinner(f"Processando..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
+            # PROMPT OTIMIZADO PARA O 1.5 NÃO SER "PREGUIÇOSO"
             prompt = f"""
-            Você é um Auditor Documental.
+            ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO FORENSE.
             
-            MISSÃO: 
-            1. Extrair o texto EXATAMENTE como está nos arquivos (letra por letra).
+            SUA TAREFA É MECÂNICA:
+            1. Ler o texto dos arquivos.
             2. Comparar Arte vs Gráfica.
-            3. Validar TÍTULOS.
-
-            LISTA DE TÍTULOS PADRÃO: {SECOES_PADRAO}
-
-            ⚠️ REGRAS:
-            1. **TÍTULOS:** Comparação EXATA (Case Sensitive). 
-               - "Apresentação" != "APRESENTAÇÕES" -> DIVERGENTE.
             
-            2. **TEXTO:** - Transcreva o texto CORPO ipsis litteris.
-               - NÃO mude pontuação. NÃO corrija erros.
-               - Diferença? Status "DIVERGENTE".
+            LISTA DE TÍTULOS OBRIGATÓRIA: {SECOES_PADRAO}
+
+            ⚠️ INSTRUÇÕES ANTI-ALUCINAÇÃO PARA O MODELO:
+            - **PROIBIDO RESUMIR.** Você deve transcrever o texto COMPLETO, caractere por caractere.
+            - **PROIBIDO IGNORAR TÍTULOS.** Verifique a lista acima. Se o título no arquivo for "Apresentação" (singular) e na lista for "APRESENTAÇÕES" (plural), MARQUE COMO DIVERGENTE.
+            - Se o texto for muito longo, NÃO PARE. Continue até o fim da seção.
 
             SAÍDA JSON:
             {{
                 "secoes": [
                     {{
-                        "titulo_padrao": "ESPERADO",
-                        "titulo_encontrado_arte": "ENCONTRADO ARTE",
-                        "titulo_encontrado_grafica": "ENCONTRADO GRAFICA",
-                        "texto_arte": "Texto completo...",
-                        "texto_grafica": "Texto completo...",
+                        "titulo_padrao": "Do gabarito acima",
+                        "titulo_encontrado_arte": "O que você leu no arq 1",
+                        "titulo_encontrado_grafica": "O que você leu no arq 2",
+                        "texto_arte": "Texto INTEGRAL da seção...",
+                        "texto_grafica": "Texto INTEGRAL da seção...",
                         "status": "CONFORME" ou "DIVERGENTE",
-                        "obs": "Explicação do erro"
+                        "obs": "Detalhe da divergência se houver"
                     }}
                 ]
             }}
@@ -152,6 +150,7 @@ if st.button("🔍 Validar Texto Integral"):
             
             payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
             
+            # DESATIVAR TODOS OS FILTROS DE SEGURANÇA (Para evitar bloqueio falso em bulas)
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -166,7 +165,7 @@ if st.button("🔍 Validar Texto Integral"):
             # --- LOOP DE TENTATIVAS ---
             for i, api_key in enumerate(keys_validas):
                 try:
-                    st.toast(f"Usando Chave {i+1}...")
+                    # st.toast(f"Conectando via Chave {i+1}...") # Comentei para limpar a tela
                     
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(
@@ -174,7 +173,7 @@ if st.button("🔍 Validar Texto Integral"):
                         generation_config={
                             "response_mime_type": "application/json", 
                             "temperature": 0.0,
-                            "max_output_tokens": 8192
+                            "max_output_tokens": 8192 # Forçando o máximo
                         },
                         safety_settings=safety_settings
                     )
@@ -185,13 +184,14 @@ if st.button("🔍 Validar Texto Integral"):
 
                 except Exception as e:
                     ultimo_erro = str(e)
-                    st.warning(f"⚠️ Chave {i+1} falhou. Aguardando 5s...")
-                    time.sleep(5) 
+                    # Se falhar o 1.5, espera um pouco e tenta a próxima chave
+                    time.sleep(2) 
                     continue 
             
             if not sucesso:
-                st.error("❌ FALHA TOTAL: O modelo experimental também recusou as chaves.")
-                st.code(f"Erro: {ultimo_erro}")
+                st.error("❌ Erro de Conexão.")
+                st.write("Até o modelo 1.5 está instável ou suas chaves expiraram.")
+                st.code(ultimo_erro)
                 st.stop()
             
             # --- EXIBIÇÃO ---
@@ -208,7 +208,7 @@ if st.button("🔍 Validar Texto Integral"):
                     divs = sum(1 for s in secoes if s['status'] != 'CONFORME')
                     oks = total - divs
 
-                    st.markdown("### 📊 Resultado (Gemini 1206)")
+                    st.markdown("### 📊 Resultado da Análise")
                     c1, c2 = st.columns(2)
                     c1.metric("Conformes", oks)
                     c2.metric("Divergentes", divs, delta_color="inverse")
@@ -253,7 +253,7 @@ if st.button("🔍 Validar Texto Integral"):
                                 st.markdown(f'<div class="texto-box {css}">{s.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error("Erro ao ler JSON.")
+                    st.error("Erro ao ler JSON. O modelo pode ter cortado a resposta.")
                     st.code(response.text)
     else:
         st.warning("Adicione os arquivos.")
