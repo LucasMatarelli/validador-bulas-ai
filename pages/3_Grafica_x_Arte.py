@@ -30,8 +30,6 @@ st.markdown("""
     }
 
     .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
-    .highlight-red { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; font-weight: bold; }
-    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; }
     .border-ok { border-left: 6px solid #28a745 !important; }
     .border-warn { border-left: 6px solid #ffc107 !important; }
     .border-info { border-left: 6px solid #17a2b8 !important; }
@@ -46,10 +44,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELO -----------------
+# ----------------- 2. CONFIGURAÇÃO MODELO (MANTIDO O FLASH) -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
-# ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
+# ----------------- 3. PROCESSAMENTO -----------------
 def process_file_content(uploaded_file):
     try:
         filename = uploaded_file.name.lower()
@@ -103,49 +101,41 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando..."):
+        with st.spinner("Analisando bulas..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT OTIMIZADO
+            # --- PROMPT COM INSTRUÇÃO DE ECONOMIA (RESUMO) ---
             prompt = f"""
-            Você é um EXTRATOR FORENSE.
-            TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS} das bulas.
+            Você é um Comparador de Textos Farmacêuticos.
+            Compare as seções: {SECOES_COMPLETAS}
 
-            ⚠️ REGRA CRÍTICA DE ECONOMIA:
-            1. **REMOVA PONTILHADOS:** Em tabelas/composição, se houver "..............", substitua por UM espaço. NÃO gaste tokens repetindo pontos.
-            2. **SEM FORMATAÇÃO VISUAL:** Não tente replicar o layout visual, foque apenas no TEXTO.
+            ⚠️ INSTRUÇÃO DE LIMITE DE TOKENS (CRÍTICO):
+            O modelo tem um limite de saída. Para não cortar o JSON:
+            1. **SE ESTIVER "CONFORME":** NÃO transcreva o texto inteiro se for longo. Escreva apenas as primeiras 10 palavras, use "(...texto conforme...)" e as últimas 10 palavras.
+            2. **SE ESTIVER "DIVERGENTE":** Transcreva o trecho completo onde está o erro para podermos ver.
+            3. **SEM PONTILHADOS:** Nunca use "..........".
 
-            🚨 REGRAS DE STATUS:
-            >>> GRUPO BLINDADO ("APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"):
-            - Status OBRIGATÓRIO: "CONFORME".
-            - Transcreva o texto limpo (sem pontinhos excessivos).
-            
-            >>> GRUPO PADRÃO (OUTROS):
-            - Compare palavra por palavra.
-            - Divergência real? <span class="highlight-yellow">TEXTO ERRADO</span>.
-
-            SAÍDA JSON:
+            SAÍDA JSON OBRIGATÓRIA:
             {{
                 "data_anvisa_ref": "dd/mm/aaaa",
                 "data_anvisa_grafica": "dd/mm/aaaa",
                 "secoes": [
                     {{
-                        "titulo": "NOME SEÇÃO",
-                        "texto_arte": "Texto da arte...",
-                        "texto_grafica": "Texto da gráfica...",
+                        "titulo": "NOME DA SEÇÃO",
+                        "texto_arte": "Inicio... (...texto conforme...) ...fim",
+                        "texto_grafica": "Inicio... (...texto conforme...) ...fim",
                         "status": "CONFORME" or "DIVERGENTE"
                     }}
                 ]
             }}
             """
             
-            payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
+            payload = [prompt, "--- DOC 1 ---"] + conteudo1 + ["--- DOC 2 ---"] + conteudo2
             
-            # --- CONFIGURAÇÃO DE SEGURANÇA CORRIGIDA E AGRESSIVA ---
-            # Definindo explicitamente todas as categorias para BLOCK_NONE
+            # Configuração de segurança para liberar tudo
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -154,7 +144,6 @@ if st.button("🚀 Validar"):
             }
 
             response = None
-            ultimo_erro = ""
 
             for i, api_key in enumerate(keys_validas):
                 try:
@@ -164,9 +153,8 @@ if st.button("🚀 Validar"):
                         generation_config={
                             "response_mime_type": "application/json", 
                             "temperature": 0.0,
-                            "max_output_tokens": 8192
+                            "max_output_tokens": 8192 # Limite máximo
                         },
-                        # APLICANDO AQUI NO CONSTRUTOR
                         safety_settings=safety_settings
                     )
                     
@@ -174,85 +162,66 @@ if st.button("🚀 Validar"):
                     break 
 
                 except Exception as e:
-                    ultimo_erro = str(e)
-                    if i < len(keys_validas) - 1:
-                        st.warning(f"⚠️ Chave {i+1} falhou. Tentando próxima...")
-                        continue
-                    else:
-                        st.error(f"❌ Erro fatal: {ultimo_erro}")
+                    if i == len(keys_validas) - 1:
+                        st.error(f"Erro fatal na API: {e}")
                         st.stop()
+                    continue
             
             if response:
                 try:
-                    # Verifica se foi bloqueado mesmo com settings
-                    if response.prompt_feedback and response.prompt_feedback.block_reason:
-                        st.error(f"❌ Bloqueio de Segurança Persistente. Razão: {response.prompt_feedback.block_reason}")
-                        st.stop()
+                    # Tenta limpar o JSON
+                    texto = response.text
+                    if "```json" in texto: texto = texto.split("```json")[1].split("```")[0]
+                    elif "```" in texto: texto = texto.split("```")[1].split("```")[0]
+                    
+                    # Tenta corrigir JSON cortado (gambiarra simples)
+                    if not texto.strip().endswith("}"):
+                        texto += "]}"
+                        
+                    data = json.loads(texto.strip(), strict=False)
+                    
+                    # --- EXIBIÇÃO ---
+                    secoes = data.get("secoes", [])
+                    data_ref = data.get("data_anvisa_ref", "-")
+                    data_graf = data.get("data_anvisa_grafica", "-")
 
-                    texto_bruto = response.text
-                    
-                    if "```json" in texto_bruto:
-                        texto_bruto = texto_bruto.split("```json")[1].split("```")[0]
-                    elif "```" in texto_bruto:
-                        texto_bruto = texto_bruto.split("```")[1].split("```")[0]
-                    
-                    texto_limpo = texto_bruto.strip()
-                    resultado = json.loads(texto_limpo, strict=False)
-                    
-                    data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
-                    data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
-                    secoes = resultado.get("secoes", [])
+                    st.markdown("### 📊 Resultado")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Data Ref", data_ref)
+                    c2.metric("Data Gráfica", data_graf, delta="Igual" if data_ref == data_graf else "Diferente")
+                    c3.metric("Seções", len(secoes))
 
-                    st.markdown("### 📊 Resumo da Conferência")
-                    
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("Data Anvisa (Ref)", data_ref)
-                    
-                    cor_delta = "normal" if data_ref == data_graf and data_ref != "Não encontrada" else "inverse"
-                    msg_delta = "Vigência" if data_ref == data_graf else "Diferente"
-                    if data_graf == "Não encontrada": msg_delta = ""
-                    
-                    k2.metric("Data Anvisa (Gráfica)", data_graf, delta=msg_delta, delta_color=cor_delta)
-                    k3.metric("Seções Analisadas", len(secoes))
+                    # Contador de divergências
+                    divs = [s for s in secoes if s['status'] != 'CONFORME']
+                    if divs: st.warning(f"⚠️ {len(divs)} Divergências encontradas!")
+                    else: st.success("✅ Tudo Conforme!")
 
-                    div_count = sum(1 for s in secoes if s['status'] != 'CONFORME')
-                    ok_count = len(secoes) - div_count
-                    
-                    b1, b2 = st.columns(2)
-                    b1.success(f"✅ **Conformes: {ok_count}**")
-                    if div_count > 0:
-                        b2.warning(f"⚠️ **Divergentes: {div_count}**")
-                    else:
-                        b2.success("✨ **Divergentes: 0**")
-                    
                     st.divider()
 
-                    for item in secoes:
-                        status = item.get('status', 'CONFORME')
-                        titulo = item.get('titulo', 'Seção')
+                    for s in secoes:
+                        status = s.get('status', 'CONFORME')
+                        titulo = s.get('titulo', 'Seção')
                         
-                        if "DIZERES LEGAIS" in titulo.upper():
-                            icon, css, aberto = "📅", "border-info", True
-                        elif status == "CONFORME":
-                            icon, css, aberto = "✅", "border-ok", False
-                        else:
-                            icon, css, aberto = "⚠️", "border-warn", True
+                        icon = "✅" if status == "CONFORME" else "⚠️"
+                        css = "border-ok" if status == "CONFORME" else "border-warn"
+                        aberto = status != "CONFORME"
 
                         with st.expander(f"{icon} {titulo}", expanded=aberto):
                             c_esq, c_dir = st.columns(2)
+                            # Se for conforme, avisa que está resumido
+                            aviso = " *(Texto resumido para economia)*" if status == "CONFORME" else ""
+                            
                             with c_esq:
-                                st.caption("Arte")
-                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
+                                st.caption(f"Referência{aviso}")
+                                st.markdown(f'<div class="texto-box {css}">{s.get("texto_arte", "")}</div>', unsafe_allow_html=True)
                             with c_dir:
-                                st.caption("Gráfica")
-                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+                                st.caption(f"Gráfica{aviso}")
+                                st.markdown(f'<div class="texto-box {css}">{s.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"Erro no processamento: {e}")
-                    # Debug avançado para ver o que retornou (se retornou algo)
+                    st.error(f"O JSON foi cortado pelo limite do modelo. Tente validar menos seções ou arquivos menores.")
+                    st.text(f"Erro técnico: {e}")
                     if response.candidates:
-                         st.code(f"Finish Reason: {response.candidates[0].finish_reason}")
-                    else:
-                        st.code("Nenhum candidato gerado.")
+                         st.write(f"Motivo da parada: {response.candidates[0].finish_reason}")
     else:
         st.warning("Adicione os arquivos.")
