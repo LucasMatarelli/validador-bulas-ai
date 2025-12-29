@@ -109,7 +109,7 @@ if st.button("🚀 Validar"):
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # Prompt OTIMIZADO para economizar tokens
+            # PROMPT OTIMIZADO
             prompt = f"""
             Você é um EXTRATOR FORENSE.
             TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS} das bulas.
@@ -144,8 +144,9 @@ if st.button("🚀 Validar"):
             
             payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
             
-            # --- CONFIGURAÇÃO DE SEGURANÇA (LIBERAR TUDO) ---
-            safe = {
+            # --- CONFIGURAÇÃO DE SEGURANÇA CORRIGIDA E AGRESSIVA ---
+            # Definindo explicitamente todas as categorias para BLOCK_NONE
+            safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
@@ -163,9 +164,10 @@ if st.button("🚀 Validar"):
                         generation_config={
                             "response_mime_type": "application/json", 
                             "temperature": 0.0,
-                            "max_output_tokens": 8192 # MÁXIMO PERMITIDO PELO MODELO
+                            "max_output_tokens": 8192
                         },
-                        safety_settings=safe # APLICANDO A LIBERAÇÃO DE SEGURANÇA
+                        # APLICANDO AQUI NO CONSTRUTOR
+                        safety_settings=safety_settings
                     )
                     
                     response = model.generate_content(payload)
@@ -182,14 +184,13 @@ if st.button("🚀 Validar"):
             
             if response:
                 try:
-                    # Tenta pegar o texto de forma segura
-                    try:
-                        texto_bruto = response.text
-                    except ValueError:
-                        # Se der erro aqui, é porque o modelo bloqueou ou retornou vazio
-                        motivo = response.candidates[0].finish_reason if response.candidates else "Desconhecido"
-                        raise Exception(f"Modelo bloqueou a resposta. Motivo: {motivo}")
+                    # Verifica se foi bloqueado mesmo com settings
+                    if response.prompt_feedback and response.prompt_feedback.block_reason:
+                        st.error(f"❌ Bloqueio de Segurança Persistente. Razão: {response.prompt_feedback.block_reason}")
+                        st.stop()
 
+                    texto_bruto = response.text
+                    
                     if "```json" in texto_bruto:
                         texto_bruto = texto_bruto.split("```json")[1].split("```")[0]
                     elif "```" in texto_bruto:
@@ -198,7 +199,6 @@ if st.button("🚀 Validar"):
                     texto_limpo = texto_bruto.strip()
                     resultado = json.loads(texto_limpo, strict=False)
                     
-                    # Extração segura
                     data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
                     data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
                     secoes = resultado.get("secoes", [])
@@ -249,11 +249,10 @@ if st.button("🚀 Validar"):
 
                 except Exception as e:
                     st.error(f"Erro no processamento: {e}")
-                    st.text("Detalhes do erro:")
-                    # Proteção extra ao exibir o erro
-                    try:
-                        st.code(response.candidates[0].content.parts[0].text if response.candidates else "Sem resposta")
-                    except:
-                        st.code("Não foi possível recuperar o texto gerado.")
+                    # Debug avançado para ver o que retornou (se retornou algo)
+                    if response.candidates:
+                         st.code(f"Finish Reason: {response.candidates[0].finish_reason}")
+                    else:
+                        st.code("Nenhum candidato gerado.")
     else:
         st.warning("Adicione os arquivos.")
