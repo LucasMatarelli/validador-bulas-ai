@@ -63,7 +63,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-flash-latest"
+# Alterado para o 1.5 Flash específico para garantir melhor performance e limites
+MODELO_FIXO = "models/gemini-1.5-flash"
 
 # ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
 def process_file_content(uploaded_file):
@@ -213,7 +214,12 @@ if st.button("🚀 Validar"):
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(
                         MODELO_FIXO, 
-                        generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                        generation_config={
+                            "response_mime_type": "application/json", 
+                            "temperature": 0.0,
+                            # AUMENTADO O LIMITE DE TOKENS PARA EVITAR CORTE NO JSON
+                            "max_output_tokens": 8192
+                        }
                     )
                     
                     response = model.generate_content(payload)
@@ -293,7 +299,7 @@ if st.button("🚀 Validar"):
 
                 except Exception as e:
                     st.error(f"Erro no processamento do JSON: {e}")
-                    st.text("Resposta bruta do modelo:")
+                    st.text("Resposta bruta do modelo (parcial):")
                     st.code(response.text)
 
     else:
