@@ -111,51 +111,76 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     TOKEN_QUEBRA = " [[BREAK]] "
     
+    # Prepara os dois textos
     ref_limpo = limpar_ruido_visual(texto_ref).replace('\n', TOKEN_QUEBRA)
     novo_limpo = limpar_ruido_visual(texto_novo).replace('\n', TOKEN_QUEBRA)
     
     a = ref_limpo.split()
     b = novo_limpo.split()
     
-    # AQUI É O MOTOR DE COMPARAÇÃO
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
-    html_output = []
+    
+    html_output_ref = []  # Saída para a coluna da Esquerda (Anvisa)
+    html_output_novo = [] # Saída para a coluna da Direita (MKT)
     eh_divergente = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        trecho = b[j1:j2]
-        texto_trecho = " ".join(trecho).replace("[[BREAK]]", "\n")
+        # Texto do lado A (Referência)
+        trecho_a = a[i1:i2]
+        texto_a = " ".join(trecho_a).replace("[[BREAK]]", "\n")
+        
+        # Texto do lado B (Novo)
+        trecho_b = b[j1:j2]
+        texto_b = " ".join(trecho_b).replace("[[BREAK]]", "\n")
         
         if tag == 'equal':
-            html_output.append(texto_trecho)
+            # Se for igual, adiciona normal nos dois
+            html_output_ref.append(texto_a)
+            html_output_novo.append(texto_b)
         
         elif tag == 'replace':
-            # Se substituiu texto, checa se é visível para marcar divergência
-            if eh_conteudo_visivel(texto_trecho):
-                html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
-                eh_divergente = True
+            # Se a normalização rigorosa disser que são iguais (ex: pontuação), não marca
+            if normalizar_rigorosa(texto_a) == normalizar_rigorosa(texto_b):
+                html_output_ref.append(texto_a)
+                html_output_novo.append(texto_b)
             else:
-                html_output.append(texto_trecho)
+                # Se for diferente mesmo, marca amarelo nos dois lados
+                # Lado Ref: Mostra o que era
+                if eh_conteudo_visivel(texto_a):
+                    html_output_ref.append(f'<span class="highlight-yellow">{texto_a}</span>')
+                else:
+                    html_output_ref.append(texto_a)
+                
+                # Lado Novo: Mostra o que virou
+                if eh_conteudo_visivel(texto_b):
+                    html_output_novo.append(f'<span class="highlight-yellow">{texto_b}</span>')
+                    eh_divergente = True
+                else:
+                    html_output_novo.append(texto_b)
 
-        elif tag == 'insert':
-            # Se inseriu texto novo
-            if eh_conteudo_visivel(texto_trecho):
-                html_output.append(f'<span class="highlight-yellow">{texto_trecho}</span>')
+        elif tag == 'delete':
+            # Apagou do Ref: Marca amarelo no Ref (para mostrar o que sumiu)
+            # No Novo não adiciona nada (pois sumiu)
+            if eh_conteudo_visivel(texto_a):
+                html_output_ref.append(f'<span class="highlight-yellow">{texto_a}</span>')
                 eh_divergente = True
             else:
-                html_output.append(texto_trecho)
+                html_output_ref.append(texto_a)
         
-        elif tag == 'delete':
-            # Se apagou algo do original
-            trecho_deletado = a[i1:i2]
-            texto_deletado = " ".join(trecho_deletado).replace("[[BREAK]]", "")
+        elif tag == 'insert':
+            # Inseriu no Novo: Marca amarelo no Novo
+            # No Ref não adiciona nada (pois não existia)
+            if eh_conteudo_visivel(texto_b):
+                html_output_novo.append(f'<span class="highlight-yellow">{texto_b}</span>')
+                eh_divergente = True
+            else:
+                html_output_novo.append(texto_b)
             
-            if eh_conteudo_visivel(texto_deletado):
-                eh_divergente = True 
-            
-    resultado_final = " ".join(html_output)
-    resultado_final = resultado_final.replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
-    return resultado_final, eh_divergente
+    # Reconstrói as strings finais
+    final_ref = " ".join(html_output_ref).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
+    final_novo = " ".join(html_output_novo).replace(" \n ", "\n").replace("\n ", "\n").replace(" \n", "\n")
+    
+    return final_ref, final_novo, eh_divergente
 
 # ----------------- 4. EXTRAÇÃO DE TEXTO -----------------
 def extract_text_from_file(uploaded_file):
