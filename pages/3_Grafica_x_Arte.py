@@ -26,16 +26,16 @@ st.markdown("""
         border: 1px solid #ced4da;
         height: 100%; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; 
+        white-space: pre-wrap;
         text-align: justify;
     }
 
-    /* Destaques */
+    /* Destaques Precisos */
     .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     .highlight-red { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; font-weight: bold; }
     .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; }
 
-    /* Bordas de Status */
+    /* Status das Bordas */
     .border-ok { border-left: 6px solid #28a745 !important; }
     .border-warn { border-left: 6px solid #ffc107 !important; }
     .border-info { border-left: 6px solid #17a2b8 !important; }
@@ -52,21 +52,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-# Usando a versão 1.5 Flash que é mais estável com limites de token
-MODELO_FIXO = "models/gemini-1.5-flash"
+MODELO_FIXO = "models/gemini-flash-latest"
 
 # ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
 def process_file_content(uploaded_file):
     try:
         filename = uploaded_file.name.lower()
-        
+
         if filename.endswith(".pdf"):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             full_text = ""
             has_digital_text = False
+            
             for page in doc:
                 text = page.get_text("text", sort=True)
-                if len(text.strip()) > 50: has_digital_text = True
+                if len(text.strip()) > 50: 
+                    has_digital_text = True
                 full_text += text + "\n"
             
             if has_digital_text:
@@ -83,33 +84,12 @@ def process_file_content(uploaded_file):
 
         elif filename.endswith(".docx"):
             doc = docx.Document(uploaded_file)
-            full_text = [para.text for para in doc.paragraphs]
+            full_text = []
+            for para in doc.paragraphs:
+                full_text.append(para.text)
             return ["\n".join(full_text)]
             
     except: return []
-
-def repair_json(json_str):
-    """Tenta fechar JSON cortado abruptamente para evitar crash"""
-    try:
-        json_str = json_str.strip()
-        # Se cortou no meio de uma string (número ímpar de aspas)
-        if json_str.count('"') % 2 != 0:
-            json_str += '"'
-        
-        # Fecha estruturas abertas
-        open_braces = json_str.count('{') - json_str.count('}')
-        open_brackets = json_str.count('[') - json_str.count(']')
-        
-        json_str += '}' * max(0, open_braces)
-        json_str += ']' * max(0, open_brackets)
-        
-        # Tenta fechar o objeto raiz se necessário
-        if not json_str.endswith("}"):
-            json_str += "}"
-            
-        return json_str
-    except:
-        return json_str
 
 SECOES_COMPLETAS = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
@@ -130,6 +110,7 @@ f1 = c1.file_uploader("📂 Arte Vigente", type=["pdf", "jpg", "png", "docx"])
 f2 = c2.file_uploader("📂 Arquivo Gráfica", type=["pdf", "jpg", "png", "docx"])
 
 if st.button("🚀 Validar"):
+    
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -138,93 +119,148 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando..."):
-            f1.seek(0); f2.seek(0)
+        with st.spinner("Processando... Priorizando texto original e leitura correta de colunas..."):
+            f1.seek(0)
+            f2.seek(0)
+            
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
+            # --- PROMPT OTIMIZADO PARA EVITAR CORTE DE JSON ---
             prompt = f"""
             Você é um EXTRATOR FORENSE DE TEXTO.
-            INPUT: Documentos farmacêuticos (Bulas).
+            
+            INPUT: Documentos farmacêuticos (Bulas com múltiplas colunas).
             TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}
 
-            ⚠️ PROTOCOLO DE LEITURA E OTIMIZAÇÃO:
-            1. **FLUXO VERTICAL:** Leia coluna por coluna.
-            2. **VERBATIM INTELIGENTE:** Copie o texto exato, MAS para economizar tokens:
-               - **IMPORTANTE:** Se houver linhas longas de pontilhados (ex: "nitrato ......... 5mg"), SUBSTITUA os pontos por "[...]" (ex: "nitrato [...] 5mg").
-               - Mantenha todo o resto da pontuação e texto inalterado.
-            3. **SEM ALUCINAÇÃO:** Não corrija gramática.
-            4. **CONTINUIDADE:** Una texto que quebra entre colunas.
+            ⚠️ PROTOCOLO DE SEGURANÇA JSON (CRÍTICO):
+            1. **NÃO USE PONTILHADOS:** Em tabelas ou composições, JAMAIS transcreva linhas de pontos (ex: "......."). Substitua por um único espaço. Isso evita que o texto fique gigante e corte o JSON.
+            2. **SEM QUEBRA DE PÁGINA:** Ignore numeração de página ou cabeçalhos repetidos.
 
+            ⚠️ PROTOCOLO DE LEITURA (COLUNAS):
+            1. **FLUXO VERTICAL:** Leia a primeira coluna INTEIRA, depois a próxima. Não misture linhas.
+
+            ⚠️ PROTOCOLO DE TOLERÂNCIA ZERO PARA ALUCINAÇÃO:
+            1. **VERBATIM (IPSIS LITTERIS):** Copie as palavras EXATAMENTE como estão, mas REMOVA excesso de pontuação visual (pontilhados de tabulação).
+            2. **PROIBIDO CORRIGIR:** Não corrija gramática.
+            
             🚨 REGRAS DE STATUS:
-            >>> GRUPO BLINDADO (CONFORME OBRIGATÓRIO): [ "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS" ]
-            >>> GRUPO PADRÃO: Compare palavra por palavra. Diferenças reais = <span class="highlight-yellow">TEXTO ERRADO</span>.
+            >>> GRUPO BLINDADO ("APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"):
+            - Status OBRIGATÓRIO: "CONFORME".
+            - PROIBIDO highlight amarelo. Apenas transcreva o texto limpo (sem os pontinhos "....").
+            - Dizeres Legais: Destaque data em <span class="highlight-blue">DATA</span>.
 
-            SAÍDA JSON (Não use Markdown, apenas JSON puro):
+            >>> GRUPO PADRÃO (OUTROS):
+            - Compare palavra por palavra.
+            - Divergência real? <span class="highlight-yellow">TEXTO ERRADO</span>.
+
+            SAÍDA JSON:
             {{
                 "data_anvisa_ref": "dd/mm/aaaa",
                 "data_anvisa_grafica": "dd/mm/aaaa",
                 "secoes": [
-                    {{ "titulo": "X", "texto_arte": "...", "texto_grafica": "...", "status": "CONFORME/DIVERGENTE" }}
+                    {{
+                        "titulo": "NOME SEÇÃO",
+                        "texto_arte": "Texto sem pontilhados longos...",
+                        "texto_grafica": "Texto sem pontilhados longos...",
+                        "status": "CONFORME" or "DIVERGENTE"
+                    }}
                 ]
             }}
             """
             
             payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
-            response = None
             
+            response = None
+            ultimo_erro = ""
+
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(
                         MODELO_FIXO, 
-                        generation_config={ "response_mime_type": "application/json", "temperature": 0.0 }
+                        generation_config={
+                            "response_mime_type": "application/json", 
+                            "temperature": 0.0,
+                            "max_output_tokens": 8192
+                        }
                     )
+                    
                     response = model.generate_content(payload)
                     break 
+
                 except Exception as e:
-                    if i == len(keys_validas) - 1: st.error(f"Erro fatal: {e}"); st.stop()
+                    ultimo_erro = str(e)
+                    if i < len(keys_validas) - 1:
+                        st.warning(f"⚠️ Chave {i+1} falhou. Tentando próxima...")
+                        continue
+                    else:
+                        st.error(f"❌ Erro fatal: {ultimo_erro}")
+                        st.stop()
             
             if response:
                 try:
-                    texto_limpo = response.text.replace("```json", "").replace("```", "").strip()
+                    texto_bruto = response.text
+                    # Limpeza de Markdown
+                    if "```json" in texto_bruto:
+                        texto_bruto = texto_bruto.split("```json")[1].split("```")[0]
+                    elif "```" in texto_bruto:
+                        texto_bruto = texto_bruto.split("```")[1].split("```")[0]
                     
-                    try:
-                        resultado = json.loads(texto_limpo, strict=False)
-                    except json.JSONDecodeError:
-                        # Tenta reparar JSON cortado
-                        st.warning("⚠️ A resposta foi muito longa e precisou ser recuperada. O final pode estar incompleto.")
-                        texto_reparado = repair_json(texto_limpo)
-                        resultado = json.loads(texto_reparado, strict=False)
+                    texto_limpo = texto_bruto.strip()
+                    resultado = json.loads(texto_limpo, strict=False)
                     
+                    data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
+                    data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
                     secoes = resultado.get("secoes", [])
-                    data_ref = resultado.get("data_anvisa_ref", "N/A")
-                    data_graf = resultado.get("data_anvisa_grafica", "N/A")
 
                     st.markdown("### 📊 Resumo da Conferência")
+                    
                     k1, k2, k3 = st.columns(3)
-                    k1.metric("Ref", data_ref)
-                    k2.metric("Gráfica", data_graf, delta="Ok" if data_ref == data_graf else "Diferente")
-                    k3.metric("Seções", len(secoes))
+                    k1.metric("Data Anvisa (Ref)", data_ref)
+                    
+                    cor_delta = "normal" if data_ref == data_graf and data_ref != "Não encontrada" else "inverse"
+                    msg_delta = "Vigência" if data_ref == data_graf else "Diferente"
+                    if data_graf == "Não encontrada": msg_delta = ""
+                    
+                    k2.metric("Data Anvisa (Gráfica)", data_graf, delta=msg_delta, delta_color=cor_delta)
+                    k3.metric("Seções Analisadas", len(secoes))
 
-                    divs = sum(1 for s in secoes if s['status'] != 'CONFORME')
-                    st.success(f"Conformes: {len(secoes)-divs}") if divs == 0 else st.warning(f"Divergentes: {divs}")
+                    div_count = sum(1 for s in secoes if s['status'] != 'CONFORME')
+                    ok_count = len(secoes) - div_count
+                    
+                    b1, b2 = st.columns(2)
+                    b1.success(f"✅ **Conformes: {ok_count}**")
+                    if div_count > 0:
+                        b2.warning(f"⚠️ **Divergentes: {div_count}**")
+                    else:
+                        b2.success("✨ **Divergentes: 0**")
                     
                     st.divider()
 
                     for item in secoes:
                         status = item.get('status', 'CONFORME')
-                        css = "border-ok" if status == "CONFORME" else "border-warn"
-                        icon = "✅" if status == "CONFORME" else "⚠️"
-                        if "DIZERES" in item.get('titulo', ''): css, icon = "border-info", "📅"
+                        titulo = item.get('titulo', 'Seção')
+                        
+                        if "DIZERES LEGAIS" in titulo.upper():
+                            icon, css, aberto = "📅", "border-info", True
+                        elif status == "CONFORME":
+                            icon, css, aberto = "✅", "border-ok", False
+                        else:
+                            icon, css, aberto = "⚠️", "border-warn", True
 
-                        with st.expander(f"{icon} {item.get('titulo')}", expanded=(status!="CONFORME")):
-                            c_esq, c_dir = st.columns(2)
-                            c_esq.markdown(f'<div class="texto-box {css}">{item.get("texto_arte")}</div>', unsafe_allow_html=True)
-                            c_dir.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica")}</div>', unsafe_allow_html=True)
+                        with st.expander(f"{icon} {titulo}", expanded=aberto):
+                            col_esq, col_dir = st.columns(2)
+                            with col_esq:
+                                st.caption("Referência (Arte)")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
+                            with col_dir:
+                                st.caption("Validação (Gráfica)")
+                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"Erro JSON Irrecuperável: {e}")
+                    st.error(f"Erro no JSON: {e}")
+                    st.text("Resposta incompleta do modelo:")
                     st.code(response.text)
     else:
         st.warning("Adicione os arquivos.")
