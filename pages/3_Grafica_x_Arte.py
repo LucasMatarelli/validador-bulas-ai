@@ -7,57 +7,49 @@ import docx
 import io
 import json
 
-# ----------------- 1. VISUAL & CSS -----------------
-st.set_page_config(page_title="Validador Farmacêutico 2.0", page_icon="💊", layout="wide")
+# ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
+st.set_page_config(page_title="Validador Farmacêutico Rigoroso", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
     
     .texto-box { 
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 0.95rem;
-        line-height: 1.6;
+        font-family: 'Courier New', monospace; /* Fonte monoespaçada para ver cada caractere */
+        font-size: 0.9rem;
+        line-height: 1.5;
         color: #212529;
-        background-color: #ffffff;
-        padding: 20px;
-        border-radius: 8px;
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 5px;
         border: 1px solid #ced4da;
         height: 100%; 
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap;
-        text-align: justify;
+        white-space: pre-wrap; /* Mantém quebras de linha originais */
     }
-    
-    .status-box {
-        padding: 15px;
-        border-radius: 8px;
-        text-align: center;
-        font-weight: bold;
-        margin-bottom: 10px;
-    }
-    .status-ok { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-    .status-warn { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
 
+    /* Cores de Status */
     .border-ok { border-left: 6px solid #28a745 !important; }
-    .border-warn { border-left: 6px solid #ffc107 !important; }
+    .border-warn { border-left: 6px solid #dc3545 !important; } /* Vermelho para erro */
     .border-info { border-left: 6px solid #17a2b8 !important; }
 
+    /* Highlight de Erros */
+    .diff-highlight { background-color: #ffcccc; text-decoration: underline; font-weight: bold; }
+
     div[data-testid="stMetric"] {
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
+        background-color: #ffffff;
+        border: 1px solid #e9ecef;
         padding: 10px;
         border-radius: 5px;
         text-align: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELO (ATUALIZADO PARA 2.0) -----------------
-# Este é o modelo mais moderno disponível atualmente fora da série 1.5
+# ----------------- 2. MODELO (Gemini 2.0 Flash) -----------------
 MODELO_FIXO = "models/gemini-2.0-flash-exp"
 
-# ----------------- 3. PROCESSAMENTO -----------------
+# ----------------- 3. PROCESSAMENTO DE ARQUIVOS -----------------
 def process_file_content(uploaded_file):
     try:
         filename = uploaded_file.name.lower()
@@ -84,11 +76,16 @@ def process_file_content(uploaded_file):
             return ["\n".join([p.text for p in doc.paragraphs])]
     except: return []
 
-SECOES_COMPLETAS = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
-    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
+# Lista exata esperada (Case Sensitive)
+SECOES_PADRAO = [
+    "APRESENTAÇÕES", 
+    "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", # Note que às vezes aparece com "?" ou sem
+    "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", 
+    "COMO DEVO USAR ESTE MEDICAMENTO?", 
     "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
     "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
     "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
@@ -96,13 +93,14 @@ SECOES_COMPLETAS = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("💊 Gráfica x Arte (Gemini 2.0)")
+st.title("⚖️ Validador de Texto Rigoroso (Gemini 2.0)")
+st.markdown("**Regra:** Transcrição exata e validação rígida de títulos (Ex: *Apresentação* ≠ *APRESENTAÇÕES*).")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Arte Vigente", type=["pdf", "jpg", "png", "docx"])
-f2 = c2.file_uploader("📂 Arquivo Gráfica", type=["pdf", "jpg", "png", "docx"])
+f1 = c1.file_uploader("📂 Arte (Referência)", type=["pdf", "jpg", "png", "docx"])
+f2 = c2.file_uploader("📂 Gráfica (Validação)", type=["pdf", "jpg", "png", "docx"])
 
-if st.button("🚀 Validar com Gemini 2.0"):
+if st.button("🔍 Validar Texto Integral"):
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -111,47 +109,55 @@ if st.button("🚀 Validar com Gemini 2.0"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Analisando com Gemini 2.0 (Alta Performance)..."):
+        with st.spinner("Extraindo e comparando texto integralmente..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # --- PROMPT OTIMIZADO PARA 2.0 ---
+            # --- PROMPT PARA EXTRAÇÃO LITERAL E RIGOROSA ---
             prompt = f"""
-            Você é um Auditor Farmacêutico Sênior.
-            Analise as seções: {SECOES_COMPLETAS}
+            Você é um Auditor de Qualidade Documental.
+            
+            SUA MISSÃO: 
+            1. Extrair o texto das bulas EXATAMENTE como está nos arquivos.
+            2. Comparar Arte vs Gráfica.
+            3. Validar rigorosamente os TÍTULOS das seções.
 
-            ⚠️ INSTRUÇÃO DE SAÍDA OBRIGATÓRIA (Token Economy):
-            
-            1. **SE O TEXTO ESTIVER IDÊNTICO ("CONFORME"):**
-               - Retorne APENAS a string "IGUAL" nos campos de texto.
-               - NÃO copie o texto original. Isso economiza memória.
-            
-            2. **SE O TEXTO ESTIVER DIFERENTE ("DIVERGENTE"):**
-               - Copie o trecho da divergência para análise.
+            LISTA DE TÍTULOS ESPERADOS (PADRÃO):
+            {SECOES_PADRAO}
 
-            3. **DIZERES LEGAIS:**
-               - Tente extrair apenas as datas de aprovação se houver.
+            ⚠️ REGRAS DE VALIDAÇÃO (CRÍTICO):
             
-            SAÍDA JSON EXATA:
+            1. **TÍTULOS:** - Compare o título encontrado no arquivo com a lista padrão acima.
+               - A comparação deve ser EXATA (caractere por caractere).
+               - Exemplo: Se no arquivo está "Apresentação" e o padrão é "APRESENTAÇÕES", ISSO É UMA DIVERGÊNCIA DE TÍTULO.
+               - Exemplo: Se no arquivo está "COMPOSICAO" (sem til) e o padrão é "COMPOSIÇÃO", ISSO É UMA DIVERGÊNCIA.
+               - Se o título estiver errado, marque status: "DIVERGENTE".
+
+            2. **CONTEÚDO DO TEXTO:**
+               - Transcreva o texto CORPO da seção ipsis litteris (letra por letra).
+               - NÃO mude pontuação. NÃO corrija erros de português.
+               - Se houver diferença entre Arte e Gráfica, status: "DIVERGENTE".
+
+            SAÍDA JSON:
             {{
-                "data_anvisa_ref": "dd/mm/aaaa",
-                "data_anvisa_grafica": "dd/mm/aaaa",
                 "secoes": [
                     {{
-                        "titulo": "NOME SEÇÃO",
-                        "texto_arte": "IGUAL" (ou o texto do erro),
-                        "texto_grafica": "IGUAL" (ou o texto do erro),
-                        "status": "CONFORME" or "DIVERGENTE"
+                        "titulo_padrao": "TÍTULO ESPERADO DA LISTA",
+                        "titulo_encontrado_arte": "Título exato lido na Arte",
+                        "titulo_encontrado_grafica": "Título exato lido na Gráfica",
+                        "texto_arte": "Texto completo exato...",
+                        "texto_grafica": "Texto completo exato...",
+                        "status": "CONFORME" ou "DIVERGENTE",
+                        "obs": "Explique o erro se houver (ex: Título incorreto)"
                     }}
                 ]
             }}
             """
             
-            payload = [prompt, "--- DOC ORIGINAL ---"] + conteudo1 + ["--- DOC GRÁFICA ---"] + conteudo2
+            payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
             
-            # Liberação de Segurança
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -170,8 +176,7 @@ if st.button("🚀 Validar com Gemini 2.0"):
                         generation_config={
                             "response_mime_type": "application/json", 
                             "temperature": 0.0,
-                            # Gemini 2.0 suporta outputs maiores, mas mantemos 8k por segurança da API padrão
-                            "max_output_tokens": 8192 
+                            "max_output_tokens": 8192 # Máximo permitido
                         },
                         safety_settings=safety_settings
                     )
@@ -185,7 +190,7 @@ if st.button("🚀 Validar com Gemini 2.0"):
                         st.warning(f"⚠️ Chave {i+1} instável. Trocando...")
                         continue
                     else:
-                        st.error(f"❌ Erro fatal na API (Gemini 2.0): {ultimo_erro}")
+                        st.error(f"❌ Erro fatal: {ultimo_erro}")
                         st.stop()
             
             if response:
@@ -195,65 +200,71 @@ if st.button("🚀 Validar com Gemini 2.0"):
                     elif "```" in texto: texto = texto.split("```")[1].split("```")[0]
                     
                     data = json.loads(texto.strip(), strict=False)
-                    
                     secoes = data.get("secoes", [])
-                    data_ref = data.get("data_anvisa_ref", "-")
-                    data_graf = data.get("data_anvisa_grafica", "-")
 
-                    st.markdown("### 📊 Resultado (Gemini 2.0)")
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("Data Ref", data_ref)
-                    c2.metric("Data Gráfica", data_graf, delta="Igual" if data_ref == data_graf else "Diferente")
-                    c3.metric("Seções", len(secoes))
+                    # Métricas
+                    total = len(secoes)
+                    divs = sum(1 for s in secoes if s['status'] != 'CONFORME')
+                    oks = total - divs
 
-                    divs = [s for s in secoes if s['status'] != 'CONFORME']
-                    if divs: st.warning(f"⚠️ {len(divs)} Divergências encontradas!")
-                    else: st.success("✅ Documento 100% Conforme!")
+                    st.markdown("### 📊 Resultado da Auditoria")
+                    c1, c2 = st.columns(2)
+                    c1.metric("Conformes", oks)
+                    c2.metric("Divergentes", divs, delta_color="inverse")
+
+                    if divs > 0:
+                        st.error(f"❌ Foram encontradas {divs} divergências (Texto ou Título).")
+                    else:
+                        st.success("✅ Documento 100% Conforme (Títulos e Conteúdo).")
 
                     st.divider()
 
                     for s in secoes:
                         status = s.get('status', 'CONFORME')
-                        titulo = s.get('titulo', 'Seção')
-                        
-                        t_arte = s.get("texto_arte", "")
-                        t_graf = s.get("texto_grafica", "")
-                        
-                        # Verifica se o Gemini 2.0 usou o código de economia
-                        eh_igual = (t_arte.strip().upper() == "IGUAL") or (t_graf.strip().upper() == "IGUAL")
-                        
-                        if status == "CONFORME" or eh_igual:
+                        titulo_padrao = s.get('titulo_padrao', 'Seção Desconhecida')
+                        titulo_arte = s.get('titulo_encontrado_arte', '-')
+                        titulo_graf = s.get('titulo_encontrado_grafica', '-')
+                        obs = s.get('obs', '')
+
+                        # Lógica de Ícone e Borda
+                        if status == "CONFORME":
                             icon = "✅"
                             css = "border-ok"
                             aberto = False
-                            conteudo_visual = """
-                            <div class="status-box status-ok">
-                                ✨ TEXTO VERIFICADO E APROVADO
-                                <br><small>O Gemini 2.0 confirmou que o conteúdo é idêntico.</small>
-                            </div>
-                            """
                         else:
-                            icon = "⚠️"
+                            icon = "🚨"
                             css = "border-warn"
                             aberto = True
-                            conteudo_visual = None 
 
-                        with st.expander(f"{icon} {titulo}", expanded=aberto):
-                            if conteudo_visual:
-                                st.markdown(conteudo_visual, unsafe_allow_html=True)
-                            else:
-                                c_esq, c_dir = st.columns(2)
-                                with c_esq:
-                                    st.caption("Trecho Original")
-                                    st.markdown(f'<div class="texto-box {css}">{t_arte}</div>', unsafe_allow_html=True)
-                                with c_dir:
-                                    st.caption("Trecho Gráfica")
-                                    st.markdown(f'<div class="texto-box {css}">{t_graf}</div>', unsafe_allow_html=True)
+                        with st.expander(f"{icon} {titulo_padrao}", expanded=aberto):
+                            
+                            # Validação Específica de Título
+                            if titulo_arte != titulo_padrao or titulo_graf != titulo_padrao:
+                                st.markdown(f"""
+                                <div style="background-color: #f8d7da; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #721c24;">
+                                    <strong>❌ ERRO DE TÍTULO DETECTADO:</strong><br>
+                                    Esperado: <code>{titulo_padrao}</code><br>
+                                    Encontrado Arte: <code>{titulo_arte}</code><br>
+                                    Encontrado Gráfica: <code>{titulo_graf}</code>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            
+                            if obs:
+                                st.caption(f"📝 Nota do Auditor: {obs}")
+
+                            c_esq, c_dir = st.columns(2)
+                            with c_esq:
+                                st.caption("📄 Texto Arte (Original)")
+                                st.markdown(f'<div class="texto-box {css}">{s.get("texto_arte", "")}</div>', unsafe_allow_html=True)
+                            with c_dir:
+                                st.caption("📄 Texto Gráfica (Validação)")
+                                st.markdown(f'<div class="texto-box {css}">{s.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error("Erro ao ler JSON.")
-                    st.text(f"Detalhe: {e}")
+                    st.error("Erro ao processar o texto completo.")
+                    st.warning("O arquivo pode ser muito grande para exibição integral em uma única passagem.")
+                    st.text(f"Erro técnico: {e}")
                     if response.candidates:
                          st.write(f"Motivo parada: {response.candidates[0].finish_reason}")
     else:
-        st.warning("Adicione os arquivos.")
+        st.warning("Por favor, faça o upload dos arquivos.")
