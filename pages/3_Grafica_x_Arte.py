@@ -9,7 +9,7 @@ import json
 import time
 
 # ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
-st.set_page_config(page_title="💊 Grafica x Arte", page_icon="💊", layout="wide")
+st.set_page_config(page_title="Grafica x Arte", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
@@ -89,7 +89,7 @@ SECOES_PADRAO = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("⚖️ Validador Rigoroso (Gemini 2.0)")
+st.title("💊 Grafica x Arte")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📂 Arte (Referência)", type=["pdf", "jpg", "png", "docx"])
