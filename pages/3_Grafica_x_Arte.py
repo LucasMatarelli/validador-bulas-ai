@@ -9,7 +9,7 @@ import json
 import time
 
 # ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
-st.set_page_config(page_title="Validador Farmacêutico Rigoroso", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="Validador Experimental 1206", page_icon="🧪", layout="wide")
 
 st.markdown("""
 <style>
@@ -42,9 +42,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. MODELO (Gemini 2.0 Flash) -----------------
-# Mantendo estritamente o modelo que você pediu
-MODELO_FIXO = "models/gemini-2.0-flash-exp"
+# ----------------- 2. MODELO ALTERNATIVO (Experimental 1206) -----------------
+# Fugindo do 1.5, 1.0 e do 2.0 (que está sem cota)
+MODELO_FIXO = "models/gemini-exp-1206"
 
 # ----------------- 3. PROCESSAMENTO -----------------
 def process_file_content(uploaded_file):
@@ -89,7 +89,7 @@ SECOES_PADRAO = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("⚖️ Validador Rigoroso (Gemini 2.0)")
+st.title("🧪 Validador (Modelo Experimental 1206)")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📂 Arte (Referência)", type=["pdf", "jpg", "png", "docx"])
@@ -103,33 +103,32 @@ if st.button("🔍 Validar Texto Integral"):
         st.secrets.get("GEMINI_API_KEY2"), 
         st.secrets.get("GEMINI_API_KEY3")
     ]
-    # Filtra chaves vazias
     keys_validas = [k for k in keys_raw if k and len(k) > 10]
 
     if not keys_validas:
-        st.error("Nenhuma chave API válida encontrada nos Segredos.")
+        st.error("Nenhuma chave API válida encontrada.")
         st.stop()
 
     if f1 and f2:
-        with st.spinner(f"Iniciando análise com {len(keys_validas)} chaves disponíveis..."):
+        with st.spinner(f"Processando com Gemini Experimental 1206..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
             prompt = f"""
-            Você é um Auditor de Qualidade Documental.
+            Você é um Auditor Documental.
             
-            SUA MISSÃO: 
+            MISSÃO: 
             1. Extrair o texto EXATAMENTE como está nos arquivos (letra por letra).
             2. Comparar Arte vs Gráfica.
-            3. Validar rigorosamente os TÍTULOS.
+            3. Validar TÍTULOS.
 
             LISTA DE TÍTULOS PADRÃO: {SECOES_PADRAO}
 
-            ⚠️ REGRAS DE VALIDAÇÃO:
+            ⚠️ REGRAS:
             1. **TÍTULOS:** Comparação EXATA (Case Sensitive). 
-               - Ex: "Apresentação" != "APRESENTAÇÕES" -> DIVERGENTE.
+               - "Apresentação" != "APRESENTAÇÕES" -> DIVERGENTE.
             
             2. **TEXTO:** - Transcreva o texto CORPO ipsis litteris.
                - NÃO mude pontuação. NÃO corrija erros.
@@ -164,11 +163,10 @@ if st.button("🔍 Validar Texto Integral"):
             ultimo_erro = ""
             sucesso = False
 
-            # --- LOOP ROBUSTO DE TENTATIVAS ---
+            # --- LOOP DE TENTATIVAS ---
             for i, api_key in enumerate(keys_validas):
                 try:
-                    # Mensagem de progresso visual
-                    st.toast(f"Tentativa com Chave {i+1} de {len(keys_validas)}...")
+                    st.toast(f"Usando Chave {i+1}...")
                     
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(
@@ -181,33 +179,22 @@ if st.button("🔍 Validar Texto Integral"):
                         safety_settings=safety_settings
                     )
                     
-                    # Chamada à API
                     response = model.generate_content(payload)
-                    
-                    # Se chegou aqui, funcionou!
                     sucesso = True
-                    st.success(f"Conectado com sucesso usando a Chave {i+1}!")
                     break 
 
                 except Exception as e:
                     ultimo_erro = str(e)
-                    st.warning(f"⚠️ Chave {i+1} falhou. Aguardando 5 segundos para trocar...")
-                    
-                    # 5 SEGUNDOS DE ESPERA PARA EVITAR BLOQUEIO IMEDIATO NA PRÓXIMA
+                    st.warning(f"⚠️ Chave {i+1} falhou. Aguardando 5s...")
                     time.sleep(5) 
                     continue 
             
-            # --- VERIFICAÇÃO FINAL ---
             if not sucesso:
-                st.error("❌ FALHA TOTAL: Todas as chaves foram rejeitadas pelo Google.")
-                st.code(f"Último erro retornado: {ultimo_erro}")
-                st.markdown("""
-                **Dica:** O erro `429 limit: 0` no modelo experimental significa que o Google bloqueou temporariamente o acesso a este modelo na sua conta.
-                Tente novamente em alguns minutos ou verifique se suas chaves não são do mesmo Projeto no Google Cloud.
-                """)
+                st.error("❌ FALHA TOTAL: O modelo experimental também recusou as chaves.")
+                st.code(f"Erro: {ultimo_erro}")
                 st.stop()
             
-            # --- EXIBIÇÃO DOS DADOS ---
+            # --- EXIBIÇÃO ---
             if response:
                 try:
                     texto = response.text
@@ -221,13 +208,13 @@ if st.button("🔍 Validar Texto Integral"):
                     divs = sum(1 for s in secoes if s['status'] != 'CONFORME')
                     oks = total - divs
 
-                    st.markdown("### 📊 Resultado da Análise")
+                    st.markdown("### 📊 Resultado (Gemini 1206)")
                     c1, c2 = st.columns(2)
                     c1.metric("Conformes", oks)
                     c2.metric("Divergentes", divs, delta_color="inverse")
 
                     if divs > 0:
-                        st.error(f"❌ {divs} Divergências encontradas.")
+                        st.error(f"❌ {divs} Divergências.")
                     else:
                         st.success("✅ Tudo Conforme.")
 
@@ -249,7 +236,7 @@ if st.button("🔍 Validar Texto Integral"):
                             if titulo_arte != titulo_padrao or titulo_graf != titulo_padrao:
                                 st.markdown(f"""
                                 <div style="background-color: #f8d7da; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #721c24;">
-                                    <strong>❌ ERRO DE TÍTULO:</strong><br>
+                                    <strong>❌ TÍTULO INCORRETO:</strong><br>
                                     Esperado: <code>{titulo_padrao}</code><br>
                                     Arte: <code>{titulo_arte}</code> | Gráfica: <code>{titulo_graf}</code>
                                 </div>
@@ -266,7 +253,7 @@ if st.button("🔍 Validar Texto Integral"):
                                 st.markdown(f'<div class="texto-box {css}">{s.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error("Erro ao processar o JSON retornado.")
+                    st.error("Erro ao ler JSON.")
                     st.code(response.text)
     else:
         st.warning("Adicione os arquivos.")
