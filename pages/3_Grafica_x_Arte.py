@@ -1,22 +1,19 @@
 import streamlit as st
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from PIL import Image
 import fitz  # PyMuPDF
-import docx  # Para ler DOCX
+import docx
 import io
 import json
 
 # ----------------- 1. VISUAL & CSS -----------------
-st.set_page_config(page_title="Validador Farmacêutico", page_icon="💊", layout="wide")
+st.set_page_config(page_title="Validador Farmacêutico 2.0", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
-    /* --- ESCONDER MENU SUPERIOR (CONFORME SOLICITADO) --- */
-    [data-testid="stHeader"] {
-        visibility: hidden;
-    }
-
-    /* Caixas de Texto */
+    [data-testid="stHeader"] { visibility: hidden; }
+    
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
         font-size: 0.95rem;
@@ -28,30 +25,24 @@ st.markdown("""
         border: 1px solid #ced4da;
         height: 100%; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; /* Mantém parágrafos */
+        white-space: pre-wrap;
         text-align: justify;
     }
-
-    /* Destaques Precisos */
-    .highlight-yellow { 
-        background-color: #fff3cd; color: #856404; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
+    
+    .status-box {
+        padding: 15px;
+        border-radius: 8px;
+        text-align: center;
+        font-weight: bold;
+        margin-bottom: 10px;
     }
-    .highlight-red { 
-        background-color: #f8d7da; color: #721c24; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; font-weight: bold; 
-    }
-    .highlight-blue { 
-        background-color: #d1ecf1; color: #0c5460; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
-    }
+    .status-ok { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .status-warn { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
 
-    /* Status das Bordas */
-    .border-ok { border-left: 6px solid #28a745 !important; }    /* Verde */
-    .border-warn { border-left: 6px solid #ffc107 !important; } /* Amarelo */
-    .border-info { border-left: 6px solid #17a2b8 !important; } /* Azul */
+    .border-ok { border-left: 6px solid #28a745 !important; }
+    .border-warn { border-left: 6px solid #ffc107 !important; }
+    .border-info { border-left: 6px solid #17a2b8 !important; }
 
-    /* Métricas no Topo */
     div[data-testid="stMetric"] {
         background-color: #f8f9fa;
         border: 1px solid #dee2e6;
@@ -62,59 +53,35 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-MODELO_FIXO = "models/gemini-flash-latest"
+# ----------------- 2. CONFIGURAÇÃO MODELO (ATUALIZADO PARA 2.0) -----------------
+# Este é o modelo mais moderno disponível atualmente fora da série 1.5
+MODELO_FIXO = "models/gemini-2.0-flash-exp"
 
-# ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
+# ----------------- 3. PROCESSAMENTO -----------------
 def process_file_content(uploaded_file):
-    """
-    Lógica Híbrida:
-    1. Tenta extrair TEXTO puro do PDF (com ordenação visual para colunas).
-    2. Se não tiver texto (scan), converte para IMAGEM.
-    3. Se for DOCX, extrai texto direto.
-    """
     try:
         filename = uploaded_file.name.lower()
-
-        # --- PROCESSAMENTO DE PDF ---
         if filename.endswith(".pdf"):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            
-            # Tenta pegar texto digital primeiro
             full_text = ""
             has_digital_text = False
-            
             for page in doc:
-                # MUDANÇA CRÍTICA AQUI: sort=True força a leitura por colunas (layout visual)
                 text = page.get_text("text", sort=True)
-                if len(text.strip()) > 50: 
-                    has_digital_text = True
+                if len(text.strip()) > 50: has_digital_text = True
                 full_text += text + "\n"
             
-            # SE TIVER TEXTO DIGITAL
-            if has_digital_text:
-                return [full_text]
-            
-            # SE NÃO TIVER TEXTO (É SCAN/IMAGEM)
+            if has_digital_text: return [full_text]
             else:
                 images = []
                 for page in doc:
                     pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) 
                     images.append(Image.open(io.BytesIO(pix.tobytes("jpeg"))))
                 return images
-        
-        # --- PROCESSAMENTO DE IMAGENS DIRETAS ---
         elif filename.endswith((".jpg", ".png", ".jpeg")):
             return [Image.open(uploaded_file)]
-
-        # --- PROCESSAMENTO DE DOCX ---
         elif filename.endswith(".docx"):
             doc = docx.Document(uploaded_file)
-            full_text = []
-            for para in doc.paragraphs:
-                full_text.append(para.text)
-            return ["\n".join(full_text)]
-            
+            return ["\n".join([p.text for p in doc.paragraphs])]
     except: return []
 
 SECOES_COMPLETAS = [
@@ -129,15 +96,13 @@ SECOES_COMPLETAS = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("💊 Gráfica x Arte")
+st.title("💊 Gráfica x Arte (Gemini 2.0)")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Arte (Original)", type=["pdf", "jpg", "png", "docx"])
-f2 = c2.file_uploader("📂 Gráfica (Prova)", type=["pdf", "jpg", "png", "docx"])
+f1 = c1.file_uploader("📂 Arte Vigente", type=["pdf", "jpg", "png", "docx"])
+f2 = c2.file_uploader("📂 Arquivo Gráfica", type=["pdf", "jpg", "png", "docx"])
 
-if st.button("🚀 Validar"):
-    
-    # ADICIONADA A TERCEIRA CHAVE AQUI
+if st.button("🚀 Validar com Gemini 2.0"):
     keys_disponiveis = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_disponiveis if k]
 
@@ -146,74 +111,69 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Processando... Priorizando texto original e leitura correta de colunas..."):
+        with st.spinner("Analisando com Gemini 2.0 (Alta Performance)..."):
             f1.seek(0)
             f2.seek(0)
-            
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT FORENSE (ANTI-ALUCINAÇÃO)
+            # --- PROMPT OTIMIZADO PARA 2.0 ---
             prompt = f"""
-            Você é um EXTRATOR FORENSE DE TEXTO. Sua função NÃO é interpretar, é TRANSCREVER E COMPARAR.
+            Você é um Auditor Farmacêutico Sênior.
+            Analise as seções: {SECOES_COMPLETAS}
+
+            ⚠️ INSTRUÇÃO DE SAÍDA OBRIGATÓRIA (Token Economy):
             
-            INPUT: Documentos farmacêuticos (Bulas com múltiplas colunas).
-            TAREFA: Extrair e comparar as seções: {SECOES_COMPLETAS}
-
-            ⚠️ PROTOCOLO DE LEITURA (COLUNAS):
-            1. **FLUXO VERTICAL:** O texto está organizado em colunas. Leia a primeira coluna INTEIRA (do topo até o fim da página), depois vá para a próxima coluna.
-            2. **NÃO MISTURE:** Jamais leia horizontalmente cruzando as colunas (não leia a linha 1 da col 1 junto com a linha 1 da col 2).
-
-            ⚠️ PROTOCOLO DE TOLERÂNCIA ZERO PARA ALUCINAÇÃO:
-            1. **VERBATIM (IPSIS LITTERIS):** Copie as palavras EXATAMENTE como estão.
-                - Se está escrito "fabricação", ESCREVA "fabricação". NÃO troque por "validade".
-                - Mantenha pontuação e negrito (se detectado visualmente, use markdown **bold**).
+            1. **SE O TEXTO ESTIVER IDÊNTICO ("CONFORME"):**
+               - Retorne APENAS a string "IGUAL" nos campos de texto.
+               - NÃO copie o texto original. Isso economiza memória.
             
-            2. **PROIBIDO CORRIGIR:** Não corrija gramática, não expanda abreviações.
+            2. **SE O TEXTO ESTIVER DIFERENTE ("DIVERGENTE"):**
+               - Copie o trecho da divergência para análise.
+
+            3. **DIZERES LEGAIS:**
+               - Tente extrair apenas as datas de aprovação se houver.
             
-            3. **CONTINUIDADE:** Se uma seção começa no fim de uma coluna e continua na próxima (ou na próxima página), una o texto logicamente.
-
-            🚨 REGRAS DE STATUS POR GRUPO:
-
-            >>> GRUPO BLINDADO (SEM DIVERGÊNCIAS): 
-            [ "APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS" ]
-            - Status OBRIGATÓRIO: "CONFORME".
-            - PROIBIDO usar highlight amarelo nestas seções.
-            - Apenas transcreva o texto original limpo.
-            - Exceção: Em "DIZERES LEGAIS", se encontrar uma data, envolva em <span class="highlight-blue">DATA</span>.
-
-            >>> GRUPO PADRÃO (TODAS AS OUTRAS SEÇÕES):
-            - Compare palavra por palavra.
-            - Diferença REAL (palavra trocada, número errado)? Marque <span class="highlight-yellow">TEXTO ERRADO</span>.
-            - Se a diferença for apenas layout/quebra de linha, considere IGUAL.
-
-            SAÍDA JSON:
+            SAÍDA JSON EXATA:
             {{
-                "data_anvisa_ref": "dd/mm/aaaa" (ou "Não encontrada"),
-                "data_anvisa_grafica": "dd/mm/aaaa" (ou "Não encontrada"),
+                "data_anvisa_ref": "dd/mm/aaaa",
+                "data_anvisa_grafica": "dd/mm/aaaa",
                 "secoes": [
                     {{
-                        "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Texto EXATO da arte",
-                        "texto_grafica": "Texto EXATO da gráfica (com highlights APENAS se permitido)",
+                        "titulo": "NOME SEÇÃO",
+                        "texto_arte": "IGUAL" (ou o texto do erro),
+                        "texto_grafica": "IGUAL" (ou o texto do erro),
                         "status": "CONFORME" or "DIVERGENTE"
                     }}
                 ]
             }}
             """
             
-            payload = [prompt, "--- ARTE (REFERÊNCIA) ---"] + conteudo1 + ["--- GRÁFICA (VALIDAÇÃO) ---"] + conteudo2
+            payload = [prompt, "--- DOC ORIGINAL ---"] + conteudo1 + ["--- DOC GRÁFICA ---"] + conteudo2
             
+            # Liberação de Segurança
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
             response = None
             ultimo_erro = ""
 
-            # Loop de Chaves (Failover)
             for i, api_key in enumerate(keys_validas):
                 try:
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(
                         MODELO_FIXO, 
-                        generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                        generation_config={
+                            "response_mime_type": "application/json", 
+                            "temperature": 0.0,
+                            # Gemini 2.0 suporta outputs maiores, mas mantemos 8k por segurança da API padrão
+                            "max_output_tokens": 8192 
+                        },
+                        safety_settings=safety_settings
                     )
                     
                     response = model.generate_content(payload)
@@ -222,79 +182,78 @@ if st.button("🚀 Validar"):
                 except Exception as e:
                     ultimo_erro = str(e)
                     if i < len(keys_validas) - 1:
-                        st.warning(f"⚠️ Chave {i+1} falhou. Trocando para Chave {i+2}...")
+                        st.warning(f"⚠️ Chave {i+1} instável. Trocando...")
                         continue
                     else:
-                        st.error(f"❌ Erro fatal: {ultimo_erro}")
+                        st.error(f"❌ Erro fatal na API (Gemini 2.0): {ultimo_erro}")
                         st.stop()
             
             if response:
                 try:
-                    # --- CORREÇÃO DO ERRO DE JSON AQUI ---
-                    # 1. Limpa blocos de código markdown
-                    texto_bruto = response.text
-                    if "```json" in texto_bruto:
-                        texto_bruto = texto_bruto.split("```json")[1].split("```")[0]
-                    elif "```" in texto_bruto:
-                        texto_bruto = texto_bruto.split("```")[1].split("```")[0]
+                    texto = response.text
+                    if "```json" in texto: texto = texto.split("```json")[1].split("```")[0]
+                    elif "```" in texto: texto = texto.split("```")[1].split("```")[0]
                     
-                    texto_limpo = texto_bruto.strip()
+                    data = json.loads(texto.strip(), strict=False)
                     
-                    # 2. strict=False permite quebras de linha e caracteres especiais dentro da string
-                    resultado = json.loads(texto_limpo, strict=False)
-                    
-                    data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
-                    data_graf = resultado.get("data_anvisa_grafica", "Não encontrada")
-                    secoes = resultado.get("secoes", [])
+                    secoes = data.get("secoes", [])
+                    data_ref = data.get("data_anvisa_ref", "-")
+                    data_graf = data.get("data_anvisa_grafica", "-")
 
-                    st.markdown("### 📊 Resumo da Conferência")
-                    
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("Data Anvisa (Ref)", data_ref)
-                    
-                    cor_delta = "normal" if data_ref == data_graf and data_ref != "Não encontrada" else "inverse"
-                    msg_delta = "Vigência" if data_ref == data_graf else "Diferente"
-                    if data_graf == "Não encontrada": msg_delta = ""
-                    
-                    k2.metric("Data Anvisa (Gráfica)", data_graf, delta=msg_delta, delta_color=cor_delta)
-                    k3.metric("Seções Analisadas", len(secoes))
+                    st.markdown("### 📊 Resultado (Gemini 2.0)")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Data Ref", data_ref)
+                    c2.metric("Data Gráfica", data_graf, delta="Igual" if data_ref == data_graf else "Diferente")
+                    c3.metric("Seções", len(secoes))
 
-                    div_count = sum(1 for s in secoes if s['status'] != 'CONFORME')
-                    ok_count = len(secoes) - div_count
-                    
-                    b1, b2 = st.columns(2)
-                    b1.success(f"✅ **Conformes: {ok_count}**")
-                    if div_count > 0:
-                        b2.warning(f"⚠️ **Divergentes: {div_count}**")
-                    else:
-                        b2.success("✨ **Divergentes: 0**")
-                    
+                    divs = [s for s in secoes if s['status'] != 'CONFORME']
+                    if divs: st.warning(f"⚠️ {len(divs)} Divergências encontradas!")
+                    else: st.success("✅ Documento 100% Conforme!")
+
                     st.divider()
 
-                    for item in secoes:
-                        status = item.get('status', 'CONFORME')
-                        titulo = item.get('titulo', 'Seção')
+                    for s in secoes:
+                        status = s.get('status', 'CONFORME')
+                        titulo = s.get('titulo', 'Seção')
                         
-                        if "DIZERES LEGAIS" in titulo.upper():
-                            icon, css, aberto = "📅", "border-info", True
-                        elif status == "CONFORME":
-                            icon, css, aberto = "✅", "border-ok", False
+                        t_arte = s.get("texto_arte", "")
+                        t_graf = s.get("texto_grafica", "")
+                        
+                        # Verifica se o Gemini 2.0 usou o código de economia
+                        eh_igual = (t_arte.strip().upper() == "IGUAL") or (t_graf.strip().upper() == "IGUAL")
+                        
+                        if status == "CONFORME" or eh_igual:
+                            icon = "✅"
+                            css = "border-ok"
+                            aberto = False
+                            conteudo_visual = """
+                            <div class="status-box status-ok">
+                                ✨ TEXTO VERIFICADO E APROVADO
+                                <br><small>O Gemini 2.0 confirmou que o conteúdo é idêntico.</small>
+                            </div>
+                            """
                         else:
-                            icon, css, aberto = "⚠️", "border-warn", True
+                            icon = "⚠️"
+                            css = "border-warn"
+                            aberto = True
+                            conteudo_visual = None 
 
                         with st.expander(f"{icon} {titulo}", expanded=aberto):
-                            col_esq, col_dir = st.columns(2)
-                            with col_esq:
-                                st.caption("Referência (Arte)")
-                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_arte", "")}</div>', unsafe_allow_html=True)
-                            with col_dir:
-                                st.caption("Validação (Gráfica)")
-                                st.markdown(f'<div class="texto-box {css}">{item.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+                            if conteudo_visual:
+                                st.markdown(conteudo_visual, unsafe_allow_html=True)
+                            else:
+                                c_esq, c_dir = st.columns(2)
+                                with c_esq:
+                                    st.caption("Trecho Original")
+                                    st.markdown(f'<div class="texto-box {css}">{t_arte}</div>', unsafe_allow_html=True)
+                                with c_dir:
+                                    st.caption("Trecho Gráfica")
+                                    st.markdown(f'<div class="texto-box {css}">{t_graf}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"Erro no processamento do JSON: {e}")
-                    st.text("Resposta bruta do modelo:")
-                    st.code(response.text)
-
+                    st.error("Erro ao ler JSON.")
+                    st.text(f"Detalhe: {e}")
+                    if response.candidates:
+                         st.write(f"Motivo parada: {response.candidates[0].finish_reason}")
     else:
         st.warning("Adicione os arquivos.")
