@@ -9,7 +9,7 @@ import json
 import time
 
 # ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
-st.set_page_config(page_title="Validador Farmacêutico Rigoroso", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="💊 Grafica x Arte", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
