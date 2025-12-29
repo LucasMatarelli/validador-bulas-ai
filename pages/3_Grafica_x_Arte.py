@@ -63,8 +63,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO MODELO -----------------
-# Alterado para o 1.5 Flash específico para garantir melhor performance e limites
-MODELO_FIXO = "models/gemini-1.5-flash"
+# ATUALIZADO PARA O MODELO SOLICITADO
+MODELO_FIXO = "models/gemini-2.5-flash"
 
 # ----------------- 3. PROCESSAMENTO INTELIGENTE -----------------
 def process_file_content(uploaded_file):
@@ -217,7 +217,7 @@ if st.button("🚀 Validar"):
                         generation_config={
                             "response_mime_type": "application/json", 
                             "temperature": 0.0,
-                            # AUMENTADO O LIMITE DE TOKENS PARA EVITAR CORTE NO JSON
+                            # Mantendo o limite alto para evitar erro de JSON cortado
                             "max_output_tokens": 8192
                         }
                     )
