@@ -28,8 +28,17 @@ st.markdown("""
         white-space: pre-wrap;
         text-align: justify;
     }
+    
+    .status-box {
+        padding: 15px;
+        border-radius: 8px;
+        text-align: center;
+        font-weight: bold;
+        margin-bottom: 10px;
+    }
+    .status-ok { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .status-warn { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
 
-    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; }
     .border-ok { border-left: 6px solid #28a745 !important; }
     .border-warn { border-left: 6px solid #ffc107 !important; }
     .border-info { border-left: 6px solid #17a2b8 !important; }
@@ -101,25 +110,29 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Analisando bulas (Modo Econômico)..."):
+        with st.spinner("Conferindo textos (Modo Otimizado)..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # --- PROMPT REESTRUTURADO PARA NÃO ESTOURAR O LIMITE ---
+            # --- PROMPT BLINDADO CONTRA ESTOURO DE MEMÓRIA ---
             prompt = f"""
-            Você é um Validador de Bulas. 
+            Você é um Validador de Bulas.
             Analise as seções: {SECOES_COMPLETAS}
 
-            ⚠️ INSTRUÇÃO OBRIGATÓRIA DE SAÍDA (PARA EVITAR ERRO DE LIMITE):
-            1. **SE O STATUS FOR "CONFORME":** - Defina "texto_arte": "MATCH"
-               - Defina "texto_grafica": "MATCH"
-               - NÃO transcreva o texto. Isso é vital para não cortar o JSON.
+            ⚠️ REGRA DE OURO (PARA NÃO TRAVAR):
+            Para economizar tokens, você NÃO deve copiar o texto se ele estiver correto.
             
-            2. **SE O STATUS FOR "DIVERGENTE":** - Transcreva o trecho onde está o erro.
+            1. **SE O STATUS FOR "CONFORME" (TEXTOS IGUAIS):**
+               - O campo "texto_arte" DEVE SER APENAS A PALAVRA: "IGUAL"
+               - O campo "texto_grafica" DEVE SER APENAS A PALAVRA: "IGUAL"
+               - NÃO COPIE O TEXTO DA BULA.
+            
+            2. **SE O STATUS FOR "DIVERGENTE" (ERRO ENCONTRADO):**
+               - Copie o trecho específico onde está o erro/diferença.
 
-            3. **DIZERES LEGAIS:** Sempre tente extrair a data se encontrar.
+            3. **DIZERES LEGAIS:** Se houver data, extraia a data. Caso contrário, siga a regra "IGUAL".
 
             SAÍDA JSON:
             {{
@@ -128,8 +141,8 @@ if st.button("🚀 Validar"):
                 "secoes": [
                     {{
                         "titulo": "NOME SEÇÃO",
-                        "texto_arte": "MATCH" ou "Texto do erro...",
-                        "texto_grafica": "MATCH" ou "Texto do erro...",
+                        "texto_arte": "IGUAL" (ou o trecho do erro),
+                        "texto_grafica": "IGUAL" (ou o trecho do erro),
                         "status": "CONFORME" or "DIVERGENTE"
                     }}
                 ]
@@ -138,7 +151,7 @@ if st.button("🚀 Validar"):
             
             payload = [prompt, "--- DOC ORIGINAL ---"] + conteudo1 + ["--- DOC GRÁFICA ---"] + conteudo2
             
-            # Configuração de Segurança (Liberado)
+            # LIBERAÇÃO TOTAL DE SEGURANÇA
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -147,6 +160,7 @@ if st.button("🚀 Validar"):
             }
 
             response = None
+            ultimo_erro = ""
 
             for i, api_key in enumerate(keys_validas):
                 try:
@@ -165,26 +179,28 @@ if st.button("🚀 Validar"):
                     break 
 
                 except Exception as e:
-                    if i == len(keys_validas) - 1:
-                        st.error(f"Erro fatal: {e}")
+                    ultimo_erro = str(e)
+                    if i < len(keys_validas) - 1:
+                        st.warning(f"⚠️ Tentativa {i+1} falhou. Trocando chave...")
+                        continue
+                    else:
+                        st.error(f"❌ Erro fatal: {ultimo_erro}")
                         st.stop()
-                    continue
             
             if response:
                 try:
-                    # Tratamento da string JSON
+                    # Limpeza bruta do JSON
                     texto = response.text
                     if "```json" in texto: texto = texto.split("```json")[1].split("```")[0]
                     elif "```" in texto: texto = texto.split("```")[1].split("```")[0]
                     
-                    # Carrega JSON
                     data = json.loads(texto.strip(), strict=False)
                     
                     secoes = data.get("secoes", [])
                     data_ref = data.get("data_anvisa_ref", "-")
                     data_graf = data.get("data_anvisa_grafica", "-")
 
-                    st.markdown("### 📊 Resultado da Validação")
+                    st.markdown("### 📊 Resultado da Conferência")
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Data Ref", data_ref)
                     c2.metric("Data Gráfica", data_graf, delta="Igual" if data_ref == data_graf else "Diferente")
@@ -200,31 +216,47 @@ if st.button("🚀 Validar"):
                         status = s.get('status', 'CONFORME')
                         titulo = s.get('titulo', 'Seção')
                         
-                        # Lógica para tratar o token "MATCH" e exibir bonitinho
+                        # --- INTERPRETAÇÃO DO CÓDIGO "IGUAL" ---
                         t_arte = s.get("texto_arte", "")
                         t_graf = s.get("texto_grafica", "")
                         
-                        if t_arte == "MATCH" or t_graf == "MATCH":
-                            t_arte = "✅ **Texto validado eletronicamente.**\nIdentificado como idêntico ao original."
-                            t_graf = "✅ **Texto validado eletronicamente.**\nIdentificado como idêntico ao original."
-
-                        icon = "✅" if status == "CONFORME" else "⚠️"
-                        css = "border-ok" if status == "CONFORME" else "border-warn"
-                        aberto = status != "CONFORME"
+                        eh_igual = (t_arte.strip().upper() == "IGUAL") or (t_graf.strip().upper() == "IGUAL")
+                        
+                        if status == "CONFORME" or eh_igual:
+                            icon = "✅"
+                            css = "border-ok"
+                            aberto = False
+                            # UI amigável para quando o texto foi omitido
+                            conteudo_visual = """
+                            <div class="status-box status-ok">
+                                ✨ TEXTO VERIFICADO E APROVADO
+                                <br><small>O conteúdo está idêntico ao original.</small>
+                            </div>
+                            """
+                        else:
+                            icon = "⚠️"
+                            css = "border-warn"
+                            aberto = True
+                            # Se tem erro, mostra o texto que o modelo retornou
+                            conteudo_visual = None 
 
                         with st.expander(f"{icon} {titulo}", expanded=aberto):
-                            c_esq, c_dir = st.columns(2)
-                            with c_esq:
-                                st.caption("Original")
-                                st.markdown(f'<div class="texto-box {css}">{t_arte}</div>', unsafe_allow_html=True)
-                            with c_dir:
-                                st.caption("Gráfica")
-                                st.markdown(f'<div class="texto-box {css}">{t_graf}</div>', unsafe_allow_html=True)
+                            if conteudo_visual:
+                                st.markdown(conteudo_visual, unsafe_allow_html=True)
+                            else:
+                                c_esq, c_dir = st.columns(2)
+                                with c_esq:
+                                    st.caption("Trecho Original")
+                                    st.markdown(f'<div class="texto-box {css}">{t_arte}</div>', unsafe_allow_html=True)
+                                with c_dir:
+                                    st.caption("Trecho Gráfica")
+                                    st.markdown(f'<div class="texto-box {css}">{t_graf}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error("Erro ao ler resposta do modelo.")
-                    st.text(f"Detalhe: {e}")
-                    if response and response.candidates:
-                         st.write(f"Motivo parada: {response.candidates[0].finish_reason}")
+                    st.error("Ocorreu um erro ao processar a resposta.")
+                    st.text(f"Erro técnico: {e}")
+                    # Debug final
+                    if response.candidates:
+                         st.write(f"Motivo da parada do modelo: {response.candidates[0].finish_reason}")
     else:
         st.warning("Adicione os arquivos.")
