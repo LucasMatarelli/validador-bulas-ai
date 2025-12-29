@@ -44,7 +44,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO MODELO (MANTIDO O FLASH) -----------------
+# ----------------- 2. CONFIGURAÇÃO MODELO -----------------
 MODELO_FIXO = "models/gemini-flash-latest"
 
 # ----------------- 3. PROCESSAMENTO -----------------
@@ -101,41 +101,44 @@ if st.button("🚀 Validar"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Analisando bulas..."):
+        with st.spinner("Analisando bulas (Modo Econômico)..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # --- PROMPT COM INSTRUÇÃO DE ECONOMIA (RESUMO) ---
+            # --- PROMPT REESTRUTURADO PARA NÃO ESTOURAR O LIMITE ---
             prompt = f"""
-            Você é um Comparador de Textos Farmacêuticos.
-            Compare as seções: {SECOES_COMPLETAS}
+            Você é um Validador de Bulas. 
+            Analise as seções: {SECOES_COMPLETAS}
 
-            ⚠️ INSTRUÇÃO DE LIMITE DE TOKENS (CRÍTICO):
-            O modelo tem um limite de saída. Para não cortar o JSON:
-            1. **SE ESTIVER "CONFORME":** NÃO transcreva o texto inteiro se for longo. Escreva apenas as primeiras 10 palavras, use "(...texto conforme...)" e as últimas 10 palavras.
-            2. **SE ESTIVER "DIVERGENTE":** Transcreva o trecho completo onde está o erro para podermos ver.
-            3. **SEM PONTILHADOS:** Nunca use "..........".
+            ⚠️ INSTRUÇÃO OBRIGATÓRIA DE SAÍDA (PARA EVITAR ERRO DE LIMITE):
+            1. **SE O STATUS FOR "CONFORME":** - Defina "texto_arte": "MATCH"
+               - Defina "texto_grafica": "MATCH"
+               - NÃO transcreva o texto. Isso é vital para não cortar o JSON.
+            
+            2. **SE O STATUS FOR "DIVERGENTE":** - Transcreva o trecho onde está o erro.
 
-            SAÍDA JSON OBRIGATÓRIA:
+            3. **DIZERES LEGAIS:** Sempre tente extrair a data se encontrar.
+
+            SAÍDA JSON:
             {{
                 "data_anvisa_ref": "dd/mm/aaaa",
                 "data_anvisa_grafica": "dd/mm/aaaa",
                 "secoes": [
                     {{
-                        "titulo": "NOME DA SEÇÃO",
-                        "texto_arte": "Inicio... (...texto conforme...) ...fim",
-                        "texto_grafica": "Inicio... (...texto conforme...) ...fim",
+                        "titulo": "NOME SEÇÃO",
+                        "texto_arte": "MATCH" ou "Texto do erro...",
+                        "texto_grafica": "MATCH" ou "Texto do erro...",
                         "status": "CONFORME" or "DIVERGENTE"
                     }}
                 ]
             }}
             """
             
-            payload = [prompt, "--- DOC 1 ---"] + conteudo1 + ["--- DOC 2 ---"] + conteudo2
+            payload = [prompt, "--- DOC ORIGINAL ---"] + conteudo1 + ["--- DOC GRÁFICA ---"] + conteudo2
             
-            # Configuração de segurança para liberar tudo
+            # Configuração de Segurança (Liberado)
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -153,7 +156,7 @@ if st.button("🚀 Validar"):
                         generation_config={
                             "response_mime_type": "application/json", 
                             "temperature": 0.0,
-                            "max_output_tokens": 8192 # Limite máximo
+                            "max_output_tokens": 8192 
                         },
                         safety_settings=safety_settings
                     )
@@ -163,38 +166,33 @@ if st.button("🚀 Validar"):
 
                 except Exception as e:
                     if i == len(keys_validas) - 1:
-                        st.error(f"Erro fatal na API: {e}")
+                        st.error(f"Erro fatal: {e}")
                         st.stop()
                     continue
             
             if response:
                 try:
-                    # Tenta limpar o JSON
+                    # Tratamento da string JSON
                     texto = response.text
                     if "```json" in texto: texto = texto.split("```json")[1].split("```")[0]
                     elif "```" in texto: texto = texto.split("```")[1].split("```")[0]
                     
-                    # Tenta corrigir JSON cortado (gambiarra simples)
-                    if not texto.strip().endswith("}"):
-                        texto += "]}"
-                        
+                    # Carrega JSON
                     data = json.loads(texto.strip(), strict=False)
                     
-                    # --- EXIBIÇÃO ---
                     secoes = data.get("secoes", [])
                     data_ref = data.get("data_anvisa_ref", "-")
                     data_graf = data.get("data_anvisa_grafica", "-")
 
-                    st.markdown("### 📊 Resultado")
+                    st.markdown("### 📊 Resultado da Validação")
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Data Ref", data_ref)
                     c2.metric("Data Gráfica", data_graf, delta="Igual" if data_ref == data_graf else "Diferente")
                     c3.metric("Seções", len(secoes))
 
-                    # Contador de divergências
                     divs = [s for s in secoes if s['status'] != 'CONFORME']
                     if divs: st.warning(f"⚠️ {len(divs)} Divergências encontradas!")
-                    else: st.success("✅ Tudo Conforme!")
+                    else: st.success("✅ Documento 100% Conforme!")
 
                     st.divider()
 
@@ -202,26 +200,31 @@ if st.button("🚀 Validar"):
                         status = s.get('status', 'CONFORME')
                         titulo = s.get('titulo', 'Seção')
                         
+                        # Lógica para tratar o token "MATCH" e exibir bonitinho
+                        t_arte = s.get("texto_arte", "")
+                        t_graf = s.get("texto_grafica", "")
+                        
+                        if t_arte == "MATCH" or t_graf == "MATCH":
+                            t_arte = "✅ **Texto validado eletronicamente.**\nIdentificado como idêntico ao original."
+                            t_graf = "✅ **Texto validado eletronicamente.**\nIdentificado como idêntico ao original."
+
                         icon = "✅" if status == "CONFORME" else "⚠️"
                         css = "border-ok" if status == "CONFORME" else "border-warn"
                         aberto = status != "CONFORME"
 
                         with st.expander(f"{icon} {titulo}", expanded=aberto):
                             c_esq, c_dir = st.columns(2)
-                            # Se for conforme, avisa que está resumido
-                            aviso = " *(Texto resumido para economia)*" if status == "CONFORME" else ""
-                            
                             with c_esq:
-                                st.caption(f"Referência{aviso}")
-                                st.markdown(f'<div class="texto-box {css}">{s.get("texto_arte", "")}</div>', unsafe_allow_html=True)
+                                st.caption("Original")
+                                st.markdown(f'<div class="texto-box {css}">{t_arte}</div>', unsafe_allow_html=True)
                             with c_dir:
-                                st.caption(f"Gráfica{aviso}")
-                                st.markdown(f'<div class="texto-box {css}">{s.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
+                                st.caption("Gráfica")
+                                st.markdown(f'<div class="texto-box {css}">{t_graf}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"O JSON foi cortado pelo limite do modelo. Tente validar menos seções ou arquivos menores.")
-                    st.text(f"Erro técnico: {e}")
-                    if response.candidates:
-                         st.write(f"Motivo da parada: {response.candidates[0].finish_reason}")
+                    st.error("Erro ao ler resposta do modelo.")
+                    st.text(f"Detalhe: {e}")
+                    if response and response.candidates:
+                         st.write(f"Motivo parada: {response.candidates[0].finish_reason}")
     else:
         st.warning("Adicione os arquivos.")
