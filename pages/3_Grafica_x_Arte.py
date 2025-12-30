@@ -257,11 +257,10 @@ def extract_text_smart(uploaded_file, api_keys=None):
     """
     Função INTELIGENTE:
     1. Tenta extrair nativamente.
-    2. Analisa se o que saiu é 'pouco demais' (< 100 caracteres).
-    3. Se for pouco, assume que é IMAGEM ou VETOR (Curva) e aciona o OCR só para esse arquivo.
+    2. Analisa se o que saiu é 'pouco demais' (< 1000 caracteres).
+    3. Se for pouco, assume que é IMAGEM ou VETOR e aciona o OCR.
     """
     text = ""
-    metodo = "Nativo"
     
     try:
         # 1. Tentativa Nativa
@@ -294,11 +293,11 @@ def extract_text_smart(uploaded_file, api_keys=None):
         # 2. Análise da Necessidade de OCR
         texto_limpo = re.sub(r'<[^>]+>', '', text).strip()
         
-        # Se tiver menos de 100 caracteres (era 50), consideramos que a extração falhou (arquivo de Curva/Imagem)
         eh_pdf = uploaded_file.name.lower().endswith('.pdf')
         
-        if eh_pdf and len(texto_limpo) < 100 and api_keys:
-            st.warning(f"👁️ Arquivo '{uploaded_file.name}' detectado como Imagem/Curvas (texto extraído insuficiente). Ativando OCR...")
+        # AQUI FOI A MUDANÇA: Limite de 1000 caracteres
+        if eh_pdf and len(texto_limpo) < 1000 and api_keys:
+            st.warning(f"👁️ Arquivo '{uploaded_file.name}' detectado com pouco texto ({len(texto_limpo)} chars < 1000). Ativando OCR...")
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
             
             if texto_ocr:
@@ -306,10 +305,9 @@ def extract_text_smart(uploaded_file, api_keys=None):
                 return texto_ocr
             else:
                 st.error(f"❌ Falha no OCR de '{uploaded_file.name}'. Detalhes: {erro_ocr}")
-                return "" # Retorna vazio para não crashar, mas avisa erro
+                return "" 
         else:
-            # Se tem bastante texto, segue o jogo sem gastar crédito de OCR
-            if len(texto_limpo) >= 100:
+            if len(texto_limpo) >= 1000:
                 st.info(f"📄 Arquivo '{uploaded_file.name}' lido como texto padrão (OCR não necessário).")
             
         return text
