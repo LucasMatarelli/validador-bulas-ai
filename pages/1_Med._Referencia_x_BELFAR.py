@@ -59,12 +59,13 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO E LISTAS -----------------
 
-# LISTA DE MODELOS PARA TENTAR (Failover)
+# LISTA DE TENTATIVAS (Primeiro o mais rápido, depois os backups)
 MODELOS_PARA_TENTAR = [
     "gemini-1.5-flash",
     "gemini-1.5-flash-latest",
     "gemini-1.5-flash-001",
-    "models/gemini-1.5-flash"
+    "models/gemini-1.5-flash",
+    "gemini-1.0-pro" # Fallback final
 ]
 
 SECOES_PACIENTE = [
@@ -211,8 +212,12 @@ f1 = c1.file_uploader("📜 Bula Referência", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
+    # Tenta pegar qualquer chave disponível
     key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY2") or st.secrets.get("GEMINI_API_KEY3")
-    if not key: st.error("Sem chave API"); st.stop()
+    
+    if not key: 
+        st.error("Erro: Nenhuma API Key encontrada nos Secrets do Streamlit Cloud.")
+        st.stop()
 
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
@@ -252,28 +257,31 @@ if st.button("🚀 Processar Conferência"):
             }}
             """
             
-            # --- TENTATIVA DE CONEXÃO COM VÁRIOS MODELOS ---
-            response = None
+            # --- SISTEMA DE TENTATIVAS AUTOMÁTICO ---
             genai.configure(api_key=key)
-            
+            response = None
             sucesso = False
+            
+            erro_msg = ""
             for modelo in MODELOS_PARA_TENTAR:
                 try:
-                    # st.info(f"Tentando modelo: {modelo}...") # Descomente para debug
+                    # st.toast(f"Tentando conectar no modelo: {modelo}...") # Opcional: Mostra pro usuário
                     model = genai.GenerativeModel(
                         modelo, 
                         generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                     )
                     response = model.generate_content(prompt)
                     sucesso = True
-                    break # Se funcionou, para o loop
+                    break # Funcionou! Sai do loop
                 except Exception as e:
-                    print(f"Erro no modelo {modelo}: {e}")
-                    time.sleep(1) # Espera um pouquinho antes de tentar o próximo
+                    erro_msg += f"\nFalha em {modelo}: {str(e)}"
+                    time.sleep(0.5)
                     continue
             
             if not sucesso:
-                st.error("❌ Erro fatal: Não foi possível conectar com nenhum modelo do Gemini. Verifique se a biblioteca 'google-generativeai' está atualizada (pip install -U google-generativeai) ou se a API Key é válida.")
+                st.error("❌ Erro fatal de conexão com a IA.")
+                with st.expander("Ver detalhes do erro"):
+                    st.code(erro_msg)
                 st.stop()
             
             try:
