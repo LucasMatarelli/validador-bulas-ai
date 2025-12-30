@@ -43,13 +43,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. LISTA DE MODELOS (PRIORIDADE) -----------------
-# O código tentará nesta ordem até um funcionar.
+# O código tentará nesta ordem EXATA até um funcionar.
+# Se o 2.0 estiver bloqueado, ele tentará os outros automaticamente.
 MODELOS_PARA_TENTAR = [
-    "gemini-1.5-flash",          # Prioridade 1: Estável
-    "gemini-1.5-flash-latest",   # Prioridade 2: Atualização
-    "gemini-1.5-flash-8b",       # Prioridade 3: Leve/Rápido
-    "gemini-2.0-flash-exp",      # Prioridade 4: Experimental (se voltar a cota)
-    "gemini-1.5-pro"             # Prioridade 5: Último recurso
+    "gemini-2.0-flash-exp",      # Tentativa 1: O que você quer
+    "gemini-exp-1206",           # Tentativa 2: Experimental alternativo
+    "gemini-1.5-flash",          # Tentativa 3: Estável (Backup)
+    "gemini-1.5-pro"             # Tentativa 4: Potente (Backup)
 ]
 
 # ----------------- 3. PROCESSAMENTO -----------------
@@ -95,7 +95,7 @@ SECOES_PADRAO = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("🛡️ Validador Farmacêutico (Modo Auto-Pilot)")
+st.title("🛡️ Validador Farmacêutico (Auto-Pilot)")
 st.caption("O sistema testará automaticamente Modelos e Chaves até encontrar uma conexão aberta.")
 
 c1, c2 = st.columns(2)
@@ -123,7 +123,7 @@ if st.button("🔍 Validar Texto Integral"):
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT EXTREMAMENTE RIGOROSO (PARA FORÇAR O 1.5 A AGIR COMO O 2.0)
+            # PROMPT EXTREMAMENTE RIGOROSO (PARA FORÇAR QUALQUER MODELO A AGIR BEM)
             prompt = f"""
             ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO FORENSE DE TEXTO.
             
@@ -154,7 +154,7 @@ if st.button("🔍 Validar Texto Integral"):
             }}
             """
             
-            # Configuração de segurança para evitar bloqueio falso em bulas
+            # Configuração de segurança
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -191,7 +191,7 @@ if st.button("🔍 Validar Texto Integral"):
                             safety_settings=safety_settings
                         )
                         
-                        # CHAMADA CORRIGIDA (SEM 'PAYLOAD=')
+                        # CHAMADA CORRIGIDA (SEM 'PAYLOAD='), o conteúdo vai direto
                         response = model.generate_content(conteudo_final)
                         
                         # Se não deu erro, sucesso!
@@ -210,7 +210,6 @@ if st.button("🔍 Validar Texto Integral"):
                         
                         # Se for 429 (Cota), tenta próxima chave
                         elif "429" in err or "quota" in err.lower():
-                            # Se for o último modelo e última chave, salva o erro
                             ultimo_erro = f"Quota excedida em {modelo_atual}"
                             time.sleep(0.5)
                             continue 
