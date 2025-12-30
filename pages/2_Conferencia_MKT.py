@@ -10,7 +10,7 @@ import time
 from spellchecker import SpellChecker
 
 # ----------------- 1. VISUAL & CSS -----------------
-st.set_page_config(page_title="Conferência MKT (Paciente)", page_icon="💊", layout="wide")
+st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
@@ -66,18 +66,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO (SUA LISTA + CORREÇÕES TÉCNICAS) -----------------
-# Nota: "gemini-2.5" ainda não existe na API pública, vai dar 404, mas deixei na lista como pediu.
-# Adicionei "gemini-2.0-flash-exp" que é o nome correto atual do 2.0.
+# ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
-    "gemini-2.0-flash-exp",        # Nome oficial do 2.0 hoje
-    "models/gemini-2.0-flash-exp", # Variação com prefixo
-    "models/gemini-2.5-flash",     # O que você pediu (provavelmente falhará)
-    "models/gemini-2.0-flash",     # O que você pediu
-    "models/gemini-1.5-flash",     # O que você pediu
-    "gemini-1.5-flash",            # Padrão estável
-    "gemini-1.5-flash-latest",     # Última versão estável
-    "gemini-1.5-flash-002"         # Versão atualizada de Setembro
+    "models/gemini-2.5-flash", 
+    "models/gemini-2.0-flash", 
+    "models/gemini-1.5-flash", 
+    "gemini-1.5-flash"
 ]
 
 SECOES_PACIENTE = [
@@ -91,17 +85,10 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
+
 SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
-
-def limpar_sujeira_invisivel(texto):
-    """Remove caracteres invisíveis que causam falso amarelo."""
-    if not texto: return ""
-    t = texto.replace('\xa0', ' ')
-    t = re.sub(r'[\u200b\u200c\u200d\u2060\ufeff]', '', t)
-    t = re.sub(r'\s+', ' ', t)
-    return t.strip()
 
 def normalizacao_nuclear(texto):
     """Remove TUDO que não seja letra ou número para comparação de conteúdo."""
@@ -112,9 +99,15 @@ def normalizacao_nuclear(texto):
     return t.lower()
 
 def verificar_ortografia_inteligente(texto):
+    """
+    Corretor Ultra-Conservador:
+    Se a palavra não for conhecida, ASSUME QUE É UM TERMO TÉCNICO CORRETO.
+    Não tenta adivinhar sugestões para evitar falsos positivos em bulas.
+    """
     try:
         spell = SpellChecker(language='pt')
-        # LISTA BRANCA REFORÇADA
+        
+        # LISTA BRANCA MASSIVA - Termos aceitos
         whitelist = {
             'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
             'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
@@ -130,6 +123,7 @@ def verificar_ortografia_inteligente(texto):
             'cardiovascular', 'respiratorio', 'digestivo', 'nervoso', 'central',
             'periferico', 'renal', 'hepatico', 'sanguineo', 'imunologico',
             'endocrino', 'metabolico', 'musculoesqueletico', 'dermatologico',
+            # Adicione aqui termos específicos que estavam marcando erro
             'predisponentes', 'sistemicos', 'sistêmicos', 'congenita', 'congênita',
             'aneurisma', 'dissecção', 'disseccao', 'valvar', 'valvula', 'regurgitação',
             'endocardite', 'marfan', 'ehlers-danlos', 'turner', 'sjogren', 'takayasu',
@@ -137,7 +131,7 @@ def verificar_ortografia_inteligente(texto):
             'hipersensibilidade', 'arritmia', 'protuberancia', 'abdômen', 'abdomen',
             'gonorreia', 'gonorréia', 'infeccao', 'infeção', 'trato', 'urinario',
             'uretra', 'cervix', 'tubulos', 'túbulos', 'renais', 'queimação', 'queimacao',
-            'prostatite', 'prostata', 'cistite', 'ureia', 'bacteria', 'bacterias', 'candida'
+            'prostatite', 'prostata', 'cistite', 'ureia', 'bacteria', 'bacterias'
         }
         spell.word_frequency.load_words(whitelist)
 
@@ -145,21 +139,32 @@ def verificar_ortografia_inteligente(texto):
         resultado = []
         
         for token in tokens:
+            # Filtros iniciais para ignorar o que não é palavra verificável
             if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
                 resultado.append(token)
                 continue
             
+            # Limpeza para verificação
             palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
             
-            if (not palavra_limpa or len(palavra_limpa) < 4 or any(c.isdigit() for c in token) or '-' in palavra_limpa or palavra_limpa[0].isupper()):
+            # BLINDAGEM: Ignora se tiver número, for muito curta, tiver hífen ou COMEÇAR COM MAIÚSCULA
+            if (not palavra_limpa or 
+                len(palavra_limpa) < 4 or 
+                any(c.isdigit() for c in token) or 
+                '-' in palavra_limpa or
+                palavra_limpa[0].isupper()):
                 resultado.append(token)
                 continue
 
             p_lower = palavra_limpa.lower()
 
+            # LÓGICA ULTRA CONSERVADORA:
+            # Se está no dicionário ou na whitelist -> OK.
+            # Se NÃO está -> ASSUME QUE É TERMO TÉCNICO E IGNORA (Não marca vermelho).
             if p_lower in spell or p_lower in whitelist:
                 resultado.append(token)
             else:
+                # Palavra desconhecida. Em bula, assumimos que está correta.
                 resultado.append(token)
 
         return "".join(resultado)
@@ -167,6 +172,7 @@ def verificar_ortografia_inteligente(texto):
         return texto
 
 def melhorar_visual_topicos(texto_html):
+    """Transforma marcadores txt em visual HTML bonito"""
     linhas = re.split(r'(<br>|\n)', texto_html)
     novo_texto = []
     for linha in linhas:
@@ -192,32 +198,20 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     tem_diff = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        trecho_ref = " ".join(palavras_ref[i1:i2])
-        trecho_novo = " ".join(palavras_novo[j1:j2])
-
         if tag == 'equal':
-            html_ref_list.append(trecho_ref)
-            html_novo_list.append(trecho_ref)
+            texto = " ".join(palavras_ref[i1:i2])
+            html_ref_list.append(texto)
+            html_novo_list.append(texto)
         elif tag == 'replace':
-            if normalizacao_nuclear(trecho_ref) == normalizacao_nuclear(trecho_novo):
-                html_ref_list.append(trecho_ref)
-                html_novo_list.append(trecho_novo)
-            else:
-                html_ref_list.append(f'<span class="highlight-yellow">{trecho_ref}</span>')
-                html_novo_list.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
-                tem_diff = True
+            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
+            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
+            tem_diff = True
         elif tag == 'delete':
-            if normalizacao_nuclear(trecho_ref) == "":
-                html_ref_list.append(trecho_ref)
-            else:
-                html_ref_list.append(f'<span class="highlight-yellow">{trecho_ref}</span>')
-                tem_diff = True
+            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
+            tem_diff = True
         elif tag == 'insert':
-            if normalizacao_nuclear(trecho_novo) == "":
-                html_novo_list.append(trecho_novo)
-            else:
-                html_novo_list.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
-                tem_diff = True
+            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
+            tem_diff = True
             
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
@@ -225,14 +219,13 @@ def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    texto_ref = limpar_sujeira_invisivel(texto_ref)
-    texto_novo = limpar_sujeira_invisivel(texto_novo)
-
+    # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for igual, ignora formatação
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
         html_novo = verificar_ortografia_inteligente(texto_novo)
         html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
+    # 2. Se falhar na nuclear, faz o diff detalhado
     ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
     novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
     
@@ -271,20 +264,24 @@ def extract_text_from_file(uploaded_file):
                     if run.bold: para_txt += f"<b>{run.text}</b>"
                     else: para_txt += run.text
                 text += para_txt + "\n\n"
-        text = limpar_sujeira_invisivel(text)
         return text
     except: return ""
 
 # ----------------- 5. UI PRINCIPAL -----------------
-st.title("💊 Med. Referência x BELFAR (Paciente)")
+st.title("💊 Conferência MKT")
+
+tipo_bula = st.radio(
+    "Escolha o Tipo de Bula:",
+    ("Paciente"),
+    horizontal=True
+)
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf", "docx"], key="f1")
-f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
+f2 = c2.file_uploader("📜 Bula MKT", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     
-    # PEGA AS 3 CHAVES DISPONÍVEIS
     keys_raw = [
         st.secrets.get("GEMINI_API_KEY"),
         st.secrets.get("GEMINI_API_KEY2"),
@@ -297,7 +294,7 @@ if st.button("🚀 Processar Conferência"):
         st.stop()
 
     if f1 and f2:
-        secoes_alvo = SECOES_PACIENTE
+        secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
 
         with st.spinner("Lendo arquivos e conectando à IA..."):
             f1.seek(0); f2.seek(0)
@@ -338,29 +335,21 @@ if st.button("🚀 Processar Conferência"):
             sucesso = False
             log_erros = []
 
-            # LOOP PARA TENTAR TODAS AS CHAVES X TODOS OS MODELOS
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
-                
                 genai.configure(api_key=key)
-                
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
                         model = genai.GenerativeModel(
                             modelo, 
-                            generation_config={
-                                "response_mime_type": "application/json", 
-                                "temperature": 0.0,
-                                "max_output_tokens": 8192 
-                            }
+                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
-                        break # Se funcionou, sai do loop de modelos
+                        break 
                     except Exception as e:
-                        # Se der erro, loga e tenta o próximo modelo/chave
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(1) # Delay anti-spam
+                        time.sleep(0.5)
                         continue
 
             if not sucesso:
@@ -368,26 +357,8 @@ if st.button("🚀 Processar Conferência"):
                 st.code("\n".join(log_erros))
                 st.stop()
             
-            # --- TRATAMENTO DE ERRO DE CORTE (JSON QUEBRADO) ---
             try:
-                text_clean = response.text.strip()
-                resultado = json.loads(text_clean)
-            except json.JSONDecodeError:
-                try:
-                    st.warning("⚠️ O texto é muito longo e foi cortado pela IA. Recuperando início...")
-                    fixed_text = text_clean + '"}]}' 
-                    resultado = json.loads(fixed_text)
-                except:
-                    try:
-                        fixed_text = text_clean.rstrip(",") + "]}"
-                        resultado = json.loads(fixed_text)
-                    except:
-                        st.error("❌ Erro Fatal: O arquivo é grande demais e a resposta quebrou.")
-                        st.download_button("Baixar Log do Erro", response.text)
-                        st.stop()
-
-            # --- PROCESSAMENTO DOS DADOS ---
-            try:
+                resultado = json.loads(response.text)
                 data_ref = resultado.get("data_anvisa_ref", "-")
                 data_mkt = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
