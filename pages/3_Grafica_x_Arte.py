@@ -9,7 +9,7 @@ import json
 import time
 
 # ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
-st.set_page_config(page_title="Grafica x Arte", page_icon="💊", layout="wide")
+st.set_page_config(page_title="Validador Farmacêutico (Auto-Pilot)", page_icon="🛡️", layout="wide")
 
 st.markdown("""
 <style>
@@ -42,9 +42,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. MODELO (Gemini 2.0 Flash) -----------------
-# Mantendo estritamente o modelo que você pediu
-MODELO_FIXO = "models/gemini-2.0-flash-exp"
+# ----------------- 2. LISTA DE MODELOS (PRIORIDADE) -----------------
+# O código tentará nesta ordem até um funcionar.
+MODELOS_PARA_TENTAR = [
+    "gemini-1.5-flash",          # Prioridade 1: Estável
+    "gemini-1.5-flash-latest",   # Prioridade 2: Atualização
+    "gemini-1.5-flash-8b",       # Prioridade 3: Leve/Rápido
+    "gemini-2.0-flash-exp",      # Prioridade 4: Experimental (se voltar a cota)
+    "gemini-1.5-pro"             # Prioridade 5: Último recurso
+]
 
 # ----------------- 3. PROCESSAMENTO -----------------
 def process_file_content(uploaded_file):
@@ -89,11 +95,12 @@ SECOES_PADRAO = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("💊 Grafica x Arte")
+st.title("🛡️ Validador Farmacêutico (Modo Auto-Pilot)")
+st.caption("O sistema testará automaticamente Modelos e Chaves até encontrar uma conexão aberta.")
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📂 Arte Vigente", type=["pdf", "jpg", "png", "docx"])
-f2 = c2.file_uploader("📂 Gráfica", type=["pdf", "jpg", "png", "docx"])
+f1 = c1.file_uploader("📂 Arte (Referência)", type=["pdf", "jpg", "png", "docx"])
+f2 = c2.file_uploader("📂 Gráfica (Validação)", type=["pdf", "jpg", "png", "docx"])
 
 if st.button("🔍 Validar Texto Integral"):
     
@@ -103,56 +110,51 @@ if st.button("🔍 Validar Texto Integral"):
         st.secrets.get("GEMINI_API_KEY2"), 
         st.secrets.get("GEMINI_API_KEY3")
     ]
-    # Filtra chaves vazias
     keys_validas = [k for k in keys_raw if k and len(k) > 10]
 
     if not keys_validas:
-        st.error("Nenhuma chave API válida encontrada nos Segredos.")
+        st.error("Nenhuma chave API válida encontrada.")
         st.stop()
 
     if f1 and f2:
-        with st.spinner(f"Iniciando análise com {len(keys_validas)} chaves disponíveis..."):
+        with st.spinner(f"Iniciando busca de rota disponível..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
+            # PROMPT EXTREMAMENTE RIGOROSO (PARA FORÇAR O 1.5 A AGIR COMO O 2.0)
             prompt = f"""
-            Você é um Auditor de Qualidade Documental.
+            ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO FORENSE DE TEXTO.
             
-            SUA MISSÃO: 
-            1. Extrair o texto EXATAMENTE como está nos arquivos (letra por letra).
+            SUA TAREFA:
+            1. Extrair o texto dos arquivos.
             2. Comparar Arte vs Gráfica.
-            3. Validar rigorosamente os TÍTULOS.
-
-            LISTA DE TÍTULOS PADRÃO: {SECOES_PADRAO}
-
-            ⚠️ REGRAS DE VALIDAÇÃO:
-            1. **TÍTULOS:** Comparação EXATA (Case Sensitive). 
-               - Ex: "Apresentação" != "APRESENTAÇÕES" -> DIVERGENTE.
             
-            2. **TEXTO:** - Transcreva o texto CORPO ipsis litteris.
-               - NÃO mude pontuação. NÃO corrija erros.
-               - Diferença? Status "DIVERGENTE".
+            LISTA DE TÍTULOS OBRIGATÓRIA: {SECOES_PADRAO}
+
+            ⚠️ INSTRUÇÕES DE TOLERÂNCIA ZERO:
+            - **PROIBIDO RESUMIR.** Você deve transcrever o texto COMPLETO, caractere por caractere, linha por linha.
+            - **TÍTULOS:** A validação é CASE SENSITIVE. Ex: "Apresentação" é diferente de "APRESENTAÇÕES". Marque como divergente.
+            - Se o texto for longo, processe até o final. Não pare no meio.
 
             SAÍDA JSON:
             {{
                 "secoes": [
                     {{
-                        "titulo_padrao": "ESPERADO",
-                        "titulo_encontrado_arte": "ENCONTRADO ARTE",
-                        "titulo_encontrado_grafica": "ENCONTRADO GRAFICA",
-                        "texto_arte": "Texto completo...",
-                        "texto_grafica": "Texto completo...",
+                        "titulo_padrao": "Do gabarito",
+                        "titulo_encontrado_arte": "Leitura Arte",
+                        "titulo_encontrado_grafica": "Leitura Grafica",
+                        "texto_arte": "Texto INTEGRAL...",
+                        "texto_grafica": "Texto INTEGRAL...",
                         "status": "CONFORME" ou "DIVERGENTE",
-                        "obs": "Explicação do erro"
+                        "obs": "Divergência"
                     }}
                 ]
             }}
             """
             
-            payload = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
-            
+            # Configuração de segurança para evitar bloqueio falso em bulas
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -162,52 +164,67 @@ if st.button("🔍 Validar Texto Integral"):
 
             response = None
             ultimo_erro = ""
+            modelo_conectado = ""
             sucesso = False
-
-            # --- LOOP ROBUSTO DE TENTATIVAS ---
-            for i, api_key in enumerate(keys_validas):
-                try:
-                    # Mensagem de progresso visual
-                    st.toast(f"Tentativa com Chave {i+1} de {len(keys_validas)}...")
-                    
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(
-                        MODELO_FIXO, 
-                        generation_config={
-                            "response_mime_type": "application/json", 
-                            "temperature": 0.0,
-                            "max_output_tokens": 8192
-                        },
-                        safety_settings=safety_settings
-                    )
-                    
-                    # Chamada à API
-                    response = model.generate_content(payload)
-                    
-                    # Se chegou aqui, funcionou!
-                    sucesso = True
-                    st.success(f"Conectado com sucesso usando a Chave {i+1}!")
-                    break 
-
-                except Exception as e:
-                    ultimo_erro = str(e)
-                    st.warning(f"⚠️ Chave {i+1} falhou. Aguardando 5 segundos para trocar...")
-                    
-                    # 5 SEGUNDOS DE ESPERA PARA EVITAR BLOQUEIO IMEDIATO NA PRÓXIMA
-                    time.sleep(5) 
-                    continue 
             
-            # --- VERIFICAÇÃO FINAL ---
+            status_container = st.empty()
+            
+            # Monta o conteúdo final APENAS UMA VEZ
+            conteudo_final = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
+
+            # --- LOOP DUPLO: MODELOS X CHAVES ---
+            for modelo_atual in MODELOS_PARA_TENTAR:
+                if sucesso: break
+                
+                for idx_k, api_key in enumerate(keys_validas):
+                    try:
+                        status_container.info(f"⏳ Testando: **{modelo_atual}** com **Chave {idx_k+1}**...")
+                        
+                        genai.configure(api_key=api_key)
+                        model = genai.GenerativeModel(
+                            modelo_atual, 
+                            generation_config={
+                                "response_mime_type": "application/json", 
+                                "temperature": 0.0,
+                                "max_output_tokens": 8192
+                            },
+                            safety_settings=safety_settings
+                        )
+                        
+                        # CHAMADA CORRIGIDA (SEM 'PAYLOAD=')
+                        response = model.generate_content(conteudo_final)
+                        
+                        # Se não deu erro, sucesso!
+                        sucesso = True
+                        modelo_conectado = modelo_atual
+                        status_container.success(f"✅ Conectado! Usando: **{modelo_atual}** (Chave {idx_k+1})")
+                        time.sleep(1) # Pausa dramática para ler o sucesso
+                        status_container.empty() # Limpa a mensagem
+                        break 
+
+                    except Exception as e:
+                        err = str(e)
+                        # Se for 404 (Modelo não existe), pula pro próximo modelo
+                        if "404" in err or "not found" in err.lower():
+                            break 
+                        
+                        # Se for 429 (Cota), tenta próxima chave
+                        elif "429" in err or "quota" in err.lower():
+                            # Se for o último modelo e última chave, salva o erro
+                            ultimo_erro = f"Quota excedida em {modelo_atual}"
+                            time.sleep(0.5)
+                            continue 
+                        
+                        else:
+                            ultimo_erro = err
+                            continue
+            
             if not sucesso:
-                st.error("❌ FALHA TOTAL: Todas as chaves foram rejeitadas pelo Google.")
-                st.code(f"Último erro retornado: {ultimo_erro}")
-                st.markdown("""
-                **Dica:** O erro `429 limit: 0` no modelo experimental significa que o Google bloqueou temporariamente o acesso a este modelo na sua conta.
-                Tente novamente em alguns minutos ou verifique se suas chaves não são do mesmo Projeto no Google Cloud.
-                """)
+                st.error("❌ Falha Total: Todas as combinações de Chaves e Modelos falharam.")
+                st.code(ultimo_erro)
                 st.stop()
             
-            # --- EXIBIÇÃO DOS DADOS ---
+            # --- EXIBIÇÃO ---
             if response:
                 try:
                     texto = response.text
@@ -221,7 +238,7 @@ if st.button("🔍 Validar Texto Integral"):
                     divs = sum(1 for s in secoes if s['status'] != 'CONFORME')
                     oks = total - divs
 
-                    st.markdown("### 📊 Resultado da Análise")
+                    st.markdown(f"### 📊 Resultado ({modelo_conectado})")
                     c1, c2 = st.columns(2)
                     c1.metric("Conformes", oks)
                     c2.metric("Divergentes", divs, delta_color="inverse")
@@ -246,10 +263,11 @@ if st.button("🔍 Validar Texto Integral"):
                             icon, css, aberto = "🚨", "border-warn", True
 
                         with st.expander(f"{icon} {titulo_padrao}", expanded=aberto):
+                            # Validação visual de título
                             if titulo_arte != titulo_padrao or titulo_graf != titulo_padrao:
                                 st.markdown(f"""
                                 <div style="background-color: #f8d7da; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #721c24;">
-                                    <strong>❌ ERRO DE TÍTULO:</strong><br>
+                                    <strong>❌ TÍTULO INCORRETO:</strong><br>
                                     Esperado: <code>{titulo_padrao}</code><br>
                                     Arte: <code>{titulo_arte}</code> | Gráfica: <code>{titulo_graf}</code>
                                 </div>
@@ -266,7 +284,7 @@ if st.button("🔍 Validar Texto Integral"):
                                 st.markdown(f'<div class="texto-box {css}">{s.get("texto_grafica", "")}</div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error("Erro ao processar o JSON retornado.")
+                    st.error("Erro ao ler JSON da resposta.")
                     st.code(response.text)
     else:
         st.warning("Adicione os arquivos.")
