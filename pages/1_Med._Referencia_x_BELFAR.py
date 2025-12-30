@@ -40,9 +40,8 @@ st.markdown("""
     /* ERRO PORTUGUÊS (Vermelho) - Apenas erros ortográficos */
     .highlight-red { 
         background-color: #f8d7da; color: #721c24; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; 
-        text-decoration: underline wavy #dc3545;
-        cursor: help;
+        padding: 0px 2px; border-radius: 4px; border-bottom: 2px solid #dc3545; 
+        text-decoration: none;
         font-weight: bold;
     }
     
@@ -93,116 +92,86 @@ SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 def normalizar_para_comparacao(texto):
     """
-    Normalização ULTRA AGRESSIVA - Remove TUDO exceto letras.
-    Se passar por aqui e ficar igual, os textos SÃO IGUAIS.
+    Normalização para verificar se o conteúdo é idêntico.
     """
     if not texto: return ""
-    
-    # Remove tags HTML completamente
-    texto = re.sub(r'<[^>]+>', '', texto)
-    
-    # Normaliza Unicode (junta acentos)
-    texto = unicodedata.normalize('NFKD', texto)
-    
-    # Remove acentos
+    texto = re.sub(r'<[^>]+>', '', texto) # Remove HTML
+    texto = unicodedata.normalize('NFKD', texto) # Normaliza acentos
     texto = ''.join([c for c in texto if not unicodedata.combining(c)])
-    
-    # Remove TUDO exceto letras (sem números, pontuação, espaços)
-    texto = re.sub(r'[^a-zA-Z]', '', texto)
-    
-    # Converte para minúsculas
+    texto = re.sub(r'[^a-zA-Z0-9]', '', texto) # Mantem letras e números apenas para check de igualdade
     texto = texto.lower()
-    
     return texto
 
 def verificar_ortografia(texto):
     """
-    Marca de VERMELHO apenas palavras REALMENTE escritas errado.
-    NÃO marca termos médicos, técnicos, siglas ou palavras desconhecidas.
+    Marca de VERMELHO apenas erros ÓBVIOS de digitação.
+    Ignora palavras desconhecidas se elas não parecerem um erro simples de uma palavra comum.
     """
     try:
         spell = SpellChecker(language='pt')
         
-        # LISTA GIGANTE de termos médicos/técnicos que NÃO são erros
+        # Termos que o dicionário padrão pode não ter, mas são comuns
         termos_validos = {
-            # Unidades e medidas
-            'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mcg/ml', 'mg/ml', 'ui/ml',
-            'mmhg', 'bpm', 'kcal', 'mm', 'cm', 'min', 'max', 'h', 'mgdl',
-            # Termos farmacêuticos
-            'frascoampola', 'comprimido', 'capsula', 'posologia', 'superdose', 
-            'norfloxacino', 'leucocitos', 'didanosina', 'protuberancia', 'aneurisma',
-            'endocardite', 'estomago', 'intestino', 'urinaras', 'refeicoes', 'ingestao',
-            'suplementos', 'trato', 'urinario', 'duraçao', 'infeccao', 'leucocituria',
-            'polimorfismo', 'formulacao', 'orais', 'recomendacoes', 'sintomas', 'inflamacao',
-            'mastigado', 'bacterias', 'leveduras', 'cronico', 'prostatica', 'antibiotico',
-            # Órgãos/anatomia
-            'renais', 'hepatica', 'cardiacos', 'vasculares', 'abdomen', 'torax',
-            # Procedimentos
-            'dialisado', 'hemodinamica', 'farmacocinetica', 'biodisponibilidade',
-            # Abreviações oficiais
-            'anvisa', 'rg', 'cpf', 'cnpj', 'cep', 'tel', 'sac', 'ms', 'resp', 'lote', 'val', 'lab',
-            # Outros
-            'placebo', 'versus', 'ex', 'ie', 'etc', 'dr', 'dra', 'sr', 'sra'
+            'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
+            'posologia', 'superdose', 'blister', 'crf', 'crm', 'anvisa', 'lote', 'val', 'fab',
+            'sac', 'cnpj', 'cep', 'dr', 'dra', 'vp', 'vps', 'bula', 'paciente', 'profissional'
         }
         
-        # Adiciona termos ao dicionário
+        # Carrega palavras extras
         spell.word_frequency.load_words(termos_validos)
         
-        # Divide preservando HTML
-        partes = re.split(r'(<[^>]+>)', texto)
+        partes = re.split(r'(<[^>]+>|\s+)', texto) # Divide mantendo tags e espaços
         resultado = []
         
         for parte in partes:
-            if parte.startswith('<'):
+            # Se for tag HTML ou espaço, mantém igual
+            if parte.startswith('<') or parte.isspace() or not parte.strip():
+                resultado.append(parte)
+                continue
+            
+            # Limpa pontuação para verificar a palavra
+            palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]', '', parte)
+            
+            # Se não sobrou nada (ex: "."), mantém o original
+            if not palavra_limpa or len(palavra_limpa) <= 2:
+                resultado.append(parte)
+                continue
+                
+            # Verifica se começa com maiúscula (nome próprio/remédio) ou tem número
+            if palavra_limpa[0].isupper() or any(c.isdigit() for c in parte):
+                resultado.append(parte)
+                continue
+            
+            palavra_lower = palavra_limpa.lower()
+            
+            # Se a palavra existe no dicionário ou na whitelist
+            if palavra_lower in spell or palavra_lower in termos_validos:
                 resultado.append(parte)
             else:
-                # Separa palavras e não-palavras
-                palavras = re.findall(r'\b[a-záàâãéèêíïóôõöúçñ]+\b|\W+', parte, re.IGNORECASE)
-                for palavra in palavras:
-                    # Se não for palavra alfabética, mantém
-                    if not re.match(r'[a-záàâãéèêíïóôõöúçñ]+', palavra, re.IGNORECASE):
-                        resultado.append(palavra)
-                        continue
+                # PALAVRA DESCONHECIDA:
+                # Só marca erro se tiver uma correção MUITO próxima (distância Levenshtein <= 2)
+                # Se não tiver correção próxima, assume que é termo médico técnico correto.
+                candidatos = spell.candidates(palavra_lower)
+                if candidatos:
+                    # Pega a melhor sugestão
+                    sugestao = spell.correction(palavra_lower)
                     
-                    # Ignora palavras curtas (siglas, unidades)
-                    if len(palavra) <= 2:
-                        resultado.append(palavra)
-                        continue
+                    # Calcula diferença simples de caracteres
+                    diff_len = abs(len(sugestao) - len(palavra_lower))
                     
-                    # Ignora se tiver números misturados
-                    if re.search(r'\d', palavra):
-                        resultado.append(palavra)
-                        continue
-                    
-                    # Ignora nomes próprios (começam com maiúscula)
-                    if palavra[0].isupper():
-                        resultado.append(palavra)
-                        continue
-                    
-                    palavra_lower = palavra.lower()
-                    
-                    # Se estiver no dicionário OU na lista de termos válidos -> NÃO marca
-                    if palavra_lower in spell or palavra_lower in termos_validos:
-                        resultado.append(palavra)
-                    else:
-                        # ÚLTIMO FILTRO: Só marca se for erro ÓBVIO (palavra comum mal escrita)
-                        # Se a palavra tiver correção muito próxima, provavelmente é erro
-                        candidatos = spell.candidates(palavra_lower)
-                        if candidatos and len(candidatos) > 0:
-                            # Verifica se existe correção muito similar (1-2 caracteres diferentes)
-                            mais_proxima = min(candidatos, key=lambda w: sum(a != b for a, b in zip(w, palavra_lower)))
-                            diferenca = sum(a != b for a, b in zip(mais_proxima, palavra_lower))
-                            
-                            # Só marca se tiver correção BEM próxima (erro óbvio)
-                            if diferenca <= 2 and abs(len(mais_proxima) - len(palavra_lower)) <= 1:
-                                resultado.append(f'<span class="highlight-red" title="Sugestão: {mais_proxima}">{palavra}</span>')
-                            else:
-                                # Provavelmente é termo técnico desconhecido
-                                resultado.append(palavra)
+                    # Só marca se for muito parecido (ex: 'gorreia' vs 'gonorreia')
+                    if sugestao and diff_len <= 2: 
+                        # Verifica quantos caracteres diferem
+                        diff_chars = sum(1 for a, b in zip(sugestao, palavra_lower) if a != b)
+                        if diff_chars <= 2:
+                             resultado.append(f'<span class="highlight-red" title="Sugestão: {sugestao}">{parte}</span>')
                         else:
-                            # Sem candidatos = provavelmente termo técnico
-                            resultado.append(palavra)
-        
+                            resultado.append(parte)
+                    else:
+                        resultado.append(parte) # Assume termo técnico
+                else:
+                    resultado.append(parte) # Sem candidatos, assume termo técnico
+
         return ''.join(resultado)
     except:
         return texto
@@ -213,53 +182,71 @@ def destacar_datas(texto):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
+def diff_palavra_a_palavra(texto_ref, texto_novo):
+    """
+    Compara duas strings palavra por palavra e retorna HTML com amarelo SÓ nas palavras diferentes.
+    """
+    # Separa por palavras (split básico)
+    palavras_ref = texto_ref.split()
+    palavras_novo = texto_novo.split()
+    
+    matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
+    
+    html_ref_list = []
+    html_novo_list = []
+    tem_diff = False
+    
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'equal':
+            # Palavras iguais: sem destaque
+            texto_igual = " ".join(palavras_ref[i1:i2])
+            html_ref_list.append(texto_igual)
+            html_novo_list.append(texto_igual) # No lado novo, passa pelo verificador ortográfico depois
+            
+        elif tag == 'replace':
+            # Palavras mudaram: destaca amarelo nos dois lados
+            trecho_antigo = " ".join(palavras_ref[i1:i2])
+            trecho_novo = " ".join(palavras_novo[j1:j2])
+            
+            html_ref_list.append(f'<span class="highlight-yellow">{trecho_antigo}</span>')
+            html_novo_list.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
+            tem_diff = True
+            
+        elif tag == 'delete':
+            # Palavra existia no REF mas sumiu no NOVO: destaca amarelo no REF
+            trecho_deletado = " ".join(palavras_ref[i1:i2])
+            html_ref_list.append(f'<span class="highlight-yellow">{trecho_deletado}</span>')
+            # No novo não aparece nada (já que foi deletado)
+            tem_diff = True
+            
+        elif tag == 'insert':
+            # Palavra nova no NOVO: destaca amarelo no NOVO
+            trecho_inserido = " ".join(palavras_novo[j1:j2])
+            html_novo_list.append(f'<span class="highlight-yellow">{trecho_inserido}</span>')
+            tem_diff = True
+            
+    return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
+
 def gerar_diff_html(texto_ref, texto_novo):
     """
-    AMARELO = diferença REAL de conteúdo (palavras diferentes)
-    VERMELHO = erro de português (só no texto novo)
+    Gera o HTML comparativo. Se as linhas forem diferentes, ativa a comparação palavra por palavra.
     """
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # TESTE DEFINITIVO: Se normalizar e ficar igual = SÃO IGUAIS
-    ref_normalizada = normalizar_para_comparacao(texto_ref)
-    novo_normalizada = normalizar_para_comparacao(texto_novo)
-    
-    if ref_normalizada == novo_normalizada:
-        # Textos SÃO IGUAIS - Apenas verifica ortografia
-        html_ref = texto_ref.replace('\n', '<br>')
-        html_novo = verificar_ortografia(texto_novo.replace('\n', '<br>'))
-        return html_ref, html_novo, False
-    
-    # ===== TEXTOS SÃO DIFERENTES - FAZ COMPARAÇÃO PALAVRA POR PALAVRA =====
-    
-    # Remove HTML para comparar só o conteúdo
+    # Normalização rápida para ver se é tudo igual
+    if normalizar_para_comparacao(texto_ref) == normalizar_para_comparacao(texto_novo):
+        # Se for igual, só verifica ortografia no novo
+        return texto_ref.replace('\n', '<br>'), verificar_ortografia(texto_novo.replace('\n', '<br>')), False
+
+    # Remove tags HTML para comparação limpa
     ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
     novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
     
-    # Pega palavras (ignorando pontuação)
-    palavras_ref = re.findall(r'\b\w+\b', ref_limpo.lower())
-    palavras_novo = re.findall(r'\b\w+\b', novo_limpo.lower())
+    linhas_ref = ref_limpo.split('\n')
+    linhas_novo = novo_limpo.split('\n')
     
-    # Compara conjuntos de palavras (ignora ordem)
-    set_ref = set(palavras_ref)
-    set_novo = set(palavras_novo)
-    
-    palavras_diferentes = (set_ref - set_novo) | (set_novo - set_ref)
-    
-    # Se tiver menos de 3 palavras diferentes, provavelmente é só formatação
-    if len(palavras_diferentes) < 3:
-        html_ref = texto_ref.replace('\n', '<br>')
-        html_novo = verificar_ortografia(texto_novo.replace('\n', '<br>'))
-        return html_ref, html_novo, False
-    
-    # ===== TEM DIFERENÇAS REAIS - MARCA EM AMARELO =====
-    
-    # Compara linha por linha para achar exatamente onde está diferente
-    linhas_ref = texto_ref.split('\n')
-    linhas_novo = texto_novo.split('\n')
-    
-    matcher = difflib.SequenceMatcher(None, linhas_ref, linhas_novo, autojunk=False)
+    matcher = difflib.SequenceMatcher(None, linhas_ref, linhas_novo)
     
     html_ref_partes = []
     html_novo_partes = []
@@ -267,44 +254,45 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            # Linhas iguais
+            # Blocos de linhas iguais
             for linha in linhas_ref[i1:i2]:
                 html_ref_partes.append(linha)
             for linha in linhas_novo[j1:j2]:
+                # Mesmo sendo igual ao ref, checa ortografia
                 html_novo_partes.append(verificar_ortografia(linha))
                 
         elif tag == 'replace':
-            trecho_ref = '\n'.join(linhas_ref[i1:i2])
-            trecho_novo = '\n'.join(linhas_novo[j1:j2])
+            # Blocos de linhas diferentes -> QUEBRA EM PALAVRAS
+            t_ref_bloco = "\n".join(linhas_ref[i1:i2])
+            t_novo_bloco = "\n".join(linhas_novo[j1:j2])
             
-            # ÚLTIMO TESTE: compara palavra por palavra
-            palavras_ref_trecho = set(re.findall(r'\b\w+\b', normalizar_para_comparacao(trecho_ref)))
-            palavras_novo_trecho = set(re.findall(r'\b\w+\b', normalizar_para_comparacao(trecho_novo)))
+            # Chama a função granular
+            ref_diff_html, novo_diff_html, diff_bool = diff_palavra_a_palavra(t_ref_bloco, t_novo_bloco)
             
-            # Se os conjuntos de palavras forem iguais = só formatação diferente
-            if palavras_ref_trecho == palavras_novo_trecho:
-                html_ref_partes.append(trecho_ref)
-                html_novo_partes.append(verificar_ortografia(trecho_novo))
-            else:
-                # Diferença REAL - marca amarelo
-                html_ref_partes.append(f'<span class="highlight-yellow">{trecho_ref}</span>')
-                html_novo_partes.append(f'<span class="highlight-yellow">{verificar_ortografia(trecho_novo)}</span>')
+            if diff_bool:
                 tem_divergencia = True
                 
+            html_ref_partes.append(ref_diff_html)
+            
+            # Aplica ortografia nas partes não destacadas ou destaca dentro?
+            # A função verificar_ortografia deve rodar no resultado final para não quebrar o HTML do span yellow
+            # Truque: rodar verificar_ortografia apenas nas partes texto (mas é complexo com HTML injetado).
+            # Simplificação: Roda ortografia no bloco todo, o highlight-yellow é classe, o spellchecker ignora tags.
+            html_novo_partes.append(verificar_ortografia(novo_diff_html))
+
         elif tag == 'delete':
-            trecho = '\n'.join(linhas_ref[i1:i2])
-            html_ref_partes.append(f'<span class="highlight-yellow">{trecho}</span>')
+            # Linhas inteiras removidas
+            bloco = "\n".join(linhas_ref[i1:i2])
+            html_ref_partes.append(f'<span class="highlight-yellow">{bloco}</span>')
             tem_divergencia = True
             
         elif tag == 'insert':
-            trecho = '\n'.join(linhas_novo[j1:j2])
-            html_novo_partes.append(f'<span class="highlight-yellow">{verificar_ortografia(trecho)}</span>')
+            # Linhas inteiras adicionadas
+            bloco = "\n".join(linhas_novo[j1:j2])
+            html_novo_partes.append(f'<span class="highlight-yellow">{verificar_ortografia(bloco)}</span>')
             tem_divergencia = True
-    
-    html_ref = '<br>'.join(html_ref_partes)
-    html_novo = '<br>'.join(html_novo_partes)
-    
-    return html_ref, html_novo, tem_divergencia
+
+    return '<br>'.join(html_ref_partes), '<br>'.join(html_novo_partes), tem_divergencia
 
 def extract_text_from_file(uploaded_file):
     try:
