@@ -420,10 +420,10 @@ if st.button("🚀 Processar Conferência"):
                     with st.expander(f"{icon} {titulo}", expanded=aberto):
                         ce, cd = st.columns(2)
                         with ce:
-                            st.caption("Referência")
+                            st.caption("BELFAR")
                             st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
                         with cd:
-                            st.caption("Validado")
+                            st.caption("MKT")
                             st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
 
             except Exception as e:
