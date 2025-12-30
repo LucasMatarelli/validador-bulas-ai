@@ -1,173 +1,158 @@
 import streamlit as st
 import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import fitz  # PyMuPDF
 import docx
 import io
 import json
 import os
 import re
-import time
+import difflib
+import unicodedata
 from PIL import Image
 from datetime import datetime
+from spellchecker import SpellChecker
 
-# --- CONFIGURAÇÕES DE USO ---
-ARQUIVO_CONTADOR = "contador_diario.json"
-LIMITE_POR_KEY = 20
-LIMITE_TOTAL = 40  # 2 chaves
-
-# --- MODELOS ---
-MODELOS_PARA_TENTAR = [
-    "models/gemini-1.5-flash",
-    "models/gemini-1.5-flash-latest",
-    "models/gemini-1.5-pro"
-]
-
-# ----------------- 1. GERENCIAMENTO DE CHAVES E COTA -----------------
-def gerenciar_uso_diario(incrementar=False):
-    hoje = datetime.now().strftime("%Y-%m-%d")
-    
-    if not os.path.exists(ARQUIVO_CONTADOR):
-        dados = {"data": hoje, "contagem": 0}
-        with open(ARQUIVO_CONTADOR, "w") as f: json.dump(dados, f)
-    else:
-        with open(ARQUIVO_CONTADOR, "r") as f:
-            try: dados = json.load(f)
-            except: dados = {"data": hoje, "contagem": 0}
-
-    if dados.get("data") != hoje:
-        dados = {"data": hoje, "contagem": 0}
-        with open(ARQUIVO_CONTADOR, "w") as f: json.dump(dados, f)
+# --- CONFIGURAÇÕES DE CSS (Incluindo o Vermelho) ---
+def injetar_css():
+    st.markdown("""
+    <style>
+        .texto-box { 
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 0.95rem;
+            line-height: 1.6;
+            color: #212529;
+            background-color: #ffffff;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #ced4da;
+            white-space: pre-wrap; 
+        }
         
-    if incrementar and dados["contagem"] < LIMITE_TOTAL:
-        dados["contagem"] += 1
-        with open(ARQUIVO_CONTADOR, "w") as f: json.dump(dados, f)
+        /* DIVERGÊNCIA (Amarelo) - Texto diferente entre os arquivos */
+        .highlight-yellow { 
+            background-color: #fff3cd; color: #856404; 
+            padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
+            font-weight: bold;
+        }
         
-    return dados["contagem"]
-
-def mostrar_sidebar_contador():
-    uso_atual = gerenciar_uso_diario(incrementar=False)
-    restantes = LIMITE_TOTAL - uso_atual
-    
-    st.sidebar.divider()
-    st.sidebar.markdown("### 🤖 Status do Sistema")
-    
-    if restantes > 0:
-        st.sidebar.success(f"ONLINE")
-        st.sidebar.progress(uso_atual / LIMITE_TOTAL)
-        st.sidebar.caption(f"Uso Hoje: {uso_atual}/{LIMITE_TOTAL}")
-    else:
-        st.sidebar.error("⛔ Cota Diária Atingida")
-
-def get_gemini_client():
-    """Retorna o cliente configurado com a chave correta baseada no uso."""
-    uso = gerenciar_uso_diario(incrementar=False)
-    if uso >= LIMITE_TOTAL:
-        st.error("Cota diária excedida. Volte amanhã.")
-        st.stop()
+        /* ERRO DE PORTUGUÊS (Vermelho) - Identificado pelo Corretor */
+        .highlight-red { 
+            background-color: #f8d7da; color: #721c24; 
+            padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; 
+            text-decoration: underline wavy #dc3545;
+        }
         
-    # Seleção de Chave
-    if uso < LIMITE_POR_KEY:
-        api_key = st.secrets.get("GEMINI_API_KEY")
-    else:
-        api_key = st.secrets.get("GEMINI_API_KEY2")
-        
-    if not api_key:
-        # Fallback para tentar pegar qualquer uma que exista
-        api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY2")
+        /* DATA (Azul) */
+        .highlight-blue { 
+            background-color: #d1ecf1; color: #0c5460; 
+            padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
-    if not api_key:
-        st.error("Nenhuma API KEY configurada no secrets.toml")
-        st.stop()
-        
-    return api_key
+# --- FUNÇÕES DE LIMPEZA E COMPARAÇÃO ---
 
-def chamar_gemini(prompt, conteudo_anexos=[]):
-    """Função robusta que tenta vários modelos e trata erros."""
-    api_key = get_gemini_client()
-    genai.configure(api_key=api_key)
-    
-    safety = {
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-    }
-
-    payload = [prompt] + conteudo_anexos
-
-    for modelo in MODELOS_PARA_TENTAR:
-        try:
-            model = genai.GenerativeModel(
-                modelo,
-                generation_config={"response_mime_type": "application/json", "temperature": 0.0},
-                safety_settings=safety
-            )
-            response = model.generate_content(payload)
-            
-            # Incrementa contador apenas se deu sucesso
-            gerenciar_uso_diario(incrementar=True)
-            return response.text
-        except Exception as e:
-            print(f"Erro no modelo {modelo}: {e}")
-            continue
-            
-    st.error("Todos os modelos falharam. Verifique sua conexão ou API Key.")
-    st.stop()
-
-# ----------------- 2. PROCESSAMENTO DE ARQUIVOS -----------------
-def processar_arquivo(uploaded_file, forcar_ocr=False):
+def normalizar_para_comparacao(texto):
     """
-    Lê PDF (Texto ou Imagem) ou DOCX e retorna formato para o Gemini.
-    forcar_ocr=True converte PDF para imagem (útil para Gráfica em curva).
+    Remove sujeira invisível que causa falsos positivos (como no 'As infecções').
     """
-    if not uploaded_file: return []
-    filename = uploaded_file.name.lower()
+    if not texto: return ""
+    # 1. Normaliza Unicode (junta acentos separados 'a'+'~' vira 'ã')
+    texto = unicodedata.normalize('NFC', texto)
+    # 2. Remove espaços não separáveis (\xa0) e outros caracteres invisíveis
+    texto = texto.replace('\xa0', ' ').replace('\u200b', '')
+    # 3. Remove espaços duplicados
+    texto = re.sub(r'\s+', ' ', texto)
+    return texto.strip()
 
+def verificar_ortografia(texto_html):
+    """
+    Passa um pente fino no texto para achar erros de português (Vermelho).
+    Ignora tags HTML já existentes.
+    """
     try:
-        if filename.endswith(".pdf"):
-            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            
-            # Se forçar OCR ou se não tiver texto digital extraível
-            texto_digital = "".join([page.get_text() for page in doc])
-            
-            if forcar_ocr or len(texto_digital.strip()) < 100:
-                imagens = []
-                for page in doc:
-                    # Alta resolução (300 DPI aprox)
-                    pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
-                    img_byte = pix.tobytes("jpeg")
-                    imagens.append(Image.open(io.BytesIO(img_byte)))
-                return imagens
-            else:
-                return [texto_digital] # Retorna texto puro se for PDF digital
-
-        elif filename.endswith(".docx"):
-            doc = docx.Document(uploaded_file)
-            return ["\n".join([p.text for p in doc.paragraphs])]
+        spell = SpellChecker(language='pt')
+        # Regex para separar palavras ignorando tags HTML (<...>)
+        tokens = re.split(r'(<[^>]+>|[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]+)', texto_html)
         
-        elif filename.endswith((".jpg", ".png", ".jpeg")):
-            return [Image.open(uploaded_file)]
+        novo_texto = []
+        for token in tokens:
+            # Se for tag HTML ou pontuação/espaço, mantém
+            if token.startswith('<') or not token.strip() or len(token) < 3:
+                novo_texto.append(token)
+                continue
             
-    except Exception as e:
-        st.error(f"Erro ao ler arquivo {filename}: {e}")
-        return []
+            # Verifica se a palavra existe no dicionário
+            # (Limpeza simples para o corretor não pegar pontuação colada)
+            palavra_limpa = token.strip()
+            if palavra_limpa.lower() not in spell:
+                # É um erro provável -> Marca de VERMELHO
+                novo_texto.append(f'<span class="highlight-red" title="Possível erro">{token}</span>')
+            else:
+                novo_texto.append(token)
+                
+        return "".join(novo_texto)
+    except:
+        return texto_html # Se der erro no spellchecker, devolve original
 
-def repair_json(json_str):
-    """Limpa JSON retornado pela IA."""
-    json_str = json_str.strip()
-    if "```json" in json_str: json_str = json_str.split("```json")[1]
-    if "```" in json_str: json_str = json_str.split("```")[0]
-    return json_str.strip()
+def gerar_diff_html(texto_ref, texto_novo):
+    """
+    Gera o HTML comparativo.
+    - Amarelo: Diferença entre Arte e Gráfica.
+    - Vermelho: Erro de português (apenas no texto NOVO).
+    """
+    # 1. Normalização para evitar o erro do "As infecções"
+    ref_norm = normalizar_para_comparacao(texto_ref)
+    novo_norm = normalizar_para_comparacao(texto_novo)
+    
+    # Se depois de limpar tudo for igual, retorna sem amarelo
+    if ref_norm == novo_norm:
+        # Ainda passamos o corretor (vermelho) no texto novo
+        html_final = verificar_ortografia(texto_novo)
+        return texto_ref, html_final, False
 
-# ----------------- 3. CONSTANTES COMPARTILHADAS -----------------
-SECOES_PADRAO = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
-    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
-    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
-    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
-    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
-    "DIZERES LEGAIS"
-]
+    # 2. Prepara para o Difflib (tokenização por quebras de linha artificiais para manter estrutura)
+    a = texto_ref.splitlines()
+    b = texto_novo.splitlines()
+    
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    
+    html_ref = []
+    html_novo = []
+    tem_divergencia = False
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        trecho_a = "\n".join(a[i1:i2])
+        trecho_b = "\n".join(b[j1:j2])
+        
+        if tag == 'equal':
+            html_ref.append(trecho_a)
+            # Verifica ortografia mesmo no texto igual
+            html_novo.append(verificar_ortografia(trecho_b))
+            
+        elif tag == 'replace':
+            # AQUI ESTÁ A CORREÇÃO PRINCIPAL:
+            # Verifica se a diferença é só sujeira invisível
+            if normalizar_para_comparacao(trecho_a) == normalizar_para_comparacao(trecho_b):
+                html_ref.append(trecho_a)
+                html_novo.append(verificar_ortografia(trecho_b))
+            else:
+                # Diferença real -> AMARELO
+                html_ref.append(f'<span class="highlight-yellow">{trecho_a}</span>')
+                html_novo.append(f'<span class="highlight-yellow">{trecho_b}</span>')
+                tem_divergencia = True
+                
+        elif tag == 'delete':
+            html_ref.append(f'<span class="highlight-yellow">{trecho_a}</span>')
+            tem_divergencia = True
+            
+        elif tag == 'insert':
+            html_novo.append(f'<span class="highlight-yellow">{trecho_b}</span>')
+            tem_divergencia = True
+
+    final_ref = "\n".join(html_ref).replace("\n", "<br>")
+    final_novo = "\n".join(html_novo).replace("\n", "<br>")
+    
+    return final_ref, final_novo, tem_divergencia
+
+# ... (Mantenha o resto das funções: gerenciar_uso_diario, processar_arquivo, etc.) ...
