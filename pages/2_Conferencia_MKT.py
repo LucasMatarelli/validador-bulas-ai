@@ -66,12 +66,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO -----------------
-# Prioridade para modelos com maior capacidade de saída
+# ----------------- 2. CONFIGURAÇÃO (CORRIGIDA) -----------------
+# Lista atualizada com modelos estáveis para evitar erro 404 e 429
 MODELOS_PARA_TENTAR = [
-    "models/gemini-1.5-flash", 
-    "models/gemini-2.0-flash-exp", 
-    "gemini-1.5-flash"
+    "gemini-1.5-flash", 
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash-001",
+    "gemini-1.5-flash-002"
 ]
 
 SECOES_PACIENTE = [
@@ -108,7 +110,7 @@ def normalizacao_nuclear(texto):
 def verificar_ortografia_inteligente(texto):
     try:
         spell = SpellChecker(language='pt')
-        # LISTA BRANCA REFORÇADA COM BASE NAS IMAGENS
+        # LISTA BRANCA REFORÇADA
         whitelist = {
             'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
             'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
@@ -154,7 +156,7 @@ def verificar_ortografia_inteligente(texto):
             if p_lower in spell or p_lower in whitelist:
                 resultado.append(token)
             else:
-                resultado.append(token) # Presunção de inocência (não marca)
+                resultado.append(token)
 
         return "".join(resultado)
     except:
@@ -352,7 +354,7 @@ if st.button("🚀 Processar Conferência"):
                         break 
                     except Exception as e:
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(0.5)
+                        time.sleep(1) # Aguarda 1s para não floodar
                         continue
 
             if not sucesso:
