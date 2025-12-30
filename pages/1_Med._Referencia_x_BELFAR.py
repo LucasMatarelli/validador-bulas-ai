@@ -93,46 +93,75 @@ SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 def normalizar_para_comparacao(texto):
     """
-    Remove TUDO que causa falso positivo (amarelo errado).
-    Se dois textos passarem por aqui e ficarem iguais, eles SÃO iguais visualmente.
+    Normalização AGRESSIVA para eliminar falsos positivos.
+    Remove espaços, pontuação, tags HTML e caracteres invisíveis.
     """
     if not texto: return ""
-    # 1. Normaliza caracteres Unicode (junta acentos, c com cedilha, etc)
-    texto = unicodedata.normalize('NFC', texto)
-    # 2. Remove caracteres invisíveis chatos
-    texto = texto.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
-    # 3. Transforma múltiplos espaços em um só
-    texto = re.sub(r'\s+', ' ', texto)
-    return texto.strip()
+    
+    # Remove tags HTML
+    texto = re.sub(r'<[^>]+>', '', texto)
+    
+    # Normaliza Unicode
+    texto = unicodedata.normalize('NFKD', texto)
+    
+    # Remove acentos
+    texto = ''.join([c for c in texto if not unicodedata.combining(c)])
+    
+    # Remove pontuação e caracteres especiais
+    texto = re.sub(r'[^\w\s]', '', texto)
+    
+    # Remove espaços múltiplos e converte para minúsculas
+    texto = re.sub(r'\s+', ' ', texto).strip().lower()
+    
+    return texto
 
-def verificar_ortografia(texto_html):
+def verificar_ortografia(texto):
     """
-    Marca de VERMELHO palavras que não existem no dicionário.
-    Ignora tags HTML e pontuação.
+    Marca de VERMELHO apenas palavras com erro ortográfico.
+    Ignora tags HTML, números, siglas e termos técnicos curtos.
     """
     try:
         spell = SpellChecker(language='pt')
-        # Regex para separar palavras ignorando tags HTML (<...>) e pontuação
-        tokens = re.split(r'(<[^>]+>|[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]+)', texto_html)
         
-        novo_texto = []
-        for token in tokens:
-            # Ignora tags, espaços vazios ou palavras muito curtas (ex: 'mg', 'ml')
-            if token.startswith('<') or not token.strip() or len(token) < 2:
-                novo_texto.append(token)
-                continue
-            
-            # Limpa e verifica
-            palavra_limpa = token.strip()
-            # Se não estiver no dicionário -> Marca VERMELHO
-            if palavra_limpa.lower() not in spell:
-                novo_texto.append(f'<span class="highlight-red" title="Erro de Português?">{token}</span>')
+        # Palavras técnicas comuns em bulas que não devem ser marcadas
+        termos_tecnicos = {
+            'mg', 'ml', 'mcg', 'ui', 'frascoampola', 'comprimido', 'capsula',
+            'anvisa', 'rg', 'cpf', 'cnpj', 'cep', 'tel', 'sac', 'lote', 'val',
+            'mg/ml', 'mcg/ml', 'ui/ml'
+        }
+        spell.word_frequency.load_words(termos_tecnicos)
+        
+        # Divide o texto preservando as tags HTML
+        partes = re.split(r'(<[^>]+>)', texto)
+        resultado = []
+        
+        for parte in partes:
+            if parte.startswith('<'):
+                # É uma tag HTML, mantém como está
+                resultado.append(parte)
             else:
-                novo_texto.append(token)
-                
-        return "".join(novo_texto)
+                # É texto normal, verifica ortografia palavra por palavra
+                palavras = re.findall(r'\b\w+\b|\W+', parte)
+                for palavra in palavras:
+                    # Ignora se não for palavra ou se for muito curta
+                    if not re.match(r'\w+', palavra) or len(palavra) <= 2:
+                        resultado.append(palavra)
+                        continue
+                    
+                    # Ignora números
+                    if palavra.isdigit():
+                        resultado.append(palavra)
+                        continue
+                    
+                    # Verifica ortografia
+                    if palavra.lower() not in spell and palavra.lower() not in termos_tecnicos:
+                        resultado.append(f'<span class="highlight-red" title="Possível erro ortográfico">{palavra}</span>')
+                    else:
+                        resultado.append(palavra)
+        
+        return ''.join(resultado)
     except:
-        return texto_html
+        return texto
 
 def destacar_datas(texto):
     padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padrão\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
@@ -142,60 +171,72 @@ def destacar_datas(texto):
 
 def gerar_diff_html(texto_ref, texto_novo):
     """
-    Gera o HTML final:
-    - Amarelo: Diferenças reais.
-    - Vermelho: Erros de português (apenas no texto novo).
+    Gera HTML com marcações:
+    - Amarelo: apenas diferenças REAIS de conteúdo
+    - Vermelho: erros ortográficos no texto novo
     """
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # 1. PROVA REAL: Se visualmente for igual, retorna limpo (SÓ COM VERMELHO SE TIVER ERRO)
-    if normalizar_para_comparacao(texto_ref) == normalizar_para_comparacao(texto_novo):
-        # Texto é igual -> Só verifica português no lado direito
-        html_novo = verificar_ortografia(texto_novo.replace('\n', '<br>'))
-        return texto_ref.replace('\n', '<br>'), html_novo, False
-
-    # 2. SE FOR DIFERENTE, RODA O COMPARADOR
-    a = texto_ref.splitlines()
-    b = texto_novo.splitlines()
+    # Primeiro verifica se são iguais após normalização
+    ref_norm = normalizar_para_comparacao(texto_ref)
+    novo_norm = normalizar_para_comparacao(texto_novo)
     
-    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
-    html_ref = []
-    html_novo = []
-    eh_divergente = False
+    if ref_norm == novo_norm:
+        # Textos são iguais, apenas aplica verificação ortográfica
+        html_ref = texto_ref.replace('\n', '<br>')
+        html_novo = verificar_ortografia(texto_novo.replace('\n', '<br>'))
+        return html_ref, html_novo, False
+    
+    # Textos são diferentes, faz comparação linha por linha
+    linhas_ref = texto_ref.split('\n')
+    linhas_novo = texto_novo.split('\n')
+    
+    matcher = difflib.SequenceMatcher(None, linhas_ref, linhas_novo, autojunk=False)
+    
+    html_ref_partes = []
+    html_novo_partes = []
+    tem_divergencia = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        trecho_a = "\n".join(a[i1:i2])
-        trecho_b = "\n".join(b[j1:j2])
-        
         if tag == 'equal':
-            # Texto igual: sem amarelo, mas verifica português no lado direito
-            html_ref.append(trecho_a)
-            html_novo.append(verificar_ortografia(trecho_b))
-        
+            # Linhas iguais
+            for linha in linhas_ref[i1:i2]:
+                html_ref_partes.append(linha)
+            for linha in linhas_novo[j1:j2]:
+                html_novo_partes.append(verificar_ortografia(linha))
+                
         elif tag == 'replace':
-            # Verifica se a "substituição" é apenas sujeira invisível
-            if normalizar_para_comparacao(trecho_a) == normalizar_para_comparacao(trecho_b):
-                # É visualmente igual -> Trata como 'equal'
-                html_ref.append(trecho_a)
-                html_novo.append(verificar_ortografia(trecho_b))
+            # Verifica se a diferença é real ou só formatação
+            trecho_ref = '\n'.join(linhas_ref[i1:i2])
+            trecho_novo = '\n'.join(linhas_novo[j1:j2])
+            
+            if normalizar_para_comparacao(trecho_ref) == normalizar_para_comparacao(trecho_novo):
+                # Diferença apenas de formatação, não marca
+                html_ref_partes.append(trecho_ref)
+                html_novo_partes.append(verificar_ortografia(trecho_novo))
             else:
-                # É diferente mesmo -> AMARELO
-                html_ref.append(f'<span class="highlight-yellow">{trecho_a}</span>')
-                html_novo.append(f'<span class="highlight-yellow">{trecho_b}</span>')
-                eh_divergente = True
-
+                # Diferença real de conteúdo
+                html_ref_partes.append(f'<span class="highlight-yellow">{trecho_ref}</span>')
+                html_novo_partes.append(f'<span class="highlight-yellow">{verificar_ortografia(trecho_novo)}</span>')
+                tem_divergencia = True
+                
         elif tag == 'delete':
-            # Texto que sumiu (estava na ref, sumiu na mkt) -> AMARELO na Ref
-            html_ref.append(f'<span class="highlight-yellow">{trecho_a}</span>')
-            eh_divergente = True
+            # Texto removido
+            trecho = '\n'.join(linhas_ref[i1:i2])
+            html_ref_partes.append(f'<span class="highlight-yellow">{trecho}</span>')
+            tem_divergencia = True
             
         elif tag == 'insert':
-            # Texto novo (não tinha na ref, apareceu na mkt) -> AMARELO na Mkt
-            html_novo.append(f'<span class="highlight-yellow">{trecho_b}</span>')
-            eh_divergente = True
-            
-    return "\n".join(html_ref).replace("\n", "<br>"), "\n".join(html_novo).replace("\n", "<br>"), eh_divergente
+            # Texto adicionado
+            trecho = '\n'.join(linhas_novo[j1:j2])
+            html_novo_partes.append(f'<span class="highlight-yellow">{verificar_ortografia(trecho)}</span>')
+            tem_divergencia = True
+    
+    html_ref = '<br>'.join(html_ref_partes)
+    html_novo = '<br>'.join(html_novo_partes)
+    
+    return html_ref, html_novo, tem_divergencia
 
 def extract_text_from_file(uploaded_file):
     try:
@@ -350,7 +391,7 @@ if st.button("🚀 Processar Conferência"):
                         html_mkt = html_mkt.replace('\n', '<br>')
                         html_ref = html_ref.replace('\n', '<br>')
                     else:
-                        # AQUI: Usa a nova lógica de comparação corrigida
+                        # Usa a lógica corrigida de comparação
                         html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff: divs_count += 1
