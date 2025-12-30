@@ -218,12 +218,16 @@ def ocr_via_gemini(uploaded_file, api_keys):
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
     
-    # PROMPT ATUALIZADO: Focado em cópia exata, proibindo tradução
+    # PROMPT BLINDADO CONTRA O ERRO 'GENERAL'
     prompt_ocr = """
-    ATENÇÃO: Você é um robô de digitalização OCR. 
-    SUA MISSÃO: Transcrever o texto da imagem EXATAMENTE como ele aparece, caractere por caractere.
-    PROIBIDO: Não corrija ortografia. Não traduza palavras (ex: MANTENHA 'geral', NÃO mude para 'general'). Não faça resumos.
-    Se houver erro de digitação no original, MANTENHA o erro. Apenas extraia o texto puro.
+    ATENÇÃO: Você é um robô de OCR para documentos farmacêuticos brasileiros.
+    IDIOMA: Português do Brasil.
+    
+    REGRAS DE OURO:
+    1. Transcreva caractere por caractere.
+    2. PROIBIDO traduzir.
+    3. ATENÇÃO MÁXIMA: Se estiver escrito "geral" (comum em bulas), mantenha "geral". NÃO escreva "general" em inglês.
+    4. Mantenha erros de digitação originais se houver.
     """
     
     safety_settings = {
@@ -245,8 +249,17 @@ def ocr_via_gemini(uploaded_file, api_keys):
                         [{'mime_type': 'application/pdf', 'data': bytes_data}, prompt_ocr],
                         safety_settings=safety_settings
                     )
-                    if response.text:
-                        return response.text, None
+                    
+                    texto_extraido = response.text
+                    
+                    # --- CIRURGIA CORRETIVA ---
+                    # Se mesmo com o aviso a IA escrever 'general', corrigimos na força bruta aqui.
+                    if texto_extraido:
+                         # Troca " general " por " geral " (com espaços para não quebrar outras palavras)
+                         # e "general," por "geral," etc.
+                         texto_extraido = re.sub(r'\bgeneral\b', 'geral', texto_extraido, flags=re.IGNORECASE)
+                         return texto_extraido, None
+                         
                 except Exception as e_model:
                     err_msg = str(e_model)
                     log_erros_ocr.append(f"Key {i+1} | {modelo}: {err_msg}")
@@ -346,7 +359,7 @@ if st.button("🚀 Processar Conferência"):
             if not t_mkt or len(t_mkt) < 20:
                 st.error(f"ERRO: Conteúdo do arquivo MKT insuficiente para análise."); st.stop()
 
-            # PROMPT ATUALIZADO: "LOBOTOMIA" NA CRIATIVIDADE DA IA
+            # PROMPT COM REFORÇO EXTRA
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso (ROBÔ DE CÓPIA).
             
@@ -355,8 +368,8 @@ if st.button("🚀 Processar Conferência"):
             
             SUA MISSÃO CRÍTICA:
             1. COPIAR o texto EXATAMENTE como está nos inputs para dentro do JSON.
-            2. PROIBIDO corrigir português (se estiver "geral", escreva "geral". Se estiver "general", escreva "general").
-            3. PROIBIDO traduzir ou trocar por sinônimos.
+            2. PROIBIDO corrigir português. 
+            3. ATENÇÃO: Se no texto de entrada estiver "geral", MANTENHA "geral". Não mude para "general".
             4. Manter formatação <b>.
             
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
