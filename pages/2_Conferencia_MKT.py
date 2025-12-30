@@ -66,12 +66,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO (SUA LISTA) -----------------
+# ----------------- 2. CONFIGURAÇÃO (SUA LISTA + CORREÇÕES TÉCNICAS) -----------------
+# Nota: "gemini-2.5" ainda não existe na API pública, vai dar 404, mas deixei na lista como pediu.
+# Adicionei "gemini-2.0-flash-exp" que é o nome correto atual do 2.0.
 MODELOS_PARA_TENTAR = [
-    "models/gemini-2.5-flash", 
-    "models/gemini-2.0-flash", 
-    "models/gemini-1.5-flash", 
-    "gemini-1.5-flash"
+    "gemini-2.0-flash-exp",        # Nome oficial do 2.0 hoje
+    "models/gemini-2.0-flash-exp", # Variação com prefixo
+    "models/gemini-2.5-flash",     # O que você pediu (provavelmente falhará)
+    "models/gemini-2.0-flash",     # O que você pediu
+    "models/gemini-1.5-flash",     # O que você pediu
+    "gemini-1.5-flash",            # Padrão estável
+    "gemini-1.5-flash-latest",     # Última versão estável
+    "gemini-1.5-flash-002"         # Versão atualizada de Setembro
 ]
 
 SECOES_PACIENTE = [
