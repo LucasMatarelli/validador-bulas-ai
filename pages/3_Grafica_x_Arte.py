@@ -193,7 +193,6 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo):
-    # Proteção extra contra None
     if texto_ref is None: texto_ref = ""
     if texto_novo is None: texto_novo = ""
     
@@ -254,9 +253,18 @@ def ocr_via_gemini(uploaded_file, api_keys):
             
     return "", " | ".join(log_erros_ocr)
 
-def extract_text_from_file(uploaded_file, api_keys=None):
+def extract_text_smart(uploaded_file, api_keys=None):
+    """
+    Função INTELIGENTE:
+    1. Tenta extrair nativamente.
+    2. Analisa se o que saiu é 'pouco demais' (< 100 caracteres).
+    3. Se for pouco, assume que é IMAGEM ou VETOR (Curva) e aciona o OCR só para esse arquivo.
+    """
     text = ""
+    metodo = "Nativo"
+    
     try:
+        # 1. Tentativa Nativa
         if uploaded_file.name.lower().endswith('.pdf'):
             uploaded_file.seek(0)
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
@@ -283,21 +291,31 @@ def extract_text_from_file(uploaded_file, api_keys=None):
                     else: para_txt += run.text
                 text += para_txt + "\n\n"
         
+        # 2. Análise da Necessidade de OCR
         texto_limpo = re.sub(r'<[^>]+>', '', text).strip()
         
-        if len(texto_limpo) < 50 and uploaded_file.name.lower().endswith('.pdf') and api_keys:
-            st.warning(f"⚠️ '{uploaded_file.name}' parece ser imagem. Tentando OCR com todas as chaves e modelos...")
+        # Se tiver menos de 100 caracteres (era 50), consideramos que a extração falhou (arquivo de Curva/Imagem)
+        eh_pdf = uploaded_file.name.lower().endswith('.pdf')
+        
+        if eh_pdf and len(texto_limpo) < 100 and api_keys:
+            st.warning(f"👁️ Arquivo '{uploaded_file.name}' detectado como Imagem/Curvas (texto extraído insuficiente). Ativando OCR...")
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
+            
             if texto_ocr:
-                st.success(f"✅ OCR realizado com sucesso em '{uploaded_file.name}'!")
+                st.success(f"✅ OCR bem-sucedido para '{uploaded_file.name}'!")
                 return texto_ocr
             else:
-                st.error(f"Falha OCR em '{uploaded_file.name}'. Erros: {erro_ocr}")
-                return ""
-
+                st.error(f"❌ Falha no OCR de '{uploaded_file.name}'. Detalhes: {erro_ocr}")
+                return "" # Retorna vazio para não crashar, mas avisa erro
+        else:
+            # Se tem bastante texto, segue o jogo sem gastar crédito de OCR
+            if len(texto_limpo) >= 100:
+                st.info(f"📄 Arquivo '{uploaded_file.name}' lido como texto padrão (OCR não necessário).")
+            
         return text
+        
     except Exception as e:
-        return f"Erro na leitura: {str(e)}"
+        return f"Erro leitura: {str(e)}"
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
@@ -305,8 +323,8 @@ st.title("💊 Conferência MKT")
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f1")
-f2 = c2.file_uploader("📜 Bula MKT", type=["pdf", "docx"], key="f2")
+f1 = c1.file_uploader("📜 Bula BELFAR (Referência)", type=["pdf", "docx"], key="f1")
+f2 = c2.file_uploader("📜 Bula MKT (Arte/Curvas)", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     keys_raw = [
@@ -322,14 +340,16 @@ if st.button("🚀 Processar Conferência"):
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE
 
-        with st.spinner("Lendo arquivos (aplicando OCR se necessário com todas as chaves)..."):
-            t_anvisa = extract_text_from_file(f1, api_keys=keys_validas)
-            t_mkt = extract_text_from_file(f2, api_keys=keys_validas)
+        with st.spinner("Analisando arquivos individualmente (Texto ou OCR)..."):
+            # Chama a função inteligente para cada um separadamente
+            t_anvisa = extract_text_smart(f1, api_keys=keys_validas)
+            t_mkt = extract_text_smart(f2, api_keys=keys_validas)
 
+            # Validação Final de Conteúdo
             if not t_anvisa or len(t_anvisa) < 20:
-                st.error(f"ERRO: O arquivo BELFAR está vazio ou ilegível mesmo com OCR."); st.stop()
+                st.error(f"ERRO: Conteúdo do arquivo BELFAR insuficiente para análise."); st.stop()
             if not t_mkt or len(t_mkt) < 20:
-                st.error(f"ERRO: O arquivo MKT está vazio ou ilegível mesmo com OCR."); st.stop()
+                st.error(f"ERRO: Conteúdo do arquivo MKT insuficiente para análise."); st.stop()
 
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
@@ -374,7 +394,7 @@ if st.button("🚀 Processar Conferência"):
             try:
                 resultado = json.loads(response.text)
                 
-                # Proteção para dados nulos
+                # Proteção (or "-") para não quebrar se vier null
                 data_ref = resultado.get("data_anvisa_ref") or "-"
                 data_mkt = resultado.get("data_anvisa_mkt") or "-"
                 dados_secoes = resultado.get("secoes") or []
@@ -384,7 +404,7 @@ if st.button("🚀 Processar Conferência"):
 
                 for item in dados_secoes:
                     titulo = (item.get('titulo') or '').strip()
-                    # AQUI ESTAVA O ERRO: Adicionamos ( ... or "") para impedir o crash
+                    # Proteção (or "") para evitar crash com strip() em None
                     txt_ref = (item.get('texto_anvisa') or "").strip()
                     txt_mkt = (item.get('texto_mkt') or "").strip()
                     
