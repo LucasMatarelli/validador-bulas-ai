@@ -66,14 +66,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO (CORRIGIDA) -----------------
-# Lista atualizada com modelos estáveis para evitar erro 404 e 429
+# ----------------- 2. CONFIGURAÇÃO (MODELOS ROBUSTOS) -----------------
+# Tenta todas as variações de nome para garantir que um funcione
 MODELOS_PARA_TENTAR = [
-    "gemini-1.5-flash", 
-    "gemini-1.5-flash-latest",
+    "models/gemini-1.5-flash",
+    "gemini-1.5-flash",
+    "models/gemini-1.5-pro",
     "gemini-1.5-pro",
-    "gemini-1.5-flash-001",
-    "gemini-1.5-flash-002"
+    "models/gemini-pro",  # Fallback (Versão 1.0 estável)
+    "gemini-pro"
 ]
 
 SECOES_PACIENTE = [
@@ -340,7 +341,7 @@ if st.button("🚀 Processar Conferência"):
                 
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
-                        # CONFIGURAÇÃO CRÍTICA PARA EVITAR CORTE
+                        # CONFIGURAÇÃO CRÍTICA
                         model = genai.GenerativeModel(
                             modelo, 
                             generation_config={
@@ -354,7 +355,7 @@ if st.button("🚀 Processar Conferência"):
                         break 
                     except Exception as e:
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(1) # Aguarda 1s para não floodar
+                        time.sleep(1) # Espera 1s para evitar bloqueio
                         continue
 
             if not sucesso:
@@ -366,7 +367,6 @@ if st.button("🚀 Processar Conferência"):
                 text_clean = response.text.strip()
                 resultado = json.loads(text_clean)
             except json.JSONDecodeError:
-                # LÓGICA DE RESGATE (Se a IA cortar no meio)
                 try:
                     st.warning("⚠️ O texto é muito longo e foi cortado pela IA. Recuperando início...")
                     fixed_text = text_clean + '"}]}' 
