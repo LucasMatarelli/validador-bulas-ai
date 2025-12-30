@@ -36,7 +36,7 @@ st.markdown("""
         font-weight: bold;
     }
     
-    /* ERRO PORTUGUÊS (Vermelho) - Apenas erros bizarros */
+    /* ERRO PORTUGUÊS (Vermelho) - Estilo sutil */
     .highlight-red { 
         background-color: #f8d7da; color: #721c24; 
         border-bottom: 2px solid #dc3545; 
@@ -97,34 +97,39 @@ SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
 def normalizacao_nuclear(texto):
-    """
-    Remove TUDO que não seja letra ou número.
-    Serve para garantir que espaços, quebras de linha e pontuação não gerem falso amarelo.
-    """
+    """Remove TUDO que não seja letra ou número para comparação de conteúdo."""
     if not texto: return ""
-    # Remove tags
     t = re.sub(r'<[^>]+>', '', texto)
-    # Remove acentos
     t = unicodedata.normalize('NFKD', t).encode('ASCII', 'ignore').decode('ASCII')
-    # Remove tudo que não for alfanumérico (Tira espaços, pontuação, simbolos)
     t = re.sub(r'[^a-zA-Z0-9]', '', t)
     return t.lower()
 
 def verificar_ortografia_inteligente(texto):
     """
-    Corretor Conservador: Na dúvida, aprova.
+    Corretor Ultra-Conservador:
+    Se a palavra não for conhecida, ASSUME QUE É UM TERMO TÉCNICO CORRETO.
+    Não tenta adivinhar sugestões para evitar falsos positivos em bulas.
     """
     try:
         spell = SpellChecker(language='pt')
         
-        # LISTA BRANCA EXPANDIDA - Termos que NÃO devem marcar erro
+        # LISTA BRANCA MASSIVA - Termos aceitos
         whitelist = {
-            # Unidades e técnicos
             'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
             'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
             'dr', 'dra', 'vp', 'vps', 'bula', 'paciente', 'profissional', 'sac',
             'blister', 'cartucho', 'posologia', 'superdose', 'farmacocinetica',
-            # Palavras médicas comuns que as vezes falham
+            'biodisponibilidade', 'excipiente', 'excipientes', 'revestimento',
+            'comprimido', 'capsula', 'solucao', 'suspensao', 'oral', 'intravenosa',
+            'subcutanea', 'intramuscular', 'topico', 'oftalmico', 'nasal',
+            'adulto', 'pediatrico', 'geriatrico', 'indicação', 'contraindicação',
+            'advertencia', 'precaucao', 'interacao', 'reacao', 'adversa', 'sintoma',
+            'tratamento', 'diagnostico', 'profilaxia', 'analgesico', 'antipiretico',
+            'anti-inflamatorio', 'antibiotico', 'antiviral', 'antifungico',
+            'cardiovascular', 'respiratorio', 'digestivo', 'nervoso', 'central',
+            'periferico', 'renal', 'hepatico', 'sanguineo', 'imunologico',
+            'endocrino', 'metabolico', 'musculoesqueletico', 'dermatologico',
+            # Adicione aqui termos específicos que estavam marcando erro
             'predisponentes', 'sistemicos', 'sistêmicos', 'congenita', 'congênita',
             'aneurisma', 'dissecção', 'disseccao', 'valvar', 'valvula', 'regurgitação',
             'endocardite', 'marfan', 'ehlers-danlos', 'turner', 'sjogren', 'takayasu',
@@ -136,49 +141,37 @@ def verificar_ortografia_inteligente(texto):
         }
         spell.word_frequency.load_words(whitelist)
 
-        # Tokeniza mantendo estrutura
-        tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/])', texto)
+        tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/\[\]])', texto)
         resultado = []
         
         for token in tokens:
-            # Ignora tokens irrelevantes
+            # Filtros iniciais para ignorar o que não é palavra verificável
             if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
                 resultado.append(token)
                 continue
             
-            # Limpa para verificação
+            # Limpeza para verificação
             palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
             
-            # Validações Rápidas (Ignora números, maiúsculas, hifens)
+            # BLINDAGEM: Ignora se tiver número, for muito curta, tiver hífen ou COMEÇAR COM MAIÚSCULA
             if (not palavra_limpa or 
-                len(palavra_limpa) < 3 or 
+                len(palavra_limpa) < 4 or 
                 any(c.isdigit() for c in token) or 
-                palavra_limpa[0].isupper() or 
-                '-' in palavra_limpa):
+                '-' in palavra_limpa or
+                palavra_limpa[0].isupper()):
                 resultado.append(token)
                 continue
 
             p_lower = palavra_limpa.lower()
 
-            # 1. Se estiver na whitelist ou dicionário -> OK
+            # LÓGICA ULTRA CONSERVADORA:
+            # Se está no dicionário ou na whitelist -> OK.
+            # Se NÃO está -> ASSUME QUE É TERMO TÉCNICO E IGNORA (Não marca vermelho).
             if p_lower in spell or p_lower in whitelist:
                 resultado.append(token)
             else:
-                # 2. Se não estiver: Só marca se tiver CERTEZA que é erro
-                candidatos = spell.candidates(p_lower)
-                if candidatos:
-                    sugestao = spell.correction(p_lower)
-                    
-                    # Regra de Ouro: Só marca se a sugestão for quase idêntica
-                    # Evita marcar "dissecção" como erro só porque o dicionário sugere "dissecação"
-                    diff_chars = sum(1 for a, b in zip(p_lower, sugestao) if a != b) + abs(len(p_lower) - len(sugestao))
-                    
-                    if diff_chars <= 1: # Só 1 letra de diferença
-                        resultado.append(f'<span class="highlight-red" title="Sugestão: {sugestao}">{token}</span>')
-                    else:
-                        resultado.append(token) # Diferença grande? Assume termo técnico.
-                else:
-                    resultado.append(token) # Sem sugestão? Termo técnico raro.
+                # Palavra desconhecida. Em bula, assumimos que está correta.
+                resultado.append(token)
 
         return "".join(resultado)
     except:
@@ -203,11 +196,8 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    """Quebra por palavras para evitar blocos amarelos gigantes por causa de espaços"""
-    # Split sem argumentos remove TODO whitespace repetido
     palavras_ref = texto_ref.split()
     palavras_novo = texto_novo.split()
-    
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
     html_ref_list = []
     html_novo_list = []
@@ -237,7 +227,6 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for igual, ignora formatação
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
-        # Conteúdo idêntico (ignorando espaços e pontuação)
         html_novo = verificar_ortografia_inteligente(texto_novo)
         html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
@@ -246,10 +235,8 @@ def gerar_diff_html(texto_ref, texto_novo):
     ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
     novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
     
-    # Compara palavra por palavra direto (ignora quebras de linha que causam falsos positivos)
     r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
     
-    # Aplica correções visuais no resultado
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
     r_html_final = r_html.replace('\n', '<br>')
