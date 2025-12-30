@@ -11,7 +11,7 @@ from spellchecker import SpellChecker
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # ----------------- 1. VISUAL & CSS -----------------
-st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide")
+st.set_page_config(page_title="Gráfica x Arte", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
@@ -328,13 +328,13 @@ def extract_text_smart(uploaded_file, api_keys=None):
         return f"Erro leitura: {str(e)}"
 
 # ----------------- 5. UI PRINCIPAL -----------------
-st.title("💊 Conferência MKT")
+st.title("💊 Gráfica x Arte")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📜 Bula BELFAR (Referência)", type=["pdf", "docx"], key="f1")
-f2 = c2.file_uploader("📜 Bula MKT (Arte/Curvas)", type=["pdf", "docx"], key="f2")
+f1 = c1.file_uploader("📜 Gráfica", type=["pdf", "docx"], key="f1")
+f2 = c2.file_uploader("📜 Arte Vigente", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     keys_raw = [
@@ -461,8 +461,8 @@ if st.button("🚀 Processar Conferência"):
 
                     with st.expander(f"{icon} {titulo}", expanded=aberto):
                         ce, cd = st.columns(2)
-                        with ce: st.caption("BELFAR"); st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
-                        with cd: st.caption("MKT"); st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
+                        with ce: st.caption("Gráfica"); st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
+                        with cd: st.caption("Arte"); st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
 
             except Exception as e:
                 st.error(f"Erro ao processar JSON: {e}"); st.code(response.text)
