@@ -8,6 +8,7 @@ import re
 import unicodedata
 import time
 from spellchecker import SpellChecker
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide")
@@ -29,14 +30,12 @@ st.markdown("""
         text-align: left;
     }
     
-    /* DIVERGÊNCIA (Amarelo) */
     .highlight-yellow { 
         background-color: #fff3cd; color: #856404; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
         font-weight: bold;
     }
     
-    /* ERRO PORTUGUÊS (Vermelho) - Estilo sutil */
     .highlight-red { 
         background-color: #f8d7da; color: #721c24; 
         border-bottom: 2px solid #dc3545; 
@@ -68,7 +67,6 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
-    "models/gemini-2.5-flash", 
     "models/gemini-2.0-flash", 
     "models/gemini-1.5-flash", 
     "gemini-1.5-flash"
@@ -85,15 +83,12 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-# (Definindo uma lista padrão para Profissional caso precise no futuro, ou usando a de Paciente como fallback)
 SECOES_PROFISSIONAL = SECOES_PACIENTE 
-
 SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
 def normalizacao_nuclear(texto):
-    """Remove TUDO que não seja letra ou número para comparação de conteúdo."""
     if not texto: return ""
     t = re.sub(r'<[^>]+>', '', texto)
     t = unicodedata.normalize('NFKD', t).encode('ASCII', 'ignore').decode('ASCII')
@@ -101,14 +96,8 @@ def normalizacao_nuclear(texto):
     return t.lower()
 
 def verificar_ortografia_inteligente(texto):
-    """
-    Corretor Ultra-Conservador:
-    Se a palavra não for conhecida, ASSUME QUE É UM TERMO TÉCNICO CORRETO.
-    """
     try:
         spell = SpellChecker(language='pt')
-        
-        # LISTA BRANCA MASSIVA - Termos aceitos
         whitelist = {
             'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
             'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
@@ -145,20 +134,14 @@ def verificar_ortografia_inteligente(texto):
             
             palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
             
-            if (not palavra_limpa or 
-                len(palavra_limpa) < 4 or 
-                any(c.isdigit() for c in token) or 
-                '-' in palavra_limpa or
-                palavra_limpa[0].isupper()):
+            if (not palavra_limpa or len(palavra_limpa) < 4 or any(c.isdigit() for c in token) or '-' in palavra_limpa or palavra_limpa[0].isupper()):
                 resultado.append(token)
                 continue
 
             p_lower = palavra_limpa.lower()
-
             if p_lower in spell or p_lower in whitelist:
                 resultado.append(token)
             else:
-                # Se não conhece, assume que é correto para evitar falso positivo em bula
                 resultado.append(token)
 
         return "".join(resultado)
@@ -166,7 +149,6 @@ def verificar_ortografia_inteligente(texto):
         return texto
 
 def melhorar_visual_topicos(texto_html):
-    """Transforma marcadores txt em visual HTML bonito"""
     linhas = re.split(r'(<br>|\n)', texto_html)
     novo_texto = []
     for linha in linhas:
@@ -233,41 +215,50 @@ def gerar_diff_html(texto_ref, texto_novo):
 
 def ocr_via_gemini(uploaded_file, api_keys):
     """
-    Usa o modelo Gemini Flash para 'ler' o PDF como imagem (OCR).
-    Isso é usado quando o PDF é escaneado (não tem texto selecionável).
+    OCR com configurações de segurança RELAXADAS para permitir bulas médicas.
     """
-    # Reinicia o ponteiro do arquivo
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
     
-    # Prompt específico para OCR fiel
-    prompt_ocr = "Transcreva TODO o texto deste documento fielmente. Não faça resumos, não adicione formatação markdown (como negrito), apenas extraia o texto corrido exatamente como está escrito."
+    prompt_ocr = "Transcreva TODO o texto deste documento fielmente. Não faça resumos, apenas extraia o texto exato."
+    
+    # Configuração vital para Bulas: Liberar conteúdo que a IA pode achar 'perigoso' (remédios)
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
+
+    last_error = ""
 
     for key in api_keys:
         try:
             genai.configure(api_key=key)
-            # Usando Gemini 1.5 Flash que aceita PDF nativamente e é rápido
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            
-            response = model.generate_content([
-                {'mime_type': 'application/pdf', 'data': bytes_data},
-                prompt_ocr
-            ])
-            return response.text
-        except Exception:
+            # Tenta o modelo 2.0 primeiro, depois o 1.5
+            for model_name in ["models/gemini-2.0-flash", "models/gemini-1.5-flash"]:
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content(
+                        [{'mime_type': 'application/pdf', 'data': bytes_data}, prompt_ocr],
+                        safety_settings=safety_settings
+                    )
+                    return response.text, None # Sucesso
+                except Exception as e_inner:
+                    last_error = f"{model_name}: {str(e_inner)}"
+                    continue
+        except Exception as e:
+            last_error = str(e)
             continue
-    return ""
+            
+    return "", last_error
 
 def extract_text_from_file(uploaded_file, api_keys=None):
-    """
-    Extrai texto de PDF/DOCX. 
-    Se o PDF tiver pouco texto (escaneado) e api_keys forem fornecidas, usa OCR via IA.
-    """
     text = ""
     try:
-        # --- TENTATIVA 1: Extração Padrão (Rápida) ---
+        # 1. Tenta extração nativa (rápida)
         if uploaded_file.name.lower().endswith('.pdf'):
-            uploaded_file.seek(0) # Garantir leitura do início
+            uploaded_file.seek(0)
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
                 blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
@@ -277,8 +268,7 @@ def extract_text_from_file(uploaded_file, api_keys=None):
                         line_txt = ""
                         for s in l.get("spans", []):
                             content = s["text"]
-                            font_props = s["font"].lower()
-                            is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
+                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower()
                             if is_bold: line_txt += f"<b>{content}</b>"
                             else: line_txt += content
                         block_text += line_txt + " " 
@@ -293,17 +283,20 @@ def extract_text_from_file(uploaded_file, api_keys=None):
                     else: para_txt += run.text
                 text += para_txt + "\n\n"
         
-        # --- TENTATIVA 2: Verificação de Necessidade de OCR ---
-        # Se o texto extraído for muito curto (< 50 caracteres) e for PDF, provavelmente é escaneado.
+        # 2. Verificação OCR
         texto_limpo = re.sub(r'<[^>]+>', '', text).strip()
         
+        # Se tiver menos de 50 caracteres e for PDF, assume que é imagem
         if len(texto_limpo) < 50 and uploaded_file.name.lower().endswith('.pdf') and api_keys:
-            st.warning(f"⚠️ Arquivo '{uploaded_file.name}' parece ser escaneado (imagem). Aplicando OCR inteligente...")
-            texto_ocr = ocr_via_gemini(uploaded_file, api_keys)
+            st.warning(f"⚠️ Arquivo '{uploaded_file.name}' parece ser imagem. Aplicando OCR Inteligente (pode demorar um pouco)...")
+            
+            texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
+            
             if texto_ocr:
                 return texto_ocr
             else:
-                st.error(f"Falha ao realizar OCR no arquivo {uploaded_file.name}.")
+                st.error(f"Erro detalhado no OCR: {erro_ocr}")
+                return ""
 
         return text
     except Exception as e:
@@ -312,67 +305,42 @@ def extract_text_from_file(uploaded_file, api_keys=None):
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
 
-tipo_bula = st.radio(
-    "Escolha o Tipo de Bula:",
-    ("Paciente",), # Adicione "Profissional" aqui se quiser habilitar
-    horizontal=True
-)
+tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula MKT", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    
-    # Recupera chaves
-    keys_raw = [
-        st.secrets.get("GEMINI_API_KEY"),
-        st.secrets.get("GEMINI_API_KEY2"),
-        st.secrets.get("GEMINI_API_KEY3")
-    ]
+    keys_raw = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_raw if k]
 
     if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key encontrada.")
-        st.stop()
+        st.error("Erro Crítico: Nenhuma API Key encontrada."); st.stop()
 
     if f1 and f2:
-        secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
+        secoes_alvo = SECOES_PACIENTE
 
-        with st.spinner("Lendo arquivos (aplicando OCR se necessário) e conectando à IA..."):
-            
-            # Passamos as chaves para a função de extração agora, para permitir o OCR
+        with st.spinner("Lendo arquivos (aplicando OCR se necessário)..."):
             t_anvisa = extract_text_from_file(f1, api_keys=keys_validas)
             t_mkt = extract_text_from_file(f2, api_keys=keys_validas)
 
-            if len(t_anvisa) < 20 or len(t_mkt) < 20:
-                st.error("Arquivo vazio ou ilegível mesmo após tentativa de OCR."); st.stop()
+            if not t_anvisa or len(t_anvisa) < 20:
+                st.error(f"Não foi possível ler o arquivo BELFAR. (Texto extraído vazio)"); st.stop()
+            if not t_mkt or len(t_mkt) < 20:
+                st.error(f"Não foi possível ler o arquivo MKT. (Texto extraído vazio)"); st.stop()
 
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
-            
             INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
             INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
-
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
             3. Manter formatação <b> e NÃO corrigir português.
-
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
-
             SAÍDA JSON:
-            {{
-                "data_anvisa_ref": "dd/mm/aaaa",
-                "data_anvisa_mkt": "dd/mm/aaaa",
-                "secoes": [
-                    {{
-                        "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "...",
-                        "texto_mkt": "..."
-                    }}
-                ]
-            }}
+            {{ "data_anvisa_ref": "...", "data_anvisa_mkt": "...", "secoes": [ {{ "titulo": "...", "texto_anvisa": "...", "texto_mkt": "..." }} ] }}
             """
             
             response = None
@@ -384,10 +352,7 @@ if st.button("🚀 Processar Conferência"):
                 genai.configure(api_key=key)
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
-                        model = genai.GenerativeModel(
-                            modelo, 
-                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
-                        )
+                        model = genai.GenerativeModel(modelo, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
                         response = model.generate_content(prompt)
                         sucesso = True
                         break 
@@ -397,9 +362,7 @@ if st.button("🚀 Processar Conferência"):
                         continue
 
             if not sucesso:
-                st.error("❌ Falha Total. Detalhes:")
-                st.code("\n".join(log_erros))
-                st.stop()
+                st.error("❌ Falha Total na Análise."); st.code("\n".join(log_erros)); st.stop()
             
             try:
                 resultado = json.loads(response.text)
@@ -421,23 +384,17 @@ if st.button("🚀 Processar Conferência"):
                     if eh_blindada:
                         status = "CONFORME"
                         if "DIZERES LEGAIS" in titulo_upper:
-                            html_mkt = destacar_datas(txt_mkt)
-                            html_ref = destacar_datas(txt_ref)
+                            html_mkt = destacar_datas(txt_mkt); html_ref = destacar_datas(txt_ref)
                         else:
-                            html_mkt = verificar_ortografia_inteligente(txt_mkt)
-                            html_ref = txt_ref
-                        
-                        html_mkt = html_mkt.replace('\n', '<br>')
+                            html_mkt = verificar_ortografia_inteligente(txt_mkt); html_ref = txt_ref
+                        html_mkt = melhorar_visual_topicos(html_mkt.replace('\n', '<br>'))
                         html_ref = html_ref.replace('\n', '<br>')
-                        html_mkt = melhorar_visual_topicos(html_mkt)
                     else:
                         html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff: divs_count += 1
 
-                    secoes_finais.append({
-                        "titulo": titulo, "texto_anvisa": html_ref, "texto_mkt": html_mkt, "status": status
-                    })
+                    secoes_finais.append({"titulo": titulo, "texto_anvisa": html_ref, "texto_mkt": html_mkt, "status": status})
 
                 st.markdown("### 📊 Resumo")
                 c1, c2, c3 = st.columns(3)
@@ -455,7 +412,6 @@ if st.button("🚀 Processar Conferência"):
                 for item in secoes_finais:
                     status = item['status']
                     titulo = item['titulo']
-                    
                     if "DIZERES LEGAIS" in titulo.upper(): icon, css, aberto = "⚖️", "border-info", True
                     elif any(b in titulo.upper() for b in SECOES_SEM_COMPARACAO): icon, css, aberto = "🔒", "border-ok", False
                     elif status == "CONFORME": icon, css, aberto = "✅", "border-ok", False
@@ -463,15 +419,10 @@ if st.button("🚀 Processar Conferência"):
 
                     with st.expander(f"{icon} {titulo}", expanded=aberto):
                         ce, cd = st.columns(2)
-                        with ce:
-                            st.caption("BELFAR")
-                            st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
-                        with cd:
-                            st.caption("MKT")
-                            st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
+                        with ce: st.caption("BELFAR"); st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
+                        with cd: st.caption("MKT"); st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"Erro ao processar JSON: {e}")
-                st.code(response.text)
+                st.error(f"Erro ao processar JSON: {e}"); st.code(response.text)
     else:
         st.warning("Adicione os arquivos.")
