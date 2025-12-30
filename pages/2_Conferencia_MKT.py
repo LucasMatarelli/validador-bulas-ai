@@ -60,8 +60,7 @@ if st.button("🚀 Processar Conferência"):
                 
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
-                        # AJUSTE 1: Aumentei o max_output_tokens para 8192 (máximo do Flash)
-                        # Isso evita que ele corte o texto no meio.
+                        # AJUSTE 1: Max Output Tokens no talo (8192)
                         model = genai.GenerativeModel(
                             modelo, 
                             generation_config={
@@ -83,25 +82,27 @@ if st.button("🚀 Processar Conferência"):
                 st.code("\n".join(log_erros))
                 st.stop()
             
-            # AJUSTE 2: Tratamento de erro do JSON Cortado
+            # AJUSTE 2: SISTEMA DE RESGATE DE JSON CORTADO
             try:
                 text_clean = response.text.strip()
                 resultado = json.loads(text_clean)
             except json.JSONDecodeError:
-                # Se falhar, tenta "remendar" o final do JSON
+                # Se cair aqui, o texto cortou no meio. Vamos tentar salvar.
                 try:
-                    # Tenta fechar aspas e chaves que ficaram abertas
-                    # Isso é uma tentativa de salvar o que já foi gerado
-                    if not text_clean.endswith("}"):
-                        text_fixed = text_clean + '"}]}'
-                        resultado = json.loads(text_fixed)
-                        st.warning("⚠️ O texto era muito longo e foi cortado no final, mas consegui recuperar o início.")
-                    else:
-                        raise Exception("JSON irrecuperável")
+                    # TENTATIVA A: O corte foi no meio de uma frase (Unterminated string).
+                    # Adicionamos aspas (") para fechar a frase, e depois fecha o objeto.
+                    st.warning("⚠️ O texto é muito longo e foi cortado pela IA. Tentando recuperar o início...")
+                    fixed_text = text_clean + '"}]}' 
+                    resultado = json.loads(fixed_text)
                 except:
-                    st.error("Erro: O arquivo é muito grande e a IA cortou a resposta no meio do JSON.")
-                    st.download_button("Baixar JSON quebrado para análise", response.text)
-                    st.stop()
+                    try:
+                        # TENTATIVA B: O corte foi depois de fechar aspas, mas antes de fechar o objeto.
+                        fixed_text = text_clean.rstrip(",") + "]}"
+                        resultado = json.loads(fixed_text)
+                    except:
+                        st.error("❌ Erro Fatal: O arquivo é grande demais e a resposta da IA quebrou de forma irrecuperável.")
+                        st.download_button("Baixar Log do Erro", response.text, file_name="erro_json.txt")
+                        st.stop()
 
             # --- DAAQUI PRA BAIXO SEGUE IGUAL ---
             try:
