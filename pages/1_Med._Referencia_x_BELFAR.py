@@ -429,7 +429,7 @@ if st.button("🚀 Processar Conferência"):
                             st.caption("Referência")
                             st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
                         with cd:
-                            st.caption("Validado")
+                            st.caption("BELFAR")
                             st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
 
             except Exception as e:
