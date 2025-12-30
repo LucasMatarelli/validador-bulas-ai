@@ -1,297 +1,3 @@
-import streamlit as st
-import google.generativeai as genai
-import fitz  # PyMuPDF
-import docx
-import json
-import difflib
-import re
-import unicodedata
-import time
-from spellchecker import SpellChecker
-
-# ----------------- 1. VISUAL & CSS -----------------
-st.set_page_config(page_title="Conferência MKT (Paciente)", page_icon="💊", layout="wide")
-
-st.markdown("""
-<style>
-    [data-testid="stHeader"] { visibility: hidden; }
-    
-    .texto-box { 
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 0.95rem;
-        line-height: 1.7;
-        color: #212529;
-        background-color: #ffffff;
-        padding: 25px;
-        border-radius: 8px;
-        border: 1px solid #ced4da;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        text-align: left;
-    }
-    
-    /* DIVERGÊNCIA (Amarelo) */
-    .highlight-yellow { 
-        background-color: #fff3cd; color: #856404; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
-        font-weight: bold;
-    }
-    
-    /* ERRO PORTUGUÊS (Vermelho) - Estilo sutil */
-    .highlight-red { 
-        background-color: #f8d7da; color: #721c24; 
-        border-bottom: 2px solid #dc3545; 
-        font-weight: bold;
-        cursor: help;
-    }
-    
-    .highlight-blue { 
-        background-color: #d1ecf1; color: #0c5460; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
-    }
-    
-    .topico-item {
-        display: block;
-        margin-left: 20px;
-        margin-bottom: 4px;
-        text-indent: -15px; 
-    }
-    
-    .border-ok { border-left: 6px solid #28a745 !important; }
-    .border-warn { border-left: 6px solid #ffc107 !important; } 
-    .border-info { border-left: 6px solid #17a2b8 !important; }
-
-    div[data-testid="stMetric"] {
-        background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# ----------------- 2. CONFIGURAÇÃO -----------------
-MODELOS_PARA_TENTAR = [
-    "models/gemini-2.5-flash", 
-    "models/gemini-2.0-flash", 
-    "models/gemini-1.5-flash", 
-    "gemini-1.5-flash"
-]
-
-SECOES_PACIENTE = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
-    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
-    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
-    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
-    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
-    "DIZERES LEGAIS"
-]
-
-SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
-
-# ----------------- 3. FUNÇÕES INTELIGENTES -----------------
-
-def limpar_sujeira_invisivel(texto):
-    """
-    Remove caracteres invisíveis que causam falso amarelo.
-    """
-    if not texto: return ""
-    # Substitui Non-breaking space (\xa0) por espaço normal
-    t = texto.replace('\xa0', ' ')
-    # Remove Zero-width space (\u200b) e outros fantasmas
-    t = re.sub(r'[\u200b\u200c\u200d\u2060\ufeff]', '', t)
-    # Remove excesso de espaços (transforma "  " em " ")
-    t = re.sub(r'\s+', ' ', t)
-    return t.strip()
-
-def normalizacao_nuclear(texto):
-    """Remove TUDO que não seja letra ou número para comparação de conteúdo."""
-    if not texto: return ""
-    t = re.sub(r'<[^>]+>', '', texto)
-    t = unicodedata.normalize('NFKD', t).encode('ASCII', 'ignore').decode('ASCII')
-    t = re.sub(r'[^a-zA-Z0-9]', '', t)
-    return t.lower()
-
-def verificar_ortografia_inteligente(texto):
-    try:
-        spell = SpellChecker(language='pt')
-        whitelist = {
-            'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
-            'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
-            'dr', 'dra', 'vp', 'vps', 'bula', 'paciente', 'profissional', 'sac',
-            'blister', 'cartucho', 'posologia', 'superdose', 'farmacocinetica',
-            'biodisponibilidade', 'excipiente', 'excipientes', 'revestimento',
-            'comprimido', 'capsula', 'solucao', 'suspensao', 'oral', 'intravenosa',
-            'subcutanea', 'intramuscular', 'topico', 'oftalmico', 'nasal',
-            'adulto', 'pediatrico', 'geriatrico', 'indicação', 'contraindicação',
-            'advertencia', 'precaucao', 'interacao', 'reacao', 'adversa', 'sintoma',
-            'tratamento', 'diagnostico', 'profilaxia', 'analgesico', 'antipiretico',
-            'anti-inflamatorio', 'antibiotico', 'antiviral', 'antifungico',
-            'cardiovascular', 'respiratorio', 'digestivo', 'nervoso', 'central',
-            'periferico', 'renal', 'hepatico', 'sanguineo', 'imunologico',
-            'endocrino', 'metabolico', 'musculoesqueletico', 'dermatologico',
-            'predisponentes', 'sistemicos', 'sistêmicos', 'congenita', 'congênita',
-            'aneurisma', 'dissecção', 'disseccao', 'valvar', 'valvula', 'regurgitação',
-            'endocardite', 'marfan', 'ehlers-danlos', 'turner', 'sjogren', 'takayasu',
-            'behcet', 'reumatoide', 'artrite', 'corticosteroides', 'fluorquinolonas',
-            'hipersensibilidade', 'arritmia', 'protuberancia', 'abdômen', 'abdomen',
-            'gonorreia', 'gonorréia', 'infeccao', 'infeção', 'trato', 'urinario',
-            'uretra', 'cervix', 'tubulos', 'túbulos', 'renais', 'queimação', 'queimacao',
-            'prostatite', 'prostata', 'cistite', 'ureia', 'bacteria', 'bacterias'
-        }
-        spell.word_frequency.load_words(whitelist)
-
-        tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/\[\]])', texto)
-        resultado = []
-        
-        for token in tokens:
-            if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
-                resultado.append(token)
-                continue
-            
-            palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
-            
-            if (not palavra_limpa or len(palavra_limpa) < 4 or any(c.isdigit() for c in token) or '-' in palavra_limpa or palavra_limpa[0].isupper()):
-                resultado.append(token)
-                continue
-
-            p_lower = palavra_limpa.lower()
-
-            if p_lower in spell or p_lower in whitelist:
-                resultado.append(token)
-            else:
-                resultado.append(token) # Na dúvida, não marca erro
-
-        return "".join(resultado)
-    except:
-        return texto
-
-def melhorar_visual_topicos(texto_html):
-    linhas = re.split(r'(<br>|\n)', texto_html)
-    novo_texto = []
-    for linha in linhas:
-        if re.search(r'^\s*[-•*]\s+', re.sub(r'<[^>]+>', '', linha).strip()):
-            linha_limpa = re.sub(r'^\s*[-•*]\s+', '', linha)
-            novo_texto.append(f'<div class="topico-item">• {linha_limpa}</div>')
-        else:
-            novo_texto.append(linha)
-    return "".join(novo_texto)
-
-def destacar_datas(texto):
-    padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padrão\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
-    def replacer(match):
-        return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
-    return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # Separa por espaços
-    palavras_ref = texto_ref.split()
-    palavras_novo = texto_novo.split()
-    
-    matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
-    html_ref_list = []
-    html_novo_list = []
-    tem_diff = False
-    
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        trecho_ref = " ".join(palavras_ref[i1:i2])
-        trecho_novo = " ".join(palavras_novo[j1:j2])
-
-        if tag == 'equal':
-            html_ref_list.append(trecho_ref)
-            html_novo_list.append(trecho_ref)
-            
-        elif tag == 'replace':
-            # CHECK DE SEGURANÇA: Se ignorando espaços e símbolos for igual, NÃO MARCA
-            if normalizacao_nuclear(trecho_ref) == normalizacao_nuclear(trecho_novo):
-                html_ref_list.append(trecho_ref)
-                html_novo_list.append(trecho_novo)
-            else:
-                html_ref_list.append(f'<span class="highlight-yellow">{trecho_ref}</span>')
-                html_novo_list.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
-                tem_diff = True
-                
-        elif tag == 'delete':
-            # Se for só espaço invisível que foi deletado, ignora
-            if normalizacao_nuclear(trecho_ref) == "":
-                html_ref_list.append(trecho_ref)
-            else:
-                html_ref_list.append(f'<span class="highlight-yellow">{trecho_ref}</span>')
-                tem_diff = True
-                
-        elif tag == 'insert':
-            if normalizacao_nuclear(trecho_novo) == "":
-                html_novo_list.append(trecho_novo)
-            else:
-                html_novo_list.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
-                tem_diff = True
-            
-    return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
-
-def gerar_diff_html(texto_ref, texto_novo):
-    if not texto_ref: texto_ref = ""
-    if not texto_novo: texto_novo = ""
-    
-    # 1. Limpa sujeira invisível antes de qualquer coisa
-    texto_ref = limpar_sujeira_invisivel(texto_ref)
-    texto_novo = limpar_sujeira_invisivel(texto_novo)
-
-    # 2. CHECAGEM NUCLEAR (Conteúdo Idêntico)
-    if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
-        html_novo = verificar_ortografia_inteligente(texto_novo)
-        html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
-        return texto_ref.replace('\n', '<br>'), html_novo, False
-
-    # 3. DIFF DETALHADO
-    # Remove tags HTML para comparação limpa
-    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
-    
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
-    
-    n_html_final = verificar_ortografia_inteligente(n_html)
-    n_html_final = melhorar_visual_topicos(n_html_final)
-    r_html_final = r_html.replace('\n', '<br>')
-    
-    return r_html_final, n_html_final, diff_bool
-
-def extract_text_from_file(uploaded_file):
-    try:
-        text = ""
-        if uploaded_file.name.lower().endswith('.pdf'):
-            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            for page in doc: 
-                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
-                for b in blocks:
-                    block_text = ""
-                    for l in b.get("lines", []):
-                        line_txt = ""
-                        for s in l.get("spans", []):
-                            content = s["text"]
-                            font_props = s["font"].lower()
-                            is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
-                            if is_bold: line_txt += f"<b>{content}</b>"
-                            else: line_txt += content
-                        block_text += line_txt + " " 
-                    text += block_text.strip() + "\n\n"
-        elif uploaded_file.name.lower().endswith('.docx'):
-            doc = docx.Document(uploaded_file)
-            for para in doc.paragraphs: 
-                para_txt = ""
-                for run in para.runs:
-                    if run.bold: para_txt += f"<b>{run.text}</b>"
-                    else: para_txt += run.text
-                text += para_txt + "\n\n"
-        # Limpeza inicial básica
-        text = limpar_sujeira_invisivel(text)
-        return text
-    except: return ""
-
-# ----------------- 5. UI PRINCIPAL -----------------
-st.title("💊 Med. Referência x BELFAR (Paciente)")
-
-c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📜 Bula Referência", type=["pdf", "docx"], key="f1")
-f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
-
 if st.button("🚀 Processar Conferência"):
     
     keys_raw = [
@@ -354,9 +60,15 @@ if st.button("🚀 Processar Conferência"):
                 
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
+                        # AJUSTE 1: Aumentei o max_output_tokens para 8192 (máximo do Flash)
+                        # Isso evita que ele corte o texto no meio.
                         model = genai.GenerativeModel(
                             modelo, 
-                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                            generation_config={
+                                "response_mime_type": "application/json", 
+                                "temperature": 0.0,
+                                "max_output_tokens": 8192 
+                            }
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
@@ -371,8 +83,28 @@ if st.button("🚀 Processar Conferência"):
                 st.code("\n".join(log_erros))
                 st.stop()
             
+            # AJUSTE 2: Tratamento de erro do JSON Cortado
             try:
-                resultado = json.loads(response.text)
+                text_clean = response.text.strip()
+                resultado = json.loads(text_clean)
+            except json.JSONDecodeError:
+                # Se falhar, tenta "remendar" o final do JSON
+                try:
+                    # Tenta fechar aspas e chaves que ficaram abertas
+                    # Isso é uma tentativa de salvar o que já foi gerado
+                    if not text_clean.endswith("}"):
+                        text_fixed = text_clean + '"}]}'
+                        resultado = json.loads(text_fixed)
+                        st.warning("⚠️ O texto era muito longo e foi cortado no final, mas consegui recuperar o início.")
+                    else:
+                        raise Exception("JSON irrecuperável")
+                except:
+                    st.error("Erro: O arquivo é muito grande e a IA cortou a resposta no meio do JSON.")
+                    st.download_button("Baixar JSON quebrado para análise", response.text)
+                    st.stop()
+
+            # --- DAAQUI PRA BAIXO SEGUE IGUAL ---
+            try:
                 data_ref = resultado.get("data_anvisa_ref", "-")
                 data_mkt = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
