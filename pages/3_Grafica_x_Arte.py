@@ -66,11 +66,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
-# Modelos para a análise de texto (comparação)
-MODELOS_ANALISE = [
-    "gemini-1.5-flash",
-    "gemini-2.0-flash-exp",
-    "gemini-1.5-pro"
+# LISTA EXATA SOLICITADA PELO USUÁRIO
+MODELOS_PARA_TENTAR = [
+    "models/gemini-2.5-flash", 
+    "models/gemini-2.0-flash", 
+    "models/gemini-1.5-flash", 
+    "gemini-1.5-flash"
 ]
 
 SECOES_PACIENTE = [
@@ -216,14 +217,14 @@ def gerar_diff_html(texto_ref, texto_novo):
 
 def ocr_via_gemini(uploaded_file, api_keys):
     """
-    OCR com configurações de segurança RELAXADAS e modelos atualizados.
+    OCR ROBISTO:
+    Itera sobre CHAVES e sobre MODELOS.
     """
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
     
     prompt_ocr = "Transcreva TODO o texto deste documento fielmente. Não faça resumos, apenas extraia o texto exato."
     
-    # Configuração vital para Bulas
     safety_settings = {
         HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -231,33 +232,34 @@ def ocr_via_gemini(uploaded_file, api_keys):
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
     }
 
-    last_error = ""
+    log_erros_ocr = []
 
-    # LISTA ATUALIZADA DE MODELOS PARA VISÃO (OCR)
-    # Removemos o prefixo 'models/' que estava causando o erro 404
-    vision_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"]
-
-    for key in api_keys:
+    # Loop Chaves -> Loop Modelos
+    for i, key in enumerate(api_keys):
         try:
             genai.configure(api_key=key)
-            for model_name in vision_models:
+            
+            for modelo in MODELOS_PARA_TENTAR:
                 try:
-                    model = genai.GenerativeModel(model_name)
+                    model = genai.GenerativeModel(modelo)
                     response = model.generate_content(
                         [{'mime_type': 'application/pdf', 'data': bytes_data}, prompt_ocr],
                         safety_settings=safety_settings
                     )
                     if response.text:
-                        return response.text, None
-                except Exception as e_inner:
-                    # Captura erro mas tenta o próximo modelo
-                    last_error = f"Erro no modelo {model_name}: {str(e_inner)}"
+                        return response.text, None # SUCESSO!
+                except Exception as e_model:
+                    err_msg = str(e_model)
+                    log_erros_ocr.append(f"Key {i+1} | {modelo}: {err_msg}")
+                    # Se for erro de Cota (429), pausa um pouco antes de tentar o próximo modelo/chave
+                    if "429" in err_msg or "quota" in err_msg.lower():
+                        time.sleep(2)
                     continue
-        except Exception as e:
-            last_error = f"Erro na chave API: {str(e)}"
+        except Exception as e_key:
+            log_erros_ocr.append(f"Key {i+1} Falha Config: {str(e_key)}")
             continue
             
-    return "", last_error
+    return "", " | ".join(log_erros_ocr)
 
 def extract_text_from_file(uploaded_file, api_keys=None):
     text = ""
@@ -294,7 +296,7 @@ def extract_text_from_file(uploaded_file, api_keys=None):
         
         # Se tiver menos de 50 caracteres e for PDF, assume que é imagem
         if len(texto_limpo) < 50 and uploaded_file.name.lower().endswith('.pdf') and api_keys:
-            st.warning(f"⚠️ Arquivo '{uploaded_file.name}' parece ser imagem (escaneado). Iniciando leitura via IA (OCR)...")
+            st.warning(f"⚠️ '{uploaded_file.name}' parece ser imagem. Tentando OCR com todas as chaves e modelos...")
             
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
             
@@ -302,7 +304,7 @@ def extract_text_from_file(uploaded_file, api_keys=None):
                 st.success(f"✅ OCR realizado com sucesso em '{uploaded_file.name}'!")
                 return texto_ocr
             else:
-                st.error(f"Não foi possível ler a imagem do PDF. Detalhe: {erro_ocr}")
+                st.error(f"Falha OCR em '{uploaded_file.name}'. Erros: {erro_ocr}")
                 return ""
 
         return text
@@ -319,16 +321,21 @@ f1 = c1.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula MKT", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    keys_raw = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
+    keys_raw = [
+        st.secrets.get("GEMINI_API_KEY"), 
+        st.secrets.get("GEMINI_API_KEY2"), 
+        st.secrets.get("GEMINI_API_KEY3")
+    ]
     keys_validas = [k for k in keys_raw if k]
 
     if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key encontrada."); st.stop()
+        st.error("Erro Crítico: Nenhuma API Key encontrada no secrets."); st.stop()
 
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE
 
-        with st.spinner("Lendo arquivos (aplicando OCR se necessário)..."):
+        with st.spinner("Lendo arquivos (aplicando OCR se necessário com todas as chaves)..."):
+            # O código vai tentar OCR nos DOIS arquivos se precisar
             t_anvisa = extract_text_from_file(f1, api_keys=keys_validas)
             t_mkt = extract_text_from_file(f2, api_keys=keys_validas)
 
@@ -355,18 +362,26 @@ if st.button("🚀 Processar Conferência"):
             sucesso = False
             log_erros = []
 
+            # Loop Principal de Análise: Chave -> Modelos
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
+                
                 genai.configure(api_key=key)
-                for modelo in MODELOS_ANALISE:
+                
+                for modelo in MODELOS_PARA_TENTAR:
                     try:
                         model = genai.GenerativeModel(modelo, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
                         response = model.generate_content(prompt)
                         sucesso = True
                         break 
                     except Exception as e:
-                        log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(0.5)
+                        erro_msg = str(e)
+                        log_erros.append(f"Key {idx_key+1} | {modelo}: {erro_msg}")
+                        # Se for erro de cota (429), espera um pouco mais
+                        if "429" in erro_msg or "quota" in erro_msg.lower():
+                            time.sleep(3)
+                        else:
+                            time.sleep(0.5)
                         continue
 
             if not sucesso:
