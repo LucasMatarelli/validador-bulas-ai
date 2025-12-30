@@ -30,16 +30,20 @@ st.markdown("""
         text-align: left;
     }
     
+    /* DIVERGÊNCIA (Amarelo) - Texto diferente ou faltando */
     .highlight-yellow { 
         background-color: #fff3cd; color: #856404; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold;
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
+        font-weight: bold;
     }
     
+    /* ERRO PORTUGUÊS (Vermelho) - Apenas erros ortográficos */
     .highlight-red { 
         background-color: #f8d7da; color: #721c24; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; 
         text-decoration: underline wavy #dc3545;
         cursor: help;
+        font-weight: bold;
     }
     
     .highlight-blue { 
@@ -57,14 +61,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO E LISTAS -----------------
-
-# Modelos em ordem de preferência (do mais novo para o mais antigo)
+# ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
-    "models/gemini-2.5-flash",
-    "models/gemini-2.0-flash",
-    "models/gemini-1.5-flash",
-    "models/gemini-flash-latest",
+    "models/gemini-2.5-flash", 
+    "models/gemini-2.0-flash", 
+    "models/gemini-1.5-flash", 
     "gemini-1.5-flash"
 ]
 
@@ -88,32 +89,47 @@ SECOES_PROFISSIONAL = [
 
 SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
-# ----------------- 3. FUNÇÕES AUXILIARES -----------------
+# ----------------- 3. FUNÇÕES DE LIMPEZA E COMPARAÇÃO -----------------
 
 def normalizar_para_comparacao(texto):
+    """
+    Remove TUDO que causa falso positivo (amarelo errado).
+    Se dois textos passarem por aqui e ficarem iguais, eles SÃO iguais visualmente.
+    """
     if not texto: return ""
+    # 1. Normaliza caracteres Unicode (junta acentos, c com cedilha, etc)
     texto = unicodedata.normalize('NFC', texto)
-    # Remove caracteres invisíveis e hifens opcionais
+    # 2. Remove caracteres invisíveis chatos
     texto = texto.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
+    # 3. Transforma múltiplos espaços em um só
     texto = re.sub(r'\s+', ' ', texto)
     return texto.strip()
 
 def verificar_ortografia(texto_html):
+    """
+    Marca de VERMELHO palavras que não existem no dicionário.
+    Ignora tags HTML e pontuação.
+    """
     try:
         spell = SpellChecker(language='pt')
+        # Regex para separar palavras ignorando tags HTML (<...>) e pontuação
         tokens = re.split(r'(<[^>]+>|[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]+)', texto_html)
+        
         novo_texto = []
         for token in tokens:
-            if token.startswith('<') or not token.strip() or len(token) < 3:
+            # Ignora tags, espaços vazios ou palavras muito curtas (ex: 'mg', 'ml')
+            if token.startswith('<') or not token.strip() or len(token) < 2:
                 novo_texto.append(token)
                 continue
             
+            # Limpa e verifica
             palavra_limpa = token.strip()
             # Se não estiver no dicionário -> Marca VERMELHO
             if palavra_limpa.lower() not in spell:
-                novo_texto.append(f'<span class="highlight-red" title="Possível erro">{token}</span>')
+                novo_texto.append(f'<span class="highlight-red" title="Erro de Português?">{token}</span>')
             else:
                 novo_texto.append(token)
+                
         return "".join(novo_texto)
     except:
         return texto_html
@@ -125,16 +141,21 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def gerar_diff_html(texto_ref, texto_novo):
+    """
+    Gera o HTML final:
+    - Amarelo: Diferenças reais.
+    - Vermelho: Erros de português (apenas no texto novo).
+    """
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    ref_norm = normalizar_para_comparacao(texto_ref)
-    novo_norm = normalizar_para_comparacao(texto_novo)
-    
-    if ref_norm == novo_norm:
+    # 1. PROVA REAL: Se visualmente for igual, retorna limpo (SÓ COM VERMELHO SE TIVER ERRO)
+    if normalizar_para_comparacao(texto_ref) == normalizar_para_comparacao(texto_novo):
+        # Texto é igual -> Só verifica português no lado direito
         html_novo = verificar_ortografia(texto_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
+    # 2. SE FOR DIFERENTE, RODA O COMPARADOR
     a = texto_ref.splitlines()
     b = texto_novo.splitlines()
     
@@ -148,23 +169,29 @@ def gerar_diff_html(texto_ref, texto_novo):
         trecho_b = "\n".join(b[j1:j2])
         
         if tag == 'equal':
+            # Texto igual: sem amarelo, mas verifica português no lado direito
             html_ref.append(trecho_a)
             html_novo.append(verificar_ortografia(trecho_b))
         
         elif tag == 'replace':
+            # Verifica se a "substituição" é apenas sujeira invisível
             if normalizar_para_comparacao(trecho_a) == normalizar_para_comparacao(trecho_b):
+                # É visualmente igual -> Trata como 'equal'
                 html_ref.append(trecho_a)
                 html_novo.append(verificar_ortografia(trecho_b))
             else:
+                # É diferente mesmo -> AMARELO
                 html_ref.append(f'<span class="highlight-yellow">{trecho_a}</span>')
                 html_novo.append(f'<span class="highlight-yellow">{trecho_b}</span>')
                 eh_divergente = True
 
         elif tag == 'delete':
+            # Texto que sumiu (estava na ref, sumiu na mkt) -> AMARELO na Ref
             html_ref.append(f'<span class="highlight-yellow">{trecho_a}</span>')
             eh_divergente = True
             
         elif tag == 'insert':
+            # Texto novo (não tinha na ref, apareceu na mkt) -> AMARELO na Mkt
             html_novo.append(f'<span class="highlight-yellow">{trecho_b}</span>')
             eh_divergente = True
             
@@ -215,17 +242,16 @@ f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     
-    # 1. COLETA AS CHAVES DISPONÍVEIS
+    # 1. BLINDAGEM DE CHAVES (Tenta as 3 chaves)
     keys_raw = [
         st.secrets.get("GEMINI_API_KEY"),
         st.secrets.get("GEMINI_API_KEY2"),
         st.secrets.get("GEMINI_API_KEY3")
     ]
-    # Filtra só as que existem (não são None)
     keys_validas = [k for k in keys_raw if k]
 
     if not keys_validas:
-        st.error("Erro Crítico: Nenhuma GEMINI_API_KEY encontrada nos Secrets.")
+        st.error("Erro Crítico: Nenhuma API Key encontrada.")
         st.stop()
 
     if f1 and f2:
@@ -266,46 +292,36 @@ if st.button("🚀 Processar Conferência"):
             }}
             """
             
-            # --- SISTEMA DE BLINDAGEM (FAILOVER TOTAL) ---
+            # --- TENTATIVA MULTI-CHAVE E MULTI-MODELO ---
             response = None
             sucesso = False
             log_erros = []
 
-            # Loop Duplo: Para cada CHAVE, tenta cada MODELO
             for idx_key, key in enumerate(keys_validas):
-                if sucesso: break # Se já funcionou, sai do loop de chaves
+                if sucesso: break
                 
-                # Configura a chave atual
                 genai.configure(api_key=key)
                 
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
-                        # Opcional: Mostra progresso discreto
-                        # st.toast(f"Tentando Chave {idx_key+1} com Modelo {modelo}...")
-                        
                         model = genai.GenerativeModel(
                             modelo, 
                             generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
-                        break # Funcionou! Sai do loop de modelos
-                        
+                        break 
                     except Exception as e:
-                        # Guarda o erro mas continua tentando
-                        erro_limpo = str(e).split('\n')[0] # Pega só a primeira linha do erro
-                        log_erros.append(f"Chave {idx_key+1} | {modelo}: {erro_limpo}")
-                        time.sleep(0.5) # Respira antes da próxima
+                        log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
+                        time.sleep(0.5)
                         continue
 
             if not sucesso:
-                st.error("❌ Falha Total: Todas as chaves e modelos falharam.")
-                with st.expander("Ver relatório de erros (Debug)"):
-                    for erro in log_erros:
-                        st.write(erro)
+                st.error("❌ Falha Total. Detalhes:")
+                st.code("\n".join(log_erros))
                 st.stop()
             
-            # --- PROCESSAMENTO DA RESPOSTA ---
+            # --- RESULTADO E COMPARAÇÃO ---
             try:
                 resultado = json.loads(response.text)
                 data_ref = resultado.get("data_anvisa_ref", "-")
@@ -334,6 +350,7 @@ if st.button("🚀 Processar Conferência"):
                         html_mkt = html_mkt.replace('\n', '<br>')
                         html_ref = html_ref.replace('\n', '<br>')
                     else:
+                        # AQUI: Usa a nova lógica de comparação corrigida
                         html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff: divs_count += 1
