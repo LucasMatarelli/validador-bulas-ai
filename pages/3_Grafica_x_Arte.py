@@ -9,7 +9,7 @@ import json
 import time
 
 # ----------------- 1. CONFIGURAÇÃO VISUAL -----------------
-st.set_page_config(page_title="Validador Farmacêutico (Auto-Pilot)", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Validador Farmacêutico (Flash Latest)", page_icon="⚡", layout="wide")
 
 st.markdown("""
 <style>
@@ -43,13 +43,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. LISTA DE MODELOS (PRIORIDADE) -----------------
-# O código tentará nesta ordem EXATA até um funcionar.
-# Se o 2.0 estiver bloqueado, ele tentará os outros automaticamente.
+# Coloquei o modelo que você pediu em PRIMEIRO lugar.
 MODELOS_PARA_TENTAR = [
-    "gemini-2.0-flash-exp",      # Tentativa 1: O que você quer
-    "gemini-exp-1206",           # Tentativa 2: Experimental alternativo
-    "gemini-1.5-flash",          # Tentativa 3: Estável (Backup)
-    "gemini-1.5-pro"             # Tentativa 4: Potente (Backup)
+    "models/gemini-flash-latest",  # <--- O QUE VOCÊ PEDIU
+    "gemini-1.5-flash-latest",     # Variação do nome (garantia)
+    "gemini-1.5-flash",            # Variação clássica
+    "gemini-1.5-pro"               # Último recurso
 ]
 
 # ----------------- 3. PROCESSAMENTO -----------------
@@ -95,8 +94,8 @@ SECOES_PADRAO = [
 ]
 
 # ----------------- 4. UI PRINCIPAL -----------------
-st.title("🛡️ Validador Farmacêutico (Auto-Pilot)")
-st.caption("O sistema testará automaticamente Modelos e Chaves até encontrar uma conexão aberta.")
+st.title("⚡ Validador Farmacêutico (Flash Latest)")
+st.caption("Usando o modelo mais rápido e estável para evitar bloqueios.")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📂 Arte (Referência)", type=["pdf", "jpg", "png", "docx"])
@@ -117,13 +116,13 @@ if st.button("🔍 Validar Texto Integral"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner(f"Iniciando busca de rota disponível..."):
+        with st.spinner(f"Conectando ao modelo Flash Latest..."):
             f1.seek(0)
             f2.seek(0)
             conteudo1 = process_file_content(f1)
             conteudo2 = process_file_content(f2)
             
-            # PROMPT EXTREMAMENTE RIGOROSO (PARA FORÇAR QUALQUER MODELO A AGIR BEM)
+            # PROMPT RIGOROSO (MANTIDO)
             prompt = f"""
             ATUE COMO UM SOFTWARE DE OCR E COMPARAÇÃO FORENSE DE TEXTO.
             
@@ -134,9 +133,9 @@ if st.button("🔍 Validar Texto Integral"):
             LISTA DE TÍTULOS OBRIGATÓRIA: {SECOES_PADRAO}
 
             ⚠️ INSTRUÇÕES DE TOLERÂNCIA ZERO:
-            - **PROIBIDO RESUMIR.** Você deve transcrever o texto COMPLETO, caractere por caractere, linha por linha.
+            - **PROIBIDO RESUMIR.** Você deve transcrever o texto COMPLETO, caractere por caractere.
             - **TÍTULOS:** A validação é CASE SENSITIVE. Ex: "Apresentação" é diferente de "APRESENTAÇÕES". Marque como divergente.
-            - Se o texto for longo, processe até o final. Não pare no meio.
+            - Se o texto for longo, processe até o final.
 
             SAÍDA JSON:
             {{
@@ -147,14 +146,13 @@ if st.button("🔍 Validar Texto Integral"):
                         "titulo_encontrado_grafica": "Leitura Grafica",
                         "texto_arte": "Texto INTEGRAL...",
                         "texto_grafica": "Texto INTEGRAL...",
-                        "status": "CONFORME" ou "DIVERGENTE",
+                        "status": "CONFORME" or "DIVERGENTE",
                         "obs": "Divergência"
                     }}
                 ]
             }}
             """
             
-            # Configuração de segurança
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -169,7 +167,7 @@ if st.button("🔍 Validar Texto Integral"):
             
             status_container = st.empty()
             
-            # Monta o conteúdo final APENAS UMA VEZ
+            # Monta o conteúdo final
             conteudo_final = [prompt, "--- ARTE ---"] + conteudo1 + ["--- GRÁFICA ---"] + conteudo2
 
             # --- LOOP DUPLO: MODELOS X CHAVES ---
@@ -178,7 +176,7 @@ if st.button("🔍 Validar Texto Integral"):
                 
                 for idx_k, api_key in enumerate(keys_validas):
                     try:
-                        status_container.info(f"⏳ Testando: **{modelo_atual}** com **Chave {idx_k+1}**...")
+                        status_container.info(f"⏳ Tentando: **{modelo_atual}** (Chave {idx_k+1})...")
                         
                         genai.configure(api_key=api_key)
                         model = genai.GenerativeModel(
@@ -191,35 +189,30 @@ if st.button("🔍 Validar Texto Integral"):
                             safety_settings=safety_settings
                         )
                         
-                        # CHAMADA CORRIGIDA (SEM 'PAYLOAD='), o conteúdo vai direto
                         response = model.generate_content(conteudo_final)
                         
                         # Se não deu erro, sucesso!
                         sucesso = True
                         modelo_conectado = modelo_atual
-                        status_container.success(f"✅ Conectado! Usando: **{modelo_atual}** (Chave {idx_k+1})")
-                        time.sleep(1) # Pausa dramática para ler o sucesso
-                        status_container.empty() # Limpa a mensagem
+                        status_container.success(f"✅ Conectado! Usando: **{modelo_atual}**")
+                        time.sleep(1)
+                        status_container.empty()
                         break 
 
                     except Exception as e:
                         err = str(e)
-                        # Se for 404 (Modelo não existe), pula pro próximo modelo
                         if "404" in err or "not found" in err.lower():
                             break 
-                        
-                        # Se for 429 (Cota), tenta próxima chave
                         elif "429" in err or "quota" in err.lower():
                             ultimo_erro = f"Quota excedida em {modelo_atual}"
                             time.sleep(0.5)
                             continue 
-                        
                         else:
                             ultimo_erro = err
                             continue
             
             if not sucesso:
-                st.error("❌ Falha Total: Todas as combinações de Chaves e Modelos falharam.")
+                st.error("❌ Falha Total.")
                 st.code(ultimo_erro)
                 st.stop()
             
@@ -262,7 +255,6 @@ if st.button("🔍 Validar Texto Integral"):
                             icon, css, aberto = "🚨", "border-warn", True
 
                         with st.expander(f"{icon} {titulo_padrao}", expanded=aberto):
-                            # Validação visual de título
                             if titulo_arte != titulo_padrao or titulo_graf != titulo_padrao:
                                 st.markdown(f"""
                                 <div style="background-color: #f8d7da; padding: 10px; border-radius: 5px; margin-bottom: 10px; color: #721c24;">
