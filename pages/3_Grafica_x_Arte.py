@@ -218,7 +218,13 @@ def ocr_via_gemini(uploaded_file, api_keys):
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
     
-    prompt_ocr = "Transcreva TODO o texto deste documento fielmente. Não faça resumos, apenas extraia o texto exato."
+    # PROMPT ATUALIZADO: Focado em cópia exata, proibindo tradução
+    prompt_ocr = """
+    ATENÇÃO: Você é um robô de digitalização OCR. 
+    SUA MISSÃO: Transcrever o texto da imagem EXATAMENTE como ele aparece, caractere por caractere.
+    PROIBIDO: Não corrija ortografia. Não traduza palavras (ex: MANTENHA 'geral', NÃO mude para 'general'). Não faça resumos.
+    Se houver erro de digitação no original, MANTENHA o erro. Apenas extraia o texto puro.
+    """
     
     safety_settings = {
         HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -254,14 +260,7 @@ def ocr_via_gemini(uploaded_file, api_keys):
     return "", " | ".join(log_erros_ocr)
 
 def extract_text_smart(uploaded_file, api_keys=None):
-    """
-    Função INTELIGENTE:
-    1. Tenta extrair nativamente.
-    2. Analisa se o que saiu é 'pouco demais' (< 1000 caracteres).
-    3. Se for pouco, assume que é IMAGEM ou VETOR e aciona o OCR.
-    """
     text = ""
-    
     try:
         # 1. Tentativa Nativa
         if uploaded_file.name.lower().endswith('.pdf'):
@@ -295,7 +294,7 @@ def extract_text_smart(uploaded_file, api_keys=None):
         
         eh_pdf = uploaded_file.name.lower().endswith('.pdf')
         
-        # AQUI FOI A MUDANÇA: Limite de 1000 caracteres
+        # Limite de 1000 caracteres para ativar OCR
         if eh_pdf and len(texto_limpo) < 1000 and api_keys:
             st.warning(f"👁️ Arquivo '{uploaded_file.name}' detectado com pouco texto ({len(texto_limpo)} chars < 1000). Ativando OCR...")
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
@@ -339,25 +338,29 @@ if st.button("🚀 Processar Conferência"):
         secoes_alvo = SECOES_PACIENTE
 
         with st.spinner("Analisando arquivos individualmente (Texto ou OCR)..."):
-            # Chama a função inteligente para cada um separadamente
             t_anvisa = extract_text_smart(f1, api_keys=keys_validas)
             t_mkt = extract_text_smart(f2, api_keys=keys_validas)
 
-            # Validação Final de Conteúdo
             if not t_anvisa or len(t_anvisa) < 20:
                 st.error(f"ERRO: Conteúdo do arquivo BELFAR insuficiente para análise."); st.stop()
             if not t_mkt or len(t_mkt) < 20:
                 st.error(f"ERRO: Conteúdo do arquivo MKT insuficiente para análise."); st.stop()
 
+            # PROMPT ATUALIZADO: "LOBOTOMIA" NA CRIATIVIDADE DA IA
             prompt = f"""
-            Você é um Extrator de Dados Farmacêuticos Rigoroso.
+            Você é um Extrator de Dados Farmacêuticos Rigoroso (ROBÔ DE CÓPIA).
+            
             INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
             INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
-            SUA MISSÃO:
-            1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
-            2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
-            3. Manter formatação <b> e NÃO corrigir português.
+            
+            SUA MISSÃO CRÍTICA:
+            1. COPIAR o texto EXATAMENTE como está nos inputs para dentro do JSON.
+            2. PROIBIDO corrigir português (se estiver "geral", escreva "geral". Se estiver "general", escreva "general").
+            3. PROIBIDO traduzir ou trocar por sinônimos.
+            4. Manter formatação <b>.
+            
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
+            
             SAÍDA JSON:
             {{ "data_anvisa_ref": "...", "data_anvisa_mkt": "...", "secoes": [ {{ "titulo": "...", "texto_anvisa": "...", "texto_mkt": "..." }} ] }}
             """
@@ -392,7 +395,6 @@ if st.button("🚀 Processar Conferência"):
             try:
                 resultado = json.loads(response.text)
                 
-                # Proteção (or "-") para não quebrar se vier null
                 data_ref = resultado.get("data_anvisa_ref") or "-"
                 data_mkt = resultado.get("data_anvisa_mkt") or "-"
                 dados_secoes = resultado.get("secoes") or []
@@ -402,7 +404,6 @@ if st.button("🚀 Processar Conferência"):
 
                 for item in dados_secoes:
                     titulo = (item.get('titulo') or '').strip()
-                    # Proteção (or "") para evitar crash com strip() em None
                     txt_ref = (item.get('texto_anvisa') or "").strip()
                     txt_mkt = (item.get('texto_mkt') or "").strip()
                     
