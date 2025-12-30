@@ -67,10 +67,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
+# Prioridade para modelos com maior capacidade de saída
 MODELOS_PARA_TENTAR = [
-    "models/gemini-2.5-flash", 
-    "models/gemini-2.0-flash", 
     "models/gemini-1.5-flash", 
+    "models/gemini-2.0-flash-exp", 
     "gemini-1.5-flash"
 ]
 
@@ -90,15 +90,10 @@ SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
 def limpar_sujeira_invisivel(texto):
-    """
-    Remove caracteres invisíveis que causam falso amarelo.
-    """
+    """Remove caracteres invisíveis que causam falso amarelo."""
     if not texto: return ""
-    # Substitui Non-breaking space (\xa0) por espaço normal
     t = texto.replace('\xa0', ' ')
-    # Remove Zero-width space (\u200b) e outros fantasmas
     t = re.sub(r'[\u200b\u200c\u200d\u2060\ufeff]', '', t)
-    # Remove excesso de espaços (transforma "  " em " ")
     t = re.sub(r'\s+', ' ', t)
     return t.strip()
 
@@ -113,6 +108,7 @@ def normalizacao_nuclear(texto):
 def verificar_ortografia_inteligente(texto):
     try:
         spell = SpellChecker(language='pt')
+        # LISTA BRANCA REFORÇADA COM BASE NAS IMAGENS
         whitelist = {
             'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
             'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
@@ -135,7 +131,7 @@ def verificar_ortografia_inteligente(texto):
             'hipersensibilidade', 'arritmia', 'protuberancia', 'abdômen', 'abdomen',
             'gonorreia', 'gonorréia', 'infeccao', 'infeção', 'trato', 'urinario',
             'uretra', 'cervix', 'tubulos', 'túbulos', 'renais', 'queimação', 'queimacao',
-            'prostatite', 'prostata', 'cistite', 'ureia', 'bacteria', 'bacterias'
+            'prostatite', 'prostata', 'cistite', 'ureia', 'bacteria', 'bacterias', 'candida'
         }
         spell.word_frequency.load_words(whitelist)
 
@@ -158,7 +154,7 @@ def verificar_ortografia_inteligente(texto):
             if p_lower in spell or p_lower in whitelist:
                 resultado.append(token)
             else:
-                resultado.append(token) # Na dúvida, não marca erro
+                resultado.append(token) # Presunção de inocência (não marca)
 
         return "".join(resultado)
     except:
@@ -182,10 +178,8 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # Separa por espaços
     palavras_ref = texto_ref.split()
     palavras_novo = texto_novo.split()
-    
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
     html_ref_list = []
     html_novo_list = []
@@ -198,9 +192,7 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
         if tag == 'equal':
             html_ref_list.append(trecho_ref)
             html_novo_list.append(trecho_ref)
-            
         elif tag == 'replace':
-            # CHECK DE SEGURANÇA: Se ignorando espaços e símbolos for igual, NÃO MARCA
             if normalizacao_nuclear(trecho_ref) == normalizacao_nuclear(trecho_novo):
                 html_ref_list.append(trecho_ref)
                 html_novo_list.append(trecho_novo)
@@ -208,15 +200,12 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
                 html_ref_list.append(f'<span class="highlight-yellow">{trecho_ref}</span>')
                 html_novo_list.append(f'<span class="highlight-yellow">{trecho_novo}</span>')
                 tem_diff = True
-                
         elif tag == 'delete':
-            # Se for só espaço invisível que foi deletado, ignora
             if normalizacao_nuclear(trecho_ref) == "":
                 html_ref_list.append(trecho_ref)
             else:
                 html_ref_list.append(f'<span class="highlight-yellow">{trecho_ref}</span>')
                 tem_diff = True
-                
         elif tag == 'insert':
             if normalizacao_nuclear(trecho_novo) == "":
                 html_novo_list.append(trecho_novo)
@@ -230,17 +219,14 @@ def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # 1. Limpa sujeira invisível antes de qualquer coisa
     texto_ref = limpar_sujeira_invisivel(texto_ref)
     texto_novo = limpar_sujeira_invisivel(texto_novo)
 
-    # 2. CHECAGEM NUCLEAR (Conteúdo Idêntico)
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
         html_novo = verificar_ortografia_inteligente(texto_novo)
         html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
-    # 3. DIFF DETALHADO
     ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
     novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
     
@@ -352,7 +338,7 @@ if st.button("🚀 Processar Conferência"):
                 
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
-                        # AJUSTE 1: Max Output Tokens (8192)
+                        # CONFIGURAÇÃO CRÍTICA PARA EVITAR CORTE
                         model = genai.GenerativeModel(
                             modelo, 
                             generation_config={
@@ -374,23 +360,22 @@ if st.button("🚀 Processar Conferência"):
                 st.code("\n".join(log_erros))
                 st.stop()
             
-            # AJUSTE 2: RESGATE DE JSON CORTADO
             try:
                 text_clean = response.text.strip()
                 resultado = json.loads(text_clean)
             except json.JSONDecodeError:
+                # LÓGICA DE RESGATE (Se a IA cortar no meio)
                 try:
-                    # Tenta fechar string aberta e objeto
                     st.warning("⚠️ O texto é muito longo e foi cortado pela IA. Recuperando início...")
                     fixed_text = text_clean + '"}]}' 
                     resultado = json.loads(fixed_text)
                 except:
                     try:
-                        # Tenta fechar apenas o objeto
                         fixed_text = text_clean.rstrip(",") + "]}"
                         resultado = json.loads(fixed_text)
                     except:
-                        st.error("❌ O arquivo é grande demais e a resposta quebrou.")
+                        st.error("❌ Erro Fatal: O arquivo é grande demais e a resposta quebrou.")
+                        st.download_button("Baixar Log do Erro", response.text)
                         st.stop()
 
             try:
