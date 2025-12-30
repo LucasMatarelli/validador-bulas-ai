@@ -277,7 +277,7 @@ tipo_bula = st.radio(
 )
 
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📜 Bula Referência", type=["pdf", "docx"], key="f1")
+f1 = c1.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula MKT", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
