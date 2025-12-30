@@ -66,15 +66,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO (MODELOS ROBUSTOS) -----------------
-# Tenta todas as variações de nome para garantir que um funcione
+# ----------------- 2. CONFIGURAÇÃO (SUA LISTA) -----------------
 MODELOS_PARA_TENTAR = [
-    "models/gemini-1.5-flash",
-    "gemini-1.5-flash",
-    "models/gemini-1.5-pro",
-    "gemini-1.5-pro",
-    "models/gemini-pro",  # Fallback (Versão 1.0 estável)
-    "gemini-pro"
+    "models/gemini-2.5-flash", 
+    "models/gemini-2.0-flash", 
+    "models/gemini-1.5-flash", 
+    "gemini-1.5-flash"
 ]
 
 SECOES_PACIENTE = [
@@ -281,6 +278,7 @@ f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     
+    # PEGA AS 3 CHAVES DISPONÍVEIS
     keys_raw = [
         st.secrets.get("GEMINI_API_KEY"),
         st.secrets.get("GEMINI_API_KEY2"),
@@ -334,6 +332,7 @@ if st.button("🚀 Processar Conferência"):
             sucesso = False
             log_erros = []
 
+            # LOOP PARA TENTAR TODAS AS CHAVES X TODOS OS MODELOS
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
                 
@@ -341,7 +340,6 @@ if st.button("🚀 Processar Conferência"):
                 
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
-                        # CONFIGURAÇÃO CRÍTICA
                         model = genai.GenerativeModel(
                             modelo, 
                             generation_config={
@@ -352,10 +350,11 @@ if st.button("🚀 Processar Conferência"):
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
-                        break 
+                        break # Se funcionou, sai do loop de modelos
                     except Exception as e:
+                        # Se der erro, loga e tenta o próximo modelo/chave
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(1) # Espera 1s para evitar bloqueio
+                        time.sleep(1) # Delay anti-spam
                         continue
 
             if not sucesso:
@@ -363,6 +362,7 @@ if st.button("🚀 Processar Conferência"):
                 st.code("\n".join(log_erros))
                 st.stop()
             
+            # --- TRATAMENTO DE ERRO DE CORTE (JSON QUEBRADO) ---
             try:
                 text_clean = response.text.strip()
                 resultado = json.loads(text_clean)
@@ -380,6 +380,7 @@ if st.button("🚀 Processar Conferência"):
                         st.download_button("Baixar Log do Erro", response.text)
                         st.stop()
 
+            # --- PROCESSAMENTO DOS DADOS ---
             try:
                 data_ref = resultado.get("data_anvisa_ref", "-")
                 data_mkt = resultado.get("data_anvisa_mkt", "-")
