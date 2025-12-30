@@ -66,10 +66,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
-MODELOS_PARA_TENTAR = [
-    "models/gemini-2.0-flash", 
-    "models/gemini-1.5-flash", 
-    "gemini-1.5-flash"
+# Modelos para a análise de texto (comparação)
+MODELOS_ANALISE = [
+    "gemini-1.5-flash",
+    "gemini-2.0-flash-exp",
+    "gemini-1.5-pro"
 ]
 
 SECOES_PACIENTE = [
@@ -215,14 +216,14 @@ def gerar_diff_html(texto_ref, texto_novo):
 
 def ocr_via_gemini(uploaded_file, api_keys):
     """
-    OCR com configurações de segurança RELAXADAS para permitir bulas médicas.
+    OCR com configurações de segurança RELAXADAS e modelos atualizados.
     """
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
     
     prompt_ocr = "Transcreva TODO o texto deste documento fielmente. Não faça resumos, apenas extraia o texto exato."
     
-    # Configuração vital para Bulas: Liberar conteúdo que a IA pode achar 'perigoso' (remédios)
+    # Configuração vital para Bulas
     safety_settings = {
         HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -232,23 +233,28 @@ def ocr_via_gemini(uploaded_file, api_keys):
 
     last_error = ""
 
+    # LISTA ATUALIZADA DE MODELOS PARA VISÃO (OCR)
+    # Removemos o prefixo 'models/' que estava causando o erro 404
+    vision_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"]
+
     for key in api_keys:
         try:
             genai.configure(api_key=key)
-            # Tenta o modelo 2.0 primeiro, depois o 1.5
-            for model_name in ["models/gemini-2.0-flash", "models/gemini-1.5-flash"]:
+            for model_name in vision_models:
                 try:
                     model = genai.GenerativeModel(model_name)
                     response = model.generate_content(
                         [{'mime_type': 'application/pdf', 'data': bytes_data}, prompt_ocr],
                         safety_settings=safety_settings
                     )
-                    return response.text, None # Sucesso
+                    if response.text:
+                        return response.text, None
                 except Exception as e_inner:
-                    last_error = f"{model_name}: {str(e_inner)}"
+                    # Captura erro mas tenta o próximo modelo
+                    last_error = f"Erro no modelo {model_name}: {str(e_inner)}"
                     continue
         except Exception as e:
-            last_error = str(e)
+            last_error = f"Erro na chave API: {str(e)}"
             continue
             
     return "", last_error
@@ -288,14 +294,15 @@ def extract_text_from_file(uploaded_file, api_keys=None):
         
         # Se tiver menos de 50 caracteres e for PDF, assume que é imagem
         if len(texto_limpo) < 50 and uploaded_file.name.lower().endswith('.pdf') and api_keys:
-            st.warning(f"⚠️ Arquivo '{uploaded_file.name}' parece ser imagem. Aplicando OCR Inteligente (pode demorar um pouco)...")
+            st.warning(f"⚠️ Arquivo '{uploaded_file.name}' parece ser imagem (escaneado). Iniciando leitura via IA (OCR)...")
             
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
             
             if texto_ocr:
+                st.success(f"✅ OCR realizado com sucesso em '{uploaded_file.name}'!")
                 return texto_ocr
             else:
-                st.error(f"Erro detalhado no OCR: {erro_ocr}")
+                st.error(f"Não foi possível ler a imagem do PDF. Detalhe: {erro_ocr}")
                 return ""
 
         return text
@@ -325,10 +332,11 @@ if st.button("🚀 Processar Conferência"):
             t_anvisa = extract_text_from_file(f1, api_keys=keys_validas)
             t_mkt = extract_text_from_file(f2, api_keys=keys_validas)
 
+            # Verificação final: se voltou vazio, para tudo.
             if not t_anvisa or len(t_anvisa) < 20:
-                st.error(f"Não foi possível ler o arquivo BELFAR. (Texto extraído vazio)"); st.stop()
+                st.error(f"ERRO: O arquivo BELFAR está vazio ou ilegível mesmo com OCR."); st.stop()
             if not t_mkt or len(t_mkt) < 20:
-                st.error(f"Não foi possível ler o arquivo MKT. (Texto extraído vazio)"); st.stop()
+                st.error(f"ERRO: O arquivo MKT está vazio ou ilegível mesmo com OCR."); st.stop()
 
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
@@ -350,7 +358,7 @@ if st.button("🚀 Processar Conferência"):
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
                 genai.configure(api_key=key)
-                for modelo in MODELOS_PARA_TENTAR:
+                for modelo in MODELOS_ANALISE:
                     try:
                         model = genai.GenerativeModel(modelo, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
                         response = model.generate_content(prompt)
