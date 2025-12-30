@@ -1,7 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
-import docx  # Para ler DOCX
+import docx
 import json
 import difflib
 import re
@@ -29,13 +29,13 @@ st.markdown("""
         text-align: left;
     }
     
-    /* DIVERGÊNCIA (Amarelo) - Texto diferente */
+    /* DIVERGÊNCIA (Amarelo) */
     .highlight-yellow { 
         background-color: #fff3cd; color: #856404; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold;
     }
     
-    /* ERRO PORTUGUÊS (Vermelho) - Identificado pelo Corretor */
+    /* ERRO PORTUGUÊS (Vermelho) */
     .highlight-red { 
         background-color: #f8d7da; color: #721c24; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #f5c6cb; 
@@ -60,56 +60,60 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO -----------------
+# ----------------- 2. CONFIGURAÇÃO E LISTAS -----------------
 MODELO_FIXO = "models/gemini-1.5-flash"
+
+SECOES_PACIENTE = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
+    "DIZERES LEGAIS"
+]
+
+SECOES_PROFISSIONAL = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
+    "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
+    "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
+    "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE", "DIZERES LEGAIS"
+]
+
+SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 3. FUNÇÕES AUXILIARES -----------------
 
 def normalizar_para_comparacao(texto):
-    """
-    Remove sujeira invisível para evitar falsos positivos (Ex: 'As infecções').
-    Se isso retornar igual para os dois textos, então visualmente eles são iguais.
-    """
     if not texto: return ""
-    # Normaliza Unicode (junta acentos)
     texto = unicodedata.normalize('NFC', texto)
-    # Remove espaços não separáveis (\xa0), hifens opcionais e zero-width spaces
     texto = texto.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
-    # Normaliza espaços múltiplos
     texto = re.sub(r'\s+', ' ', texto)
     return texto.strip()
 
 def verificar_ortografia(texto_html):
-    """
-    Passa um pente fino no texto para achar erros de português (Vermelho).
-    Ignora tags HTML já existentes (<br>, <b>, etc).
-    """
     try:
         spell = SpellChecker(language='pt')
-        # Regex poderosa: Separa tags HTML (<...>) de palavras reais
+        # Regex que ignora tags HTML
         tokens = re.split(r'(<[^>]+>|[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]+)', texto_html)
         
         novo_texto = []
         for token in tokens:
-            # Se for tag HTML, espaço, pontuação ou palavra muito curta, ignora
             if token.startswith('<') or not token.strip() or len(token) < 3:
                 novo_texto.append(token)
                 continue
             
-            # Verifica se a palavra existe no dicionário
             palavra_limpa = token.strip()
-            # Se não estiver no dicionário -> Marca VERMELHO
             if palavra_limpa.lower() not in spell:
                 novo_texto.append(f'<span class="highlight-red" title="Possível erro">{token}</span>')
             else:
                 novo_texto.append(token)
-                
         return "".join(novo_texto)
     except:
-        return texto_html # Se der erro no spellchecker, devolve original
+        return texto_html
 
 def destacar_datas(texto):
-    # Detecta frases de aprovação Anvisa e destaca a data em azul
     padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padrão\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     def replacer(match):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
@@ -119,22 +123,21 @@ def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # 1. Tira a prova real: Se normalizado for igual, não marque amarelo!
+    # 1. Prova real visual (ignora sujeira invisível)
     ref_norm = normalizar_para_comparacao(texto_ref)
     novo_norm = normalizar_para_comparacao(texto_novo)
     
     if ref_norm == novo_norm:
-        # Se for igual, só verifica ortografia no novo (Vermelho) e retorna sem divergência
         html_novo = verificar_ortografia(texto_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
-    # 2. Se for diferente, faz o diff detalhado
+    # 2. Diff detalhado
     a = texto_ref.splitlines()
     b = texto_novo.splitlines()
     
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
-    html_output_ref = []
-    html_output_novo = []
+    html_ref = []
+    html_novo = []
     eh_divergente = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -142,35 +145,28 @@ def gerar_diff_html(texto_ref, texto_novo):
         trecho_b = "\n".join(b[j1:j2])
         
         if tag == 'equal':
-            html_output_ref.append(trecho_a)
-            # Verifica ortografia no texto igual
-            html_output_novo.append(verificar_ortografia(trecho_b))
+            html_ref.append(trecho_a)
+            html_novo.append(verificar_ortografia(trecho_b))
         
         elif tag == 'replace':
-            # Verifica novamente trecho a trecho se é só sujeira invisível
             if normalizar_para_comparacao(trecho_a) == normalizar_para_comparacao(trecho_b):
-                html_output_ref.append(trecho_a)
-                html_output_novo.append(verificar_ortografia(trecho_b))
+                html_ref.append(trecho_a)
+                html_novo.append(verificar_ortografia(trecho_b))
             else:
-                # Diferença REAL -> Amarelo
-                html_output_ref.append(f'<span class="highlight-yellow">{trecho_a}</span>')
-                html_output_novo.append(f'<span class="highlight-yellow">{trecho_b}</span>')
+                html_ref.append(f'<span class="highlight-yellow">{trecho_a}</span>')
+                html_novo.append(f'<span class="highlight-yellow">{trecho_b}</span>')
                 eh_divergente = True
 
         elif tag == 'delete':
-            html_output_ref.append(f'<span class="highlight-yellow">{trecho_a}</span>')
+            html_ref.append(f'<span class="highlight-yellow">{trecho_a}</span>')
             eh_divergente = True
             
         elif tag == 'insert':
-            html_output_novo.append(f'<span class="highlight-yellow">{trecho_b}</span>')
+            html_novo.append(f'<span class="highlight-yellow">{trecho_b}</span>')
             eh_divergente = True
             
-    final_ref = "\n".join(html_output_ref).replace("\n", "<br>")
-    final_novo = "\n".join(html_output_novo).replace("\n", "<br>")
-    
-    return final_ref, final_novo, eh_divergente
+    return "\n".join(html_ref).replace("\n", "<br>"), "\n".join(html_novo).replace("\n", "<br>"), eh_divergente
 
-# ----------------- 4. EXTRAÇÃO DE TEXTO -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
@@ -186,84 +182,63 @@ def extract_text_from_file(uploaded_file):
                             content = s["text"]
                             font_props = s["font"].lower()
                             is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
-                            if is_bold:
-                                line_txt += f"<b>{content}</b>"
-                            else:
-                                line_txt += content
+                            if is_bold: line_txt += f"<b>{content}</b>"
+                            else: line_txt += content
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
-                    
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
             for para in doc.paragraphs: 
                 para_txt = ""
                 for run in para.runs:
-                    if run.bold:
-                        para_txt += f"<b>{run.text}</b>"
-                    else:
-                        para_txt += run.text
+                    if run.bold: para_txt += f"<b>{run.text}</b>"
+                    else: para_txt += run.text
                 text += para_txt + "\n\n"
         return text
-    except Exception as e:
-        return ""
-
-SECOES_PACIENTE = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
-    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
-    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
-    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
-    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
-    "DIZERES LEGAIS"
-]
-
-SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
+    except: return ""
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Med. Referência x BELFAR")
+
+# --- SELETOR DE TIPO DE BULA (NOVO) ---
+tipo_bula = st.radio(
+    "Escolha o Tipo de Bula:",
+    ("Paciente", "Profissional"),
+    horizontal=True
+)
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    # Tenta pegar qualquer chave disponível
     key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY2") or st.secrets.get("GEMINI_API_KEY3")
-
-    if not key:
-        st.error("Nenhuma chave API encontrada.")
-        st.stop()
+    if not key: st.error("Sem chave API"); st.stop()
 
     if f1 and f2:
-        with st.spinner("Conferindo... (Detectando símbolos, ignorando espaços vazios e checando português)..."):
+        # Define a lista baseada na escolha do usuário
+        secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
+
+        with st.spinner("Conferindo..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
 
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
-                st.error("Erro: Arquivo vazio ou ilegível."); st.stop()
+                st.error("Arquivo vazio."); st.stop()
 
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
             
-            INPUT TEXTO 1 (REF): 
-            {t_anvisa[:150000]}
-            
-            INPUT TEXTO 2 (MKT): 
-            {t_mkt[:150000]}
+            INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
+            INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
 
             SUA MISSÃO:
-            1. **DATA DE APROVAÇÃO:** Procure EXATAMENTE por frases como "Esta bula foi aprovada pela Anvisa em (DATA)" ou "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em (DATA)". Extraia APENAS essa data específica.
-            
-            2. **CONTEÚDO COMPLETO:** - Extraia TODO o texto entre um título e outro.
-               - NÃO PARE no meio. NÃO RESUMA.
-            
-            3. **FORMATAÇÃO:**
-               - MANTENHA as tags <b> e </b> originais.
-               - NÃO CORRIJA O PORTUGUÊS. Copie ipsis litteris.
+            1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
+            2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
+            3. Manter formatação <b> e NÃO corrigir português.
 
-            LISTA DE SEÇÕES ESPERADAS: {SECOES_PACIENTE}
+            LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
             SAÍDA JSON:
             {{
@@ -272,8 +247,8 @@ if st.button("🚀 Processar Conferência"):
                 "secoes": [
                     {{
                         "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "Texto completo com <b> e \\n",
-                        "texto_mkt": "Texto completo com <b> e \\n"
+                        "texto_anvisa": "...",
+                        "texto_mkt": "..."
                     }}
                 ]
             }}
@@ -285,12 +260,12 @@ if st.button("🚀 Processar Conferência"):
                 response = model.generate_content(prompt)
                 
                 resultado = json.loads(response.text)
-                data_ref = resultado.get("data_anvisa_ref", "Não encontrada")
-                data_mkt = resultado.get("data_anvisa_mkt", "Não encontrada")
+                data_ref = resultado.get("data_anvisa_ref", "-")
+                data_mkt = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
                 
                 secoes_finais = []
-                divergentes_count = 0
+                divs_count = 0
 
                 for item in dados_secoes:
                     titulo = item.get('titulo', '').strip()
@@ -298,45 +273,37 @@ if st.button("🚀 Processar Conferência"):
                     txt_mkt = item.get('texto_mkt', '').strip()
                     
                     titulo_upper = titulo.upper()
-                    eh_secao_blindada = any(blindada in titulo_upper for blindada in SECOES_SEM_COMPARACAO)
+                    eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
 
-                    if eh_secao_blindada:
+                    if eh_blindada:
                         status = "CONFORME"
                         if "DIZERES LEGAIS" in titulo_upper:
                             html_mkt = destacar_datas(txt_mkt)
                             html_ref = destacar_datas(txt_ref)
                         else:
-                            html_mkt = verificar_ortografia(txt_mkt) # Ainda checa português
+                            html_mkt = verificar_ortografia(txt_mkt)
                             html_ref = txt_ref
-                        
-                        # Ajusta quebras de linha para visualização
                         html_mkt = html_mkt.replace('\n', '<br>')
                         html_ref = html_ref.replace('\n', '<br>')
-                    
                     else:
-                        # AQUI ESTÁ A MÁGICA: Gera diff ignorando "As infecções" falso positivo
-                        # e marcando vermelho em erros de português
                         html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
-                        if teve_diff: divergentes_count += 1
+                        if teve_diff: divs_count += 1
 
                     secoes_finais.append({
-                        "titulo": titulo,
-                        "texto_anvisa": html_ref,
-                        "texto_mkt": html_mkt,
-                        "status": status
+                        "titulo": titulo, "texto_anvisa": html_ref, "texto_mkt": html_mkt, "status": status
                     })
 
-                st.markdown("### 📊 Resumo da Conferência")
+                st.markdown("### 📊 Resumo")
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Data Anvisa (Ref)", data_ref)
-                c2.metric("Data Anvisa (MKT)", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
+                c1.metric("Data Ref", data_ref)
+                c2.metric("Data MKT", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
                 c3.metric("Seções", len(secoes_finais))
 
                 sub1, sub2 = st.columns(2)
-                sub1.info(f"✅ **Conformes:** {len(secoes_finais) - divergentes_count}")
-                if divergentes_count > 0: sub2.warning(f"⚠️ **Divergentes:** {divergentes_count}")
-                else: sub2.success("✨ **Divergências:** 0")
+                sub1.info(f"✅ Conformes: {len(secoes_finais) - divs_count}")
+                if divs_count > 0: sub2.warning(f"⚠️ Divergentes: {divs_count}")
+                else: sub2.success("✨ Divergências: 0")
 
                 st.divider()
 
@@ -344,26 +311,21 @@ if st.button("🚀 Processar Conferência"):
                     status = item['status']
                     titulo = item['titulo']
                     
-                    if "DIZERES LEGAIS" in titulo.upper():
-                        icon = "⚖️"; css = "border-info"; aberto = True
-                    elif any(b in titulo.upper() for b in SECOES_SEM_COMPARACAO):
-                        icon = "🔒"; css = "border-ok"; aberto = False
-                    elif status == "CONFORME":
-                        icon = "✅"; css = "border-ok"; aberto = False
-                    else:
-                        icon = "⚠️"; css = "border-warn"; aberto = True
+                    if "DIZERES LEGAIS" in titulo.upper(): icon, css, aberto = "⚖️", "border-info", True
+                    elif any(b in titulo.upper() for b in SECOES_SEM_COMPARACAO): icon, css, aberto = "🔒", "border-ok", False
+                    elif status == "CONFORME": icon, css, aberto = "✅", "border-ok", False
+                    else: icon, css, aberto = "⚠️", "border-warn", True
 
                     with st.expander(f"{icon} {titulo}", expanded=aberto):
-                        col_esq, col_dir = st.columns(2)
-                        with col_esq:
-                            st.caption("📜 Referência")
+                        ce, cd = st.columns(2)
+                        with ce:
+                            st.caption("Referência")
                             st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
-                        with col_dir:
-                            st.caption("🎨 Validado")
+                        with cd:
+                            st.caption("Validado")
                             st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"Erro ao processar: {e}")
-                # st.code(response.text) # Descomente para debug
+                st.error(f"Erro: {e}")
     else:
         st.warning("Adicione os arquivos.")
