@@ -66,7 +66,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
-# LISTA EXATA SOLICITADA PELO USUÁRIO
 MODELOS_PARA_TENTAR = [
     "models/gemini-2.5-flash", 
     "models/gemini-2.0-flash", 
@@ -194,8 +193,9 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo):
-    if not texto_ref: texto_ref = ""
-    if not texto_novo: texto_novo = ""
+    # Proteção extra contra None
+    if texto_ref is None: texto_ref = ""
+    if texto_novo is None: texto_novo = ""
     
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
         html_novo = verificar_ortografia_inteligente(texto_novo)
@@ -216,10 +216,6 @@ def gerar_diff_html(texto_ref, texto_novo):
 # ----------------- 4. EXTRAÇÃO E OCR -----------------
 
 def ocr_via_gemini(uploaded_file, api_keys):
-    """
-    OCR ROBISTO:
-    Itera sobre CHAVES e sobre MODELOS.
-    """
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
     
@@ -234,11 +230,9 @@ def ocr_via_gemini(uploaded_file, api_keys):
 
     log_erros_ocr = []
 
-    # Loop Chaves -> Loop Modelos
     for i, key in enumerate(api_keys):
         try:
             genai.configure(api_key=key)
-            
             for modelo in MODELOS_PARA_TENTAR:
                 try:
                     model = genai.GenerativeModel(modelo)
@@ -247,11 +241,10 @@ def ocr_via_gemini(uploaded_file, api_keys):
                         safety_settings=safety_settings
                     )
                     if response.text:
-                        return response.text, None # SUCESSO!
+                        return response.text, None
                 except Exception as e_model:
                     err_msg = str(e_model)
                     log_erros_ocr.append(f"Key {i+1} | {modelo}: {err_msg}")
-                    # Se for erro de Cota (429), pausa um pouco antes de tentar o próximo modelo/chave
                     if "429" in err_msg or "quota" in err_msg.lower():
                         time.sleep(2)
                     continue
@@ -264,7 +257,6 @@ def ocr_via_gemini(uploaded_file, api_keys):
 def extract_text_from_file(uploaded_file, api_keys=None):
     text = ""
     try:
-        # 1. Tenta extração nativa (rápida)
         if uploaded_file.name.lower().endswith('.pdf'):
             uploaded_file.seek(0)
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
@@ -291,15 +283,11 @@ def extract_text_from_file(uploaded_file, api_keys=None):
                     else: para_txt += run.text
                 text += para_txt + "\n\n"
         
-        # 2. Verificação OCR
         texto_limpo = re.sub(r'<[^>]+>', '', text).strip()
         
-        # Se tiver menos de 50 caracteres e for PDF, assume que é imagem
         if len(texto_limpo) < 50 and uploaded_file.name.lower().endswith('.pdf') and api_keys:
             st.warning(f"⚠️ '{uploaded_file.name}' parece ser imagem. Tentando OCR com todas as chaves e modelos...")
-            
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
-            
             if texto_ocr:
                 st.success(f"✅ OCR realizado com sucesso em '{uploaded_file.name}'!")
                 return texto_ocr
@@ -335,11 +323,9 @@ if st.button("🚀 Processar Conferência"):
         secoes_alvo = SECOES_PACIENTE
 
         with st.spinner("Lendo arquivos (aplicando OCR se necessário com todas as chaves)..."):
-            # O código vai tentar OCR nos DOIS arquivos se precisar
             t_anvisa = extract_text_from_file(f1, api_keys=keys_validas)
             t_mkt = extract_text_from_file(f2, api_keys=keys_validas)
 
-            # Verificação final: se voltou vazio, para tudo.
             if not t_anvisa or len(t_anvisa) < 20:
                 st.error(f"ERRO: O arquivo BELFAR está vazio ou ilegível mesmo com OCR."); st.stop()
             if not t_mkt or len(t_mkt) < 20:
@@ -362,7 +348,6 @@ if st.button("🚀 Processar Conferência"):
             sucesso = False
             log_erros = []
 
-            # Loop Principal de Análise: Chave -> Modelos
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
                 
@@ -377,7 +362,6 @@ if st.button("🚀 Processar Conferência"):
                     except Exception as e:
                         erro_msg = str(e)
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {erro_msg}")
-                        # Se for erro de cota (429), espera um pouco mais
                         if "429" in erro_msg or "quota" in erro_msg.lower():
                             time.sleep(3)
                         else:
@@ -389,17 +373,20 @@ if st.button("🚀 Processar Conferência"):
             
             try:
                 resultado = json.loads(response.text)
-                data_ref = resultado.get("data_anvisa_ref", "-")
-                data_mkt = resultado.get("data_anvisa_mkt", "-")
-                dados_secoes = resultado.get("secoes", [])
+                
+                # Proteção para dados nulos
+                data_ref = resultado.get("data_anvisa_ref") or "-"
+                data_mkt = resultado.get("data_anvisa_mkt") or "-"
+                dados_secoes = resultado.get("secoes") or []
                 
                 secoes_finais = []
                 divs_count = 0
 
                 for item in dados_secoes:
-                    titulo = item.get('titulo', '').strip()
-                    txt_ref = item.get('texto_anvisa', '').strip()
-                    txt_mkt = item.get('texto_mkt', '').strip()
+                    titulo = (item.get('titulo') or '').strip()
+                    # AQUI ESTAVA O ERRO: Adicionamos ( ... or "") para impedir o crash
+                    txt_ref = (item.get('texto_anvisa') or "").strip()
+                    txt_mkt = (item.get('texto_mkt') or "").strip()
                     
                     titulo_upper = titulo.upper()
                     eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
