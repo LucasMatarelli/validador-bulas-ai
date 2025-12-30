@@ -10,7 +10,7 @@ import time
 from spellchecker import SpellChecker
 
 # ----------------- 1. VISUAL & CSS -----------------
-st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide")
+st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
 
 st.markdown("""
 <style>
