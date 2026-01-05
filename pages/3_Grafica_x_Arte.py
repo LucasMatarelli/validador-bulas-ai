@@ -167,6 +167,7 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
+    # Split que preserva as tags coladas às palavras
     palavras_ref = texto_ref.split()
     palavras_novo = texto_novo.split()
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
@@ -196,15 +197,14 @@ def gerar_diff_html(texto_ref, texto_novo):
     if texto_ref is None: texto_ref = ""
     if texto_novo is None: texto_novo = ""
     
+    # Normalização nuclear ignora tags para decidir se entra no modo DIFF
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
         html_novo = verificar_ortografia_inteligente(texto_novo)
         html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
-    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
-    
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
+    # Comparação direta mantendo as tags HTML (<b>, <i>) para reconhecer mudanças de estilo
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
     
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
@@ -218,7 +218,6 @@ def ocr_via_gemini(uploaded_file, api_keys):
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
     
-    # PROMPT BLINDADO CONTRA O ERRO 'GENERAL'
     prompt_ocr = """
     ATENÇÃO: Você é um robô de OCR para documentos farmacêuticos brasileiros.
     IDIOMA: Português do Brasil.
@@ -228,6 +227,7 @@ def ocr_via_gemini(uploaded_file, api_keys):
     2. PROIBIDO traduzir.
     3. ATENÇÃO MÁXIMA: Se estiver escrito "geral" (comum em bulas), mantenha "geral". NÃO escreva "general" em inglês.
     4. Mantenha erros de digitação originais se houver.
+    5. IDENTIFIQUE NEGRITO E ITÁLICO: Use <b> para negrito e <i> para itálico exatamente onde ocorrerem.
     """
     
     safety_settings = {
@@ -252,7 +252,6 @@ def ocr_via_gemini(uploaded_file, api_keys):
                     
                     texto_extraido = response.text
                     
-                    # --- CIRURGIA CORRETIVA ---
                     if texto_extraido:
                          texto_extraido = re.sub(r'\bgeneral\b', 'geral', texto_extraido, flags=re.IGNORECASE)
                          return texto_extraido, None
@@ -305,9 +304,7 @@ def extract_text_smart(uploaded_file, api_keys=None):
                     para_txt += res
                 text += para_txt + "\n\n"
         
-        # 2. Análise da Necessidade de OCR
         texto_limpo = re.sub(r'<[^>]+>', '', text).strip()
-        
         eh_pdf = uploaded_file.name.lower().endswith('.pdf')
         
         if eh_pdf and len(texto_limpo) < 1000 and api_keys:
@@ -361,7 +358,6 @@ if st.button("🚀 Processar Conferência"):
             if not t_mkt or len(t_mkt) < 20:
                 st.error(f"ERRO: Conteúdo do arquivo MKT insuficiente para análise."); st.stop()
 
-            # PROMPT COM REFORÇO EXTRA
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso (ROBÔ DE CÓPIA).
             
@@ -372,7 +368,7 @@ if st.button("🚀 Processar Conferência"):
             1. COPIAR o texto EXATAMENTE como está nos inputs para dentro do JSON.
             2. PROIBIDO corrigir português. 
             3. ATENÇÃO: Se no texto de entrada estiver "geral", MANTENHA "geral". Não mude para "general".
-            4. Manter formatação <b> e <i>.
+            4. Manter formatação <b> e <i> exatamente como estão nos textos de entrada.
             5. Se não encontrar a data de aprovação da Anvisa (geralmente nos Dizeres Legais), retorne "N/A" nos campos de data.
             
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
@@ -387,9 +383,7 @@ if st.button("🚀 Processar Conferência"):
 
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
-                
                 genai.configure(api_key=key)
-                
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
                         model = genai.GenerativeModel(modelo, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
@@ -410,11 +404,8 @@ if st.button("🚀 Processar Conferência"):
             
             try:
                 resultado = json.loads(response.text)
-                
-                # --- ALTERAÇÃO SOLICITADA: FALLBACK PARA N/A SE VAZIO ---
                 data_ref = resultado.get("data_anvisa_ref") or "N/A"
                 data_mkt = resultado.get("data_anvisa_mkt") or "N/A"
-                
                 dados_secoes = resultado.get("secoes") or []
                 
                 secoes_finais = []
