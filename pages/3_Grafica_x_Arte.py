@@ -287,9 +287,14 @@ def extract_text_smart(uploaded_file, api_keys=None):
                         line_txt = ""
                         for s in l.get("spans", []):
                             content = s["text"]
-                            is_bold = (s["flags"] & 16) or "bold" in s["font"].lower()
-                            if is_bold: line_txt += f"<b>{content}</b>"
-                            else: line_txt += content
+                            font_props = s["font"].lower()
+                            is_bold = (s["flags"] & 16) or "bold" in font_props
+                            is_italic = (s["flags"] & 2) or "italic" in font_props or "oblique" in font_props
+                            
+                            temp_content = content
+                            if is_bold: temp_content = f"<b>{temp_content}</b>"
+                            if is_italic: temp_content = f"<i>{temp_content}</i>"
+                            line_txt += temp_content
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
         
@@ -298,8 +303,10 @@ def extract_text_smart(uploaded_file, api_keys=None):
             for para in doc.paragraphs: 
                 para_txt = ""
                 for run in para.runs:
-                    if run.bold: para_txt += f"<b>{run.text}</b>"
-                    else: para_txt += run.text
+                    run_content = run.text
+                    if run.bold: run_content = f"<b>{run_content}</b>"
+                    if run.italic: run_content = f"<i>{run_content}</i>"
+                    para_txt += run_content
                 text += para_txt + "\n\n"
         
         # 2. Análise da Necessidade de OCR
@@ -370,7 +377,7 @@ if st.button("🚀 Processar Conferência"):
             1. COPIAR o texto EXATAMENTE como está nos inputs para dentro do JSON.
             2. PROIBIDO corrigir português. 
             3. ATENÇÃO: Se no texto de entrada estiver "geral", MANTENHA "geral". Não mude para "general".
-            4. Manter formatação <b>.
+            4. Manter formatação <b> e <i>.
             
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
             
