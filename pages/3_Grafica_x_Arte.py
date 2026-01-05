@@ -289,12 +289,11 @@ def extract_text_smart(uploaded_file, api_keys=None):
                             content = s["text"]
                             font_props = s["font"].lower()
                             is_bold = (s["flags"] & 16) or "bold" in font_props
-                            is_italic = (s["flags"] & 2) or "italic" in font_props or "oblique" in font_props
-                            
-                            temp_content = content
-                            if is_bold: temp_content = f"<b>{temp_content}</b>"
-                            if is_italic: temp_content = f"<i>{temp_content}</i>"
-                            line_txt += temp_content
+                            is_italic = (s["flags"] & 2) or "italic" in font_props
+                            res = content
+                            if is_bold: res = f"<b>{res}</b>"
+                            if is_italic: res = f"<i>{res}</i>"
+                            line_txt += res
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
         
@@ -303,10 +302,10 @@ def extract_text_smart(uploaded_file, api_keys=None):
             for para in doc.paragraphs: 
                 para_txt = ""
                 for run in para.runs:
-                    run_content = run.text
-                    if run.bold: run_content = f"<b>{run_content}</b>"
-                    if run.italic: run_content = f"<i>{run_content}</i>"
-                    para_txt += run_content
+                    res = run.text
+                    if run.bold: res = f"<b>{res}</b>"
+                    if run.italic: res = f"<i>{res}</i>"
+                    para_txt += res
                 text += para_txt + "\n\n"
         
         # 2. Análise da Necessidade de OCR
