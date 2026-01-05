@@ -253,10 +253,7 @@ def ocr_via_gemini(uploaded_file, api_keys):
                     texto_extraido = response.text
                     
                     # --- CIRURGIA CORRETIVA ---
-                    # Se mesmo com o aviso a IA escrever 'general', corrigimos na força bruta aqui.
                     if texto_extraido:
-                         # Troca " general " por " geral " (com espaços para não quebrar outras palavras)
-                         # e "general," por "geral," etc.
                          texto_extraido = re.sub(r'\bgeneral\b', 'geral', texto_extraido, flags=re.IGNORECASE)
                          return texto_extraido, None
                          
@@ -313,7 +310,6 @@ def extract_text_smart(uploaded_file, api_keys=None):
         
         eh_pdf = uploaded_file.name.lower().endswith('.pdf')
         
-        # Limite de 1000 caracteres para ativar OCR
         if eh_pdf and len(texto_limpo) < 1000 and api_keys:
             st.warning(f"👁️ Arquivo '{uploaded_file.name}' detectado com pouco texto ({len(texto_limpo)} chars < 1000). Ativando OCR...")
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
@@ -377,6 +373,7 @@ if st.button("🚀 Processar Conferência"):
             2. PROIBIDO corrigir português. 
             3. ATENÇÃO: Se no texto de entrada estiver "geral", MANTENHA "geral". Não mude para "general".
             4. Manter formatação <b> e <i>.
+            5. Se não encontrar a data de aprovação da Anvisa (geralmente nos Dizeres Legais), retorne "N/A" nos campos de data.
             
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
             
@@ -414,8 +411,10 @@ if st.button("🚀 Processar Conferência"):
             try:
                 resultado = json.loads(response.text)
                 
-                data_ref = resultado.get("data_anvisa_ref") or "-"
-                data_mkt = resultado.get("data_anvisa_mkt") or "-"
+                # --- ALTERAÇÃO SOLICITADA: FALLBACK PARA N/A SE VAZIO ---
+                data_ref = resultado.get("data_anvisa_ref") or "N/A"
+                data_mkt = resultado.get("data_anvisa_mkt") or "N/A"
+                
                 dados_secoes = resultado.get("secoes") or []
                 
                 secoes_finais = []
