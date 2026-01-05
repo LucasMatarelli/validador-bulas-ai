@@ -201,8 +201,10 @@ def gerar_diff_html(texto_ref, texto_novo):
         html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
-    # REMOVIDO: re.sub(r'<[^>]+>', '', ...) para manter negrito e itálico na comparação
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
+    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
+    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
+    
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
     
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
@@ -216,6 +218,7 @@ def ocr_via_gemini(uploaded_file, api_keys):
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
     
+    # PROMPT BLINDADO CONTRA O ERRO 'GENERAL'
     prompt_ocr = """
     ATENÇÃO: Você é um robô de OCR para documentos farmacêuticos brasileiros.
     IDIOMA: Português do Brasil.
@@ -249,7 +252,11 @@ def ocr_via_gemini(uploaded_file, api_keys):
                     
                     texto_extraido = response.text
                     
+                    # --- CIRURGIA CORRETIVA ---
+                    # Se mesmo com o aviso a IA escrever 'general', corrigimos na força bruta aqui.
                     if texto_extraido:
+                         # Troca " general " por " geral " (com espaços para não quebrar outras palavras)
+                         # e "general," por "geral," etc.
                          texto_extraido = re.sub(r'\bgeneral\b', 'geral', texto_extraido, flags=re.IGNORECASE)
                          return texto_extraido, None
                          
@@ -268,6 +275,7 @@ def ocr_via_gemini(uploaded_file, api_keys):
 def extract_text_smart(uploaded_file, api_keys=None):
     text = ""
     try:
+        # 1. Tentativa Nativa
         if uploaded_file.name.lower().endswith('.pdf'):
             uploaded_file.seek(0)
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
@@ -300,9 +308,12 @@ def extract_text_smart(uploaded_file, api_keys=None):
                     para_txt += res
                 text += para_txt + "\n\n"
         
+        # 2. Análise da Necessidade de OCR
         texto_limpo = re.sub(r'<[^>]+>', '', text).strip()
+        
         eh_pdf = uploaded_file.name.lower().endswith('.pdf')
         
+        # Limite de 1000 caracteres para ativar OCR
         if eh_pdf and len(texto_limpo) < 1000 and api_keys:
             st.warning(f"👁️ Arquivo '{uploaded_file.name}' detectado com pouco texto ({len(texto_limpo)} chars < 1000). Ativando OCR...")
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
@@ -354,20 +365,18 @@ if st.button("🚀 Processar Conferência"):
             if not t_mkt or len(t_mkt) < 20:
                 st.error(f"ERRO: Conteúdo do arquivo MKT insuficiente para análise."); st.stop()
 
-            # PROMPT AJUSTADO PARA N/A
+            # PROMPT COM REFORÇO EXTRA
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso (ROBÔ DE CÓPIA).
             
-            INPUT TEXTO 1 (GRÁFICA): {t_anvisa[:150000]}
-            INPUT TEXTO 2 (ARTE): {t_mkt[:150000]}
+            INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
+            INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
             
             SUA MISSÃO CRÍTICA:
-            1. No campo "data_anvisa_ref" e "data_anvisa_mkt", procure EXCLUSIVAMENTE a data após a frase "aprovada pela Anvisa em". 
-            2. Se NÃO encontrar exatamente essa frase com uma data, escreva obrigatoriamente "N/A". Proibido colocar o nome do medicamento nesses campos.
-            3. COPIAR o texto EXATAMENTE como está nos inputs para dentro do JSON.
-            4. PROIBIDO corrigir português. 
-            5. ATENÇÃO: Se no texto de entrada estiver "geral", MANTENHA "geral". Não mude para "general".
-            6. Manter formatação <b> e <i>.
+            1. COPIAR o texto EXATAMENTE como está nos inputs para dentro do JSON.
+            2. PROIBIDO corrigir português. 
+            3. ATENÇÃO: Se no texto de entrada estiver "geral", MANTENHA "geral". Não mude para "general".
+            4. Manter formatação <b> e <i>.
             
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
             
@@ -381,7 +390,9 @@ if st.button("🚀 Processar Conferência"):
 
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
+                
                 genai.configure(api_key=key)
+                
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
                         model = genai.GenerativeModel(modelo, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
@@ -403,8 +414,8 @@ if st.button("🚀 Processar Conferência"):
             try:
                 resultado = json.loads(response.text)
                 
-                data_ref = resultado.get("data_anvisa_ref") or "N/A"
-                data_mkt = resultado.get("data_anvisa_mkt") or "N/A"
+                data_ref = resultado.get("data_anvisa_ref") or "-"
+                data_mkt = resultado.get("data_anvisa_mkt") or "-"
                 dados_secoes = resultado.get("secoes") or []
                 
                 secoes_finais = []
@@ -416,7 +427,6 @@ if st.button("🚀 Processar Conferência"):
                     txt_mkt = (item.get('texto_mkt') or "").strip()
                     
                     titulo_upper = titulo.upper()
-                    # APRESENTAÇÕES agora incluída no cadeado igual composição
                     eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
 
                     if eh_blindada:
@@ -436,9 +446,8 @@ if st.button("🚀 Processar Conferência"):
 
                 st.markdown("### 📊 Resumo")
                 c1, c2, c3 = st.columns(3)
-                # Alterado Data Ref -> Data Gráfica e Data MKT -> Data Arte
-                c1.metric("Data Gráfica", data_ref)
-                c2.metric("Data Arte", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
+                c1.metric("Data Ref", data_ref)
+                c2.metric("Data MKT", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
                 c3.metric("Seções", len(secoes_finais))
 
                 sub1, sub2 = st.columns(2)
@@ -451,7 +460,6 @@ if st.button("🚀 Processar Conferência"):
                 for item in secoes_finais:
                     status = item['status']
                     titulo = item['titulo']
-                    # O cadeado (🔒) já funciona para APRESENTAÇÕES pois está no SECOES_SEM_COMPARACAO
                     if "DIZERES LEGAIS" in titulo.upper(): icon, css, aberto = "⚖️", "border-info", True
                     elif any(b in titulo.upper() for b in SECOES_SEM_COMPARACAO): icon, css, aberto = "🔒", "border-ok", False
                     elif status == "CONFORME": icon, css, aberto = "✅", "border-ok", False
