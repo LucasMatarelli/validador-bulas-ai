@@ -67,6 +67,7 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
+    "models/gemini-2.5-flash", 
     "models/gemini-2.0-flash", 
     "models/gemini-1.5-flash", 
     "gemini-1.5-flash"
@@ -166,7 +167,6 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # Split mantendo as tags HTML coladas nas palavras para preservar negrito/itálico
     palavras_ref = texto_ref.split()
     palavras_novo = texto_novo.split()
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
@@ -196,13 +196,12 @@ def gerar_diff_html(texto_ref, texto_novo):
     if texto_ref is None: texto_ref = ""
     if texto_novo is None: texto_novo = ""
     
-    # Normalização apenas para checagem lógica de igualdade
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
         html_novo = verificar_ortografia_inteligente(texto_novo)
         html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
-    # NÃO limpamos mais as tags HTML aqui para preservar o negrito/itálico na comparação
+    # REMOVIDO: re.sub(r'<[^>]+>', '', ...) para manter negrito e itálico na comparação
     r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
     
     n_html_final = verificar_ortografia_inteligente(n_html)
@@ -224,8 +223,8 @@ def ocr_via_gemini(uploaded_file, api_keys):
     REGRAS DE OURO:
     1. Transcreva caractere por caractere.
     2. PROIBIDO traduzir.
-    3. ATENÇÃO MÁXIMA: Se estiver escrito "geral", mantenha "geral". NÃO escreva "general".
-    4. Mantenha os negritos <b> e itálicos <i> se conseguir identificar.
+    3. ATENÇÃO MÁXIMA: Se estiver escrito "geral" (comum em bulas), mantenha "geral". NÃO escreva "general" em inglês.
+    4. Mantenha erros de digitação originais se houver.
     """
     
     safety_settings = {
@@ -247,17 +246,23 @@ def ocr_via_gemini(uploaded_file, api_keys):
                         [{'mime_type': 'application/pdf', 'data': bytes_data}, prompt_ocr],
                         safety_settings=safety_settings
                     )
+                    
                     texto_extraido = response.text
+                    
                     if texto_extraido:
                          texto_extraido = re.sub(r'\bgeneral\b', 'geral', texto_extraido, flags=re.IGNORECASE)
                          return texto_extraido, None
+                         
                 except Exception as e_model:
                     err_msg = str(e_model)
                     log_erros_ocr.append(f"Key {i+1} | {modelo}: {err_msg}")
+                    if "429" in err_msg or "quota" in err_msg.lower():
+                        time.sleep(2)
                     continue
         except Exception as e_key:
             log_erros_ocr.append(f"Key {i+1} Falha Config: {str(e_key)}")
             continue
+            
     return "", " | ".join(log_erros_ocr)
 
 def extract_text_smart(uploaded_file, api_keys=None):
@@ -296,11 +301,24 @@ def extract_text_smart(uploaded_file, api_keys=None):
                 text += para_txt + "\n\n"
         
         texto_limpo = re.sub(r'<[^>]+>', '', text).strip()
-        if uploaded_file.name.lower().endswith('.pdf') and len(texto_limpo) < 1000 and api_keys:
-            st.warning(f"👁️ Ativando OCR para '{uploaded_file.name}'...")
+        eh_pdf = uploaded_file.name.lower().endswith('.pdf')
+        
+        if eh_pdf and len(texto_limpo) < 1000 and api_keys:
+            st.warning(f"👁️ Arquivo '{uploaded_file.name}' detectado com pouco texto ({len(texto_limpo)} chars < 1000). Ativando OCR...")
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
-            return texto_ocr if texto_ocr else ""
+            
+            if texto_ocr:
+                st.success(f"✅ OCR bem-sucedido para '{uploaded_file.name}'!")
+                return texto_ocr
+            else:
+                st.error(f"❌ Falha no OCR de '{uploaded_file.name}'. Detalhes: {erro_ocr}")
+                return "" 
+        else:
+            if len(texto_limpo) >= 1000:
+                st.info(f"📄 Arquivo '{uploaded_file.name}' lido como texto padrão (OCR não necessário).")
+            
         return text
+        
     except Exception as e:
         return f"Erro leitura: {str(e)}"
 
@@ -314,28 +332,44 @@ f1 = c1.file_uploader("📜 Gráfica", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Arte Vigente", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    keys_raw = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
+    keys_raw = [
+        st.secrets.get("GEMINI_API_KEY"), 
+        st.secrets.get("GEMINI_API_KEY2"), 
+        st.secrets.get("GEMINI_API_KEY3")
+    ]
     keys_validas = [k for k in keys_raw if k]
+
+    if not keys_validas:
+        st.error("Erro Crítico: Nenhuma API Key encontrada no secrets."); st.stop()
 
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE
-        with st.spinner("Analisando arquivos..."):
+
+        with st.spinner("Analisando arquivos individualmente (Texto ou OCR)..."):
             t_anvisa = extract_text_smart(f1, api_keys=keys_validas)
             t_mkt = extract_text_smart(f2, api_keys=keys_validas)
 
+            if not t_anvisa or len(t_anvisa) < 20:
+                st.error(f"ERRO: Conteúdo do arquivo BELFAR insuficiente para análise."); st.stop()
+            if not t_mkt or len(t_mkt) < 20:
+                st.error(f"ERRO: Conteúdo do arquivo MKT insuficiente para análise."); st.stop()
+
+            # PROMPT AJUSTADO PARA N/A
             prompt = f"""
-            Você é um Extrator de Dados Farmacêuticos Rigoroso.
+            Você é um Extrator de Dados Farmacêuticos Rigoroso (ROBÔ DE CÓPIA).
             
             INPUT TEXTO 1 (GRÁFICA): {t_anvisa[:150000]}
             INPUT TEXTO 2 (ARTE): {t_mkt[:150000]}
             
-            MISSÃO:
+            SUA MISSÃO CRÍTICA:
             1. No campo "data_anvisa_ref" e "data_anvisa_mkt", procure EXCLUSIVAMENTE a data após a frase "aprovada pela Anvisa em". 
-            2. Se NÃO encontrar essa frase com uma data (ex: 10/2024), retorne obrigatoriamente "N/A". Não coloque nomes de produtos ou outras frases.
-            3. COPIAR o texto EXATAMENTE como está nos inputs para as seções JSON, mantendo tags <b> e <i>.
-            4. PROIBIDO trocar "geral" por "general".
+            2. Se NÃO encontrar exatamente essa frase com uma data, escreva obrigatoriamente "N/A". Proibido colocar o nome do medicamento nesses campos.
+            3. COPIAR o texto EXATAMENTE como está nos inputs para dentro do JSON.
+            4. PROIBIDO corrigir português. 
+            5. ATENÇÃO: Se no texto de entrada estiver "geral", MANTENHA "geral". Não mude para "general".
+            6. Manter formatação <b> e <i>.
             
-            LISTA DE SEÇÕES: {secoes_alvo}
+            LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
             
             SAÍDA JSON:
             {{ "data_anvisa_ref": "...", "data_anvisa_mkt": "...", "secoes": [ {{ "titulo": "...", "texto_anvisa": "...", "texto_mkt": "..." }} ] }}
@@ -343,7 +377,9 @@ if st.button("🚀 Processar Conferência"):
             
             response = None
             sucesso = False
-            for key in keys_validas:
+            log_erros = []
+
+            for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
                 genai.configure(api_key=key)
                 for modelo in MODELOS_PARA_TENTAR:
@@ -352,18 +388,25 @@ if st.button("🚀 Processar Conferência"):
                         response = model.generate_content(prompt)
                         sucesso = True
                         break 
-                    except: continue
+                    except Exception as e:
+                        erro_msg = str(e)
+                        log_erros.append(f"Key {idx_key+1} | {modelo}: {erro_msg}")
+                        if "429" in erro_msg or "quota" in erro_msg.lower():
+                            time.sleep(3)
+                        else:
+                            time.sleep(0.5)
+                        continue
 
-            if sucesso:
+            if not sucesso:
+                st.error("❌ Falha Total na Análise."); st.code("\n".join(log_erros)); st.stop()
+            
+            try:
                 resultado = json.loads(response.text)
+                
                 data_ref = resultado.get("data_anvisa_ref") or "N/A"
                 data_mkt = resultado.get("data_anvisa_mkt") or "N/A"
-                
-                # Validação extra de segurança para a data
-                if len(data_ref) > 15: data_ref = "N/A"
-                if len(data_mkt) > 15: data_mkt = "N/A"
-
                 dados_secoes = resultado.get("secoes") or []
+                
                 secoes_finais = []
                 divs_count = 0
 
@@ -371,9 +414,9 @@ if st.button("🚀 Processar Conferência"):
                     titulo = (item.get('titulo') or '').strip()
                     txt_ref = (item.get('texto_anvisa') or "").strip()
                     txt_mkt = (item.get('texto_mkt') or "").strip()
-                    titulo_upper = titulo.upper()
                     
-                    # APRESENTAÇÕES agora incluída no bloqueio de comparação (cadeado)
+                    titulo_upper = titulo.upper()
+                    # APRESENTAÇÕES agora incluída no cadeado igual composição
                     eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
 
                     if eh_blindada:
@@ -393,7 +436,7 @@ if st.button("🚀 Processar Conferência"):
 
                 st.markdown("### 📊 Resumo")
                 c1, c2, c3 = st.columns(3)
-                # Alteração dos nomes das métricas conforme solicitado
+                # Alterado Data Ref -> Data Gráfica e Data MKT -> Data Arte
                 c1.metric("Data Gráfica", data_ref)
                 c2.metric("Data Arte", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
                 c3.metric("Seções", len(secoes_finais))
@@ -401,13 +444,14 @@ if st.button("🚀 Processar Conferência"):
                 sub1, sub2 = st.columns(2)
                 sub1.info(f"✅ Conformes: {len(secoes_finais) - divs_count}")
                 if divs_count > 0: sub2.warning(f"⚠️ Divergentes: {divs_count}")
+                else: sub2.success("✨ Divergências: 0")
 
                 st.divider()
 
                 for item in secoes_finais:
                     status = item['status']
                     titulo = item['titulo']
-                    # Lógica do ícone de cadeado para Apresentação, Composição e Dizeres Legais
+                    # O cadeado (🔒) já funciona para APRESENTAÇÕES pois está no SECOES_SEM_COMPARACAO
                     if "DIZERES LEGAIS" in titulo.upper(): icon, css, aberto = "⚖️", "border-info", True
                     elif any(b in titulo.upper() for b in SECOES_SEM_COMPARACAO): icon, css, aberto = "🔒", "border-ok", False
                     elif status == "CONFORME": icon, css, aberto = "✅", "border-ok", False
@@ -417,5 +461,8 @@ if st.button("🚀 Processar Conferência"):
                         ce, cd = st.columns(2)
                         with ce: st.caption("Gráfica"); st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
                         with cd: st.caption("Arte"); st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
-            else:
-                st.error("Erro no processamento.")
+
+            except Exception as e:
+                st.error(f"Erro ao processar JSON: {e}"); st.code(response.text)
+    else:
+        st.warning("Adicione os arquivos.")
