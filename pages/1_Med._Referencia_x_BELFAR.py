@@ -408,8 +408,8 @@ if st.button("🚀 Processar Conferência"):
 
                 st.markdown("### 📊 Resumo")
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Data Ref", data_ref)
-                c2.metric("Data MKT", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
+                c1.metric("Data Referência", data_ref)
+                c2.metric("Data BELFAR", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
                 c3.metric("Seções", len(secoes_finais))
 
                 sub1, sub2 = st.columns(2)
