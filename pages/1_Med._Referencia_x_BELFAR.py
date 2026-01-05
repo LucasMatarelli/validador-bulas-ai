@@ -258,8 +258,12 @@ def extract_text_from_file(uploaded_file):
                             content = s["text"]
                             font_props = s["font"].lower()
                             is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
-                            if is_bold: line_txt += f"<b>{content}</b>"
-                            else: line_txt += content
+                            is_italic = (s["flags"] & 2) or "italic" in font_props or "oblique" in font_props
+                            
+                            temp_content = content
+                            if is_bold: temp_content = f"<b>{temp_content}</b>"
+                            if is_italic: temp_content = f"<i>{temp_content}</i>"
+                            line_txt += temp_content
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
@@ -267,8 +271,10 @@ def extract_text_from_file(uploaded_file):
             for para in doc.paragraphs: 
                 para_txt = ""
                 for run in para.runs:
-                    if run.bold: para_txt += f"<b>{run.text}</b>"
-                    else: para_txt += run.text
+                    run_content = run.text
+                    if run.bold: run_content = f"<b>{run_content}</b>"
+                    if run.italic: run_content = f"<i>{run_content}</i>"
+                    para_txt += run_content
                 text += para_txt + "\n\n"
         return text
     except: return ""
@@ -319,7 +325,7 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
-            3. Manter formatação <b> e NÃO corrigir português.
+            3. Manter formatação <b> e <i> e NÃO corrigir português.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
