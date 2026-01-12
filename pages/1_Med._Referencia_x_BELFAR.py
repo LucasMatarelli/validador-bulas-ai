@@ -7,7 +7,6 @@ import difflib
 import re
 import unicodedata
 import time
-from spellchecker import SpellChecker
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
@@ -34,14 +33,6 @@ st.markdown("""
         background-color: #fff3cd; color: #856404; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
         font-weight: bold;
-    }
-    
-    /* ERRO PORTUGUÊS (Vermelho) - Estilo sutil */
-    .highlight-red { 
-        background-color: #f8d7da; color: #721c24; 
-        border-bottom: 2px solid #dc3545; 
-        font-weight: bold;
-        cursor: help;
     }
     
     .highlight-blue { 
@@ -104,87 +95,6 @@ def normalizacao_nuclear(texto):
     t = re.sub(r'[^a-zA-Z0-9]', '', t)
     return t.lower()
 
-def verificar_ortografia_inteligente(texto):
-    """
-    Corretor que marca erros de português em vermelho.
-    Conservador com termos técnicos médicos.
-    """
-    try:
-        spell = SpellChecker(language='pt')
-        
-        # LISTA BRANCA MASSIVA - Termos aceitos
-        whitelist = {
-            'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
-            'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
-            'dr', 'dra', 'vp', 'vps', 'bula', 'paciente', 'profissional', 'sac',
-            'blister', 'cartucho', 'posologia', 'superdose', 'farmacocinetica',
-            'biodisponibilidade', 'excipiente', 'excipientes', 'revestimento',
-            'comprimido', 'capsula', 'solucao', 'suspensao', 'oral', 'intravenosa',
-            'subcutanea', 'intramuscular', 'topico', 'oftalmico', 'nasal',
-            'adulto', 'pediatrico', 'geriatrico', 'indicação', 'contraindicação',
-            'advertencia', 'precaucao', 'interacao', 'reacao', 'adversa', 'sintoma',
-            'tratamento', 'diagnostico', 'profilaxia', 'analgesico', 'antipiretico',
-            'anti-inflamatorio', 'antibiotico', 'antiviral', 'antifungico',
-            'cardiovascular', 'respiratorio', 'digestivo', 'nervoso', 'central',
-            'periferico', 'renal', 'hepatico', 'sanguineo', 'imunologico',
-            'endocrino', 'metabolico', 'musculoesqueletico', 'dermatologico',
-            'predisponentes', 'sistemicos', 'sistêmicos', 'congenita', 'congênita',
-            'aneurisma', 'dissecção', 'disseccao', 'valvar', 'valvula', 'regurgitação',
-            'endocardite', 'marfan', 'ehlers-danlos', 'ehlers', 'danlos', 'turner', 
-            'sjogren', 'takayasu', 'behcet', 'reumatoide', 'artrite', 'corticosteroides', 
-            'fluorquinolonas', 'hipersensibilidade', 'arritmia', 'protuberancia', 
-            'abdômen', 'abdomen', 'gonorreia', 'gonorréia', 'infeccao', 'infeção', 
-            'trato', 'urinario', 'uretra', 'cervix', 'tubulos', 'túbulos', 'renais', 
-            'queimação', 'queimacao', 'prostatite', 'prostata', 'cistite', 'ureia', 
-            'bacteria', 'bacterias', 'spreng', 'mikania', 'glomerata', 'cumarina',
-            'cumarinas', 'veículo', 'veiculo', 'padronizado', 'benzoato', 'sodio',
-            'sódio', 'metilparabeno', 'hidroxietilcelulose', 'sacarose', 'purificada',
-            'xarope', 'farmacêutico', 'farmaceutico', 'desaparecendo', 'massagens',
-            'equimoses', 'prolongadas'
-        }
-        spell.word_frequency.load_words(whitelist)
-
-        # Divide o texto preservando tags HTML
-        tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/\[\]])', texto)
-        resultado = []
-        
-        for token in tokens:
-            # Ignora espaços, tags HTML e tokens sem letras
-            if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
-                resultado.append(token)
-                continue
-            
-            # Limpeza para verificação
-            palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
-            
-            # Ignora se: tiver número, for muito curta, tiver hífen ou começar com maiúscula
-            if (not palavra_limpa or 
-                len(palavra_limpa) < 4 or 
-                any(c.isdigit() for c in token) or 
-                '-' in palavra_limpa or
-                palavra_limpa[0].isupper()):
-                resultado.append(token)
-                continue
-
-            p_lower = palavra_limpa.lower()
-
-            # Verifica se está no dicionário ou whitelist
-            if p_lower in spell or p_lower in whitelist:
-                resultado.append(token)
-            else:
-                # Verifica se é realmente um erro
-                candidatos = spell.candidates(p_lower)
-                if candidatos and p_lower not in candidatos:
-                    # Marca em vermelho apenas se houver sugestões válidas
-                    resultado.append(f'<span class="highlight-red" title="Possível erro">{token}</span>')
-                else:
-                    # Assume que é termo técnico
-                    resultado.append(token)
-
-        return "".join(resultado)
-    except:
-        return texto
-
 def melhorar_visual_topicos(texto_html):
     """Transforma marcadores txt em visual HTML bonito"""
     linhas = re.split(r'(<br>|\n)', texto_html)
@@ -235,8 +145,7 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for igual, ignora formatação
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
-        html_novo = verificar_ortografia_inteligente(texto_novo)
-        html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
+        html_novo = melhorar_visual_topicos(texto_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
     # 2. Se falhar na nuclear, faz o diff detalhado
@@ -245,8 +154,7 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
     
-    n_html_final = verificar_ortografia_inteligente(n_html)
-    n_html_final = melhorar_visual_topicos(n_html_final)
+    n_html_final = melhorar_visual_topicos(n_html)
     r_html_final = r_html.replace('\n', '<br>')
     
     return r_html_final, n_html_final, diff_bool
@@ -429,7 +337,7 @@ if st.button("🚀 Processar Conferência"):
                             html_mkt = destacar_datas(txt_mkt)
                             html_ref = destacar_datas(txt_ref)
                         else:
-                            html_mkt = verificar_ortografia_inteligente(txt_mkt)
+                            html_mkt = txt_mkt
                             html_ref = txt_ref
                         
                         html_mkt = html_mkt.replace('\n', '<br>')
