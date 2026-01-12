@@ -189,51 +189,77 @@ def destacar_datas(texto):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
+def extrair_tokens_com_formatacao(texto):
+    """REMOVIDA - Não é mais necessária"""
+    pass
+
+def reconstruir_com_tags(tokens):
+    """REMOVIDA - Não é mais necessária"""
+    pass
+
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    palavras_ref = texto_ref.split()
-    palavras_novo = texto_novo.split()
+    """Compara textos preservando formatação HTML"""
+    # Remove apenas espaços múltiplos e normaliza
+    ref_normalizado = re.sub(r'\s+', ' ', texto_ref).strip()
+    novo_normalizado = re.sub(r'\s+', ' ', texto_novo).strip()
+    
+    # Divide em palavras mantendo as tags HTML
+    palavras_ref = re.findall(r'<[^>]+>|[^\s<>]+', ref_normalizado)
+    palavras_novo = re.findall(r'<[^>]+>|[^\s<>]+', novo_normalizado)
+    
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
+    
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            texto = " ".join(palavras_ref[i1:i2])
-            html_ref_list.append(texto)
-            html_novo_list.append(texto)
+            html_ref_list.extend(palavras_ref[i1:i2])
+            html_novo_list.extend(palavras_novo[j1:j2])
         elif tag == 'replace':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
+            ref_parte = ' '.join(palavras_ref[i1:i2])
+            novo_parte = ' '.join(palavras_novo[j1:j2])
+            html_ref_list.append(f'<span class="highlight-yellow">{ref_parte}</span>')
+            html_novo_list.append(f'<span class="highlight-yellow">{novo_parte}</span>')
             tem_diff = True
         elif tag == 'delete':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
+            ref_parte = ' '.join(palavras_ref[i1:i2])
+            html_ref_list.append(f'<span class="highlight-yellow">{ref_parte}</span>')
             tem_diff = True
         elif tag == 'insert':
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
+            novo_parte = ' '.join(palavras_novo[j1:j2])
+            html_novo_list.append(f'<span class="highlight-yellow">{novo_parte}</span>')
             tem_diff = True
-            
-    return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
+    
+    return ' '.join(html_ref_list), ' '.join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for igual, ignora formatação
-    if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
-        html_novo = verificar_ortografia_inteligente(texto_novo)
-        html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
-        return texto_ref.replace('\n', '<br>'), html_novo, False
-
-    # 2. Se falhar na nuclear, faz o diff detalhado
-    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
+    # 1. CHECAGEM NUCLEAR MELHORADA: Compara conteúdo ignorando formatação
+    ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
+    novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
     
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
+    # Normaliza espaços para comparação
+    ref_limpo = re.sub(r'\s+', ' ', ref_sem_tags).strip()
+    novo_limpo = re.sub(r'\s+', ' ', novo_sem_tags).strip()
+    
+    # Se o conteúdo textual for idêntico, NÃO marca divergência
+    if ref_limpo == novo_limpo:
+        html_ref = texto_ref.replace('\n', '<br>')
+        html_novo = verificar_ortografia_inteligente(texto_novo).replace('\n', '<br>')
+        html_ref = melhorar_visual_topicos(html_ref)
+        html_novo = melhorar_visual_topicos(html_novo)
+        return html_ref, html_novo, False
+
+    # 2. Se textos forem diferentes, faz diff preservando formatação
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
     
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
-    r_html_final = r_html.replace('\n', '<br>')
+    r_html_final = melhorar_visual_topicos(r_html)
     
     return r_html_final, n_html_final, diff_bool
 
@@ -318,7 +344,7 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
-            3. Manter formatação <b> e <i> e NÃO corrigir português.
+            3. Manter formatação <b> e <i> EXATAMENTE como aparece no texto original.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
@@ -391,6 +417,7 @@ if st.button("🚀 Processar Conferência"):
                         html_mkt = html_mkt.replace('\n', '<br>')
                         html_ref = html_ref.replace('\n', '<br>')
                         html_mkt = melhorar_visual_topicos(html_mkt)
+                        html_ref = melhorar_visual_topicos(html_ref)
                     else:
                         html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
