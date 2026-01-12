@@ -85,6 +85,9 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
+# Definição padrão caso precise expandir depois
+SECOES_PROFISSIONAL = SECOES_PACIENTE 
+
 SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
@@ -330,8 +333,18 @@ def extract_text_from_file(uploaded_file):
                     block_text = ""
                     for l in b.get("lines", []):
                         line_txt = ""
+                        prev_x1 = 0 # Variável para controlar onde terminou o último texto
                         for s in l.get("spans", []):
                             content = s["text"]
+                            
+                            # --- CORREÇÃO DE PALAVRAS COLADAS ---
+                            # Se houver uma distância significativa (ex: > 2.5px) entre o fim 
+                            # do span anterior e o início deste, insere um espaço.
+                            x0 = s["bbox"][0]
+                            if prev_x1 > 0 and (x0 - prev_x1) > 2.5:
+                                line_txt += " "
+                            # ------------------------------------
+
                             font_props = s["font"].lower()
                             is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
                             is_italic = (s["flags"] & 2) or "italic" in font_props
@@ -339,13 +352,9 @@ def extract_text_from_file(uploaded_file):
                             if is_bold: res = f"<b>{res}</b>"
                             if is_italic: res = f"<i>{res}</i>"
                             
-                            # --- CORREÇÃO DE PALAVRAS GRUDADAS ---
-                            # Se não tem espaço no final do anterior e nem no começo deste, e não é pontuação, insere espaço.
-                            if line_txt and not line_txt.endswith(" ") and not content.startswith(" ") and content.strip() and not content[0] in ".,;?!:)]}":
-                                line_txt += " "
-                            # -------------------------------------
-                            
                             line_txt += res
+                            prev_x1 = s["bbox"][2] # Atualiza a posição final para o próximo loop
+                            
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
@@ -366,7 +375,7 @@ st.title("💊 Conferência MKT")
 
 tipo_bula = st.radio(
     "Escolha o Tipo de Bula:",
-    ("Paciente"),
+    ("Paciente", "Profissional"),
     horizontal=True
 )
 
