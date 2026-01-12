@@ -189,30 +189,117 @@ def destacar_datas(texto):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
+def extrair_tokens_com_formatacao(texto):
+    """Extrai tokens preservando as tags HTML de formatação"""
+    # Divide em palavras mantendo as tags anexadas
+    padrao = r'(<[bi]>.*?</[bi]>|</?[bi]>|\S+|\s+)'
+    tokens = re.findall(padrao, texto, re.DOTALL)
+    return [t for t in tokens if t.strip()]
+
+def reconstruir_com_tags(tokens):
+    """Reconstrói texto a partir de tokens preservando formatação"""
+    resultado = []
+    for i, token in enumerate(tokens):
+        if i > 0 and not token.startswith('<') and not tokens[i-1].endswith('>') and token not in '.,;:!?':
+            resultado.append(' ')
+        resultado.append(token)
+    return ''.join(resultado)
+
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    palavras_ref = texto_ref.split()
-    palavras_novo = texto_novo.split()
+    # Extrai tokens com formatação preservada
+    tokens_ref = extrair_tokens_com_formatacao(texto_ref)
+    tokens_novo = extrair_tokens_com_formatacao(texto_novo)
+    
+    # Cria versões limpas apenas para comparação
+    palavras_ref = [re.sub(r'<[^>]+>', '', t).strip() for t in tokens_ref if re.sub(r'<[^>]+>', '', t).strip()]
+    palavras_novo = [re.sub(r'<[^>]+>', '', t).strip() for t in tokens_novo if re.sub(r'<[^>]+>', '', t).strip()]
+    
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
+    
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
     
+    idx_ref = 0
+    idx_novo = 0
+    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            texto = " ".join(palavras_ref[i1:i2])
-            html_ref_list.append(texto)
-            html_novo_list.append(texto)
+            # Mantém tokens originais com formatação
+            while idx_ref < len(tokens_ref) and i1 < i2:
+                token = tokens_ref[idx_ref]
+                if re.sub(r'<[^>]+>', '', token).strip():
+                    html_ref_list.append(token)
+                    i1 += 1
+                else:
+                    html_ref_list.append(token)
+                idx_ref += 1
+                
+            while idx_novo < len(tokens_novo) and j1 < j2:
+                token = tokens_novo[idx_novo]
+                if re.sub(r'<[^>]+>', '', token).strip():
+                    html_novo_list.append(token)
+                    j1 += 1
+                else:
+                    html_novo_list.append(token)
+                idx_novo += 1
+                
         elif tag == 'replace':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
-            tem_diff = True
-        elif tag == 'delete':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            tem_diff = True
-        elif tag == 'insert':
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
+            partes_ref = []
+            partes_novo = []
+            
+            while idx_ref < len(tokens_ref) and i1 < i2:
+                token = tokens_ref[idx_ref]
+                if re.sub(r'<[^>]+>', '', token).strip():
+                    partes_ref.append(token)
+                    i1 += 1
+                else:
+                    partes_ref.append(token)
+                idx_ref += 1
+                
+            while idx_novo < len(tokens_novo) and j1 < j2:
+                token = tokens_novo[idx_novo]
+                if re.sub(r'<[^>]+>', '', token).strip():
+                    partes_novo.append(token)
+                    j1 += 1
+                else:
+                    partes_novo.append(token)
+                idx_novo += 1
+            
+            if partes_ref:
+                html_ref_list.append(f'<span class="highlight-yellow">{" ".join(partes_ref)}</span>')
+            if partes_novo:
+                html_novo_list.append(f'<span class="highlight-yellow">{" ".join(partes_novo)}</span>')
             tem_diff = True
             
+        elif tag == 'delete':
+            partes = []
+            while idx_ref < len(tokens_ref) and i1 < i2:
+                token = tokens_ref[idx_ref]
+                if re.sub(r'<[^>]+>', '', token).strip():
+                    partes.append(token)
+                    i1 += 1
+                else:
+                    partes.append(token)
+                idx_ref += 1
+            if partes:
+                html_ref_list.append(f'<span class="highlight-yellow">{" ".join(partes)}</span>')
+            tem_diff = True
+            
+        elif tag == 'insert':
+            partes = []
+            while idx_novo < len(tokens_novo) and j1 < j2:
+                token = tokens_novo[idx_novo]
+                if re.sub(r'<[^>]+>', '', token).strip():
+                    partes.append(token)
+                    j1 += 1
+                else:
+                    partes.append(token)
+                idx_novo += 1
+            if partes:
+                html_novo_list.append(f'<span class="highlight-yellow">{" ".join(partes)}</span>')
+            tem_diff = True
+    
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo):
@@ -223,17 +310,16 @@ def gerar_diff_html(texto_ref, texto_novo):
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
         html_novo = verificar_ortografia_inteligente(texto_novo)
         html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
-        return texto_ref.replace('\n', '<br>'), html_novo, False
+        html_ref = texto_ref.replace('\n', '<br>')
+        html_ref = melhorar_visual_topicos(html_ref)
+        return html_ref, html_novo, False
 
-    # 2. Se falhar na nuclear, faz o diff detalhado
-    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
-    
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
+    # 2. Se falhar na nuclear, faz o diff detalhado PRESERVANDO FORMATAÇÃO
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
     
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
-    r_html_final = r_html.replace('\n', '<br>')
+    r_html_final = melhorar_visual_topicos(r_html)
     
     return r_html_final, n_html_final, diff_bool
 
@@ -318,7 +404,7 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
-            3. Manter formatação <b> e <i> e NÃO corrigir português.
+            3. Manter formatação <b> e <i> EXATAMENTE como aparece no texto original.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
@@ -391,6 +477,7 @@ if st.button("🚀 Processar Conferência"):
                         html_mkt = html_mkt.replace('\n', '<br>')
                         html_ref = html_ref.replace('\n', '<br>')
                         html_mkt = melhorar_visual_topicos(html_mkt)
+                        html_ref = melhorar_visual_topicos(html_ref)
                     else:
                         html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
