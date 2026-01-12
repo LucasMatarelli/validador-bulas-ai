@@ -85,7 +85,6 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-
 SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
@@ -188,14 +187,6 @@ def destacar_datas(texto):
     def replacer(match):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-def extrair_tokens_com_formatacao(texto):
-    """REMOVIDA - Não é mais necessária"""
-    pass
-
-def reconstruir_com_tags(tokens):
-    """REMOVIDA - Não é mais necessária"""
-    pass
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     """Compara textos ignorando tags HTML mas preservando-as no output"""
@@ -347,6 +338,13 @@ def extract_text_from_file(uploaded_file):
                             res = content
                             if is_bold: res = f"<b>{res}</b>"
                             if is_italic: res = f"<i>{res}</i>"
+                            
+                            # --- CORREÇÃO DE PALAVRAS GRUDADAS ---
+                            # Se não tem espaço no final do anterior e nem no começo deste, e não é pontuação, insere espaço.
+                            if line_txt and not line_txt.endswith(" ") and not content.startswith(" ") and content.strip() and not content[0] in ".,;?!:)]}":
+                                line_txt += " "
+                            # -------------------------------------
+                            
                             line_txt += res
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
