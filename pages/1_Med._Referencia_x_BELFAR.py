@@ -28,13 +28,6 @@ st.markdown("""
         text-align: left;
     }
     
-    /* DIVERGÊNCIA (Amarelo) */
-    .highlight-yellow { 
-        background-color: #fff3cd; color: #856404; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
-        font-weight: bold;
-    }
-    
     .highlight-blue { 
         background-color: #d1ecf1; color: #0c5460; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
@@ -127,14 +120,17 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
             html_ref_list.append(texto)
             html_novo_list.append(texto)
         elif tag == 'replace':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
+            # Removemos o span highlight-yellow, apenas adicionamos o texto
+            html_ref_list.append(" ".join(palavras_ref[i1:i2]))
+            html_novo_list.append(" ".join(palavras_novo[j1:j2]))
             tem_diff = True
         elif tag == 'delete':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
+            # Removemos o span highlight-yellow, apenas adicionamos o texto
+            html_ref_list.append(" ".join(palavras_ref[i1:i2]))
             tem_diff = True
         elif tag == 'insert':
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
+            # Removemos o span highlight-yellow, apenas adicionamos o texto
+            html_novo_list.append(" ".join(palavras_novo[j1:j2]))
             tem_diff = True
             
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
