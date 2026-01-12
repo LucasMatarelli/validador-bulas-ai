@@ -106,9 +106,8 @@ def normalizacao_nuclear(texto):
 
 def verificar_ortografia_inteligente(texto):
     """
-    Corretor Ultra-Conservador:
-    Se a palavra não for conhecida, ASSUME QUE É UM TERMO TÉCNICO CORRETO.
-    Não tenta adivinhar sugestões para evitar falsos positivos em bulas.
+    Corretor que marca erros de português em vermelho.
+    Conservador com termos técnicos médicos.
     """
     try:
         spell = SpellChecker(language='pt')
@@ -129,23 +128,28 @@ def verificar_ortografia_inteligente(texto):
             'cardiovascular', 'respiratorio', 'digestivo', 'nervoso', 'central',
             'periferico', 'renal', 'hepatico', 'sanguineo', 'imunologico',
             'endocrino', 'metabolico', 'musculoesqueletico', 'dermatologico',
-            # Adicione aqui termos específicos que estavam marcando erro
             'predisponentes', 'sistemicos', 'sistêmicos', 'congenita', 'congênita',
             'aneurisma', 'dissecção', 'disseccao', 'valvar', 'valvula', 'regurgitação',
-            'endocardite', 'marfan', 'ehlers-danlos', 'turner', 'sjogren', 'takayasu',
-            'behcet', 'reumatoide', 'artrite', 'corticosteroides', 'fluorquinolonas',
-            'hipersensibilidade', 'arritmia', 'protuberancia', 'abdômen', 'abdomen',
-            'gonorreia', 'gonorréia', 'infeccao', 'infeção', 'trato', 'urinario',
-            'uretra', 'cervix', 'tubulos', 'túbulos', 'renais', 'queimação', 'queimacao',
-            'prostatite', 'prostata', 'cistite', 'ureia', 'bacteria', 'bacterias'
+            'endocardite', 'marfan', 'ehlers-danlos', 'ehlers', 'danlos', 'turner', 
+            'sjogren', 'takayasu', 'behcet', 'reumatoide', 'artrite', 'corticosteroides', 
+            'fluorquinolonas', 'hipersensibilidade', 'arritmia', 'protuberancia', 
+            'abdômen', 'abdomen', 'gonorreia', 'gonorréia', 'infeccao', 'infeção', 
+            'trato', 'urinario', 'uretra', 'cervix', 'tubulos', 'túbulos', 'renais', 
+            'queimação', 'queimacao', 'prostatite', 'prostata', 'cistite', 'ureia', 
+            'bacteria', 'bacterias', 'spreng', 'mikania', 'glomerata', 'cumarina',
+            'cumarinas', 'veículo', 'veiculo', 'padronizado', 'benzoato', 'sodio',
+            'sódio', 'metilparabeno', 'hidroxietilcelulose', 'sacarose', 'purificada',
+            'xarope', 'farmacêutico', 'farmaceutico', 'desaparecendo', 'massagens',
+            'equimoses', 'prolongadas'
         }
         spell.word_frequency.load_words(whitelist)
 
+        # Divide o texto preservando tags HTML
         tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/\[\]])', texto)
         resultado = []
         
         for token in tokens:
-            # Filtros iniciais para ignorar o que não é palavra verificável
+            # Ignora espaços, tags HTML e tokens sem letras
             if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
                 resultado.append(token)
                 continue
@@ -153,7 +157,7 @@ def verificar_ortografia_inteligente(texto):
             # Limpeza para verificação
             palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
             
-            # BLINDAGEM: Ignora se tiver número, for muito curta, tiver hífen ou COMEÇAR COM MAIÚSCULA
+            # Ignora se: tiver número, for muito curta, tiver hífen ou começar com maiúscula
             if (not palavra_limpa or 
                 len(palavra_limpa) < 4 or 
                 any(c.isdigit() for c in token) or 
@@ -164,14 +168,18 @@ def verificar_ortografia_inteligente(texto):
 
             p_lower = palavra_limpa.lower()
 
-            # LÓGICA ULTRA CONSERVADORA:
-            # Se está no dicionário ou na whitelist -> OK.
-            # Se NÃO está -> ASSUME QUE É TERMO TÉCNICO E IGNORA (Não marca vermelho).
+            # Verifica se está no dicionário ou whitelist
             if p_lower in spell or p_lower in whitelist:
                 resultado.append(token)
             else:
-                # Palavra desconhecida. Em bula, assumimos que está correta.
-                resultado.append(token)
+                # Verifica se é realmente um erro
+                candidatos = spell.candidates(p_lower)
+                if candidatos and p_lower not in candidatos:
+                    # Marca em vermelho apenas se houver sugestões válidas
+                    resultado.append(f'<span class="highlight-red" title="Possível erro">{token}</span>')
+                else:
+                    # Assume que é termo técnico
+                    resultado.append(token)
 
         return "".join(resultado)
     except:
@@ -257,11 +265,36 @@ def extract_text_from_file(uploaded_file):
                         for s in l.get("spans", []):
                             content = s["text"]
                             font_props = s["font"].lower()
-                            is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
-                            is_italic = (s["flags"] & 2) or "italic" in font_props
+                            font_size = s.get("size", 0)
+                            flags = s.get("flags", 0)
+                            
+                            # Detecção mais rigorosa de negrito
+                            is_bold = (
+                                (flags & 16) or  # Flag de bold
+                                "bold" in font_props or 
+                                "black" in font_props or
+                                "heavy" in font_props or
+                                "semibold" in font_props or
+                                font_props.endswith("-b") or
+                                font_props.endswith("-bold")
+                            )
+                            
+                            # Detecção mais rigorosa de itálico
+                            is_italic = (
+                                (flags & 2) or  # Flag de itálico
+                                "italic" in font_props or
+                                "oblique" in font_props or
+                                font_props.endswith("-i") or
+                                font_props.endswith("-italic")
+                            )
+                            
                             res = content
-                            if is_bold: res = f"<b>{res}</b>"
-                            if is_italic: res = f"<i>{res}</i>"
+                            # Aplica itálico ANTES de negrito para preservar ambos
+                            if is_italic: 
+                                res = f"<i>{res}</i>"
+                            if is_bold: 
+                                res = f"<b>{res}</b>"
+                            
                             line_txt += res
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
@@ -271,12 +304,16 @@ def extract_text_from_file(uploaded_file):
                 para_txt = ""
                 for run in para.runs:
                     res = run.text
-                    if run.bold: res = f"<b>{res}</b>"
-                    if run.italic: res = f"<i>{res}</i>"
+                    # Aplica itálico ANTES de negrito
+                    if run.italic: 
+                        res = f"<i>{res}</i>"
+                    if run.bold: 
+                        res = f"<b>{res}</b>"
                     para_txt += res
                 text += para_txt + "\n\n"
         return text
-    except: return ""
+    except: 
+        return ""
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Med. Referência x BELFAR")
@@ -324,7 +361,8 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
-            3. Manter formatação <b> e <i> e NÃO corrigir português.
+            3. PRESERVAR RIGOROSAMENTE formatação <b> e <i>. NÃO corrigir português.
+            4. MANTER todas as tags <b></b> e <i></i> EXATAMENTE como aparecem no texto.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
