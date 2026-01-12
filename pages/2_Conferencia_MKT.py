@@ -198,38 +198,94 @@ def reconstruir_com_tags(tokens):
     pass
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    """Compara textos preservando formatação HTML"""
-    # Remove apenas espaços múltiplos e normaliza
-    ref_normalizado = re.sub(r'\s+', ' ', texto_ref).strip()
-    novo_normalizado = re.sub(r'\s+', ' ', texto_novo).strip()
+    """Compara textos ignorando tags HTML mas preservando-as no output"""
+    # Extrai palavras SEM tags para comparação pura
+    palavras_ref_limpo = re.sub(r'<[^>]+>', '', texto_ref).split()
+    palavras_novo_limpo = re.sub(r'<[^>]+>', '', texto_novo).split()
     
-    # Divide em palavras mantendo as tags HTML
-    palavras_ref = re.findall(r'<[^>]+>|[^\s<>]+', ref_normalizado)
-    palavras_novo = re.findall(r'<[^>]+>|[^\s<>]+', novo_normalizado)
+    # Extrai palavras COM tags para reconstrução
+    palavras_ref_com_tag = re.findall(r'<[^>]+>|[^\s<>]+', texto_ref)
+    palavras_novo_com_tag = re.findall(r'<[^>]+>|[^\s<>]+', texto_novo)
     
-    matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
+    # Compara as versões limpas
+    matcher = difflib.SequenceMatcher(None, palavras_ref_limpo, palavras_novo_limpo)
     
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
     
+    idx_ref = 0
+    idx_novo = 0
+    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            html_ref_list.extend(palavras_ref[i1:i2])
-            html_novo_list.extend(palavras_novo[j1:j2])
+            # Reconstrói mantendo tags HTML originais
+            for _ in range(i1, i2):
+                while idx_ref < len(palavras_ref_com_tag):
+                    token = palavras_ref_com_tag[idx_ref]
+                    idx_ref += 1
+                    html_ref_list.append(token)
+                    if not token.startswith('<'):
+                        break
+                        
+            for _ in range(j1, j2):
+                while idx_novo < len(palavras_novo_com_tag):
+                    token = palavras_novo_com_tag[idx_novo]
+                    idx_novo += 1
+                    html_novo_list.append(token)
+                    if not token.startswith('<'):
+                        break
+                        
         elif tag == 'replace':
-            ref_parte = ' '.join(palavras_ref[i1:i2])
-            novo_parte = ' '.join(palavras_novo[j1:j2])
-            html_ref_list.append(f'<span class="highlight-yellow">{ref_parte}</span>')
-            html_novo_list.append(f'<span class="highlight-yellow">{novo_parte}</span>')
+            ref_parte = []
+            novo_parte = []
+            
+            for _ in range(i1, i2):
+                while idx_ref < len(palavras_ref_com_tag):
+                    token = palavras_ref_com_tag[idx_ref]
+                    idx_ref += 1
+                    ref_parte.append(token)
+                    if not token.startswith('<'):
+                        break
+                        
+            for _ in range(j1, j2):
+                while idx_novo < len(palavras_novo_com_tag):
+                    token = palavras_novo_com_tag[idx_novo]
+                    idx_novo += 1
+                    novo_parte.append(token)
+                    if not token.startswith('<'):
+                        break
+            
+            if ref_parte:
+                html_ref_list.append(f'<span class="highlight-yellow">{"".join(ref_parte)}</span>')
+            if novo_parte:
+                html_novo_list.append(f'<span class="highlight-yellow">{"".join(novo_parte)}</span>')
             tem_diff = True
+            
         elif tag == 'delete':
-            ref_parte = ' '.join(palavras_ref[i1:i2])
-            html_ref_list.append(f'<span class="highlight-yellow">{ref_parte}</span>')
+            ref_parte = []
+            for _ in range(i1, i2):
+                while idx_ref < len(palavras_ref_com_tag):
+                    token = palavras_ref_com_tag[idx_ref]
+                    idx_ref += 1
+                    ref_parte.append(token)
+                    if not token.startswith('<'):
+                        break
+            if ref_parte:
+                html_ref_list.append(f'<span class="highlight-yellow">{"".join(ref_parte)}</span>')
             tem_diff = True
+            
         elif tag == 'insert':
-            novo_parte = ' '.join(palavras_novo[j1:j2])
-            html_novo_list.append(f'<span class="highlight-yellow">{novo_parte}</span>')
+            novo_parte = []
+            for _ in range(j1, j2):
+                while idx_novo < len(palavras_novo_com_tag):
+                    token = palavras_novo_com_tag[idx_novo]
+                    idx_novo += 1
+                    novo_parte.append(token)
+                    if not token.startswith('<'):
+                        break
+            if novo_parte:
+                html_novo_list.append(f'<span class="highlight-yellow">{"".join(novo_parte)}</span>')
             tem_diff = True
     
     return ' '.join(html_ref_list), ' '.join(html_novo_list), tem_diff
@@ -238,25 +294,30 @@ def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # 1. CHECAGEM NUCLEAR MELHORADA: Compara conteúdo ignorando formatação
-    ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
+    # CHECAGEM DEFINITIVA: Remove tags e compara apenas o texto puro
+    ref_puro = re.sub(r'<[^>]+>', '', texto_ref)
+    novo_puro = re.sub(r'<[^>]+>', '', texto_novo)
     
-    # Normaliza espaços para comparação
-    ref_limpo = re.sub(r'\s+', ' ', ref_sem_tags).strip()
-    novo_limpo = re.sub(r'\s+', ' ', novo_sem_tags).strip()
+    # Normaliza espaços para comparação justa
+    ref_normalizado = ' '.join(ref_puro.split())
+    novo_normalizado = ' '.join(novo_puro.split())
     
-    # Se o conteúdo textual for idêntico, NÃO marca divergência
-    if ref_limpo == novo_limpo:
+    # Se o CONTEÚDO for idêntico → NÃO marca amarelo
+    if ref_normalizado == novo_normalizado:
         html_ref = texto_ref.replace('\n', '<br>')
-        html_novo = verificar_ortografia_inteligente(texto_novo).replace('\n', '<br>')
         html_ref = melhorar_visual_topicos(html_ref)
+        
+        # Aplica verificação ortográfica SÓ no texto MKT
+        html_novo = verificar_ortografia_inteligente(texto_novo)
+        html_novo = html_novo.replace('\n', '<br>')
         html_novo = melhorar_visual_topicos(html_novo)
+        
         return html_ref, html_novo, False
 
-    # 2. Se textos forem diferentes, faz diff preservando formatação
+    # Se houver diferença real, faz diff
     r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
     
+    # Aplica corretor ortográfico no lado MKT
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
     r_html_final = melhorar_visual_topicos(r_html)
