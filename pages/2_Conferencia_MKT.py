@@ -302,6 +302,10 @@ def gerar_diff_html(texto_ref, texto_novo):
     ref_normalizado = ' '.join(ref_puro.split())
     novo_normalizado = ' '.join(novo_puro.split())
     
+    # ADICAO: Se a estrutura nuclear for identica, força ser igual
+    if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
+        ref_normalizado = novo_normalizado
+
     # Se o CONTEÚDO for idêntico → NÃO marca amarelo
     if ref_normalizado == novo_normalizado:
         html_ref = texto_ref.replace('\n', '<br>')
