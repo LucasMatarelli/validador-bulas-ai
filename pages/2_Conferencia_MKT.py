@@ -14,6 +14,38 @@ st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide
 
 st.markdown("""
 <style>
+    /* Força a sidebar a ficar sempre aberta */
+    section[data-testid="stSidebar"] {
+        display: block !important;
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
+        transition: none !important;
+        position: relative !important;
+    }
+    
+    section[data-testid="stSidebar"][aria-expanded="true"],
+    section[data-testid="stSidebar"][aria-expanded="false"] {
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
+    }
+    
+    /* Remove o botão de colapsar */
+    button[kind="header"] {
+        display: none !important;
+    }
+    
+    [data-testid="collapsedControl"] {
+        display: none !important;
+    }
+    
+    div[data-testid="stSidebarNav"] {
+        display: block !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<style>
     [data-testid="stHeader"] { visibility: hidden; }
     
     .texto-box { 
@@ -339,20 +371,7 @@ def extract_text_from_file(uploaded_file):
     except Exception as e:
         st.error(f"Erro ao extrair texto: {str(e)}")
         return ""
-st.markdown("""
-<style>
-    /* Força a sidebar a ficar sempre aberta */
-    [data-testid="stSidebar"] {
-        display: block !important;
-        margin-left: 0 !important;
-    }
-    
-    /* Remove o botão de colapsar */
-    [data-testid="collapsedControl"] {
-        display: none !important;
-    }
-</style>
-""", unsafe_allow_html=True)
+
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
 
