@@ -339,7 +339,20 @@ def extract_text_from_file(uploaded_file):
     except Exception as e:
         st.error(f"Erro ao extrair texto: {str(e)}")
         return ""
-
+st.markdown("""
+<style>
+    /* Força a sidebar a ficar sempre aberta */
+    [data-testid="stSidebar"] {
+        display: block !important;
+        margin-left: 0 !important;
+    }
+    
+    /* Remove o botão de colapsar */
+    [data-testid="collapsedControl"] {
+        display: none !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
 
