@@ -85,7 +85,6 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-SECOES_PROFISSIONAL = SECOES_PACIENTE 
 
 SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
@@ -100,8 +99,15 @@ def normalizacao_nuclear(texto):
     return t.lower()
 
 def verificar_ortografia_inteligente(texto):
+    """
+    Corretor Ultra-Conservador:
+    Se a palavra não for conhecida, ASSUME QUE É UM TERMO TÉCNICO CORRETO.
+    Não tenta adivinhar sugestões para evitar falsos positivos em bulas.
+    """
     try:
         spell = SpellChecker(language='pt')
+        
+        # LISTA BRANCA MASSIVA - Termos aceitos
         whitelist = {
             'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
             'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
@@ -117,6 +123,7 @@ def verificar_ortografia_inteligente(texto):
             'cardiovascular', 'respiratorio', 'digestivo', 'nervoso', 'central',
             'periferico', 'renal', 'hepatico', 'sanguineo', 'imunologico',
             'endocrino', 'metabolico', 'musculoesqueletico', 'dermatologico',
+            # Adicione aqui termos específicos que estavam marcando erro
             'predisponentes', 'sistemicos', 'sistêmicos', 'congenita', 'congênita',
             'aneurisma', 'dissecção', 'disseccao', 'valvar', 'valvula', 'regurgitação',
             'endocardite', 'marfan', 'ehlers-danlos', 'turner', 'sjogren', 'takayasu',
@@ -132,12 +139,15 @@ def verificar_ortografia_inteligente(texto):
         resultado = []
         
         for token in tokens:
+            # Filtros iniciais para ignorar o que não é palavra verificável
             if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
                 resultado.append(token)
                 continue
             
+            # Limpeza para verificação
             palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
             
+            # BLINDAGEM: Ignora se tiver número, for muito curta, tiver hífen ou COMEÇAR COM MAIÚSCULA
             if (not palavra_limpa or 
                 len(palavra_limpa) < 4 or 
                 any(c.isdigit() for c in token) or 
@@ -147,9 +157,14 @@ def verificar_ortografia_inteligente(texto):
                 continue
 
             p_lower = palavra_limpa.lower()
+
+            # LÓGICA ULTRA CONSERVADORA:
+            # Se está no dicionário ou na whitelist -> OK.
+            # Se NÃO está -> ASSUME QUE É TERMO TÉCNICO E IGNORA (Não marca vermelho).
             if p_lower in spell or p_lower in whitelist:
                 resultado.append(token)
             else:
+                # Palavra desconhecida. Em bula, assumimos que está correta.
                 resultado.append(token)
 
         return "".join(resultado)
@@ -157,6 +172,7 @@ def verificar_ortografia_inteligente(texto):
         return texto
 
 def melhorar_visual_topicos(texto_html):
+    """Transforma marcadores txt em visual HTML bonito"""
     linhas = re.split(r'(<br>|\n)', texto_html)
     novo_texto = []
     for linha in linhas:
@@ -174,97 +190,51 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    palavras_ref_limpo = re.sub(r'<[^>]+>', '', texto_ref).split()
-    palavras_novo_limpo = re.sub(r'<[^>]+>', '', texto_novo).split()
-    palavras_ref_com_tag = re.findall(r'<[^>]+>|[^\s<>]+', texto_ref)
-    palavras_novo_com_tag = re.findall(r'<[^>]+>|[^\s<>]+', texto_novo)
-    
-    matcher = difflib.SequenceMatcher(None, palavras_ref_limpo, palavras_novo_limpo)
-    
+    palavras_ref = texto_ref.split()
+    palavras_novo = texto_novo.split()
+    matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
     
-    idx_ref = 0
-    idx_novo = 0
-    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            for _ in range(i1, i2):
-                while idx_ref < len(palavras_ref_com_tag):
-                    token = palavras_ref_com_tag[idx_ref]
-                    idx_ref += 1
-                    html_ref_list.append(token)
-                    if not token.startswith('<'): break
-            for _ in range(j1, j2):
-                while idx_novo < len(palavras_novo_com_tag):
-                    token = palavras_novo_com_tag[idx_novo]
-                    idx_novo += 1
-                    html_novo_list.append(token)
-                    if not token.startswith('<'): break     
+            texto = " ".join(palavras_ref[i1:i2])
+            html_ref_list.append(texto)
+            html_novo_list.append(texto)
         elif tag == 'replace':
-            ref_parte = []
-            novo_parte = []
-            for _ in range(i1, i2):
-                while idx_ref < len(palavras_ref_com_tag):
-                    token = palavras_ref_com_tag[idx_ref]
-                    idx_ref += 1
-                    ref_parte.append(token)
-                    if not token.startswith('<'): break
-            for _ in range(j1, j2):
-                while idx_novo < len(palavras_novo_com_tag):
-                    token = palavras_novo_com_tag[idx_novo]
-                    idx_novo += 1
-                    novo_parte.append(token)
-                    if not token.startswith('<'): break
-            if ref_parte: html_ref_list.append(f'<span class="highlight-yellow">{"".join(ref_parte)}</span>')
-            if novo_parte: html_novo_list.append(f'<span class="highlight-yellow">{"".join(novo_parte)}</span>')
+            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
+            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
         elif tag == 'delete':
-            ref_parte = []
-            for _ in range(i1, i2):
-                while idx_ref < len(palavras_ref_com_tag):
-                    token = palavras_ref_com_tag[idx_ref]
-                    idx_ref += 1
-                    ref_parte.append(token)
-                    if not token.startswith('<'): break
-            if ref_parte: html_ref_list.append(f'<span class="highlight-yellow">{"".join(ref_parte)}</span>')
+            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
             tem_diff = True
         elif tag == 'insert':
-            novo_parte = []
-            for _ in range(j1, j2):
-                while idx_novo < len(palavras_novo_com_tag):
-                    token = palavras_novo_com_tag[idx_novo]
-                    idx_novo += 1
-                    novo_parte.append(token)
-                    if not token.startswith('<'): break
-            if novo_parte: html_novo_list.append(f'<span class="highlight-yellow">{"".join(novo_parte)}</span>')
+            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
-    
-    return ' '.join(html_ref_list), ' '.join(html_novo_list), tem_diff
+            
+    return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
-    ref_puro = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_puro = re.sub(r'<[^>]+>', '', texto_novo)
-    ref_normalizado = ' '.join(ref_puro.split())
-    novo_normalizado = ' '.join(novo_puro.split())
+    
+    # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for igual, ignora formatação
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
-        ref_normalizado = novo_normalizado
-
-    if ref_normalizado == novo_normalizado:
-        html_ref = texto_ref.replace('\n', '<br>')
-        html_ref = melhorar_visual_topicos(html_ref)
         html_novo = verificar_ortografia_inteligente(texto_novo)
-        html_novo = html_novo.replace('\n', '<br>')
-        html_novo = melhorar_visual_topicos(html_novo)
-        return html_ref, html_novo, False
+        html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
+        return texto_ref.replace('\n', '<br>'), html_novo, False
 
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
+    # 2. Se falhar na nuclear, faz o diff detalhado
+    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
+    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
+    
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
+    
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
-    r_html_final = melhorar_visual_topicos(r_html)
+    r_html_final = r_html.replace('\n', '<br>')
+    
     return r_html_final, n_html_final, diff_bool
 
 def extract_text_from_file(uploaded_file):
@@ -278,12 +248,8 @@ def extract_text_from_file(uploaded_file):
                     block_text = ""
                     for l in b.get("lines", []):
                         line_txt = ""
-                        prev_x1 = 0
                         for s in l.get("spans", []):
                             content = s["text"]
-                            x0 = s["bbox"][0]
-                            if prev_x1 > 0 and (x0 - prev_x1) > 2.5:
-                                line_txt += " "
                             font_props = s["font"].lower()
                             is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
                             is_italic = (s["flags"] & 2) or "italic" in font_props
@@ -291,7 +257,6 @@ def extract_text_from_file(uploaded_file):
                             if is_bold: res = f"<b>{res}</b>"
                             if is_italic: res = f"<i>{res}</i>"
                             line_txt += res
-                            prev_x1 = s["bbox"][2]
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
@@ -306,26 +271,6 @@ def extract_text_from_file(uploaded_file):
                 text += para_txt + "\n\n"
         return text
     except: return ""
-
-# --- NOVA FUNÇÃO DE REPARO DE JSON ---
-def repair_json(json_str):
-    """Tenta consertar um JSON cortado pela metade"""
-    json_str = json_str.strip()
-    # Se cortou no meio de uma string, fecha aspas
-    if not json_str.endswith('"') and not json_str.endswith('}') and not json_str.endswith(']'):
-        json_str += '"'
-    
-    # Tenta fechar chaves e colchetes recursivamente
-    try:
-        return json.loads(json_str)
-    except:
-        try:
-            return json.loads(json_str + "}]}")
-        except:
-            try:
-                return json.loads(json_str + "]}")
-            except:
-                return None
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
@@ -373,7 +318,7 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
-            3. Manter formatação <b> e <i> EXATAMENTE como aparece no texto original.
+            3. Manter formatação <b> e <i> e NÃO corrigir português.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
@@ -402,11 +347,7 @@ if st.button("🚀 Processar Conferência"):
                     try:
                         model = genai.GenerativeModel(
                             modelo, 
-                            generation_config={
-                                "response_mime_type": "application/json", 
-                                "temperature": 0.0,
-                                "max_output_tokens": 8192 # <--- AUMENTO CRÍTICO DE LIMITE
-                            }
+                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
@@ -421,21 +362,8 @@ if st.button("🚀 Processar Conferência"):
                 st.code("\n".join(log_erros))
                 st.stop()
             
-            # --- PARTE CORRIGIDA: JSON ROBUSTO ---
             try:
-                # Tenta carregar normalmente
                 resultado = json.loads(response.text)
-            except json.JSONDecodeError:
-                # Se falhar (corte de texto), tenta reparar
-                resultado = repair_json(response.text)
-                if resultado:
-                    st.warning("⚠️ Nota: O texto gerado era muito longo e foi cortado no final pela IA. O sistema recuperou o que foi possível.")
-                else:
-                    st.error("Erro fatal: A resposta da IA veio corrompida e não pôde ser recuperada.")
-                    st.code(response.text)
-                    st.stop()
-            
-            try:
                 data_ref = resultado.get("data_anvisa_ref", "-")
                 data_mkt = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
@@ -463,7 +391,6 @@ if st.button("🚀 Processar Conferência"):
                         html_mkt = html_mkt.replace('\n', '<br>')
                         html_ref = html_ref.replace('\n', '<br>')
                         html_mkt = melhorar_visual_topicos(html_mkt)
-                        html_ref = melhorar_visual_topicos(html_ref)
                     else:
                         html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
@@ -505,6 +432,7 @@ if st.button("🚀 Processar Conferência"):
                             st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"Erro ao processar dados recuperados: {e}")
+                st.error(f"Erro ao processar JSON: {e}")
+                st.code(response.text)
     else:
         st.warning("Adicione os arquivos.")
