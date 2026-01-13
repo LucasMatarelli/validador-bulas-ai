@@ -14,38 +14,6 @@ st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide
 
 st.markdown("""
 <style>
-    /* Força a sidebar a ficar sempre aberta */
-    section[data-testid="stSidebar"] {
-        display: block !important;
-        margin-left: 0 !important;
-        transform: translateX(0) !important;
-        transition: none !important;
-        position: relative !important;
-    }
-    
-    section[data-testid="stSidebar"][aria-expanded="true"],
-    section[data-testid="stSidebar"][aria-expanded="false"] {
-        margin-left: 0 !important;
-        transform: translateX(0) !important;
-    }
-    
-    /* Remove o botão de colapsar */
-    button[kind="header"] {
-        display: none !important;
-    }
-    
-    [data-testid="collapsedControl"] {
-        display: none !important;
-    }
-    
-    div[data-testid="stSidebarNav"] {
-        display: block !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("""
-<style>
     [data-testid="stHeader"] { visibility: hidden; }
     
     .texto-box { 
@@ -372,6 +340,19 @@ def extract_text_from_file(uploaded_file):
         st.error(f"Erro ao extrair texto: {str(e)}")
         return ""
 
+# ============= CRIA O MENU LATERAL =============
+with st.sidebar:
+    st.markdown("### 📂 Menu de Navegação")
+    
+    pagina_selecionada = st.radio(
+        "Escolha a página:",
+        ["app", "Med. Referência x BELFAR", "Conferência MKT", "Gráfica x Arte"],
+        index=2  # Deixa "Conferência MKT" selecionado por padrão
+    )
+    
+    st.divider()
+    st.caption("Validador de Bulas - v1.0")
+    
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
 
