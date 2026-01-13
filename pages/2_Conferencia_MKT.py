@@ -341,17 +341,95 @@ def extract_text_from_file(uploaded_file):
         return ""
 
 # ============= CRIA O MENU LATERAL =============
+st.markdown("""
+<style>
+    [data-testid="stHeader"] { visibility: hidden; }
+    
+    /* FORÇA A SIDEBAR A EXISTIR E FICAR VISÍVEL */
+    section[data-testid="stSidebar"] {
+        display: block !important;
+        visibility: visible !important;
+        width: 250px !important;
+        min-width: 250px !important;
+        max-width: 250px !important;
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
+        transition: none !important;
+        position: relative !important;
+        background-color: #f0f2f6 !important;
+        z-index: 999 !important;
+    }
+    
+    section[data-testid="stSidebar"] > div:first-child {
+        width: 250px !important;
+        min-width: 250px !important;
+    }
+    
+    section[data-testid="stSidebar"][aria-expanded="false"],
+    section[data-testid="stSidebar"][aria-expanded="true"] {
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
+    }
+    
+    /* Remove todos os botões de colapsar */
+    button[kind="header"],
+    [data-testid="collapsedControl"],
+    button[data-testid="baseButton-header"] {
+        display: none !important;
+    }
+    
+    /* Garante que o conteúdo da sidebar seja visível */
+    div[data-testid="stSidebarNav"],
+    section[data-testid="stSidebar"] > div {
+        display: block !important;
+        visibility: visible !important;
+    }
+    
+    /* Ajusta o conteúdo principal */
+    .main .block-container {
+        padding-left: 2rem;
+        max-width: calc(100% - 250px);
+    }
+    
+    /* Resto do seu CSS */
+    .texto-box { 
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 0.95rem;
+        line-height: 1.7;
+        color: #212529;
+        background-color: #ffffff;
+        padding: 25px;
+        border-radius: 8px;
+        border: 1px solid #ced4da;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        text-align: left;
+    }
+    
+    /* ... resto do seu CSS ... */
+</style>
+""", unsafe_allow_html=True)
+
+# AGORA ADICIONA O CONTEÚDO DA SIDEBAR
 with st.sidebar:
+    st.image("https://img.icons8.com/color/96/000000/pill.png", width=80)
     st.markdown("### 📂 Menu de Navegação")
+    st.markdown("---")
     
-    pagina_selecionada = st.radio(
-        "Escolha a página:",
-        ["app", "Med. Referência x BELFAR", "Conferência MKT", "Gráfica x Arte"],
-        index=2  # Deixa "Conferência MKT" selecionado por padrão
-    )
+    if st.button("📱 app", use_container_width=True):
+        st.info("Navegando para app...")
     
-    st.divider()
-    st.caption("Validador de Bulas - v1.0")
+    if st.button("💊 Med. Referência x BELFAR", use_container_width=True):
+        st.info("Navegando para Referência...")
+    
+    if st.button("✅ Conferência MKT", use_container_width=True, type="primary"):
+        st.success("Você está aqui!")
+    
+    if st.button("🎨 Gráfica x Arte", use_container_width=True):
+        st.info("Navegando para Gráfica...")
+    
+    st.markdown("---")
+    st.caption("🔒 Validador de Bulas v1.0")
+    st.caption("Última atualização: 2025")
     
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
