@@ -341,6 +341,7 @@ def extract_text_from_file(uploaded_file):
         return ""
 
 # ============= CRIA O MENU LATERAL =============
+
 st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
@@ -386,7 +387,7 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-    
+
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
 
