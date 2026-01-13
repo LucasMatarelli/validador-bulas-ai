@@ -345,7 +345,7 @@ st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
     
-    /* FORÇA A SIDEBAR A EXISTIR E FICAR VISÍVEL */
+    /* SIDEBAR SEMPRE ABERTA E TRAVADA */
     section[data-testid="stSidebar"] {
         display: block !important;
         visibility: visible !important;
@@ -378,58 +378,14 @@ st.markdown("""
         display: none !important;
     }
     
-    /* Garante que o conteúdo da sidebar seja visível */
-    div[data-testid="stSidebarNav"],
-    section[data-testid="stSidebar"] > div {
-        display: block !important;
-        visibility: visible !important;
-    }
-    
-    /* Ajusta o conteúdo principal */
-    .main .block-container {
-        padding-left: 2rem;
-        max-width: calc(100% - 250px);
-    }
-    
     /* Resto do seu CSS */
     .texto-box { 
         font-family: 'Segoe UI', sans-serif;
         font-size: 0.95rem;
-        line-height: 1.7;
-        color: #212529;
-        background-color: #ffffff;
-        padding: 25px;
-        border-radius: 8px;
-        border: 1px solid #ced4da;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        text-align: left;
+        /* ... resto do CSS ... */
     }
-    
-    /* ... resto do seu CSS ... */
 </style>
 """, unsafe_allow_html=True)
-
-# AGORA ADICIONA O CONTEÚDO DA SIDEBAR
-with st.sidebar:
-    st.image("https://img.icons8.com/color/96/000000/pill.png", width=80)
-    st.markdown("### 📂 Menu de Navegação")
-    st.markdown("---")
-    
-    if st.button("📱 app", use_container_width=True):
-        st.info("Navegando para app...")
-    
-    if st.button("💊 Med. Referência x BELFAR", use_container_width=True):
-        st.info("Navegando para Referência...")
-    
-    if st.button("✅ Conferência MKT", use_container_width=True, type="primary"):
-        st.success("Você está aqui!")
-    
-    if st.button("🎨 Gráfica x Arte", use_container_width=True):
-        st.info("Navegando para Gráfica...")
-    
-    st.markdown("---")
-    st.caption("🔒 Validador de Bulas v1.0")
-    st.caption("Última atualização: 2025")
     
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
