@@ -238,39 +238,107 @@ def gerar_diff_html(texto_ref, texto_novo):
     return r_html_final, n_html_final, diff_bool
 
 def extract_text_from_file(uploaded_file):
+    """
+    FUNÇÃO OTIMIZADA PARA CAPTURA PRECISA DE NEGRITO E ITÁLICO
+    Extrai texto mantendo EXATAMENTE a formatação original do documento
+    """
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            for page in doc: 
-                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
-                for b in blocks:
+            
+            for page in doc:
+                # Extrai blocos de texto com informações de formatação
+                blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_IMAGES)["blocks"]
+                
+                for block in blocks:
+                    if block.get("type") != 0:  # Ignora blocos que não são texto
+                        continue
+                    
                     block_text = ""
-                    for l in b.get("lines", []):
-                        line_txt = ""
-                        for s in l.get("spans", []):
-                            content = s["text"]
-                            font_props = s["font"].lower()
-                            is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
-                            is_italic = (s["flags"] & 2) or "italic" in font_props
-                            res = content
-                            if is_bold: res = f"<b>{res}</b>"
-                            if is_italic: res = f"<i>{res}</i>"
-                            line_txt += res
-                        block_text += line_txt + " " 
+                    
+                    for line in block.get("lines", []):
+                        line_text = ""
+                        
+                        for span in line.get("spans", []):
+                            content = span.get("text", "")
+                            if not content.strip():
+                                line_text += content
+                                continue
+                            
+                            # DETECÇÃO APRIMORADA DE FORMATAÇÃO
+                            flags = span.get("flags", 0)
+                            font_name = span.get("font", "").lower()
+                            font_size = span.get("size", 0)
+                            
+                            # Verifica negrito através de múltiplos indicadores
+                            is_bold = (
+                                (flags & 16) or  # Flag de negrito
+                                (flags & 32) or  # Flag adicional
+                                "bold" in font_name or 
+                                "black" in font_name or 
+                                "heavy" in font_name or
+                                "semibold" in font_name or
+                                "extra" in font_name
+                            )
+                            
+                            # Verifica itálico através de múltiplos indicadores
+                            is_italic = (
+                                (flags & 2) or  # Flag de itálico
+                                "italic" in font_name or 
+                                "oblique" in font_name
+                            )
+                            
+                            # Aplica formatação HTML
+                            formatted_text = content
+                            if is_bold and is_italic:
+                                formatted_text = f"<b><i>{content}</i></b>"
+                            elif is_bold:
+                                formatted_text = f"<b>{content}</b>"
+                            elif is_italic:
+                                formatted_text = f"<i>{content}</i>"
+                            
+                            line_text += formatted_text
+                        
+                        block_text += line_text.rstrip() + " "
+                    
                     text += block_text.strip() + "\n\n"
+            
+            doc.close()
+            
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
-            for para in doc.paragraphs: 
-                para_txt = ""
+            
+            for para in doc.paragraphs:
+                para_text = ""
+                
                 for run in para.runs:
-                    res = run.text
-                    if run.bold: res = f"<b>{res}</b>"
-                    if run.italic: res = f"<i>{res}</i>"
-                    para_txt += res
-                text += para_txt + "\n\n"
-        return text
-    except: return ""
+                    content = run.text
+                    if not content:
+                        continue
+                    
+                    # DETECÇÃO PRECISA DE FORMATAÇÃO NO DOCX
+                    is_bold = run.bold is True  # Verifica explicitamente True
+                    is_italic = run.italic is True  # Verifica explicitamente True
+                    
+                    # Aplica formatação HTML
+                    formatted_text = content
+                    if is_bold and is_italic:
+                        formatted_text = f"<b><i>{content}</i></b>"
+                    elif is_bold:
+                        formatted_text = f"<b>{content}</b>"
+                    elif is_italic:
+                        formatted_text = f"<i>{content}</i>"
+                    
+                    para_text += formatted_text
+                
+                text += para_text + "\n\n"
+        
+        return text.strip()
+        
+    except Exception as e:
+        st.error(f"Erro ao extrair texto: {str(e)}")
+        return ""
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
