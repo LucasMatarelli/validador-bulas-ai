@@ -82,6 +82,53 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ============= CRIA O MENU LATERAL =============
+st.markdown("""
+<style>
+    [data-testid="stHeader"] { visibility: hidden; }
+    
+    /* SIDEBAR SEMPRE ABERTA E TRAVADA */
+    section[data-testid="stSidebar"] {
+        display: block !important;
+        visibility: visible !important;
+        width: 250px !important;
+        min-width: 250px !important;
+        max-width: 250px !important;
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
+        transition: none !important;
+        position: relative !important;
+        background-color: #f0f2f6 !important;
+        z-index: 999 !important;
+    }
+    
+    section[data-testid="stSidebar"] > div:first-child {
+        width: 250px !important;
+        min-width: 250px !important;
+    }
+    
+    section[data-testid="stSidebar"][aria-expanded="false"],
+    section[data-testid="stSidebar"][aria-expanded="true"] {
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
+    }
+    
+    /* Remove todos os botões de colapsar */
+    button[kind="header"],
+    [data-testid="collapsedControl"],
+    button[data-testid="baseButton-header"] {
+        display: none !important;
+    }
+    
+    /* Resto do seu CSS */
+    .texto-box { 
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 0.95rem;
+        /* ... resto do CSS ... */
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # ----------------- UI PRINCIPAL -----------------
 
 # Cabeçalho
