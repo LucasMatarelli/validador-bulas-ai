@@ -332,7 +332,7 @@ st.title("💊 Conferência MKT")
 
 tipo_bula = st.radio(
     "Escolha o Tipo de Bula:",
-    ("Paciente", "Profissional"),
+    ("Paciente"),
     horizontal=True
 )
 
