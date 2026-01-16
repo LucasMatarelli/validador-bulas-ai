@@ -74,7 +74,7 @@ MODELOS_PARA_TENTAR = [
     "gemini-1.5-flash"
 ]
 
-# LISTA ATUALIZADA: Incluindo "I - ..." e as "Informações...", ordenadas
+# LISTA ATUALIZADA
 SECOES_PACIENTE = [
     "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO",
     "INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES E COMPOSIÇÃO",
@@ -90,7 +90,7 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-# SEM BLINDAGEM (Lista vazia)
+# SEM BLINDAGEM
 SECOES_SEM_COMPARACAO = []
 SECOES_PROFISSIONAL = [] 
 
@@ -504,6 +504,14 @@ if st.button("🚀 Processar Conferência"):
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
                     
+                    # --- LIMPEZA ESPECÍFICA SOLICITADA ---
+                    if "IDENTIFICAÇÃO" in titulo.upper():
+                        # Remove a repetição do título/nome do produto dentro do conteúdo
+                        padrao_remove = r'Boldo\s+Belfar\s+PRODUTO\s+TRADICIONAL\s+FITOTERÁPICO'
+                        txt_ref = re.sub(padrao_remove, '', txt_ref, flags=re.IGNORECASE).strip()
+                        txt_mkt = re.sub(padrao_remove, '', txt_mkt, flags=re.IGNORECASE).strip()
+                    # -------------------------------------
+
                     titulo_upper = titulo.upper()
                     eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
 
