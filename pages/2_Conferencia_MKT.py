@@ -74,7 +74,7 @@ MODELOS_PARA_TENTAR = [
     "gemini-1.5-flash"
 ]
 
-# LISTA ATUALIZADA: Apenas as seções padrão + a de Identificação solicitada
+# LISTA ATUALIZADA: Apenas as seções padrão + a de Identificação
 SECOES_PACIENTE = [
     "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO",
     "APRESENTAÇÕES", 
@@ -473,7 +473,11 @@ if st.button("🚀 Processar Conferência"):
                     try:
                         model = genai.GenerativeModel(
                             modelo, 
-                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                            generation_config={
+                                "response_mime_type": "application/json", 
+                                "temperature": 0.0,
+                                "max_output_tokens": 16000 # AUMENTADO PARA EVITAR ERRO DE JSON CORTADO
+                            }
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
@@ -502,6 +506,14 @@ if st.button("🚀 Processar Conferência"):
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
                     
+                    # --- LIMPEZA ESPECÍFICA SOLICITADA ---
+                    if "IDENTIFICAÇÃO" in titulo.upper():
+                        # Remove a repetição do título/nome do produto dentro do conteúdo
+                        padrao_remove = r'Boldo\s+Belfar\s+PRODUTO\s+TRADICIONAL\s+FITOTERÁPICO'
+                        txt_ref = re.sub(padrao_remove, '', txt_ref, flags=re.IGNORECASE).strip()
+                        txt_mkt = re.sub(padrao_remove, '', txt_mkt, flags=re.IGNORECASE).strip()
+                    # -------------------------------------
+
                     titulo_upper = titulo.upper()
                     eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
 
