@@ -378,13 +378,6 @@ st.markdown("""
     button[data-testid="baseButton-header"] {
         display: none !important;
     }
-    
-    /* Resto do seu CSS */
-    .texto-box { 
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 0.95rem;
-        /* ... resto do CSS ... */
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -422,6 +415,18 @@ if st.button("🚀 Processar Conferência"):
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
 
+            # --- ADIÇÃO: LIMPEZA ESPECÍFICA DAS IMAGENS 2, 3 E 4 ---
+            def aplicar_regras_especificas(t):
+                # Foto 2: Ignorar frase completa
+                t = re.sub(r'II\s*[–-]\s*INFORMAÇÕES\s+QUANTO\s+ÀS\s+APRESENTAÇÕES\s+E\s+COMPOSIÇÃO', '', t, flags=re.IGNORECASE)
+                # Foto 3 e 4: Manter a frase mas ignorar o número romano (III)
+                t = re.sub(r'III\s*[–-]\s*(INFORMAÇÕES\s+AO\s+PACIENTE)', r'\1', t, flags=re.IGNORECASE)
+                return t
+
+            t_anvisa = aplicar_regras_especificas(t_anvisa)
+            t_mkt = aplicar_regras_especificas(t_mkt)
+            # -------------------------------------------------------
+
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Arquivo vazio ou ilegível."); st.stop()
 
@@ -435,6 +440,7 @@ if st.button("🚀 Processar Conferência"):
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
             3. Manter formatação <b> e <i> e NÃO corrigir português.
+            4. Se houver o cabeçalho 'I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO', inclua-o no início da leitura.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
