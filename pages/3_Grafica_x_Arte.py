@@ -7,7 +7,6 @@ import difflib
 import re
 import unicodedata
 import time
-from spellchecker import SpellChecker
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # ----------------- 1. VISUAL & CSS -----------------
@@ -96,61 +95,6 @@ def normalizacao_nuclear(texto):
     t = re.sub(r'[^a-zA-Z0-9]', '', t)
     return t.lower()
 
-def verificar_ortografia_inteligente(texto):
-    try:
-        spell = SpellChecker(language='pt')
-        whitelist = {
-            'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
-            'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
-            'dr', 'dra', 'vp', 'vps', 'bula', 'paciente', 'profissional', 'sac',
-            'blister', 'cartucho', 'posologia', 'superdose', 'farmacocinetica',
-            'biodisponibilidade', 'excipiente', 'excipientes', 'revestimento',
-            'comprimido', 'capsula', 'solucao', 'suspensao', 'oral', 'intravenosa',
-            'subcutanea', 'intramuscular', 'topico', 'oftalmico', 'nasal',
-            'adulto', 'pediatrico', 'geriatrico', 'indicação', 'contraindicação',
-            'advertencia', 'precaucao', 'interacao', 'reacao', 'adversa', 'sintoma',
-            'tratamento', 'diagnostico', 'profilaxia', 'analgesico', 'antipiretico',
-            'anti-inflamatorio', 'antibiotico', 'antiviral', 'antifungico',
-            'cardiovascular', 'respiratorio', 'digestivo', 'nervoso', 'central',
-            'periferico', 'renal', 'hepatico', 'sanguineo', 'imunologico',
-            'endocrino', 'metabolico', 'musculoesqueletico', 'dermatologico',
-            'predisponentes', 'sistemicos', 'sistêmicos', 'congenita', 'congênita',
-            'aneurisma', 'dissecção', 'disseccao', 'valvar', 'valvula', 'regurgitação',
-            'endocardite', 'marfan', 'ehlers-danlos', 'turner', 'sjogren', 'takayasu',
-            'behcet', 'reumatoide', 'artrite', 'corticosteroides', 'fluorquinolonas',
-            'hipersensibilidade', 'arritmia', 'protuberancia', 'abdômen', 'abdomen',
-            'gonorreia', 'gonorréia', 'infeccao', 'infeção', 'trato', 'urinario',
-            'uretra', 'cervix', 'tubulos', 'túbulos', 'renais', 'queimação', 'queimacao',
-            'prostatite', 'prostata', 'cistite', 'ureia', 'bacteria', 'bacterias',
-            'odes', 'tinea', 'candida', 'candidíase', 'balanite', 'dermatomicoses',
-            'pedis', 'corporis', 'cruris', 'unguium', 'onicomicoses', 'unha', 'unhas'
-        }
-        spell.word_frequency.load_words(whitelist)
-
-        tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/\[\]])', texto)
-        resultado = []
-        
-        for token in tokens:
-            if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
-                resultado.append(token)
-                continue
-            
-            palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
-            
-            if (not palavra_limpa or len(palavra_limpa) < 4 or any(c.isdigit() for c in token) or '-' in palavra_limpa or palavra_limpa[0].isupper()):
-                resultado.append(token)
-                continue
-
-            p_lower = palavra_limpa.lower()
-            if p_lower in spell or p_lower in whitelist:
-                resultado.append(token)
-            else:
-                resultado.append(token)
-
-        return "".join(resultado)
-    except:
-        return texto
-
 def melhorar_visual_topicos(texto_html):
     linhas = re.split(r'(<br>|\n)', texto_html)
     novo_texto = []
@@ -199,8 +143,7 @@ def gerar_diff_html(texto_ref, texto_novo):
     if texto_novo is None: texto_novo = ""
     
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
-        html_novo = verificar_ortografia_inteligente(texto_novo)
-        html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
+        html_novo = melhorar_visual_topicos(texto_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
     ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
@@ -208,8 +151,7 @@ def gerar_diff_html(texto_ref, texto_novo):
     
     r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
     
-    n_html_final = verificar_ortografia_inteligente(n_html)
-    n_html_final = melhorar_visual_topicos(n_html_final)
+    n_html_final = melhorar_visual_topicos(n_html)
     r_html_final = r_html.replace('\n', '<br>')
     
     return r_html_final, n_html_final, diff_bool
@@ -493,7 +435,7 @@ if st.button("🚀 Processar Conferência"):
                         if "DIZERES LEGAIS" in titulo_upper:
                             html_mkt = destacar_datas(txt_mkt); html_ref = destacar_datas(txt_ref)
                         else:
-                            html_mkt = verificar_ortografia_inteligente(txt_mkt); html_ref = txt_ref
+                            html_mkt = txt_mkt; html_ref = txt_ref
                         html_mkt = melhorar_visual_topicos(html_mkt.replace('\n', '<br>'))
                         html_ref = html_ref.replace('\n', '<br>')
                     else:
