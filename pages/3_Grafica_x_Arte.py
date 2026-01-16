@@ -158,6 +158,40 @@ def gerar_diff_html(texto_ref, texto_novo):
 
 # ----------------- 4. EXTRAÇÃO E OCR -----------------
 
+def remover_rodapes_bula(texto):
+    """Remove rodapés típicos de bulas farmacêuticas"""
+    if not texto:
+        return texto
+    
+    # Padrões comuns de rodapé em bulas
+    padroes_rodape = [
+        r'Medida\s+do\s+bula.*?Papel.*?Cor.*',
+        r'Medida\s+\d+,\d+\s*x\s*\d+,\d+\s*mm',
+        r'Tipologia\s+de\s+bula:.*?Negro:.*?Corpo:.*',
+        r'Papel:.*?Cor:.*',
+        r'FRENTE.*?Medida.*?Papel.*?Cor.*',
+        r'Balcomplex.*?_comprimido_.*',
+        r'conteúdo:.*?atendimento@belfar\.com\.br',
+        r'\d{10,}',  # Números longos que podem ser códigos
+        r'www\.[^\s]+',  # URLs
+        r'[A-Z]{2,}\s+\d{8,}',  # Códigos alfanuméricos
+    ]
+    
+    texto_limpo = texto
+    for padrao in padroes_rodape:
+        texto_limpo = re.sub(padrao, '', texto_limpo, flags=re.IGNORECASE | re.MULTILINE)
+    
+    # Remove linhas com apenas números, dimensões ou códigos
+    linhas = texto_limpo.split('\n')
+    linhas_filtradas = []
+    for linha in linhas:
+        linha_strip = linha.strip()
+        # Pula linhas que são apenas números, dimensões ou muito curtas sem conteúdo relevante
+        if linha_strip and not re.match(r'^[\d\s,\.]+$', linha_strip):
+            linhas_filtradas.append(linha)
+    
+    return '\n'.join(linhas_filtradas)
+
 def ocr_via_gemini(uploaded_file, api_keys):
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
@@ -173,6 +207,8 @@ def ocr_via_gemini(uploaded_file, api_keys):
     4. Mantenha erros de digitação originais se houver.
     5. CRÍTICO: Extraia TODO o texto do documento, não pare no meio.
     6. Use <b> para negrito e <i> para itálico conforme aparece no original.
+    7. IMPORTANTE: NÃO extraia informações de rodapé como medidas, tipologia, papel, cor, códigos de produto ou informações técnicas da impressão.
+    8. Foque apenas no conteúdo da bula (texto informativo para paciente/profissional).
     """
     
     safety_settings = {
@@ -199,6 +235,7 @@ def ocr_via_gemini(uploaded_file, api_keys):
                     
                     if texto_extraido:
                          texto_extraido = re.sub(r'\bgeneral\b', 'geral', texto_extraido, flags=re.IGNORECASE)
+                         texto_extraido = remover_rodapes_bula(texto_extraido)
                          return texto_extraido, None
                          
                 except Exception as e_model:
@@ -260,6 +297,9 @@ def extract_text_smart(uploaded_file, api_keys=None):
                         res = f"<i>{res}</i>"
                     para_txt += res
                 text += para_txt + "\n\n"
+        
+        # Remove rodapés do texto extraído
+        text = remover_rodapes_bula(text)
         
         # 2. Análise da Necessidade de OCR
         texto_limpo = re.sub(r'<[^>]+>', '', text).strip()
