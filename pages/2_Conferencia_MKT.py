@@ -85,9 +85,6 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-
-SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
-
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
 def normalizacao_nuclear(texto):
