@@ -116,6 +116,9 @@ SECOES_PACIENTE = [
 
 SECOES_PROFISSIONAL = SECOES_PACIENTE 
 
+# --- ALTERAÇÃO AQUI: Lista vazia para garantir que NENHUMA seção seja "cadiadinho" (sem comparação) ---
+SECOES_SEM_COMPARACAO = [] 
+
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
 def normalizacao_nuclear(texto):
