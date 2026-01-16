@@ -74,11 +74,13 @@ MODELOS_PARA_TENTAR = [
     "gemini-1.5-flash"
 ]
 
-# LISTA ATUALIZADA: Adicionadas apenas as seções solicitadas (sem Boldo Belfar)
+# LISTA ATUALIZADA: Incluindo "I - ..." e as "Informações...", ordenadas
 SECOES_PACIENTE = [
+    "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO",
     "INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES E COMPOSIÇÃO",
     "INFORMAÇÕES AO PACIENTE",
-    "APRESENTAÇÕES", "COMPOSIÇÃO", 
+    "APRESENTAÇÕES", 
+    "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
     "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
     "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
@@ -88,7 +90,7 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-# RETIRADA A BLINDAGEM (Lista vazia para forçar comparação total)
+# SEM BLINDAGEM (Lista vazia)
 SECOES_SEM_COMPARACAO = []
 SECOES_PROFISSIONAL = [] 
 
@@ -444,7 +446,7 @@ if st.button("🚀 Processar Conferência"):
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
             3. Manter formatação <b> e <i> e NÃO corrigir português.
-            4. Se houver o cabeçalho 'I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO', inclua-o no início da leitura.
+            4. Se uma seção da lista não for encontrada no documento, NÃO a inclua no JSON.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
