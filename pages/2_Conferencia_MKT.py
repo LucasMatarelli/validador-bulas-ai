@@ -73,8 +73,7 @@ MODELOS_PARA_TENTAR = [
     "gemini-1.5-flash"
 ]
 
-# LISTA ATUALIZADA: Apenas as seções padrão + a de Identificação (condicional)
-# "INFORMAÇÕES..." foram removidas daqui para serem tratadas como conteúdo interno.
+# LISTA DE SEÇÕES (Mantida conforme solicitado anteriormente)
 SECOES_PACIENTE = [
     "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO",
     "APRESENTAÇÕES", 
@@ -95,11 +94,15 @@ SECOES_PROFISSIONAL = []
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
 def normalizacao_nuclear(texto):
-    """Remove TUDO que não seja letra ou número para comparação de conteúdo."""
+    """
+    Remove caracteres irrelevantes para comparação.
+    ALTERADO: Agora mantém '*' e '1' para detectar diferenças em '1actose' ou '*lactose'.
+    """
     if not texto: return ""
     t = re.sub(r'<[^>]+>', '', texto)
     t = unicodedata.normalize('NFKD', t).encode('ASCII', 'ignore').decode('ASCII')
-    t = re.sub(r'[^a-zA-Z0-9]', '', t)
+    # MUDANÇA AQUI: Adicionado '*' e mantendo números para pegar a divergência do "L" estranho
+    t = re.sub(r'[^a-zA-Z0-9*]', '', t) 
     return t.lower()
 
 def verificar_ortografia_inteligente(texto):
@@ -163,12 +166,9 @@ def verificar_ortografia_inteligente(texto):
             p_lower = palavra_limpa.lower()
 
             # LÓGICA ULTRA CONSERVADORA:
-            # Se está no dicionário ou na whitelist -> OK.
-            # Se NÃO está -> ASSUME QUE É TERMO TÉCNICO E IGNORA (Não marca vermelho).
             if p_lower in spell or p_lower in whitelist:
                 resultado.append(token)
             else:
-                # Palavra desconhecida. Em bula, assumimos que está correta.
                 resultado.append(token)
 
         return "".join(resultado)
@@ -444,6 +444,7 @@ if st.button("🚀 Processar Conferência"):
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção da lista. NÃO RESUMA.
             3. Manter formatação <b> e <i> e NÃO corrigir português.
+            4. **IMPORTANTE:** Certifique-se de que o JSON gerado seja válido. Todas as aspas duplas dentro do texto DEVEM ser escapadas.
             
             REGRA ESPECIAL PARA SEÇÃO 'I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO':
             - Só inclua esta seção no JSON se o documento contiver AMBOS:
@@ -510,8 +511,12 @@ if st.button("🚀 Processar Conferência"):
             try:
                 # Limpeza simples caso a API retorne algo fora do padrão JSON
                 clean_text = response.text.strip()
-                resultado = json.loads(clean_text)
+                if clean_text.startswith("```json"):
+                    clean_text = clean_text[7:]
+                if clean_text.endswith("```"):
+                    clean_text = clean_text[:-3]
                 
+                resultado = json.loads(clean_text)
                 data_ref = resultado.get("data_anvisa_ref", "-")
                 data_mkt = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
