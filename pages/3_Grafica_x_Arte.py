@@ -67,22 +67,24 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
-    "models/gemini-1.5-pro", # Pro lida melhor com textos longos sem cortar
+    "models/gemini-2.5-flash", 
     "models/gemini-2.0-flash", 
-    "models/gemini-1.5-flash"
+    "models/gemini-1.5-flash", 
+    "gemini-1.5-flash"
 ]
 
 SECOES_PACIENTE = [
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO?", "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
     "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
     "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
     "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
     "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
-    "O QUE FAZER SE ALGUÉM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
     "DIZERES LEGAIS"
 ]
 
+SECOES_PROFISSIONAL = SECOES_PACIENTE 
 SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
@@ -97,14 +99,54 @@ def normalizacao_nuclear(texto):
 def verificar_ortografia_inteligente(texto):
     try:
         spell = SpellChecker(language='pt')
-        # ... (sua lista de whitelist mantida)
+        whitelist = {
+            'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
+            'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
+            'dr', 'dra', 'vp', 'vps', 'bula', 'paciente', 'profissional', 'sac',
+            'blister', 'cartucho', 'posologia', 'superdose', 'farmacocinetica',
+            'biodisponibilidade', 'excipiente', 'excipientes', 'revestimento',
+            'comprimido', 'capsula', 'solucao', 'suspensao', 'oral', 'intravenosa',
+            'subcutanea', 'intramuscular', 'topico', 'oftalmico', 'nasal',
+            'adulto', 'pediatrico', 'geriatrico', 'indicação', 'contraindicação',
+            'advertencia', 'precaucao', 'interacao', 'reacao', 'adversa', 'sintoma',
+            'tratamento', 'diagnostico', 'profilaxia', 'analgesico', 'antipiretico',
+            'anti-inflamatorio', 'antibiotico', 'antiviral', 'antifungico',
+            'cardiovascular', 'respiratorio', 'digestivo', 'nervoso', 'central',
+            'periferico', 'renal', 'hepatico', 'sanguineo', 'imunologico',
+            'endocrino', 'metabolico', 'musculoesqueletico', 'dermatologico',
+            'predisponentes', 'sistemicos', 'sistêmicos', 'congenita', 'congênita',
+            'aneurisma', 'dissecção', 'disseccao', 'valvar', 'valvula', 'regurgitação',
+            'endocardite', 'marfan', 'ehlers-danlos', 'turner', 'sjogren', 'takayasu',
+            'behcet', 'reumatoide', 'artrite', 'corticosteroides', 'fluorquinolonas',
+            'hipersensibilidade', 'arritmia', 'protuberancia', 'abdômen', 'abdomen',
+            'gonorreia', 'gonorréia', 'infeccao', 'infeção', 'trato', 'urinario',
+            'uretra', 'cervix', 'tubulos', 'túbulos', 'renais', 'queimação', 'queimacao',
+            'prostatite', 'prostata', 'cistite', 'ureia', 'bacteria', 'bacterias',
+            'odes', 'tinea', 'candida', 'candidíase', 'balanite', 'dermatomicoses',
+            'pedis', 'corporis', 'cruris', 'unguium', 'onicomicoses', 'unha', 'unhas'
+        }
+        spell.word_frequency.load_words(whitelist)
+
         tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/\[\]])', texto)
         resultado = []
+        
         for token in tokens:
             if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
                 resultado.append(token)
                 continue
-            resultado.append(token)
+            
+            palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
+            
+            if (not palavra_limpa or len(palavra_limpa) < 4 or any(c.isdigit() for c in token) or '-' in palavra_limpa or palavra_limpa[0].isupper()):
+                resultado.append(token)
+                continue
+
+            p_lower = palavra_limpa.lower()
+            if p_lower in spell or p_lower in whitelist:
+                resultado.append(token)
+            else:
+                resultado.append(token)
+
         return "".join(resultado)
     except:
         return texto
@@ -127,7 +169,6 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # Split preservando as tags para a comparação
     palavras_ref = texto_ref.split()
     palavras_novo = texto_novo.split()
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
@@ -140,13 +181,17 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
             texto = " ".join(palavras_ref[i1:i2])
             html_ref_list.append(texto)
             html_novo_list.append(texto)
-        else:
+        elif tag == 'replace':
+            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
+            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
-            if tag in ('replace', 'delete'):
-                html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            if tag in ('replace', 'insert'):
-                html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
-                
+        elif tag == 'delete':
+            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
+            tem_diff = True
+        elif tag == 'insert':
+            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
+            tem_diff = True
+            
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo):
@@ -154,15 +199,18 @@ def gerar_diff_html(texto_ref, texto_novo):
     if texto_novo is None: texto_novo = ""
     
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
-        return texto_ref.replace('\n', '<br>'), texto_novo.replace('\n', '<br>'), False
+        html_novo = verificar_ortografia_inteligente(texto_novo)
+        html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
+        return texto_ref.replace('\n', '<br>'), html_novo, False
 
-    # Comparação direta mantendo as tags <b> e <i> vindas da extração
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
+    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
+    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
     
-    # Apenas visual e ortografia
-    r_html_final = verificar_ortografia_inteligente(r_html)
-    r_html_final = melhorar_visual_topicos(r_html_final.replace('\n', '<br>'))
-    n_html_final = n_html.replace('\n', '<br>')
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
+    
+    n_html_final = verificar_ortografia_inteligente(n_html)
+    n_html_final = melhorar_visual_topicos(n_html_final)
+    r_html_final = r_html.replace('\n', '<br>')
     
     return r_html_final, n_html_final, diff_bool
 
@@ -171,45 +219,87 @@ def gerar_diff_html(texto_ref, texto_novo):
 def ocr_via_gemini(uploaded_file, api_keys):
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
+    
     prompt_ocr = """
-    Transcreva caractere por caractere. PROIBIDO traduzir ou resumir. 
-    Mantenha negritos com <b> e itálicos com <i>.
-    Se estiver escrito "geral", mantenha "geral".
+    ATENÇÃO: Você é um robô de OCR para documentos farmacêuticos brasileiros.
+    IDIOMA: Português do Brasil.
+    
+    REGRAS DE OURO:
+    1. Transcreva caractere por caractere, INCLUINDO toda formatação <b> e <i>.
+    2. PROIBIDO traduzir.
+    3. ATENÇÃO MÁXIMA: Se estiver escrito "geral" (comum em bulas), mantenha "geral". NÃO escreva "general" em inglês.
+    4. Mantenha erros de digitação originais se houver.
+    5. CRÍTICO: Extraia TODO o texto do documento, não pare no meio.
+    6. Use <b> para negrito e <i> para itálico conforme aparece no original.
     """
     
-    safety_settings = {category: HarmBlockThreshold.BLOCK_NONE for category in [HarmCategory.HARM_CATEGORY_HATE_SPEECH, HarmCategory.HARM_CATEGORY_HARASSMENT, HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT]}
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
 
-    for key in api_keys:
+    log_erros_ocr = []
+
+    for i, key in enumerate(api_keys):
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel("models/gemini-1.5-pro")
-            response = model.generate_content([{'mime_type': 'application/pdf', 'data': bytes_data}, prompt_ocr], safety_settings=safety_settings)
-            return response.text, None
-        except Exception as e:
+            for modelo in MODELOS_PARA_TENTAR:
+                try:
+                    model = genai.GenerativeModel(modelo)
+                    response = model.generate_content(
+                        [{'mime_type': 'application/pdf', 'data': bytes_data}, prompt_ocr],
+                        safety_settings=safety_settings
+                    )
+                    
+                    texto_extraido = response.text
+                    
+                    if texto_extraido:
+                         texto_extraido = re.sub(r'\bgeneral\b', 'geral', texto_extraido, flags=re.IGNORECASE)
+                         return texto_extraido, None
+                         
+                except Exception as e_model:
+                    err_msg = str(e_model)
+                    log_erros_ocr.append(f"Key {i+1} | {modelo}: {err_msg}")
+                    if "429" in err_msg or "quota" in err_msg.lower():
+                        time.sleep(2)
+                    continue
+        except Exception as e_key:
+            log_erros_ocr.append(f"Key {i+1} Falha Config: {str(e_key)}")
             continue
-    return "", "Falha no OCR"
+            
+    return "", " | ".join(log_erros_ocr)
 
 def extract_text_smart(uploaded_file, api_keys=None):
     text = ""
     try:
+        # 1. Tentativa Nativa com FORMATAÇÃO PRESERVADA
         if uploaded_file.name.lower().endswith('.pdf'):
             uploaded_file.seek(0)
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
             for page in doc: 
-                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
+                blocks = page.get_text("dict", flags=11)["blocks"]
                 for b in blocks:
+                    if b.get("type") != 0:
+                        continue
                     block_text = ""
                     for l in b.get("lines", []):
                         line_txt = ""
                         for s in l.get("spans", []):
-                            content = s["text"]
-                            font_props = s["font"].lower()
-                            is_bold = (s["flags"] & 16) or "bold" in font_props
-                            is_italic = (s["flags"] & 2) or "italic" in font_props
+                            content = s.get("text", "")
+                            font_props = s.get("font", "").lower()
+                            flags = s.get("flags", 0)
+                            is_bold = (flags & 16) or "bold" in font_props
+                            is_italic = (flags & 2) or "italic" in font_props or "oblique" in font_props
+                            
                             res = content
-                            if is_bold: res = f"<b>{res}</b>"
-                            if is_italic: res = f"<i>{res}</i>"
-                            # FIX: Não adiciona espaço entre spans para evitar "rea ções"
+                            if is_bold and is_italic:
+                                res = f"<b><i>{res}</i></b>"
+                            elif is_bold:
+                                res = f"<b>{res}</b>"
+                            elif is_italic:
+                                res = f"<i>{res}</i>"
                             line_txt += res
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
@@ -220,24 +310,88 @@ def extract_text_smart(uploaded_file, api_keys=None):
                 para_txt = ""
                 for run in para.runs:
                     res = run.text
-                    if run.bold: res = f"<b>{res}</b>"
-                    if run.italic: res = f"<i>{res}</i>"
+                    if run.bold and run.italic:
+                        res = f"<b><i>{res}</i></b>"
+                    elif run.bold:
+                        res = f"<b>{res}</b>"
+                    elif run.italic:
+                        res = f"<i>{res}</i>"
                     para_txt += res
                 text += para_txt + "\n\n"
         
+        # 2. Análise da Necessidade de OCR
         texto_limpo = re.sub(r'<[^>]+>', '', text).strip()
-        if uploaded_file.name.lower().endswith('.pdf') and len(texto_limpo) < 1000 and api_keys:
+        
+        eh_pdf = uploaded_file.name.lower().endswith('.pdf')
+        
+        if eh_pdf and len(texto_limpo) < 1000 and api_keys:
+            st.warning(f"👁️ Arquivo '{uploaded_file.name}' detectado com pouco texto ({len(texto_limpo)} chars < 1000). Ativando OCR...")
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
-            return texto_ocr if texto_ocr else text
+            
+            if texto_ocr:
+                st.success(f"✅ OCR bem-sucedido para '{uploaded_file.name}'!")
+                return texto_ocr
+            else:
+                st.error(f"❌ Falha no OCR de '{uploaded_file.name}'. Detalhes: {erro_ocr}")
+                return "" 
+        else:
+            if len(texto_limpo) >= 1000:
+                st.info(f"📄 Arquivo '{uploaded_file.name}' lido como texto padrão (OCR não necessário).")
+            
         return text
+        
     except Exception as e:
-        return f"Erro: {str(e)}"
+        return f"Erro leitura: {str(e)}"
+
+# ============= CRIA O MENU LATERAL =============
+st.markdown("""
+<style>
+    [data-testid="stHeader"] { visibility: hidden; }
+    
+    /* SIDEBAR SEMPRE ABERTA E TRAVADA */
+    section[data-testid="stSidebar"] {
+        display: block !important;
+        visibility: visible !important;
+        width: 250px !important;
+        min-width: 250px !important;
+        max-width: 250px !important;
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
+        transition: none !important;
+        position: relative !important;
+        background-color: #f0f2f6 !important;
+        z-index: 999 !important;
+    }
+    
+    section[data-testid="stSidebar"] > div:first-child {
+        width: 250px !important;
+        min-width: 250px !important;
+    }
+    
+    section[data-testid="stSidebar"][aria-expanded="false"],
+    section[data-testid="stSidebar"][aria-expanded="true"] {
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
+    }
+    
+    /* Remove todos os botões de colapsar */
+    button[kind="header"],
+    [data-testid="collapsedControl"],
+    button[data-testid="baseButton-header"] {
+        display: none !important;
+    }
+    
+    /* Resto do seu CSS */
+    .texto-box { 
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 0.95rem;
+        /* ... resto do CSS ... */
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Gráfica x Arte")
-
-# Sidebar fixa como no seu original
-st.markdown("""<style> section[data-testid="stSidebar"] { width: 250px !important; } </style>""", unsafe_allow_html=True)
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
 
@@ -246,70 +400,136 @@ f1 = c1.file_uploader("📜 Gráfica", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Arte Vigente", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    keys_raw = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
+    keys_raw = [
+        st.secrets.get("GEMINI_API_KEY"), 
+        st.secrets.get("GEMINI_API_KEY2"), 
+        st.secrets.get("GEMINI_API_KEY3")
+    ]
     keys_validas = [k for k in keys_raw if k]
 
+    if not keys_validas:
+        st.error("Erro Crítico: Nenhuma API Key encontrada no secrets."); st.stop()
+
     if f1 and f2:
-        with st.spinner("Analisando bulas..."):
+        secoes_alvo = SECOES_PACIENTE
+
+        with st.spinner("Analisando arquivos individualmente (Texto ou OCR)..."):
             t_anvisa = extract_text_smart(f1, api_keys=keys_validas)
             t_mkt = extract_text_smart(f2, api_keys=keys_validas)
 
-            # PROMPT REFORÇADO PARA NÃO CORTAR E MANTER TAGS
+            if not t_anvisa or len(t_anvisa) < 20:
+                st.error(f"ERRO: Conteúdo do arquivo BELFAR insuficiente para análise."); st.stop()
+            if not t_mkt or len(t_mkt) < 20:
+                st.error(f"ERRO: Conteúdo do arquivo MKT insuficiente para análise."); st.stop()
+
             prompt = f"""
-            Você é um ROBÔ DE CÓPIA FIEL. 
-            Extraia o texto das seções: {SECOES_PACIENTE}
+            Você é um Extrator de Dados Farmacêuticos Rigoroso (ROBÔ DE CÓPIA).
             
-            REGRAS VITAIS:
-            1. Para a seção da GRÁFICA (Ref), copie o texto TODO, sem omitir uma única palavra.
-            2. Mantenha as tags <b> e <i> rigorosamente.
-            3. Se houver erro de escrita no input, mantenha no output.
+            INPUT TEXTO 1 (REF - GRÁFICA): {t_anvisa[:180000]}
+            INPUT TEXTO 2 (MKT - ARTE): {t_mkt[:180000]}
             
-            FORMATO JSON:
+            SUA MISSÃO CRÍTICA:
+            1. COPIAR o texto EXATAMENTE como está nos inputs para dentro do JSON.
+            2. PRESERVAR TODA a formatação <b> e <i> dos textos originais.
+            3. EXTRAIR TODO o conteúdo de cada seção - NÃO CORTE o texto no meio.
+            4. PROIBIDO corrigir português. 
+            5. ATENÇÃO: Se no texto de entrada estiver "geral", MANTENHA "geral". Não mude para "general".
+            6. Se não encontrar a data de aprovação da Anvisa (geralmente nos Dizeres Legais), retorne "N/A" nos campos de data.
+            
+            LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
+            
+            SAÍDA JSON:
             {{ "data_anvisa_ref": "...", "data_anvisa_mkt": "...", "secoes": [ {{ "titulo": "...", "texto_anvisa": "...", "texto_mkt": "..." }} ] }}
-            
-            INPUT GRÁFICA: {t_anvisa[:160000]}
-            INPUT ARTE: {t_mkt[:160000]}
             """
             
-            # Configuração com max_output_tokens alto para não truncar o JSON
-            genai.configure(api_key=keys_validas[0])
-            model = genai.GenerativeModel("models/gemini-1.5-pro", 
-                                          generation_config={"response_mime_type": "application/json", "temperature": 0.0, "max_output_tokens": 8192})
-            
-            response = model.generate_content(prompt)
-            resultado = json.loads(response.text)
+            response = None
+            sucesso = False
+            log_erros = []
 
-            secoes_finais = []
-            for item in resultado.get("secoes", []):
-                titulo = item.get('titulo', '').strip()
-                txt_ref = item.get('texto_anvisa', "").strip()
-                txt_mkt = item.get('texto_mkt', "").strip()
+            for idx_key, key in enumerate(keys_validas):
+                if sucesso: break
                 
-                titulo_upper = titulo.upper()
-                eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
+                genai.configure(api_key=key)
+                
+                for modelo in MODELOS_PARA_TENTAR:
+                    try:
+                        model = genai.GenerativeModel(modelo, generation_config={"response_mime_type": "application/json", "temperature": 0.0})
+                        response = model.generate_content(prompt)
+                        sucesso = True
+                        break 
+                    except Exception as e:
+                        erro_msg = str(e)
+                        log_erros.append(f"Key {idx_key+1} | {modelo}: {erro_msg}")
+                        if "429" in erro_msg or "quota" in erro_msg.lower():
+                            time.sleep(3)
+                        else:
+                            time.sleep(0.5)
+                        continue
 
-                if eh_blindada:
-                    status = "CONFORME"
-                    # Correção e destaques apenas na Gráfica (txt_ref) como solicitado
-                    html_ref = verificar_ortografia_inteligente(txt_ref)
-                    if "DIZERES LEGAIS" in titulo_upper:
-                        html_ref = destacar_datas(html_ref); html_mkt = destacar_datas(txt_mkt)
+            if not sucesso:
+                st.error("❌ Falha Total na Análise."); st.code("\n".join(log_erros)); st.stop()
+            
+            try:
+                resultado = json.loads(response.text)
+                
+                data_ref = resultado.get("data_anvisa_ref") or "N/A"
+                data_mkt = resultado.get("data_anvisa_mkt") or "N/A"
+                
+                dados_secoes = resultado.get("secoes") or []
+                
+                secoes_finais = []
+                divs_count = 0
+
+                for item in dados_secoes:
+                    titulo = (item.get('titulo') or '').strip()
+                    txt_ref = (item.get('texto_anvisa') or "").strip()
+                    txt_mkt = (item.get('texto_mkt') or "").strip()
+                    
+                    titulo_upper = titulo.upper()
+                    eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
+
+                    if eh_blindada:
+                        status = "CONFORME"
+                        if "DIZERES LEGAIS" in titulo_upper:
+                            html_mkt = destacar_datas(txt_mkt); html_ref = destacar_datas(txt_ref)
+                        else:
+                            html_mkt = verificar_ortografia_inteligente(txt_mkt); html_ref = txt_ref
+                        html_mkt = melhorar_visual_topicos(html_mkt.replace('\n', '<br>'))
+                        html_ref = html_ref.replace('\n', '<br>')
                     else:
-                        html_mkt = txt_mkt
-                    html_ref = melhorar_visual_topicos(html_ref.replace('\n', '<br>'))
-                    html_mkt = html_mkt.replace('\n', '<br>')
-                else:
-                    # Na função gerar_diff_html, a correção agora é aplicada ao html_ref (Gráfica)
-                    html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
-                    status = "DIVERGENTE" if teve_diff else "CONFORME"
+                        html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
+                        status = "DIVERGENTE" if teve_diff else "CONFORME"
+                        if teve_diff: divs_count += 1
 
-                secoes_finais.append({"titulo": titulo, "texto_anvisa": html_ref, "texto_mkt": html_mkt, "status": status})
+                    secoes_finais.append({"titulo": titulo, "texto_anvisa": html_ref, "texto_mkt": html_mkt, "status": status})
 
-            # --- RENDERIZAÇÃO ---
-            st.divider()
-            for item in secoes_finais:
-                css = "border-warn" if item['status'] == "DIVERGENTE" else "border-ok"
-                with st.expander(f"{item['titulo']}", expanded=(item['status'] == "DIVERGENTE")):
-                    ce, cd = st.columns(2)
-                    ce.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
-                    cd.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
+                st.markdown("### 📊 Resumo")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Data Ref", data_ref)
+                c2.metric("Data MKT", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
+                c3.metric("Seções", len(secoes_finais))
+
+                sub1, sub2 = st.columns(2)
+                sub1.info(f"✅ Conformes: {len(secoes_finais) - divs_count}")
+                if divs_count > 0: sub2.warning(f"⚠️ Divergentes: {divs_count}")
+                else: sub2.success("✨ Divergências: 0")
+
+                st.divider()
+
+                for item in secoes_finais:
+                    status = item['status']
+                    titulo = item['titulo']
+                    if "DIZERES LEGAIS" in titulo.upper(): icon, css, aberto = "⚖️", "border-info", True
+                    elif any(b in titulo.upper() for b in SECOES_SEM_COMPARACAO): icon, css, aberto = "🔒", "border-ok", False
+                    elif status == "CONFORME": icon, css, aberto = "✅", "border-ok", False
+                    else: icon, css, aberto = "⚠️", "border-warn", True
+
+                    with st.expander(f"{icon} {titulo}", expanded=aberto):
+                        ce, cd = st.columns(2)
+                        with ce: st.caption("Gráfica"); st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
+                        with cd: st.caption("Arte"); st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
+
+            except Exception as e:
+                st.error(f"Erro ao processar JSON: {e}"); st.code(response.text)
+    else:
+        st.warning("Adicione os arquivos.")
