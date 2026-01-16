@@ -74,7 +74,10 @@ MODELOS_PARA_TENTAR = [
     "gemini-1.5-flash"
 ]
 
+# LISTA ATUALIZADA: Adicionadas apenas as seções solicitadas (sem Boldo Belfar)
 SECOES_PACIENTE = [
+    "INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES E COMPOSIÇÃO",
+    "INFORMAÇÕES AO PACIENTE",
     "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
     "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
@@ -84,6 +87,10 @@ SECOES_PACIENTE = [
     "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
     "DIZERES LEGAIS"
 ]
+
+# RETIRADA A BLINDAGEM (Lista vazia para forçar comparação total)
+SECOES_SEM_COMPARACAO = []
+SECOES_PROFISSIONAL = [] 
 
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
@@ -414,9 +421,9 @@ if st.button("🚀 Processar Conferência"):
 
             # --- ADIÇÃO: LIMPEZA ESPECÍFICA DAS IMAGENS 2, 3 E 4 ---
             def aplicar_regras_especificas(t):
-                # Foto 2: Ignorar frase completa
-                t = re.sub(r'II\s*[–-]\s*INFORMAÇÕES\s+QUANTO\s+ÀS\s+APRESENTAÇÕES\s+E\s+COMPOSIÇÃO', '', t, flags=re.IGNORECASE)
-                # Foto 3 e 4: Manter a frase mas ignorar o número romano (III)
+                # Foto 2 (Composição): Mantém a frase, remove apenas o II e o hífen
+                t = re.sub(r'II\s*[–-]\s*(INFORMAÇÕES\s+QUANTO\s+ÀS\s+APRESENTAÇÕES\s+E\s+COMPOSIÇÃO)', r'\1', t, flags=re.IGNORECASE)
+                # Foto 3 (Informações ao Paciente): Mantém a frase, remove apenas o III e o hífen
                 t = re.sub(r'III\s*[–-]\s*(INFORMAÇÕES\s+AO\s+PACIENTE)', r'\1', t, flags=re.IGNORECASE)
                 return t
 
