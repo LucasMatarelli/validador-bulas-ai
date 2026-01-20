@@ -68,15 +68,17 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
-    "models/gemini-1.5-flash", 
+    "models/gemini-2.5-flash", 
     "models/gemini-2.0-flash", 
+    "models/gemini-1.5-flash", 
     "gemini-1.5-flash"
 ]
 
-# LISTA ATUALIZADA: Apenas as seções padrão + a de Identificação (condicional)
-# "INFORMAÇÕES..." foram removidas daqui para serem tratadas como conteúdo interno.
+# LISTA ATUALIZADA
 SECOES_PACIENTE = [
     "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO",
+    "INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES E COMPOSIÇÃO",
+    "INFORMAÇÕES AO PACIENTE",
     "APRESENTAÇÕES", 
     "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
@@ -421,9 +423,9 @@ if st.button("🚀 Processar Conferência"):
 
             # --- ADIÇÃO: LIMPEZA ESPECÍFICA DAS IMAGENS 2, 3 E 4 ---
             def aplicar_regras_especificas(t):
-                # Mantém a frase, remove apenas o II e III e o hífen
-                # Isso serve para limpar o texto antes de enviar para a IA
+                # Foto 2 (Composição): Mantém a frase, remove apenas o II e o hífen
                 t = re.sub(r'II\s*[–-]\s*(INFORMAÇÕES\s+QUANTO\s+ÀS\s+APRESENTAÇÕES\s+E\s+COMPOSIÇÃO)', r'\1', t, flags=re.IGNORECASE)
+                # Foto 3 (Informações ao Paciente): Mantém a frase, remove apenas o III e o hífen
                 t = re.sub(r'III\s*[–-]\s*(INFORMAÇÕES\s+AO\s+PACIENTE)', r'\1', t, flags=re.IGNORECASE)
                 return t
 
@@ -442,39 +444,25 @@ if st.button("🚀 Processar Conferência"):
 
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
-            2. Extrair TODO o conteúdo de cada seção da lista. NÃO RESUMA.
+            2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
             3. Manter formatação <b> e <i> e NÃO corrigir português.
-            
-            REGRA ESPECIAL PARA SEÇÃO 'I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO':
-            - Só inclua esta seção no JSON se o documento contiver AMBOS:
-              a) O título 'I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO' (ou similar)
-              b) O conteúdo 'Boldo Belfar PRODUTO TRADICIONAL FITOTERÁPICO' (ou similar).
-            - Se faltar um desses, IGNORE essa seção e não a coloque no JSON.
+            4. Se uma seção da lista não for encontrada no documento, NÃO a inclua no JSON.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
+
+            SAÍDA JSON:
+            {{
+                "data_anvisa_ref": "dd/mm/aaaa",
+                "data_anvisa_mkt": "dd/mm/aaaa",
+                "secoes": [
+                    {{
+                        "titulo": "NOME DA SEÇÃO",
+                        "texto_anvisa": "...",
+                        "texto_mkt": "..."
+                    }}
+                ]
+            }}
             """
-            
-            # SCHEMA JSON PARA EVITAR ERROS DE FORMATAÇÃO
-            response_schema = {
-                "type": "OBJECT",
-                "properties": {
-                    "data_anvisa_ref": {"type": "STRING"},
-                    "data_anvisa_mkt": {"type": "STRING"},
-                    "secoes": {
-                        "type": "ARRAY",
-                        "items": {
-                            "type": "OBJECT",
-                            "properties": {
-                                "titulo": {"type": "STRING"},
-                                "texto_anvisa": {"type": "STRING"},
-                                "texto_mkt": {"type": "STRING"}
-                            },
-                            "required": ["titulo", "texto_anvisa", "texto_mkt"]
-                        }
-                    }
-                },
-                "required": ["data_anvisa_ref", "data_anvisa_mkt", "secoes"]
-            }
             
             response = None
             sucesso = False
@@ -487,12 +475,7 @@ if st.button("🚀 Processar Conferência"):
                     try:
                         model = genai.GenerativeModel(
                             modelo, 
-                            generation_config={
-                                "response_mime_type": "application/json", 
-                                "response_schema": response_schema,
-                                "temperature": 0.0,
-                                "max_output_tokens": 8192
-                            }
+                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
@@ -508,10 +491,7 @@ if st.button("🚀 Processar Conferência"):
                 st.stop()
             
             try:
-                # Limpeza simples caso a API retorne algo fora do padrão JSON
-                clean_text = response.text.strip()
-                resultado = json.loads(clean_text)
-                
+                resultado = json.loads(response.text)
                 data_ref = resultado.get("data_anvisa_ref", "-")
                 data_mkt = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
@@ -524,6 +504,14 @@ if st.button("🚀 Processar Conferência"):
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
                     
+                    # --- LIMPEZA ESPECÍFICA SOLICITADA ---
+                    if "IDENTIFICAÇÃO" in titulo.upper():
+                        # Remove a repetição do título/nome do produto dentro do conteúdo
+                        padrao_remove = r'Boldo\s+Belfar\s+PRODUTO\s+TRADICIONAL\s+FITOTERÁPICO'
+                        txt_ref = re.sub(padrao_remove, '', txt_ref, flags=re.IGNORECASE).strip()
+                        txt_mkt = re.sub(padrao_remove, '', txt_mkt, flags=re.IGNORECASE).strip()
+                    # -------------------------------------
+
                     titulo_upper = titulo.upper()
                     eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
 
