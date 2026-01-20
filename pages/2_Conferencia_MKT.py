@@ -407,22 +407,19 @@ if st.button("🚀 Processar Conferência"):
 
             REGRAS CRÍTICAS DE EXTRAÇÃO:
             
-            1. **CABEÇALHO DA BULA**: 
-               - OBRIGATÓRIO: Extrair TUDO desde o INÍCIO do texto ATÉ encontrar a seção "APRESENTAÇÕES".
-               - O cabeçalho inclui: Identificação do Medicamento, Composição, Informações ao Paciente, etc.
-               - NÃO CORTAR NADA. Se houver 3 páginas antes de "APRESENTAÇÕES", extraia as 3 páginas completas para essa chave.
-               - Remover APENAS os algarismos romanos (I, II, III) e hífen de títulos, mantendo o texto.
+            1. **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ a seção "APRESENTAÇÕES". 
+               - Inclui: nome do produto, código de barras, nomenclaturas, etc.
+               - Inclui frases como "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO"
+               - Inclui "II – INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES E COMPOSIÇÃO" 
+               - Inclui "III – INFORMAÇÕES AO PACIENTE"
+               - IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen, mantendo o texto.
             
-            2. **SEÇÕES NORMAIS**: 
-               - Extrair o conteúdo COMPLETO de cada seção (de "APRESENTAÇÕES" até "DIZERES LEGAIS").
-               - ATENÇÃO: Algumas seções possuem sub-títulos ou perguntas internas (ex: "O que é pressão arterial?"). TUDO ISSO PERTENCE À SEÇÃO ATUAL.
-               - REGRA DE OURO PARA MKT: Não pare a extração no meio. O texto MKT deve ir até o início do título da PRÓXIMA seção. Não resuma.
+            2. **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
             
-            3. **INTEGRIDADE**: 
+            3. **FORMATAÇÃO**: 
                - Manter <b> e <i> EXATAMENTE como está
                - NÃO corrigir português
                - NÃO resumir
-               - PROIBIDO CORTAR TEXTO
                - Ignorar linhas horizontais/elementos gráficos
             
             4. **DATA DE APROVAÇÃO**: Extrair frase "aprovada pela Anvisa em..."
@@ -439,7 +436,7 @@ if st.button("🚀 Processar Conferência"):
                     {{
                         "titulo": "NOME EXATO DA SEÇÃO",
                         "texto_anvisa": "conteúdo completo",
-                        "texto_mkt": "conteúdo completo SEM CORTES"
+                        "texto_mkt": "conteúdo completo"
                     }}
                 ]
             }}
