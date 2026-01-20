@@ -101,10 +101,10 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
-    "models/gemini-2.5-flash", 
+    "models/gemini-2.0-flash-exp",
     "models/gemini-2.0-flash", 
-    "models/gemini-1.5-flash", 
-    "gemini-1.5-flash"
+    "models/gemini-1.5-flash-8b",
+    "models/gemini-1.5-flash"
 ]
 
 SECOES_PACIENTE = [
@@ -399,49 +399,43 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Arquivo vazio ou ilegível."); st.stop()
 
+            # OTIMIZAÇÃO: Limita o tamanho do texto para 80k caracteres
+            limite = 80000
+            t_anvisa_cortado = t_anvisa[:limite]
+            t_mkt_cortado = t_mkt[:limite]
+
             prompt = f"""
-            Você é um Extrator de Dados Farmacêuticos Rigoroso.
-            
-            INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
-            INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
+Você é um Extrator de Bulas Farmacêuticas.
 
-            REGRAS CRÍTICAS DE EXTRAÇÃO:
-            
-            1. **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
-               - Inclui: nome do produto, código de barras, nomenclaturas, etc.
-               - Inclui frases como "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO"
-               - Inclui "II – INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES E COMPOSIÇÃO" 
-               - Inclui "III – INFORMAÇÕES AO PACIENTE"
-               - IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
-               - PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
-            
-            2. **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
-            
-            3. **FORMATAÇÃO**: 
-               - Manter <b> e <i> EXATAMENTE como está
-               - NÃO corrigir português
-               - NÃO resumir
-               - Ignorar linhas horizontais/elementos gráficos
-            
-            4. **DATA DE APROVAÇÃO**: Extrair frase "aprovada pela Anvisa em..."
-            
-            5. Se uma seção não existir, NÃO inclua no JSON.
+TEXTO REFERÊNCIA (BELFAR):
+{t_anvisa_cortado}
 
-            LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
+TEXTO MARKETING (MKT):
+{t_mkt_cortado}
 
-            SAÍDA JSON:
-            {{
-                "data_anvisa_ref": "dd/mm/aaaa",
-                "data_anvisa_mkt": "dd/mm/aaaa",
-                "secoes": [
-                    {{
-                        "titulo": "NOME EXATO DA SEÇÃO",
-                        "texto_anvisa": "conteúdo completo",
-                        "texto_mkt": "conteúdo completo"
-                    }}
-                ]
-            }}
-            """
+INSTRUÇÕES DE EXTRAÇÃO:
+
+1. CABEÇALHO DA BULA: Todo conteúdo do início até ANTES de "APRESENTAÇÕES"
+   - Remove algarismos romanos (I, II, III) e hífens
+   
+2. Seções seguintes: APRESENTAÇÕES até DIZERES LEGAIS
+
+3. Mantenha <b> e <i> originais, não corrija português
+
+4. Extraia data de aprovação Anvisa
+
+JSON ESPERADO:
+{{
+  "data_anvisa_ref": "dd/mm/aaaa",
+  "data_anvisa_mkt": "dd/mm/aaaa",
+  "secoes": [
+    {{"titulo": "CABEÇALHO DA BULA", "texto_anvisa": "...", "texto_mkt": "..."}},
+    {{"titulo": "APRESENTAÇÕES", "texto_anvisa": "...", "texto_mkt": "..."}}
+  ]
+}}
+
+SEÇÕES: {secoes_alvo}
+"""
             
             response = None
             sucesso = False
@@ -454,14 +448,18 @@ if st.button("🚀 Processar Conferência"):
                     try:
                         model = genai.GenerativeModel(
                             modelo, 
-                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                            generation_config={
+                                "response_mime_type": "application/json", 
+                                "temperature": 0.0,
+                                "max_output_tokens": 8192
+                            }
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
                         break 
                     except Exception as e:
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(0.5)
+                        time.sleep(0.3)
                         continue
 
             if not sucesso:
