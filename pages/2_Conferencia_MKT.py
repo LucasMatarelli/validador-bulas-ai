@@ -74,13 +74,8 @@ MODELOS_PARA_TENTAR = [
     "gemini-1.5-flash"
 ]
 
-# LISTA ATUALIZADA
 SECOES_PACIENTE = [
-    "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO",
-    "INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES E COMPOSIÇÃO",
-    "INFORMAÇÕES AO PACIENTE",
-    "APRESENTAÇÕES", 
-    "COMPOSIÇÃO", 
+    "APRESENTAÇÕES", "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
     "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
     "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
@@ -90,9 +85,8 @@ SECOES_PACIENTE = [
     "DIZERES LEGAIS"
 ]
 
-# SEM BLINDAGEM
-SECOES_SEM_COMPARACAO = []
-SECOES_PROFISSIONAL = [] 
+
+SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
@@ -195,197 +189,175 @@ def destacar_datas(texto):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
+def extrair_tokens_com_formatacao(texto):
+    """REMOVIDA - Não é mais necessária"""
+    pass
+
+def reconstruir_com_tags(tokens):
+    """REMOVIDA - Não é mais necessária"""
+    pass
+
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    palavras_ref = texto_ref.split()
-    palavras_novo = texto_novo.split()
-    matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
+    """Compara textos ignorando tags HTML mas preservando-as no output"""
+    # Extrai palavras SEM tags para comparação pura
+    palavras_ref_limpo = re.sub(r'<[^>]+>', '', texto_ref).split()
+    palavras_novo_limpo = re.sub(r'<[^>]+>', '', texto_novo).split()
+    
+    # Extrai palavras COM tags para reconstrução
+    palavras_ref_com_tag = re.findall(r'<[^>]+>|[^\s<>]+', texto_ref)
+    palavras_novo_com_tag = re.findall(r'<[^>]+>|[^\s<>]+', texto_novo)
+    
+    # Compara as versões limpas
+    matcher = difflib.SequenceMatcher(None, palavras_ref_limpo, palavras_novo_limpo)
+    
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
     
+    idx_ref = 0
+    idx_novo = 0
+    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            texto = " ".join(palavras_ref[i1:i2])
-            html_ref_list.append(texto)
-            html_novo_list.append(texto)
+            # Reconstrói mantendo tags HTML originais
+            for _ in range(i1, i2):
+                while idx_ref < len(palavras_ref_com_tag):
+                    token = palavras_ref_com_tag[idx_ref]
+                    idx_ref += 1
+                    html_ref_list.append(token)
+                    if not token.startswith('<'):
+                        break
+                        
+            for _ in range(j1, j2):
+                while idx_novo < len(palavras_novo_com_tag):
+                    token = palavras_novo_com_tag[idx_novo]
+                    idx_novo += 1
+                    html_novo_list.append(token)
+                    if not token.startswith('<'):
+                        break
+                        
         elif tag == 'replace':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
-            tem_diff = True
-        elif tag == 'delete':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            tem_diff = True
-        elif tag == 'insert':
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
+            ref_parte = []
+            novo_parte = []
+            
+            for _ in range(i1, i2):
+                while idx_ref < len(palavras_ref_com_tag):
+                    token = palavras_ref_com_tag[idx_ref]
+                    idx_ref += 1
+                    ref_parte.append(token)
+                    if not token.startswith('<'):
+                        break
+                        
+            for _ in range(j1, j2):
+                while idx_novo < len(palavras_novo_com_tag):
+                    token = palavras_novo_com_tag[idx_novo]
+                    idx_novo += 1
+                    novo_parte.append(token)
+                    if not token.startswith('<'):
+                        break
+            
+            if ref_parte:
+                html_ref_list.append(f'<span class="highlight-yellow">{"".join(ref_parte)}</span>')
+            if novo_parte:
+                html_novo_list.append(f'<span class="highlight-yellow">{"".join(novo_parte)}</span>')
             tem_diff = True
             
-    return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
+        elif tag == 'delete':
+            ref_parte = []
+            for _ in range(i1, i2):
+                while idx_ref < len(palavras_ref_com_tag):
+                    token = palavras_ref_com_tag[idx_ref]
+                    idx_ref += 1
+                    ref_parte.append(token)
+                    if not token.startswith('<'):
+                        break
+            if ref_parte:
+                html_ref_list.append(f'<span class="highlight-yellow">{"".join(ref_parte)}</span>')
+            tem_diff = True
+            
+        elif tag == 'insert':
+            novo_parte = []
+            for _ in range(j1, j2):
+                while idx_novo < len(palavras_novo_com_tag):
+                    token = palavras_novo_com_tag[idx_novo]
+                    idx_novo += 1
+                    novo_parte.append(token)
+                    if not token.startswith('<'):
+                        break
+            if novo_parte:
+                html_novo_list.append(f'<span class="highlight-yellow">{"".join(novo_parte)}</span>')
+            tem_diff = True
+    
+    return ' '.join(html_ref_list), ' '.join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for igual, ignora formatação
-    if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
+    # CHECAGEM DEFINITIVA: Remove tags e compara apenas o texto puro
+    ref_puro = re.sub(r'<[^>]+>', '', texto_ref)
+    novo_puro = re.sub(r'<[^>]+>', '', texto_novo)
+    
+    # Normaliza espaços para comparação justa
+    ref_normalizado = ' '.join(ref_puro.split())
+    novo_normalizado = ' '.join(novo_puro.split())
+    
+    # Se o CONTEÚDO for idêntico → NÃO marca amarelo
+    if ref_normalizado == novo_normalizado:
+        html_ref = texto_ref.replace('\n', '<br>')
+        html_ref = melhorar_visual_topicos(html_ref)
+        
+        # Aplica verificação ortográfica SÓ no texto MKT
         html_novo = verificar_ortografia_inteligente(texto_novo)
-        html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
-        return texto_ref.replace('\n', '<br>'), html_novo, False
+        html_novo = html_novo.replace('\n', '<br>')
+        html_novo = melhorar_visual_topicos(html_novo)
+        
+        return html_ref, html_novo, False
 
-    # 2. Se falhar na nuclear, faz o diff detalhado
-    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
+    # Se houver diferença real, faz diff
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
     
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
-    
+    # Aplica corretor ortográfico no lado MKT
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
-    r_html_final = r_html.replace('\n', '<br>')
+    r_html_final = melhorar_visual_topicos(r_html)
     
     return r_html_final, n_html_final, diff_bool
 
 def extract_text_from_file(uploaded_file):
-    """
-    FUNÇÃO OTIMIZADA PARA CAPTURA PRECISA DE NEGRITO E ITÁLICO
-    Extrai texto mantendo EXATAMENTE a formatação original do documento
-    """
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            
-            for page in doc:
-                # Extrai blocos de texto com informações de formatação
-                blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_IMAGES)["blocks"]
-                
-                for block in blocks:
-                    if block.get("type") != 0:  # Ignora blocos que não são texto
-                        continue
-                    
+            for page in doc: 
+                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
+                for b in blocks:
                     block_text = ""
-                    
-                    for line in block.get("lines", []):
-                        line_text = ""
-                        
-                        for span in line.get("spans", []):
-                            content = span.get("text", "")
-                            if not content.strip():
-                                line_text += content
-                                continue
-                            
-                            # DETECÇÃO APRIMORADA DE FORMATAÇÃO
-                            flags = span.get("flags", 0)
-                            font_name = span.get("font", "").lower()
-                            font_size = span.get("size", 0)
-                            
-                            # Verifica negrito através de múltiplos indicadores
-                            is_bold = (
-                                (flags & 16) or  # Flag de negrito
-                                (flags & 32) or  # Flag adicional
-                                "bold" in font_name or 
-                                "black" in font_name or 
-                                "heavy" in font_name or
-                                "semibold" in font_name or
-                                "extra" in font_name
-                            )
-                            
-                            # Verifica itálico através de múltiplos indicadores
-                            is_italic = (
-                                (flags & 2) or  # Flag de itálico
-                                "italic" in font_name or 
-                                "oblique" in font_name
-                            )
-                            
-                            # Aplica formatação HTML
-                            formatted_text = content
-                            if is_bold and is_italic:
-                                formatted_text = f"<b><i>{content}</i></b>"
-                            elif is_bold:
-                                formatted_text = f"<b>{content}</b>"
-                            elif is_italic:
-                                formatted_text = f"<i>{content}</i>"
-                            
-                            line_text += formatted_text
-                        
-                        block_text += line_text.rstrip() + " "
-                    
+                    for l in b.get("lines", []):
+                        line_txt = ""
+                        for s in l.get("spans", []):
+                            content = s["text"]
+                            font_props = s["font"].lower()
+                            is_bold = (s["flags"] & 16) or "bold" in font_props or "black" in font_props
+                            is_italic = (s["flags"] & 2) or "italic" in font_props
+                            res = content
+                            if is_bold: res = f"<b>{res}</b>"
+                            if is_italic: res = f"<i>{res}</i>"
+                            line_txt += res
+                        block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
-            
-            doc.close()
-            
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
-            
-            for para in doc.paragraphs:
-                para_text = ""
-                
+            for para in doc.paragraphs: 
+                para_txt = ""
                 for run in para.runs:
-                    content = run.text
-                    if not content:
-                        continue
-                    
-                    # DETECÇÃO PRECISA DE FORMATAÇÃO NO DOCX
-                    is_bold = run.bold is True  # Verifica explicitamente True
-                    is_italic = run.italic is True  # Verifica explicitamente True
-                    
-                    # Aplica formatação HTML
-                    formatted_text = content
-                    if is_bold and is_italic:
-                        formatted_text = f"<b><i>{content}</i></b>"
-                    elif is_bold:
-                        formatted_text = f"<b>{content}</b>"
-                    elif is_italic:
-                        formatted_text = f"<i>{content}</i>"
-                    
-                    para_text += formatted_text
-                
-                text += para_text + "\n\n"
-        
-        return text.strip()
-        
-    except Exception as e:
-        st.error(f"Erro ao extrair texto: {str(e)}")
-        return ""
-
-# ============= CRIA O MENU LATERAL =============
-
-st.markdown("""
-<style>
-    [data-testid="stHeader"] { visibility: hidden; }
-    
-    /* SIDEBAR SEMPRE ABERTA E TRAVADA */
-    section[data-testid="stSidebar"] {
-        display: block !important;
-        visibility: visible !important;
-        width: 250px !important;
-        min-width: 250px !important;
-        max-width: 250px !important;
-        margin-left: 0 !important;
-        transform: translateX(0) !important;
-        transition: none !important;
-        position: relative !important;
-        background-color: #f0f2f6 !important;
-        z-index: 999 !important;
-    }
-    
-    section[data-testid="stSidebar"] > div:first-child {
-        width: 250px !important;
-        min-width: 250px !important;
-    }
-    
-    section[data-testid="stSidebar"][aria-expanded="false"],
-    section[data-testid="stSidebar"][aria-expanded="true"] {
-        margin-left: 0 !important;
-        transform: translateX(0) !important;
-    }
-    
-    /* Remove todos os botões de colapsar */
-    button[kind="header"],
-    [data-testid="collapsedControl"],
-    button[data-testid="baseButton-header"] {
-        display: none !important;
-    }
-</style>
-""", unsafe_allow_html=True)
+                    res = run.text
+                    if run.bold: res = f"<b>{res}</b>"
+                    if run.italic: res = f"<i>{res}</i>"
+                    para_txt += res
+                text += para_txt + "\n\n"
+        return text
+    except: return ""
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
@@ -421,18 +393,6 @@ if st.button("🚀 Processar Conferência"):
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
 
-            # --- ADIÇÃO: LIMPEZA ESPECÍFICA DAS IMAGENS 2, 3 E 4 ---
-            def aplicar_regras_especificas(t):
-                # Foto 2 (Composição): Mantém a frase, remove apenas o II e o hífen
-                t = re.sub(r'II\s*[–-]\s*(INFORMAÇÕES\s+QUANTO\s+ÀS\s+APRESENTAÇÕES\s+E\s+COMPOSIÇÃO)', r'\1', t, flags=re.IGNORECASE)
-                # Foto 3 (Informações ao Paciente): Mantém a frase, remove apenas o III e o hífen
-                t = re.sub(r'III\s*[–-]\s*(INFORMAÇÕES\s+AO\s+PACIENTE)', r'\1', t, flags=re.IGNORECASE)
-                return t
-
-            t_anvisa = aplicar_regras_especificas(t_anvisa)
-            t_mkt = aplicar_regras_especificas(t_mkt)
-            # -------------------------------------------------------
-
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Arquivo vazio ou ilegível."); st.stop()
 
@@ -445,8 +405,7 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
-            3. Manter formatação <b> e <i> e NÃO corrigir português.
-            4. Se uma seção da lista não for encontrada no documento, NÃO a inclua no JSON.
+            3. Manter formatação <b> e <i> EXATAMENTE como aparece no texto original.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
@@ -504,14 +463,6 @@ if st.button("🚀 Processar Conferência"):
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
                     
-                    # --- LIMPEZA ESPECÍFICA SOLICITADA ---
-                    if "IDENTIFICAÇÃO" in titulo.upper():
-                        # Remove a repetição do título/nome do produto dentro do conteúdo
-                        padrao_remove = r'Boldo\s+Belfar\s+PRODUTO\s+TRADICIONAL\s+FITOTERÁPICO'
-                        txt_ref = re.sub(padrao_remove, '', txt_ref, flags=re.IGNORECASE).strip()
-                        txt_mkt = re.sub(padrao_remove, '', txt_mkt, flags=re.IGNORECASE).strip()
-                    # -------------------------------------
-
                     titulo_upper = titulo.upper()
                     eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
 
@@ -527,6 +478,7 @@ if st.button("🚀 Processar Conferência"):
                         html_mkt = html_mkt.replace('\n', '<br>')
                         html_ref = html_ref.replace('\n', '<br>')
                         html_mkt = melhorar_visual_topicos(html_mkt)
+                        html_ref = melhorar_visual_topicos(html_ref)
                     else:
                         html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
