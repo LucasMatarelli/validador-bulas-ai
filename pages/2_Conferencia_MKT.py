@@ -24,9 +24,15 @@ st.markdown("""
         background-color: #ffffff;
         padding: 25px;
         border-radius: 8px;
-        border: 1px solid #ced4da;
+        border: 1px solid #ced4da; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         text-align: left;
+        /* AJUSTES PARA NÃO CORTAR CONTEÚDO */
+        height: auto !important;
+        min-height: fit-content;
+        overflow: visible !important;
+        word-wrap: break-word;
+        display: block;
     }
     
     /* DIVERGÊNCIA (Amarelo) */
@@ -68,7 +74,6 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
-    "models/gemini-2.5-flash", 
     "models/gemini-2.0-flash", 
     "models/gemini-1.5-flash", 
     "gemini-1.5-flash"
@@ -81,7 +86,7 @@ SECOES_PACIENTE = [
     "INFORMAÇÕES AO PACIENTE",
     "APRESENTAÇÕES", 
     "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO?", "COMO ESTE MEDICAMENTO FUNCIONA?", 
     "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
     "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
     "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
@@ -105,15 +110,9 @@ def normalizacao_nuclear(texto):
     return t.lower()
 
 def verificar_ortografia_inteligente(texto):
-    """
-    Corretor Ultra-Conservador:
-    Se a palavra não for conhecida, ASSUME QUE É UM TERMO TÉCNICO CORRETO.
-    Não tenta adivinhar sugestões para evitar falsos positivos em bulas.
-    """
+    """Corretor Ultra-Conservador."""
     try:
         spell = SpellChecker(language='pt')
-        
-        # LISTA BRANCA MASSIVA - Termos aceitos
         whitelist = {
             'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
             'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
@@ -129,7 +128,6 @@ def verificar_ortografia_inteligente(texto):
             'cardiovascular', 'respiratorio', 'digestivo', 'nervoso', 'central',
             'periferico', 'renal', 'hepatico', 'sanguineo', 'imunologico',
             'endocrino', 'metabolico', 'musculoesqueletico', 'dermatologico',
-            # Adicione aqui termos específicos que estavam marcando erro
             'predisponentes', 'sistemicos', 'sistêmicos', 'congenita', 'congênita',
             'aneurisma', 'dissecção', 'disseccao', 'valvar', 'valvula', 'regurgitação',
             'endocardite', 'marfan', 'ehlers-danlos', 'turner', 'sjogren', 'takayasu',
@@ -143,36 +141,16 @@ def verificar_ortografia_inteligente(texto):
 
         tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/\[\]])', texto)
         resultado = []
-        
         for token in tokens:
-            # Filtros iniciais para ignorar o que não é palavra verificável
             if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
                 resultado.append(token)
                 continue
-            
-            # Limpeza para verificação
             palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
-            
-            # BLINDAGEM: Ignora se tiver número, for muito curta, tiver hífen ou COMEÇAR COM MAIÚSCULA
-            if (not palavra_limpa or 
-                len(palavra_limpa) < 4 or 
-                any(c.isdigit() for c in token) or 
-                '-' in palavra_limpa or
-                palavra_limpa[0].isupper()):
+            if (not palavra_limpa or len(palavra_limpa) < 4 or any(c.isdigit() for c in token) or '-' in palavra_limpa or palavra_limpa[0].isupper()):
                 resultado.append(token)
                 continue
-
             p_lower = palavra_limpa.lower()
-
-            # LÓGICA ULTRA CONSERVADORA:
-            # Se está no dicionário ou na whitelist -> OK.
-            # Se NÃO está -> ASSUME QUE É TERMO TÉCNICO E IGNORA (Não marca vermelho).
-            if p_lower in spell or p_lower in whitelist:
-                resultado.append(token)
-            else:
-                # Palavra desconhecida. Em bula, assumimos que está correta.
-                resultado.append(token)
-
+            resultado.append(token)
         return "".join(resultado)
     except:
         return texto
@@ -199,15 +177,12 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     palavras_ref = texto_ref.split()
     palavras_novo = texto_novo.split()
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
-    html_ref_list = []
-    html_novo_list = []
+    html_ref_list, html_novo_list = [], []
     tem_diff = False
-    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
             texto = " ".join(palavras_ref[i1:i2])
-            html_ref_list.append(texto)
-            html_novo_list.append(texto)
+            html_ref_list.append(texto); html_novo_list.append(texto)
         elif tag == 'replace':
             html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
             html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
@@ -218,235 +193,103 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
         elif tag == 'insert':
             html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
-            
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
-    
-    # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for igual, ignora formatação
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
         html_novo = verificar_ortografia_inteligente(texto_novo)
         html_novo = melhorar_visual_topicos(html_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
-
-    # 2. Se falhar na nuclear, faz o diff detalhado
     ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
     novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
-    
     r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
-    
-    n_html_final = verificar_ortografia_inteligente(n_html)
-    n_html_final = melhorar_visual_topicos(n_html_final)
-    r_html_final = r_html.replace('\n', '<br>')
-    
-    return r_html_final, n_html_final, diff_bool
+    n_html_final = melhorar_visual_topicos(verificar_ortografia_inteligente(n_html))
+    return r_html.replace('\n', '<br>'), n_html_final, diff_bool
 
 def extract_text_from_file(uploaded_file):
-    """
-    FUNÇÃO OTIMIZADA PARA CAPTURA PRECISA DE NEGRITO E ITÁLICO
-    Extrai texto mantendo EXATAMENTE a formatação original do documento
-    """
+    """Extração otimizada para negrito e itálico."""
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            
             for page in doc:
-                # Extrai blocos de texto com informações de formatação
-                blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_IMAGES)["blocks"]
-                
+                blocks = page.get_text("dict")["blocks"]
                 for block in blocks:
-                    if block.get("type") != 0:  # Ignora blocos que não são texto
-                        continue
-                    
+                    if block.get("type") != 0: continue
                     block_text = ""
-                    
                     for line in block.get("lines", []):
                         line_text = ""
-                        
                         for span in line.get("spans", []):
                             content = span.get("text", "")
-                            if not content.strip():
-                                line_text += content
-                                continue
-                            
-                            # DETECÇÃO APRIMORADA DE FORMATAÇÃO
                             flags = span.get("flags", 0)
                             font_name = span.get("font", "").lower()
-                            font_size = span.get("size", 0)
-                            
-                            # Verifica negrito através de múltiplos indicadores
-                            is_bold = (
-                                (flags & 16) or  # Flag de negrito
-                                (flags & 32) or  # Flag adicional
-                                "bold" in font_name or 
-                                "black" in font_name or 
-                                "heavy" in font_name or
-                                "semibold" in font_name or
-                                "extra" in font_name
-                            )
-                            
-                            # Verifica itálico através de múltiplos indicadores
-                            is_italic = (
-                                (flags & 2) or  # Flag de itálico
-                                "italic" in font_name or 
-                                "oblique" in font_name
-                            )
-                            
-                            # Aplica formatação HTML
-                            formatted_text = content
-                            if is_bold and is_italic:
-                                formatted_text = f"<b><i>{content}</i></b>"
-                            elif is_bold:
-                                formatted_text = f"<b>{content}</b>"
-                            elif is_italic:
-                                formatted_text = f"<i>{content}</i>"
-                            
-                            line_text += formatted_text
-                        
+                            is_bold = (flags & 16) or "bold" in font_name
+                            is_italic = (flags & 2) or "italic" in font_name
+                            formatted = content
+                            if is_bold and is_italic: formatted = f"<b><i>{content}</i></b>"
+                            elif is_bold: formatted = f"<b>{content}</b>"
+                            elif is_italic: formatted = f"<i>{content}</i>"
+                            line_text += formatted
                         block_text += line_text.rstrip() + " "
-                    
                     text += block_text.strip() + "\n\n"
-            
             doc.close()
-            
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
-            
             for para in doc.paragraphs:
                 para_text = ""
-                
                 for run in para.runs:
                     content = run.text
-                    if not content:
-                        continue
-                    
-                    # DETECÇÃO PRECISA DE FORMATAÇÃO NO DOCX
-                    is_bold = run.bold is True  # Verifica explicitamente True
-                    is_italic = run.italic is True  # Verifica explicitamente True
-                    
-                    # Aplica formatação HTML
-                    formatted_text = content
-                    if is_bold and is_italic:
-                        formatted_text = f"<b><i>{content}</i></b>"
-                    elif is_bold:
-                        formatted_text = f"<b>{content}</b>"
-                    elif is_italic:
-                        formatted_text = f"<i>{content}</i>"
-                    
-                    para_text += formatted_text
-                
+                    formatted = content
+                    if run.bold and run.italic: formatted = f"<b><i>{content}</i></b>"
+                    elif run.bold: formatted = f"<b>{content}</b>"
+                    elif run.italic: formatted = f"<i>{content}</i>"
+                    para_text += formatted
                 text += para_text + "\n\n"
-        
         return text.strip()
-        
     except Exception as e:
-        st.error(f"Erro ao extrair texto: {str(e)}")
-        return ""
+        st.error(f"Erro ao extrair texto: {str(e)}"); return ""
 
-# ============= CRIA O MENU LATERAL =============
-
-st.markdown("""
-<style>
-    [data-testid="stHeader"] { visibility: hidden; }
-    
-    /* SIDEBAR SEMPRE ABERTA E TRAVADA */
-    section[data-testid="stSidebar"] {
-        display: block !important;
-        visibility: visible !important;
-        width: 250px !important;
-        min-width: 250px !important;
-        max-width: 250px !important;
-        margin-left: 0 !important;
-        transform: translateX(0) !important;
-        transition: none !important;
-        position: relative !important;
-        background-color: #f0f2f6 !important;
-        z-index: 999 !important;
-    }
-    
-    section[data-testid="stSidebar"] > div:first-child {
-        width: 250px !important;
-        min-width: 250px !important;
-    }
-    
-    section[data-testid="stSidebar"][aria-expanded="false"],
-    section[data-testid="stSidebar"][aria-expanded="true"] {
-        margin-left: 0 !important;
-        transform: translateX(0) !important;
-    }
-    
-    /* Remove todos os botões de colapsar */
-    button[kind="header"],
-    [data-testid="collapsedControl"],
-    button[data-testid="baseButton-header"] {
-        display: none !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# ----------------- 5. UI PRINCIPAL -----------------
+# ----------------- UI PRINCIPAL -----------------
 st.title("💊 Conferência MKT")
 
-tipo_bula = st.radio(
-    "Escolha o Tipo de Bula:",
-    ("Paciente"),
-    horizontal=True
-)
+tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula MKT", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    
-    keys_raw = [
-        st.secrets.get("GEMINI_API_KEY"),
-        st.secrets.get("GEMINI_API_KEY2"),
-        st.secrets.get("GEMINI_API_KEY3")
-    ]
+    keys_raw = [st.secrets.get("GEMINI_API_KEY"), st.secrets.get("GEMINI_API_KEY2"), st.secrets.get("GEMINI_API_KEY3")]
     keys_validas = [k for k in keys_raw if k]
-
-    if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key encontrada.")
-        st.stop()
+    if not keys_validas: st.error("Erro Crítico: API Key não encontrada."); st.stop()
 
     if f1 and f2:
-        secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
-
+        secoes_alvo = SECOES_PACIENTE
         with st.spinner("Lendo arquivos e conectando à IA..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
 
-            # --- ADIÇÃO: LIMPEZA ESPECÍFICA DAS IMAGENS 2, 3 E 4 ---
             def aplicar_regras_especificas(t):
-                # Foto 2 (Composição): Mantém a frase, remove apenas o II e o hífen
                 t = re.sub(r'II\s*[–-]\s*(INFORMAÇÕES\s+QUANTO\s+ÀS\s+APRESENTAÇÕES\s+E\s+COMPOSIÇÃO)', r'\1', t, flags=re.IGNORECASE)
-                # Foto 3 (Informações ao Paciente): Mantém a frase, remove apenas o III e o hífen
                 t = re.sub(r'III\s*[–-]\s*(INFORMAÇÕES\s+AO\s+PACIENTE)', r'\1', t, flags=re.IGNORECASE)
                 return t
 
             t_anvisa = aplicar_regras_especificas(t_anvisa)
             t_mkt = aplicar_regras_especificas(t_mkt)
-            # -------------------------------------------------------
-
-            if len(t_anvisa) < 20 or len(t_mkt) < 20:
-                st.error("Arquivo vazio ou ilegível."); st.stop()
 
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
-            
-            INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
-            INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
+            INPUT TEXTO 1 (REF): {t_anvisa[:160000]}
+            INPUT TEXTO 2 (MKT): {t_mkt[:160000]}
 
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
-            2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
+            2. Extrair TODO o conteúdo de cada seção abaixo. NÃO RESUMA, EXTRAIA O TEXTO COMPLETO.
             3. Manter formatação <b> e <i> e NÃO corrigir português.
-            4. Se uma seção da lista não for encontrada no documento, NÃO a inclua no JSON.
+            4. Se uma seção não existir, ignore-a.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
@@ -455,40 +298,34 @@ if st.button("🚀 Processar Conferência"):
                 "data_anvisa_ref": "dd/mm/aaaa",
                 "data_anvisa_mkt": "dd/mm/aaaa",
                 "secoes": [
-                    {{
-                        "titulo": "NOME DA SEÇÃO",
-                        "texto_anvisa": "...",
-                        "texto_mkt": "..."
-                    }}
+                    {{ "titulo": "...", "texto_anvisa": "...", "texto_mkt": "..." }}
                 ]
             }}
             """
             
-            response = None
-            sucesso = False
+            response, sucesso = None, False
             log_erros = []
-
-            for idx_key, key in enumerate(keys_validas):
+            for key in keys_validas:
                 if sucesso: break
                 genai.configure(api_key=key)
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
-                        model = genai.GenerativeModel(
-                            modelo, 
-                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                        model = genai.GenerativeModel(modelo)
+                        # AUMENTO DE TOKENS PARA NÃO CORTAR O JSON NO MEIO
+                        response = model.generate_content(
+                            prompt, 
+                            generation_config={
+                                "response_mime_type": "application/json", 
+                                "temperature": 0.0,
+                                "max_output_tokens": 8192
+                            }
                         )
-                        response = model.generate_content(prompt)
-                        sucesso = True
-                        break 
+                        sucesso = True; break 
                     except Exception as e:
-                        log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(0.5)
-                        continue
+                        log_erros.append(f"{modelo}: {str(e)}"); time.sleep(0.5)
 
             if not sucesso:
-                st.error("❌ Falha Total. Detalhes:")
-                st.code("\n".join(log_erros))
-                st.stop()
+                st.error("❌ Falha Total."); st.code("\n".join(log_erros)); st.stop()
             
             try:
                 resultado = json.loads(response.text)
@@ -498,43 +335,15 @@ if st.button("🚀 Processar Conferência"):
                 
                 secoes_finais = []
                 divs_count = 0
-
                 for item in dados_secoes:
                     titulo = item.get('titulo', '').strip()
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
                     
-                    # --- LIMPEZA ESPECÍFICA SOLICITADA ---
-                    if "IDENTIFICAÇÃO" in titulo.upper():
-                        # Remove a repetição do título/nome do produto dentro do conteúdo
-                        padrao_remove = r'Boldo\s+Belfar\s+PRODUTO\s+TRADICIONAL\s+FITOTERÁPICO'
-                        txt_ref = re.sub(padrao_remove, '', txt_ref, flags=re.IGNORECASE).strip()
-                        txt_mkt = re.sub(padrao_remove, '', txt_mkt, flags=re.IGNORECASE).strip()
-                    # -------------------------------------
-
-                    titulo_upper = titulo.upper()
-                    eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
-
-                    if eh_blindada:
-                        status = "CONFORME"
-                        if "DIZERES LEGAIS" in titulo_upper:
-                            html_mkt = destacar_datas(txt_mkt)
-                            html_ref = destacar_datas(txt_ref)
-                        else:
-                            html_mkt = verificar_ortografia_inteligente(txt_mkt)
-                            html_ref = txt_ref
-                        
-                        html_mkt = html_mkt.replace('\n', '<br>')
-                        html_ref = html_ref.replace('\n', '<br>')
-                        html_mkt = melhorar_visual_topicos(html_mkt)
-                    else:
-                        html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
-                        status = "DIVERGENTE" if teve_diff else "CONFORME"
-                        if teve_diff: divs_count += 1
-
-                    secoes_finais.append({
-                        "titulo": titulo, "texto_anvisa": html_ref, "texto_mkt": html_mkt, "status": status
-                    })
+                    html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
+                    status = "DIVERGENTE" if teve_diff else "CONFORME"
+                    if teve_diff: divs_count += 1
+                    secoes_finais.append({"titulo": titulo, "texto_anvisa": html_ref, "texto_mkt": html_mkt, "status": status})
 
                 st.markdown("### 📊 Resumo")
                 c1, c2, c3 = st.columns(3)
@@ -548,16 +357,9 @@ if st.button("🚀 Processar Conferência"):
                 else: sub2.success("✨ Divergências: 0")
 
                 st.divider()
-
                 for item in secoes_finais:
-                    status = item['status']
-                    titulo = item['titulo']
-                    
-                    if "DIZERES LEGAIS" in titulo.upper(): icon, css, aberto = "⚖️", "border-info", True
-                    elif any(b in titulo.upper() for b in SECOES_SEM_COMPARACAO): icon, css, aberto = "🔒", "border-ok", False
-                    elif status == "CONFORME": icon, css, aberto = "✅", "border-ok", False
-                    else: icon, css, aberto = "⚠️", "border-warn", True
-
+                    status, titulo = item['status'], item['titulo']
+                    icon, css, aberto = ("✅", "border-ok", False) if status == "CONFORME" else ("⚠️", "border-warn", True)
                     with st.expander(f"{icon} {titulo}", expanded=aberto):
                         ce, cd = st.columns(2)
                         with ce:
@@ -566,9 +368,7 @@ if st.button("🚀 Processar Conferência"):
                         with cd:
                             st.caption("MKT")
                             st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
-
             except Exception as e:
-                st.error(f"Erro ao processar JSON: {e}")
-                st.code(response.text)
+                st.error(f"Erro ao processar JSON: {e}"); st.code(response.text)
     else:
         st.warning("Adicione os arquivos.")
