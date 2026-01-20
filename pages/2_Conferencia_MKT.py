@@ -101,10 +101,10 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro-latest",
-    "gemini-pro"
+    "models/gemini-2.5-flash", 
+    "models/gemini-2.0-flash", 
+    "models/gemini-1.5-flash", 
+    "gemini-1.5-flash"
 ]
 
 SECOES_PACIENTE = [
@@ -399,102 +399,74 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Arquivo vazio ou ilegível."); st.stop()
 
-            # OTIMIZAÇÃO: Limita o tamanho do texto
-            limite = 60000
-            t_anvisa_cortado = t_anvisa[:limite]
-            t_mkt_cortado = t_mkt[:limite]
-
             prompt = f"""
-Extrator de Bulas Farmacêuticas.
+            Você é um Extrator de Dados Farmacêuticos Rigoroso.
+            
+            INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
+            INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
 
-BELFAR:
-{t_anvisa_cortado}
+            REGRAS CRÍTICAS DE EXTRAÇÃO:
+            
+            1. **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
+               - Inclui: nome do produto, código de barras, nomenclaturas, etc.
+               - Inclui frases como "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO"
+               - Inclui "II – INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES E COMPOSIÇÃO" 
+               - Inclui "III – INFORMAÇÕES AO PACIENTE"
+               - IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
+               - PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
+            
+            2. **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
+            
+            3. **FORMATAÇÃO**: 
+               - Manter <b> e <i> EXATAMENTE como está
+               - NÃO corrigir português
+               - NÃO resumir
+               - Ignorar linhas horizontais/elementos gráficos
+            
+            4. **DATA DE APROVAÇÃO**: Extrair frase "aprovada pela Anvisa em..."
+            
+            5. Se uma seção não existir, NÃO inclua no JSON.
 
-MKT:
-{t_mkt_cortado}
+            LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
-EXTRAIR:
-1. CABEÇALHO: tudo antes de "APRESENTAÇÕES", remove algarismos romanos
-2. Seções de APRESENTAÇÕES até DIZERES LEGAIS
-3. Manter <b> e <i>
-4. Data Anvisa
-
-JSON:
-{{
-  "data_anvisa_ref": "dd/mm/aaaa",
-  "data_anvisa_mkt": "dd/mm/aaaa",
-  "secoes": [
-    {{"titulo": "CABEÇALHO DA BULA", "texto_anvisa": "...", "texto_mkt": "..."}}
-  ]
-}}
-"""
+            SAÍDA JSON:
+            {{
+                "data_anvisa_ref": "dd/mm/aaaa",
+                "data_anvisa_mkt": "dd/mm/aaaa",
+                "secoes": [
+                    {{
+                        "titulo": "NOME EXATO DA SEÇÃO",
+                        "texto_anvisa": "conteúdo completo",
+                        "texto_mkt": "conteúdo completo"
+                    }}
+                ]
+            }}
+            """
             
             response = None
             sucesso = False
             log_erros = []
-            tentativa_count = 0
-            max_tentativas = 3
 
-            for tentativa in range(max_tentativas):
-                for idx_key, key in enumerate(keys_validas):
-                    if sucesso: break
-                    genai.configure(api_key=key)
-                    
-                    for modelo in MODELOS_PARA_TENTAR:
-                        tentativa_count += 1
-                        try:
-                            st.info(f"⏳ Tentativa {tentativa_count} - Key {idx_key+1} - {modelo}")
-                            
-                            model = genai.GenerativeModel(
-                                modelo, 
-                                generation_config={
-                                    "response_mime_type": "application/json", 
-                                    "temperature": 0.0
-                                }
-                            )
-                            response = model.generate_content(prompt)
-                            sucesso = True
-                            st.success(f"✅ Sucesso com {modelo}!")
-                            break 
-                        except Exception as e:
-                            erro_msg = str(e)
-                            
-                            # Se for erro 429 (quota), espera e continua
-                            if "429" in erro_msg or "quota" in erro_msg.lower():
-                                st.warning(f"⏸️ Quota excedida na Key {idx_key+1}. Tentando próxima...")
-                                time.sleep(2)
-                                continue
-                            
-                            # Se for 404, apenas pula
-                            if "404" in erro_msg:
-                                continue
-                            
-                            log_erros.append(f"Tent. {tentativa_count} | Key {idx_key+1} | {modelo}: {erro_msg[:100]}")
-                            time.sleep(1)
-                            continue
-                    
-                    if sucesso: break
-                
+            for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
-                
-                # Se falhou essa rodada, espera 5 segundos antes da próxima
-                if tentativa < max_tentativas - 1:
-                    st.warning(f"⏳ Aguardando 5s antes da tentativa {tentativa+2}...")
-                    time.sleep(5)
+                genai.configure(api_key=key)
+                for modelo in MODELOS_PARA_TENTAR:
+                    try:
+                        model = genai.GenerativeModel(
+                            modelo, 
+                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                        )
+                        response = model.generate_content(prompt)
+                        sucesso = True
+                        break 
+                    except Exception as e:
+                        log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
+                        time.sleep(0.5)
+                        continue
 
             if not sucesso:
-                st.error("❌ **TODAS AS APIS KEYS ATINGIRAM O LIMITE!**")
-                st.warning("""
-                **Possíveis soluções:**
-                
-                1. ⏰ **Aguardar**: As APIs gratuitas resetam a cada minuto/hora
-                2. 🔑 **Criar novas keys**: Acesse https://aistudio.google.com/apikey
-                3. 💳 **Upgrade**: Considere plano pago do Google AI
-                4. ⏳ **Tentar novamente**: Aguarde 1-2 minutos e tente de novo
-                """)
-                
-                with st.expander("📋 Detalhes dos Erros"):
-                    st.code("\n".join(log_erros))
+                st.error("❌ Falha Total. Detalhes:")
+                st.code("\n".join(log_erros))
                 st.stop()
             
             try:
@@ -513,6 +485,7 @@ JSON:
                     
                     # Remove algarismos romanos do CONTEÚDO (não do título)
                     if "CABEÇALHO" in titulo.upper():
+                        # Remove I –, II –, III – do conteúdo mantendo o texto
                         txt_ref = re.sub(r'\b[IVX]+\s*[–-]\s*', '', txt_ref)
                         txt_mkt = re.sub(r'\b[IVX]+\s*[–-]\s*', '', txt_mkt)
 
