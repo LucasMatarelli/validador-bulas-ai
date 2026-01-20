@@ -407,12 +407,13 @@ if st.button("🚀 Processar Conferência"):
 
             REGRAS CRÍTICAS DE EXTRAÇÃO:
             
-            1. **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ a seção "APRESENTAÇÕES". 
+            1. **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
                - Inclui: nome do produto, código de barras, nomenclaturas, etc.
                - Inclui frases como "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO"
                - Inclui "II – INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES E COMPOSIÇÃO" 
                - Inclui "III – INFORMAÇÕES AO PACIENTE"
-               - IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen, mantendo o texto.
+               - IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
+               - PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
             
             2. **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
             
@@ -487,11 +488,6 @@ if st.button("🚀 Processar Conferência"):
                         # Remove I –, II –, III – do conteúdo mantendo o texto
                         txt_ref = re.sub(r'\b[IVX]+\s*[–-]\s*', '', txt_ref)
                         txt_mkt = re.sub(r'\b[IVX]+\s*[–-]\s*', '', txt_mkt)
-                        
-                        # Remove duplicatas do nome do produto
-                        padrao_remove = r'(Boldo\s+Belfar\s+PRODUTO\s+TRADICIONAL\s+FITOTERÁPICO|BOLDO\s+BELFAR\s+PRODUTO\s+TRADICIONAL\s+FITOTERÁPICO)'
-                        txt_ref = re.sub(padrao_remove, '', txt_ref, count=1, flags=re.IGNORECASE).strip()
-                        txt_mkt = re.sub(padrao_remove, '', txt_mkt, count=1, flags=re.IGNORECASE).strip()
 
                     # Processa seção com diff ou destaque de datas
                     if "DIZERES LEGAIS" in titulo.upper():
