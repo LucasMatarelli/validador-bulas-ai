@@ -400,47 +400,60 @@ if st.button("🚀 Processar Conferência"):
                 st.error("Arquivo vazio ou ilegível."); st.stop()
 
             prompt = f"""
-            Você é um Extrator de Dados Farmacêuticos Rigoroso.
+            Você é um Extrator de Dados Farmacêuticos Ultra-Rigoroso e Preciso.
             
-            INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
+            INPUT TEXTO 1 (BELFAR/REF): {t_anvisa[:150000]}
             INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
 
             REGRAS CRÍTICAS DE EXTRAÇÃO:
             
-            1. **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
-               - Inclui: nome do produto, código de barras, nomenclaturas, etc.
-               - Inclui frases como "I – IDENTIFICAÇÃO DO PRODUTO TRADICIONAL FITOTERÁPICO"
-               - Inclui "II – INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES E COMPOSIÇÃO" 
-               - Inclui "III – INFORMAÇÕES AO PACIENTE"
-               - IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
-               - PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
+            1. **CABEÇALHO DA BULA**: 
+               - Extrair TODO o conteúdo desde a PRIMEIRA LINHA do documento até IMEDIATAMENTE ANTES da palavra "APRESENTAÇÕES" (não incluir "APRESENTAÇÕES").
+               - INCLUIR TUDO: nome do medicamento, código de barras, dosagens (5 mg, 10 mg, 20 mg), Lei nº, qualquer texto introdutório.
+               - Se houver algarismos romanos (I, II, III) seguidos de hífen ou traço (–, -), REMOVER APENAS os algarismos e o hífen/traço, mantendo TODO o resto do texto.
+               - Exemplo: "I – IDENTIFICAÇÃO DO PRODUTO" vira "IDENTIFICAÇÃO DO PRODUTO"
+               - Exemplo: "II – INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES" vira "INFORMAÇÕES QUANTO ÀS APRESENTAÇÕES"
+               - MANTER toda pontuação, quebras de linha, formatação <b> e <i>
+               - Extrair EXATAMENTE da mesma forma para AMBOS os arquivos (REF e MKT)
             
-            2. **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
+            2. **SEÇÕES NORMAIS**: 
+               - A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
+               - Incluir o título da seção no conteúdo extraído.
+               - NÃO pular nenhuma linha ou parágrafo.
             
             3. **FORMATAÇÃO**: 
-               - Manter <b> e <i> EXATAMENTE como está
-               - NÃO corrigir português
-               - NÃO resumir
-               - Ignorar linhas horizontais/elementos gráficos
+               - Manter <b> e <i> EXATAMENTE como está no original
+               - NÃO corrigir erros de português
+               - NÃO resumir ou parafrasear
+               - Manter espaços e quebras de linha originais
+               - Ignorar apenas linhas horizontais/elementos gráficos
             
-            4. **DATA DE APROVAÇÃO**: Extrair frase "aprovada pela Anvisa em..."
+            4. **DATA DE APROVAÇÃO**: 
+               - Extrair EXATAMENTE a frase contendo "aprovada pela Anvisa em..."
+               - Formato esperado: dd/mm/aaaa ou mm/aaaa
             
-            5. Se uma seção não existir, NÃO inclua no JSON.
+            5. **EXTRAÇÃO IDÊNTICA**: 
+               - Se um texto é IDÊNTICO entre REF e MKT, os valores de "texto_anvisa" e "texto_mkt" devem ser EXATAMENTE IGUAIS, byte por byte.
+               - NÃO introduza diferenças artificiais.
+            
+            6. Se uma seção não existir em um dos documentos, deixe o campo vazio (""), mas ainda inclua a seção no JSON.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
-            SAÍDA JSON:
+            SAÍDA JSON OBRIGATÓRIA:
             {{
                 "data_anvisa_ref": "dd/mm/aaaa",
                 "data_anvisa_mkt": "dd/mm/aaaa",
                 "secoes": [
                     {{
                         "titulo": "NOME EXATO DA SEÇÃO",
-                        "texto_anvisa": "conteúdo completo",
-                        "texto_mkt": "conteúdo completo"
+                        "texto_anvisa": "conteúdo completo extraído",
+                        "texto_mkt": "conteúdo completo extraído"
                     }}
                 ]
             }}
+            
+            ATENÇÃO ESPECIAL: O CABEÇALHO deve ser extraído de forma COMPLETA e IDÊNTICA de ambos os documentos. Não omita nenhuma informação.
             """
             
             response = None
@@ -483,11 +496,11 @@ if st.button("🚀 Processar Conferência"):
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
                     
-                    # Remove algarismos romanos do CONTEÚDO (não do título)
+                    # Remove algarismos romanos APENAS do CONTEÚDO do cabeçalho, não do título
                     if "CABEÇALHO" in titulo.upper():
-                        # Remove I –, II –, III – do conteúdo mantendo o texto
-                        txt_ref = re.sub(r'\b[IVX]+\s*[–-]\s*', '', txt_ref)
-                        txt_mkt = re.sub(r'\b[IVX]+\s*[–-]\s*', '', txt_mkt)
+                        # Remove I –, II –, III –, IV –, V – etc do conteúdo mantendo o texto
+                        txt_ref = re.sub(r'\b[IVX]+\s*[–\-]\s*', '', txt_ref)
+                        txt_mkt = re.sub(r'\b[IVX]+\s*[–\-]\s*', '', txt_mkt)
 
                     # Processa seção com diff ou destaque de datas
                     if "DIZERES LEGAIS" in titulo.upper():
