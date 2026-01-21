@@ -36,13 +36,6 @@ st.markdown("""
         font-weight: bold;
     }
 
-    .highlight-red { 
-        background-color: #f8d7da; color: #721c24; 
-        border-bottom: 2px solid #dc3545; 
-        font-weight: bold;
-        cursor: help;
-    }
-
     .highlight-blue { 
         background-color: #d1ecf1; color: #0c5460; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
@@ -63,7 +56,6 @@ st.markdown("""
         background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
     }
 
-    /* SIDEBAR SEMPRE ABERTA E TRAVADA */
     section[data-testid="stSidebar"] {
         display: block !important;
         visibility: visible !important;
@@ -89,7 +81,6 @@ st.markdown("""
         transform: translateX(0) !important;
     }
 
-    /* Remove todos os botões de colapsar */
     button[kind="header"],
     [data-testid="collapsedControl"],
     button[data-testid="baseButton-header"] {
@@ -100,78 +91,63 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
-    "models/gemini-2.5-flash",
-    "models/gemini-2.0-flash",
-    "models/gemini-1.5-flash",
+    "models/gemini-2.5-flash", 
+    "models/gemini-2.0-flash", 
+    "models/gemini-1.5-flash", 
     "gemini-1.5-flash"
 ]
 
 SECOES_PACIENTE = [
     "CABEÇALHO DA BULA",
-    "APRESENTAÇÕES",
-    "COMPOSIÇÃO",
+    "APRESENTAÇÕES", 
+    "COMPOSIÇÃO", 
     "PARA QUE ESTE MEDICAMENTO É INDICADO?",
-    "COMO ESTE MEDICAMENTO FUNCIONA?",
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?",
-    "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?",
-    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?",
-    "COMO DEVO USAR ESTE MEDICAMENTO?",
-    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?",
-    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?",
-    "O QUE FAZER SE ALGUÉM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?",
+    "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", 
+    "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUÉM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
     "DIZERES LEGAIS"
 ]
 
-SECOES_SEM_COMPARACAO = []
 SECOES_PROFISSIONAL = []
 
-# ----------------- 3. FUNÇÕES DE LIMPEZA E NORMALIZAÇÃO -----------------
+# ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
 
 def clean_metadata_and_footers(texto: str) -> str:
     """
-    Remove metadados de produção/impressão e rodapés/paginações do texto.
-    Remove linhas que contenham:
-     - "Medida da bula", "Tipologia da bula", "Impressão:", "Papel:", "Cor:"
-     - "Frente/Verso", "VERSO", "FRENTE"
-     - dimensões tipo "45,00 cm x 19,00 cm"
-     - nomes tipo "BUL_..." ou sequências longas em maiúsculas com underscores (prováveis nomes de arquivo)
-     - paginação "Bula ao Paciente Página 2 de 9" (variações)
+    Remove metadados/rodapés e nomes de arquivo/impressão que não fazem parte do
+    conteúdo da bula. Aplica-se antes de comparações e antes de exibir.
     """
     if not texto:
         return texto
 
     t = texto
 
-    # Remove linhas com palavras-chave de metadado (case-insensitive)
-    keys_line_patterns = [
+    # Remover padrões de "nomes de arquivo" longos em MAIÚSCULAS / underscores
+    t = re.sub(r'(?m)^\s*[A-Z0-9_]{8,}\s*$', '', t)
+
+    # Remover linhas que descrevem medidas / tipologia / papel / impressão / cor / frente/verso
+    patterns_line = [
         r'(?im)^\s*.*medida\s+da\s+bula.*$',
         r'(?im)^\s*.*tipologia\s+da\s+bula.*$',
         r'(?im)^\s*.*tipologia:.*$',
         r'(?im)^\s*.*impress(ã|a)o.*:.*$',
-        r'(?im)^\s*.*impressão:.*$',
         r'(?im)^\s*.*papel:.*$',
         r'(?im)^\s*.*cor:.*$',
         r'(?im)^\s*.*frente\/verso.*$',
-        r'(?im)^\s*frente\/verso.*$',
-        r'(?im)^\s*^\s*verso\s*$',
-        r'(?im)^\s*^\s*fren?te\s*$'
+        r'(?im)^\s*frente\/verso.*$'
     ]
-    for p in keys_line_patterns:
+    for p in patterns_line:
         t = re.sub(p, '', t)
 
-    # Remove linhas contendo dimensões (ex: 45,00 cm x 19,00 cm) em variantes
-    t = re.sub(r'(?im)^\s*\d{1,2},\d{2}\s*cm\s*[x×X]\s*\d{1,2},\d{2}\s*cm\s*$', '', t, flags=re.MULTILINE)
+    # Remover dimensões tipo "45,00 cm x 19,00 cm"
     t = re.sub(r'(?im)\d{1,2},\d{2}\s*cm\s*[x×X]\s*\d{1,2},\d{2}\s*cm', '', t)
 
-    # Remove nomes longos em MAIÚSCULAS com underscores que pareçam nomes de arquivo (ex: BUL_MALEATO_DE_ENALAPRIL_...)
-    # Remover linhas que tenham muitas letras maiúsculas/underscores e números
-    t = re.sub(r'(?m)^\s*[A-Z0-9_]{8,}\s*$', '', t)
-
-    # Remove padrões contendo "BUL" ou "BULA" seguidos de identificadores (com ou sem underscores)
-    t = re.sub(r'(?im)\bBUL[A-Z0-9_]*\b', '', t)
-    t = re.sub(r'(?im)\bBULA_[A-Z0-9_]+\b', '', t)
-
-    # Remove paginação / rodapé do tipo "Bula ao Paciente Página 2 de 9" e variações "Página 2 de 9"
+    # Remover paginação/rodapés do tipo "Bula ao Paciente Página 2 de 9" e variações "Página 2 de 9"
     page_patterns = [
         r'(?im)\bBula(?:\s+ao\s+Paciente)?\s+P[aá]gina\s*\d+\s*(?:de|\/)\s*\d+\b',
         r'(?im)\bBula(?:\s+ao\s+Paciente)?\s+P[aá]gina\s*\d+\b',
@@ -181,32 +157,97 @@ def clean_metadata_and_footers(texto: str) -> str:
     for p in page_patterns:
         t = re.sub(p, '', t)
 
-    # Remove repetições curtas de "Verso", "Frente", "Frente/Verso" mesmo no meio da linha
-    t = re.sub(r'(?im)\bverso\b', '', t)
+    # Remover ocorrências isoladas de "FRENTE", "VERSO" que normalmente são metadados
     t = re.sub(r'(?im)\bfrente\b', '', t)
-    t = re.sub(r'(?im)\bfrente\/verso\b', '', t)
+    t = re.sub(r'(?im)\bverso\b', '', t)
 
-    # Limpa caracteres extras e colapsa múltiplas quebras de linha em uma única
+    # Remover tokens "BUL_*" residuais
+    t = re.sub(r'(?im)\bBUL[_A-Z0-9-]*\b', '', t)
+
+    # Colapsar espaços e quebras duplicadas
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\r', '\n', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
-    # Remove linhas em branco que sobram no início/fim de texto
-    t = "\n".join([ln for ln in (line.rstrip() for line in t.splitlines()) if ln.strip() != ""])
+
+    # Remover linhas vazias extras
+    lines = [ln.rstrip() for ln in t.splitlines()]
+    lines = [ln for ln in lines if ln.strip() != ""]
+    t = "\n".join(lines)
 
     return t.strip()
 
-def normalizacao_nuclear(texto):
-    """Remove tudo que não seja letra ou número para comparação de conteúdo,
-       após limpar metadados/rodapés."""
+# ----------------- 4. EXTRAÇÃO DO CABEÇALHO (APENAS ATÉ 'APRESENTAÇÕES') -----------------
+
+def build_section_pattern(title: str) -> str:
+    """
+    Constrói um padrão regex tolerante para localizar um título de seção no texto.
+    Divide o título em palavras e permite quaisquer separadores não alfanuméricos entre elas.
+    """
+    words = re.findall(r'\w+', title, flags=re.UNICODE)
+    if not words:
+        return None
+    # juntar palavras permitindo qualquer sequência não-alfanumérica entre elas
+    pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
+    return pattern
+
+def find_first_section_index(texto: str, section_titles: list) -> int:
+    """
+    Retorna o menor índice de ocorrência de qualquer título de section_titles no texto.
+    Se não encontrar, retorna -1.
+    """
+    menor = None
+    for title in section_titles:
+        if not title:
+            continue
+        patt = build_section_pattern(title)
+        if not patt:
+            continue
+        m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
+        if m:
+            idx = m.start()
+            if menor is None or idx < menor:
+                menor = idx
+    return -1 if menor is None else menor
+
+def extract_header_from_raw(texto: str, sections_list: list) -> str:
+    """
+    Extrai o cabeçalho: tudo desde o início até ANTES da primeira seção (APRESENTAÇÕES ou outra).
+    Usa procura por todos os títulos conhecidos (exceto 'CABEÇALHO DA BULA').
+    Em seguida, limpa metadados e remove numerais romanos iniciais.
+    """
     if not texto:
         return ""
-    t = clean_metadata_and_footers(texto)
-    t = re.sub(r'<[^>]+>', '', t)
+
+    # procurar todas as seções exceto 'CABEÇALHO DA BULA'
+    candidatos = [s for s in sections_list if s.strip().upper() != "CABEÇALHO DA BULA"]
+    idx = find_first_section_index(texto, candidatos)
+
+    if idx == -1:
+        # fallback estrito: procurar 'APRESENTA' isoladamente
+        m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
+        idx = m.start() if m else -1
+
+    if idx == -1:
+        # não encontrou seção conhecida: retornar vazio (evita puxar toda a bula)
+        return ""
+
+    header_raw = texto[:idx].strip()
+    # remover numerais romanos + traço no início de linhas
+    header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
+    # limpar metadados/rodapés dentro do cabeçalho
+    header_clean = clean_metadata_and_footers(header_raw)
+    return header_clean.strip()
+
+# ----------------- 5. FUNÇÕES DE COMPARAÇÃO E VISUAL -----------------
+
+def normalizacao_nuclear(texto):
+    """Remove TUDO que não seja letra ou número para comparação de conteúdo."""
+    if not texto:
+        return ""
+    t = re.sub(r'<[^>]+>', '', texto)
     t = unicodedata.normalize('NFKD', t).encode('ASCII', 'ignore').decode('ASCII')
     t = re.sub(r'[^a-zA-Z0-9]', '', t)
     return t.lower()
-
-# ----------------- 4. FUNÇÕES INTELIGENTES (mantidas / adaptadas) -----------------
 
 def verificar_ortografia_inteligente(texto):
     """Corretor Ultra-Conservador para erros de português"""
@@ -214,9 +255,8 @@ def verificar_ortografia_inteligente(texto):
         spell = SpellChecker(language='pt')
 
         whitelist = {
-            'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal', 
-            'crf', 'crm', 'anvisa', 'lote', 'val', 'fab', 'sac', 'cnpj', 'cep', 
-            'dr', 'dra', 'vp', 'vps', 'bula', 'paciente', 'profissional', 'sac',
+            'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal',
+            'anvisa', 'cnpj', 'cep', 'sac', 'bula'
         }
         spell.word_frequency.load_words(whitelist)
 
@@ -230,20 +270,12 @@ def verificar_ortografia_inteligente(texto):
 
             palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
 
-            if (not palavra_limpa or 
-                len(palavra_limpa) < 4 or 
-                any(c.isdigit() for c in token) or 
-                '-' in palavra_limpa or
-                palavra_limpa[0].isupper()):
+            if (not palavra_limpa or len(palavra_limpa) < 4 or any(c.isdigit() for c in token) or
+                '-' in palavra_limpa or palavra_limpa[0].isupper()):
                 resultado.append(token)
                 continue
 
-            p_lower = palavra_limpa.lower()
-
-            if p_lower in spell or p_lower in whitelist:
-                resultado.append(token)
-            else:
-                resultado.append(token)
+            resultado.append(token)
 
         return "".join(resultado)
     except:
@@ -300,24 +332,22 @@ def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
 
-    # Para comparação, removemos metadados/rodapés que travam o diff
+    # Para comparação, remover metadados/rodapés (já limpos normalmente)
     comp_ref = clean_metadata_and_footers(texto_ref)
     comp_novo = clean_metadata_and_footers(texto_novo)
 
-    # Comparação ignorando tags HTML e metadados
     if normalizacao_nuclear(comp_ref) == normalizacao_nuclear(comp_novo):
-        # Se equivalentes após normalização, mostramos os textos limpos (sem metadados) mantendo formatação
-        html_ref = clean_metadata_and_footers(texto_ref).replace('\n', '<br>')
+        html_ref = comp_ref.replace('\n', '<br>')
         html_ref = melhorar_visual_topicos(html_ref)
 
-        html_novo = verificar_ortografia_inteligente(clean_metadata_and_footers(texto_novo))
+        html_novo = verificar_ortografia_inteligente(comp_novo)
         html_novo = html_novo.replace('\n', '<br>')
         html_novo = melhorar_visual_topicos(html_novo)
 
         return html_ref, html_novo, False
 
-    # Diff preservando formatação original (após limpeza para evitar ruído)
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(clean_metadata_and_footers(texto_ref), clean_metadata_and_footers(texto_novo))
+    # caso contrário, realiza diff palavra-a-palavra em textos limpos (para evitar ruído)
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
 
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
@@ -325,10 +355,10 @@ def gerar_diff_html(texto_ref, texto_novo):
 
     return r_html_final, n_html_final, diff_bool
 
-# ----------------- 5. EXTRAÇÃO DE TEXTO -----------------
+# ----------------- 6. EXTRAÇÃO DE TEXTO DOS ARQUIVOS -----------------
 
 def extract_text_from_file(uploaded_file):
-    """Extrai texto mantendo negrito/itálico quando possível."""
+    """Extrai texto mantendo negrito/itálico quando possível e já limpa metadados."""
     try:
         text = ""
         name = getattr(uploaded_file, "name", "uploaded")
@@ -390,14 +420,14 @@ def extract_text_from_file(uploaded_file):
                     para_text += formatted_text
                 text += para_text + "\n\n"
 
-        # Limpeza inicial: remove metadados/rodapés logo após extrair
+        # Limpeza inicial: remover metadados/rodapés assim que extrai o texto
         return clean_metadata_and_footers(text.strip())
 
     except Exception as e:
         st.error(f"Erro ao extrair texto do arquivo {getattr(uploaded_file, 'name', '')}: {str(e)}")
         return ""
 
-# ----------------- 6. UI PRINCIPAL -----------------
+# ----------------- 7. UI PRINCIPAL E FLUXO -----------------
 st.title("💊 Conferência MKT")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
@@ -422,7 +452,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
     keys_validas = [k for k in keys_raw if k]
 
     if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key encontrada. Adicione as GEMINI_API_KEY no Secrets.")
+        st.error("Erro Crítico: Nenhuma API Key encontrada.")
         st.stop()
 
     if f1 and f2:
@@ -431,11 +461,10 @@ if st.button("🚀 Processar Conferência", key="process_button"):
         with st.spinner("Lendo arquivos e conectando à IA..."):
             try:
                 f1.seek(0); f2.seek(0)
-                t_anvisa = extract_text_from_file(f1)
+                t_anvisa = extract_text_from_file(f1)  # já limpo de metadados
                 t_mkt = extract_text_from_file(f2)
-
-                st.info(f"Tamanho do texto BELFAR (após limpeza): {len(t_anvisa)} caracteres")
-                st.info(f"Tamanho do texto MKT (após limpeza): {len(t_mkt)} caracteres")
+                st.info(f"Tamanho do texto BELFAR (após limpeza): {len(t_anvisa)}")
+                st.info(f"Tamanho do texto MKT (após limpeza): {len(t_mkt)}")
             except Exception as e:
                 st.exception(f"Falha ao extrair textos: {e}")
                 st.stop()
@@ -491,12 +520,12 @@ SAÍDA JSON:
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
                         model = genai.GenerativeModel(
-                            modelo,
+                            modelo, 
                             generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
-                        break
+                        break 
                     except Exception as e:
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
                         time.sleep(0.5)
@@ -542,20 +571,46 @@ SAÍDA JSON:
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
 
-                    # Limpeza final: remove metadados/paginacao também dentro das seções retornadas pela IA
+                    # Se o IA trouxe algo, primeiro limpar metadados dentro do conteúdo
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
 
-                    # Se for CABEÇALHO DA BULA: garantir que pegou tudo até APRESENTAÇÕES
+                    # TRATAMENTO ESPECIAL: CABEÇALHO DA BULA
                     if "CABEÇALHO" in titulo.upper():
-                        if not txt_ref or len(txt_ref) < 50 or re.search(r'APRESENTA', txt_ref, flags=re.IGNORECASE) is None:
-                            # extrai do texto bruto já limpo
-                            txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t_anvisa)
-                        if not txt_mkt or len(txt_mkt) < 50 or re.search(r'APRESENTA', txt_mkt, flags=re.IGNORECASE) is None:
-                            txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t_mkt)
+                        # Se o IA trouxe um cabeçalho que na prática é toda a bula (ou contém outras seções),
+                        # reconstruímos o cabeçalho usando o texto bruto já limpo (t_anvisa / t_mkt)
+                        def contains_other_sections(text):
+                            # detecta se 'texto' contém qualquer título de seção diferente de CABEÇALHO
+                            for s in secoes_alvo:
+                                if s.strip().upper() == "CABEÇALHO DA BULA":
+                                    continue
+                                patt = build_section_pattern(s)
+                                if patt and re.search(patt, text, flags=re.IGNORECASE):
+                                    return True
+                            return False
+
+                        # Se o txt_ref parecer conter toda a bula (ou outras seções), refazemos via raw
+                        if not txt_ref or contains_other_sections(txt_ref):
+                            novo_ref = extract_header_from_raw(t_anvisa, secoes_alvo)
+                            if novo_ref:
+                                txt_ref = novo_ref
+
+                        if not txt_mkt or contains_other_sections(txt_mkt):
+                            novo_mkt = extract_header_from_raw(t_mkt, secoes_alvo)
+                            if novo_mkt:
+                                txt_mkt = novo_mkt
+
+                        # garantir remoção de numerais romanos no conteúdo (por linha)
                         txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
                         txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
 
+                        # Se ainda vazio, tentamos extrair até APRESENTAÇÕES diretamente do texto limpo
+                        if not txt_ref:
+                            txt_ref = extract_header_from_raw(t_anvisa, secoes_alvo)
+                        if not txt_mkt:
+                            txt_mkt = extract_header_from_raw(t_mkt, secoes_alvo)
+
+                    # Para DIZERES LEGAIS, destacamos datas e não fazemos diff
                     if "DIZERES LEGAIS" in titulo.upper():
                         html_ref = destacar_datas(txt_ref).replace('\n', '<br>')
                         html_novo = destacar_datas(txt_mkt)
@@ -570,9 +625,9 @@ SAÍDA JSON:
                             divs_count += 1
 
                     secoes_finais.append({
-                        "titulo": titulo,
-                        "texto_anvisa": html_ref,
-                        "texto_mkt": html_novo,
+                        "titulo": titulo, 
+                        "texto_anvisa": html_ref, 
+                        "texto_mkt": html_novo, 
                         "status": status
                     })
 
@@ -595,11 +650,11 @@ SAÍDA JSON:
                     status = item['status']
                     titulo = item['titulo']
 
-                    if "DIZERES LEGAIS" in titulo.upper():
+                    if "DIZERES LEGAIS" in titulo.upper(): 
                         icon, css, aberto = "⚖️", "border-info", False
-                    elif status == "CONFORME":
+                    elif status == "CONFORME": 
                         icon, css, aberto = "✅", "border-ok", False
-                    else:
+                    else: 
                         icon, css, aberto = "⚠️", "border-warn", True
 
                     with st.expander(f"{icon} {titulo}", expanded=aberto):
@@ -613,6 +668,10 @@ SAÍDA JSON:
 
             except Exception as e:
                 st.exception(f"Erro ao processar resultado: {e}")
+                try:
+                    st.code(str(response))
+                except:
+                    pass
                 st.stop()
 
 else:
