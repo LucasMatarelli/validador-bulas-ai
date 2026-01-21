@@ -186,15 +186,10 @@ def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
     if not words:
         return None
-    # juntar palavras permitindo qualquer sequência não-alfanumérica entre elas
     pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
     return pattern
 
 def find_first_section_index(texto: str, section_titles: list) -> int:
-    """
-    Retorna o menor índice de ocorrência de qualquer título de section_titles no texto.
-    Se não encontrar, retorna -1.
-    """
     menor = None
     for title in section_titles:
         if not title:
@@ -212,36 +207,30 @@ def find_first_section_index(texto: str, section_titles: list) -> int:
 def extract_header_from_raw(texto: str, sections_list: list) -> str:
     """
     Extrai o cabeçalho: tudo desde o início até ANTES da primeira seção (APRESENTAÇÕES ou outra).
-    Usa procura por todos os títulos conhecidos (exceto 'CABEÇALHO DA BULA').
-    Em seguida, limpa metadados e remove numerais romanos iniciais.
+    Se não encontrar, retorna string vazia (não sobrescreve outrora).
     """
     if not texto:
         return ""
 
-    # procurar todas as seções exceto 'CABEÇALHO DA BULA'
     candidatos = [s for s in sections_list if s.strip().upper() != "CABEÇALHO DA BULA"]
     idx = find_first_section_index(texto, candidatos)
 
     if idx == -1:
-        # fallback estrito: procurar 'APRESENTA' isoladamente
         m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
         idx = m.start() if m else -1
 
     if idx == -1:
-        # não encontrou seção conhecida: retornar vazio (evita puxar toda a bula)
+        # NÃO retornar o conteúdo inteiro (evita cortar a bula); informar falha via string vazia
         return ""
 
     header_raw = texto[:idx].strip()
-    # remover numerais romanos + traço no início de linhas
     header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
-    # limpar metadados/rodapés dentro do cabeçalho
     header_clean = clean_metadata_and_footers(header_raw)
     return header_clean.strip()
 
 # ----------------- 5. FUNÇÕES DE COMPARAÇÃO E VISUAL -----------------
 
 def normalizacao_nuclear(texto):
-    """Remove TUDO que não seja letra ou número para comparação de conteúdo."""
     if not texto:
         return ""
     t = re.sub(r'<[^>]+>', '', texto)
@@ -250,33 +239,25 @@ def normalizacao_nuclear(texto):
     return t.lower()
 
 def verificar_ortografia_inteligente(texto):
-    """Corretor Ultra-Conservador para erros de português"""
     try:
         spell = SpellChecker(language='pt')
-
         whitelist = {
             'mg', 'ml', 'mcg', 'ui', 'g', 'kg', 'l', 'dl', 'mmhg', 'bpm', 'kcal',
             'anvisa', 'cnpj', 'cep', 'sac', 'bula'
         }
         spell.word_frequency.load_words(whitelist)
-
         tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/\[\]])', texto)
         resultado = []
-
         for token in tokens:
             if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
                 resultado.append(token)
                 continue
-
             palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
-
             if (not palavra_limpa or len(palavra_limpa) < 4 or any(c.isdigit() for c in token) or
                 '-' in palavra_limpa or palavra_limpa[0].isupper()):
                 resultado.append(token)
                 continue
-
             resultado.append(token)
-
         return "".join(resultado)
     except:
         return texto
@@ -293,23 +274,24 @@ def melhorar_visual_topicos(texto_html):
     return "".join(novo_texto)
 
 def destacar_datas(texto):
+    """
+    Destaca a data indicada na frase 'aprovada pela Anvisa em ...' em azul.
+    Aplica-se ao texto todo, tanto BELFAR quanto MKT.
+    """
     padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padrão\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     def replacer(match):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
-    return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
+    return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
     novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
-
     palavras_ref = ref_sem_tags.split()
     palavras_novo = novo_sem_tags.split()
-
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
-
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
             texto = " ".join(palavras_ref[i1:i2])
@@ -325,34 +307,24 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
         elif tag == 'insert':
             html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
-
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
-
-    # Para comparação, remover metadados/rodapés (já limpos normalmente)
     comp_ref = clean_metadata_and_footers(texto_ref)
     comp_novo = clean_metadata_and_footers(texto_novo)
-
     if normalizacao_nuclear(comp_ref) == normalizacao_nuclear(comp_novo):
         html_ref = comp_ref.replace('\n', '<br>')
         html_ref = melhorar_visual_topicos(html_ref)
-
         html_novo = verificar_ortografia_inteligente(comp_novo)
         html_novo = html_novo.replace('\n', '<br>')
         html_novo = melhorar_visual_topicos(html_novo)
-
         return html_ref, html_novo, False
-
-    # caso contrário, realiza diff palavra-a-palavra em textos limpos (para evitar ruído)
     r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
-
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
     r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
-
     return r_html_final, n_html_final, diff_bool
 
 # ----------------- 6. EXTRAÇÃO DE TEXTO DOS ARQUIVOS -----------------
@@ -571,50 +543,43 @@ SAÍDA JSON:
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
 
-                    # Se o IA trouxe algo, primeiro limpar metadados dentro do conteúdo
+                    # Limpeza dentro das seções: removemos apenas metadados/rodapés visíveis
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
 
                     # TRATAMENTO ESPECIAL: CABEÇALHO DA BULA
                     if "CABEÇALHO" in titulo.upper():
-                        # Se o IA trouxe um cabeçalho que na prática é toda a bula (ou contém outras seções),
-                        # reconstruímos o cabeçalho usando o texto bruto já limpo (t_anvisa / t_mkt)
                         def contains_other_sections(text):
-                            # detecta se 'texto' contém qualquer título de seção diferente de CABEÇALHO
                             for s in secoes_alvo:
                                 if s.strip().upper() == "CABEÇALHO DA BULA":
                                     continue
                                 patt = build_section_pattern(s)
-                                if patt and re.search(patt, text, flags=re.IGNORECASE):
+                                if patt and re.search(patt, text:=txt_ref, flags=re.IGNORECASE):
                                     return True
                             return False
 
-                        # Se o txt_ref parecer conter toda a bula (ou outras seções), refazemos via raw
-                        if not txt_ref or contains_other_sections(txt_ref):
+                        # Se o IA retornou algo que claramente contém várias seções (ou toda a bula),
+                        # tentamos reconstruir o cabeçalho apenas se a extração for bem-sucedida.
+                        if (not txt_ref) or contains_other_sections(txt_ref):
                             novo_ref = extract_header_from_raw(t_anvisa, secoes_alvo)
                             if novo_ref:
-                                txt_ref = novo_ref
+                                txt_ref = novo_ref  # só sobrescreve se extraiu algo válido
 
-                        if not txt_mkt or contains_other_sections(txt_mkt):
+                        if (not txt_mkt) or contains_other_sections(txt_mkt):
                             novo_mkt = extract_header_from_raw(t_mkt, secoes_alvo)
                             if novo_mkt:
                                 txt_mkt = novo_mkt
 
-                        # garantir remoção de numerais romanos no conteúdo (por linha)
+                        # remover numerais romanos no conteúdo (por linha)
                         txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
                         txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
 
-                        # Se ainda vazio, tentamos extrair até APRESENTAÇÕES diretamente do texto limpo
-                        if not txt_ref:
-                            txt_ref = extract_header_from_raw(t_anvisa, secoes_alvo)
-                        if not txt_mkt:
-                            txt_mkt = extract_header_from_raw(t_mkt, secoes_alvo)
-
-                    # Para DIZERES LEGAIS, destacamos datas e não fazemos diff
+                    # DIZERES LEGAIS: destacar datas da Anvisa em ambos os textos (BELFAR e MKT)
                     if "DIZERES LEGAIS" in titulo.upper():
                         html_ref = destacar_datas(txt_ref).replace('\n', '<br>')
-                        html_novo = destacar_datas(txt_mkt)
-                        html_novo = verificar_ortografia_inteligente(html_novo).replace('\n', '<br>')
+                        html_novo = destacar_datas(txt_mkt).replace('\n', '<br>')
+                        html_ref = verificar_ortografia_inteligente(html_ref)
+                        html_novo = verificar_ortografia_inteligente(html_novo)
                         html_ref = melhorar_visual_topicos(html_ref)
                         html_novo = melhorar_visual_topicos(html_novo)
                         status = "CONFORME"
