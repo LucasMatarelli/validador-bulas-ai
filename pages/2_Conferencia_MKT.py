@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
@@ -116,13 +115,11 @@ SECOES_PACIENTE = [
 
 SECOES_PROFISSIONAL = []
 
-# Similarity threshold (ajustável)
-SIMILARITY_THRESHOLD = 0.90
+SIMILARITY_THRESHOLD = 0.92  # mais rígido para reduzir falsos-positivos
 
 # ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
 
 def clean_metadata_and_footers(texto: str) -> str:
-    """Remove metadados / nomes de arquivo / medidas / paginação que não são conteúdo."""
     if not texto:
         return texto
     t = texto
@@ -143,10 +140,8 @@ def clean_metadata_and_footers(texto: str) -> str:
     for p in patterns_line:
         t = re.sub(p, '', t)
 
-    # dimensões "45,00 cm x 19,00 cm"
+    # dimensões e paginação
     t = re.sub(r'(?im)\d{1,2},\d{2}\s*cm\s*[x×X]\s*\d{1,2},\d{2}\s*cm', '', t)
-
-    # paginação/rodapé "Bula ao Paciente Página 2 de 9" ou "Página 2"
     page_patterns = [
         r'(?im)\bBula(?:\s+ao\s+Paciente)?\s+P[aá]gina\s*\d+\s*(?:de|\/)\s*\d+\b',
         r'(?im)\bBula(?:\s+ao\s+Paciente)?\s+P[aá]gina\s*\d+\b',
@@ -163,7 +158,7 @@ def clean_metadata_and_footers(texto: str) -> str:
     # remover quebras por hífen (quebra de sílaba no final de linha)
     t = re.sub(r'-\s*\n\s*', '', t)
 
-    # colapsar espaços e quebras repetidas
+    # normalizações simples de espaçamento
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\r', '\n', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
@@ -175,7 +170,7 @@ def clean_metadata_and_footers(texto: str) -> str:
 
     return t.strip()
 
-# ----------------- 4. REMOÇÃO DE TÍTULOS PARA COMPARAÇÃO -----------------
+# ----------------- 4. LOCALIZAÇÃO DE TÍTULOS E EXTRAÇÃO DE CABEÇALHO (SEGURA) -----------------
 
 def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
@@ -184,21 +179,49 @@ def build_section_pattern(title: str) -> str:
     pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
     return pattern
 
-def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIENTE) -> str:
-    """Remove títulos de seção conhecidos do texto APENAS para fins de comparação."""
-    if not texto:
-        return texto
-    t = texto
-    for s in sections_list:
-        if not s or s.strip().upper() == "CABEÇALHO DA BULA":
+def find_first_section_index(texto: str, section_titles: list) -> int:
+    menor = None
+    for title in section_titles:
+        if not title:
             continue
-        patt = build_section_pattern(s)
-        if patt:
-            t = re.sub(patt, ' ', t, flags=re.IGNORECASE)
-    # remover variações comuns
-    t = re.sub(r'(?im)\bInform[aç]o(?:es)?\s+ao\s+paciente\b', ' ', t)
-    t = re.sub(r'\s{2,}', ' ', t)
-    return t.strip()
+        patt = build_section_pattern(title)
+        if not patt:
+            continue
+        m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
+        if m:
+            idx = m.start()
+            if menor is None or idx < menor:
+                menor = idx
+    return -1 if menor is None else menor
+
+def safe_extract_header(texto: str, secoes_alvo: list) -> str:
+    """
+    Extrai o cabeçalho (do início até antes da primeira seção conhecida) APENAS se for
+    seguro — evita extrair a bula inteira.
+    Critérios de segurança:
+     - Encontrou índice de alguma seção
+     - O fragmento extraído tem tamanho >= 20 caracteres
+     - O fragmento extraído não representa mais que 35% do texto total (evita pegar tudo)
+    """
+    if not texto:
+        return ""
+    idx = find_first_section_index(texto, [s for s in secoes_alvo if s.strip().upper() != "CABEÇALHO DA BULA"])
+    if idx == -1:
+        # fallback estrito: procurar 'APRESENTA' isoladamente
+        m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
+        idx = m.start() if m else -1
+    if idx == -1:
+        return ""
+    header_raw = texto[:idx].strip()
+    header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
+    header_clean = clean_metadata_and_footers(header_raw)
+    # critérios de segurança
+    if len(header_clean) < 20:
+        return ""
+    if len(header_clean) > max(2000, int(len(texto) * 0.35)):
+        # cabeçalho extraído muito grande => não é seguro
+        return ""
+    return header_clean.strip()
 
 # ----------------- 5. NORMALIZAÇÃO AVANÇADA PARA COMPARAÇÃO -----------------
 
@@ -208,42 +231,34 @@ def strip_accents(s: str) -> str:
 def tokenize_words(s: str):
     return re.findall(r'\w+', s, flags=re.UNICODE)
 
+def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIENTE) -> str:
+    if not texto:
+        return texto
+    t = texto
+    for s in sections_list:
+        if not s or s.strip().upper() == "CABEÇALHO DA BULA":
+            continue
+        patt = build_section_pattern(s)
+        if patt:
+            t = re.sub(patt, ' ', t, flags=re.IGNORECASE)
+    t = re.sub(r'(?im)\bInform[aç]o(?:es)?\s+ao\s+paciente\b', ' ', t)
+    t = re.sub(r'\s{2,}', ' ', t)
+    return t.strip()
+
 def normalize_for_comparison(text: str) -> str:
-    """
-    Normaliza fortemente para comparação:
-    - aplica limpeza de metadados
-    - remove títulos de seção (para comparação)
-    - remove numeração de seção ("2. ", "2) ")
-    - remove numerais romanos no início de linhas
-    - remove pontuação e espaços extras, transforma em lowercase sem acentos
-    """
     if not text:
         return ""
     t = clean_metadata_and_footers(text)
     t = remove_section_titles_for_comparison(t)
     # remover numeração no início de linhas: "2. ", "2) ", "2 -"
     t = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]\s*', '', t)
-    # remover numeração inline "2. " no começo de parágrafos
     t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
-    # remover numerais romanos no início
     t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
-    # remover repetições de títulos (se aparecerem no meio do texto)
-    for s in SECOES_PACIENTE:
-        if s.strip().upper() == "CABEÇALHO DA BULA":
-            continue
-        patt = build_section_pattern(s)
-        if patt:
-            t = re.sub(patt, ' ', t, flags=re.IGNORECASE)
-
-    # quitar hífens residuais
-    t = re.sub(r'-\s+', '', t)
-    # retirar tags html antes de normalizar
+    # retirar tags html
     t = re.sub(r'<[^>]+>', '', t)
-    # lowercase e sem acentos
     t = strip_accents(t).lower()
     # remover pontuação
     t = re.sub(r'[^a-z0-9\s]', ' ', t)
-    # colapsar espaços
     t = re.sub(r'\s+', ' ', t).strip()
     return t
 
@@ -321,36 +336,33 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
             tem_diff = True
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
-def gerar_diff_html(texto_ref, texto_novo):
+def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
 
-    # limpeza básica (remove metadados/paginação) - exibição usa versão limpa
     comp_ref = clean_metadata_and_footers(texto_ref)
     comp_novo = clean_metadata_and_footers(texto_novo)
 
-    # normalização forte para comparação
     norm_ref = normalize_for_comparison(comp_ref)
     norm_novo = normalize_for_comparison(comp_novo)
 
-    # 1) igualdade exata após normalização
+    # 1) igualdade absoluta após normalização
     if norm_ref == norm_novo:
         html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
         html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
 
-    # 2) substring: se um normalizado contém o outro e proporção de comprimento é alta => conforme
+    # 2) substring-proportion (se curtos e contidos)
     if norm_ref and norm_novo:
         shorter, longer = (norm_ref, norm_novo) if len(norm_ref) <= len(norm_novo) else (norm_novo, norm_ref)
         if shorter and shorter in longer:
-            # proporção de comprimento
             prop = len(shorter) / max(1, len(longer))
-            if prop >= 0.85:
+            if prop >= 0.88:
                 html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
                 html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
                 return html_ref, html_novo, False
 
-    # 3) Similaridade por SequenceMatcher (caracteres) e Jaccard (tokens)
+    # 3) Similaridade mista (SequenceMatcher + Jaccard)
     ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
     jacc = jaccard_similarity(norm_ref, norm_novo)
     if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
@@ -358,7 +370,7 @@ def gerar_diff_html(texto_ref, texto_novo):
         html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
 
-    # Caso contrário: diff palavra-a-palavra em textos "limpos" (mas mantendo exibição bonita)
+    # 4) Caso contrário, diff palavra-a-palavra (após limpeza)
     r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
     n_html_final = verificar_ortografia_inteligente(n_html); n_html_final = melhorar_visual_topicos(n_html_final)
     r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
@@ -367,7 +379,6 @@ def gerar_diff_html(texto_ref, texto_novo):
 # ----------------- 8. EXTRAÇÃO DE TEXTO -----------------
 
 def extract_text_from_file(uploaded_file):
-    """Extrai texto mantendo negrito/itálico quando possível e aplica limpeza inicial."""
     try:
         text = ""
         name = getattr(uploaded_file, "name", "uploaded")
@@ -573,46 +584,22 @@ SAÍDA JSON:
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
 
-                    # Limpeza dentro das seções: removemos apenas metadados/rodapés visíveis
+                    # limpeza leve dentro das seções (não remove conteúdo essencial)
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
 
-                    # TRATAMENTO ESPECIAL: CABEÇALHO DA BULA (reconstruir somente se EXTRAÇÃO VÁLIDA)
+                    # TRATAMENTO SEGURO DO CABEÇALHO DA BULA
                     if "CABEÇALHO" in titulo.upper():
-                        # tenta extrair a partir do texto bruto limpo apenas se for seguro (não sobrescrever com vazio)
-                        novo_ref = ""
-                        candidatos = [s for s in secoes_alvo if s.strip().upper() != "CABEÇALHO DA BULA"]
-                        idx_first = None
-                        for s in candidatos:
-                            patt = build_section_pattern(s)
-                            if patt:
-                                m = re.search(patt, t_anvisa, flags=re.IGNORECASE)
-                                if m:
-                                    if idx_first is None or m.start() < idx_first:
-                                        idx_first = m.start()
-                        if idx_first:
-                            header_raw = t_anvisa[:idx_first].strip()
-                            header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
-                            novo_ref = clean_metadata_and_footers(header_raw)
-                        if novo_ref:
+                        # Só reconstruir se a extração for considerada segura pelo safe_extract_header
+                        novo_ref = safe_extract_header(t_anvisa, secoes_alvo)
+                        if novo_ref and (not txt_ref or len(novo_ref) < len(txt_ref) or len(txt_ref) < 50):
                             txt_ref = novo_ref
 
-                        novo_mkt = ""
-                        idx_first2 = None
-                        for s in candidatos:
-                            patt = build_section_pattern(s)
-                            if patt:
-                                m = re.search(patt, t_mkt, flags=re.IGNORECASE)
-                                if m:
-                                    if idx_first2 is None or m.start() < idx_first2:
-                                        idx_first2 = m.start()
-                        if idx_first2:
-                            header_raw = t_mkt[:idx_first2].strip()
-                            header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
-                            novo_mkt = clean_metadata_and_footers(header_raw)
-                        if novo_mkt:
+                        novo_mkt = safe_extract_header(t_mkt, secoes_alvo)
+                        if novo_mkt and (not txt_mkt or len(novo_mkt) < len(txt_mkt) or len(txt_mkt) < 50):
                             txt_mkt = novo_mkt
 
+                        # remover numerais romanos no conteúdo (por linha)
                         txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
                         txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
 
@@ -626,7 +613,7 @@ SAÍDA JSON:
                         html_novo = melhorar_visual_topicos(html_novo)
                         status = "CONFORME"
                     else:
-                        html_ref, html_novo, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
+                        html_ref, html_novo, teve_diff = gerar_diff_html(txt_ref, txt_mkt, secoes_alvo)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff:
                             divs_count += 1
