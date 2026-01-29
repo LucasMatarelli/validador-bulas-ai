@@ -195,19 +195,10 @@ def find_first_section_index(texto: str, section_titles: list) -> int:
     return -1 if menor is None else menor
 
 def safe_extract_header(texto: str, secoes_alvo: list) -> str:
-    """
-    Extrai o cabeçalho (do início até antes da primeira seção conhecida) APENAS se for
-    seguro — evita extrair a bula inteira.
-    Critérios de segurança:
-     - Encontrou índice de alguma seção
-     - O fragmento extraído tem tamanho >= 20 caracteres
-     - O fragmento extraído não representa mais que 35% do texto total (evita pegar tudo)
-    """
     if not texto:
         return ""
     idx = find_first_section_index(texto, [s for s in secoes_alvo if s.strip().upper() != "CABEÇALHO DA BULA"])
     if idx == -1:
-        # fallback estrito: procurar 'APRESENTA' isoladamente
         m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
         idx = m.start() if m else -1
     if idx == -1:
@@ -215,13 +206,58 @@ def safe_extract_header(texto: str, secoes_alvo: list) -> str:
     header_raw = texto[:idx].strip()
     header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
     header_clean = clean_metadata_and_footers(header_raw)
-    # critérios de segurança
     if len(header_clean) < 20:
         return ""
     if len(header_clean) > max(2000, int(len(texto) * 0.35)):
-        # cabeçalho extraído muito grande => não é seguro
         return ""
     return header_clean.strip()
+
+# ----------------- 4b. EXTRAIR SEÇÃO DO TEXTO BRUTO (FALLBACK) -----------------
+
+def extract_section_from_raw(texto: str, section_title: str, sections_list: list) -> str:
+    """
+    Extrai o conteúdo de uma seção a partir do texto bruto:
+    - localiza o título (qualquer variação via regex tolerante)
+    - pega do fim do título até o início da próxima seção conhecida
+    - retorna '' se não encontrar ou se a extração parecer insegura
+    """
+    if not texto or not section_title:
+        return ""
+    patt = build_section_pattern(section_title)
+    if not patt:
+        return ""
+    m = re.search(patt, texto, flags=re.IGNORECASE)
+    if not m:
+        return ""
+    start = m.end()
+    # localizar o início da próxima seção (menor índice > start)
+    menor = None
+    for s in sections_list:
+        if not s:
+            continue
+        if s.strip().upper() == section_title.strip().upper():
+            continue
+        p2 = build_section_pattern(s)
+        if not p2:
+            continue
+        m2 = re.search(p2, texto[start:], flags=re.IGNORECASE)
+        if m2:
+            idx = start + m2.start()
+            if menor is None or idx < menor:
+                menor = idx
+    end = menor if menor is not None else len(texto)
+    section_raw = texto[start:end].strip()
+    # Remover títulos ou numerais residuais no início
+    section_raw = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]?\s*', '', section_raw)
+    section_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', section_raw)
+    # Limpeza leve (não remover conteúdo útil)
+    section_clean = re.sub(r'\r', '\n', section_raw).strip()
+    # Segurança: não aceitar se for muito curto (provavelmente não existe) ou absurdamente grande (pegou tudo)
+    if len(section_clean) < 10:
+        return ""
+    if len(section_clean) > max(5000, int(len(texto) * 0.6)):
+        return ""
+    return section_clean
 
 # ----------------- 5. NORMALIZAÇÃO AVANÇADA PARA COMPARAÇÃO -----------------
 
@@ -250,14 +286,11 @@ def normalize_for_comparison(text: str) -> str:
         return ""
     t = clean_metadata_and_footers(text)
     t = remove_section_titles_for_comparison(t)
-    # remover numeração no início de linhas: "2. ", "2) ", "2 -"
     t = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]\s*', '', t)
     t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
     t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
-    # retirar tags html
     t = re.sub(r'<[^>]+>', '', t)
     t = strip_accents(t).lower()
-    # remover pontuação
     t = re.sub(r'[^a-z0-9\s]', ' ', t)
     t = re.sub(r'\s+', ' ', t).strip()
     return t
@@ -584,13 +617,22 @@ SAÍDA JSON:
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
 
+                    # FALLBACK: se a IA não retornou texto da seção, tente extrair do texto bruto
+                    if not txt_ref:
+                        tentativa = extract_section_from_raw(t_anvisa, titulo, secoes_alvo)
+                        if tentativa:
+                            txt_ref = tentativa
+                    if not txt_mkt:
+                        tentativa2 = extract_section_from_raw(t_mkt, titulo, secoes_alvo)
+                        if tentativa2:
+                            txt_mkt = tentativa2
+
                     # limpeza leve dentro das seções (não remove conteúdo essencial)
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
 
                     # TRATAMENTO SEGURO DO CABEÇALHO DA BULA
                     if "CABEÇALHO" in titulo.upper():
-                        # Só reconstruir se a extração for considerada segura pelo safe_extract_header
                         novo_ref = safe_extract_header(t_anvisa, secoes_alvo)
                         if novo_ref and (not txt_ref or len(novo_ref) < len(txt_ref) or len(txt_ref) < 50):
                             txt_ref = novo_ref
@@ -599,7 +641,6 @@ SAÍDA JSON:
                         if novo_mkt and (not txt_mkt or len(novo_mkt) < len(txt_mkt) or len(txt_mkt) < 50):
                             txt_mkt = novo_mkt
 
-                        # remover numerais romanos no conteúdo (por linha)
                         txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
                         txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
 
