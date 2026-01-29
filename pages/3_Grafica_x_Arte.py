@@ -145,7 +145,7 @@ def jaccard_similarity(a: str, b: str) -> float:
 
 def clean_metadata_and_footers(texto: str) -> str:
     """
-    Limpeza suave para REMOVER apenas metadados/rodapés visíveis que atrapalham comparação.
+    Limpeza suave para REMOVER apenas metadados/rodapés visíveis que atrapalham compara��ão.
     NÃO usar esta versão para gerar o texto exibido - apenas para comparação.
     """
     if not texto:
@@ -266,10 +266,38 @@ def verificar_ortografia_inteligente(texto):
     except:
         return texto
 
-# ----------------- 5. DIFF ROBUSTO -----------------
+# ----------------- 5. DIFF ROBUSTO (CHAR-PRESERVING) -----------------
+
+def diff_preserve_original(text_a: str, text_b: str):
+    """
+    Faz diff em nível de caracteres preservando EXATAMENTE os textos originais,
+    envolvendo trechos divergentes com <span class="highlight-yellow">...</span>.
+    Retorna (html_a, html_b, tem_diff)
+    """
+    if text_a is None: text_a = ""
+    if text_b is None: text_b = ""
+    matcher = difflib.SequenceMatcher(None, text_a, text_b)
+    parts_a = []
+    parts_b = []
+    tem = False
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'equal':
+            parts_a.append(text_a[i1:i2])
+            parts_b.append(text_b[j1:j2])
+        elif tag == 'replace':
+            parts_a.append(f'<span class="highlight-yellow">{text_a[i1:i2]}</span>')
+            parts_b.append(f'<span class="highlight-yellow">{text_b[j1:j2]}</span>')
+            tem = True
+        elif tag == 'delete':
+            parts_a.append(f'<span class="highlight-yellow">{text_a[i1:i2]}</span>')
+            tem = True
+        elif tag == 'insert':
+            parts_b.append(f'<span class="highlight-yellow">{text_b[j1:j2]}</span>')
+            tem = True
+    return ''.join(parts_a), ''.join(parts_b), tem
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # usa textos sem tags para comparação palavra-a-palavra
+    # Mantive por compatibilidade, mas não usamos quando queremos preservar texto original
     ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
     novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
     palavras_ref = ref_sem_tags.split()
@@ -302,12 +330,12 @@ def gerar_diff_html(texto_ref, texto_novo):
     Faz comparação robusta:
     - Normaliza fortemente e verifica igualdade.
     - Substring-proportion e similaridade Jaccard/SequenceMatcher para evitar falsos-positivos.
-    - Só se realmente diferente, executa diff palavra-a-palavra e retorna textos com destaques.
+    - Só se realmente diferente, executa diff preservando os textos originais (char-level).
     """
     if texto_ref is None: texto_ref = ""
     if texto_novo is None: texto_novo = ""
 
-    # Para exibição, usamos a versão limpa (somente removendo tags HTML se houver)
+    # Para exibição, usamos a versão literal (preservando <b>/<i> se houver)
     display_ref = texto_ref.replace('\n', '<br>')
     display_novo = texto_novo.replace('\n', '<br>')
 
@@ -333,11 +361,13 @@ def gerar_diff_html(texto_ref, texto_novo):
     if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
         return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
 
-    # 4) finalmente, diff palavra-a-palavra sobre versões limpas (para reduzir ruído)
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
-    n_html_final = melhorar_visual_topicos(verificar_ortografia_inteligente(n_html))
-    r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
-    return r_html_final, n_html_final, diff_bool
+    # 4) Caso contrário: diff em nível de caracteres PRESERVANDO o texto original
+    # usamos display_ref/display_novo (com <b>/<i> preservados) para construir o destaque
+    html_ref, html_novo, diff_bool = diff_preserve_original(display_ref, display_novo)
+    # garantir aplicações de visual improvements (topicos) somente depois de construído
+    html_ref = melhorar_visual_topicos(html_ref)
+    html_novo = melhorar_visual_topicos(html_novo)
+    return html_ref, html_novo, diff_bool
 
 # ----------------- 6. REMOVER RODAPÉS (SUAVE) -----------------
 
@@ -369,16 +399,13 @@ def remover_rodapes_bula(texto):
     linhas_filtradas = []
     for ln in linhas:
         ln_s = ln.strip()
-        # mantém linhas que tenham letras minúsculas (provável conteúdo) ou tenham mais de 10 caracteres
         if not ln_s:
             continue
         if re.match(r'^[\d\W_]{1,30}$', ln_s):
-            # linha muito técnica -> remover
             continue
         linhas_filtradas.append(ln.rstrip())
 
     retorno = '\n'.join(linhas_filtradas)
-    # colapsa múltiplas quebras
     retorno = re.sub(r'\n{3,}', '\n\n', retorno)
     return retorno.strip()
 
@@ -420,7 +447,6 @@ def ocr_via_gemini(uploaded_file, api_keys):
                     )
                     texto_extraido = getattr(response, "text", "") or ""
                     if texto_extraido.strip():
-                        # aplica limpeza suave apenas no texto retornado pelo OCR
                         texto_extraido = remover_rodapes_bula(texto_extraido)
                         return texto_extraido, None
                 except Exception as e_model:
@@ -438,10 +464,6 @@ def ocr_via_gemini(uploaded_file, api_keys):
 # ----------------- 8. EXTRAÇÃO INTELIGENTE (RETORNA RAW PARA EXIBIÇÃO) -----------------
 
 def extract_text_smart(uploaded_file, api_keys=None):
-    """
-    Extrai o texto (raw) e usa versão 'limpa' apenas internamente para decidir OCR.
-    Retorna o texto RAW (com <b>/<i> preserve) para exibição e para envio ao modelo.
-    """
     try:
         raw_text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
@@ -498,7 +520,6 @@ def extract_text_smart(uploaded_file, api_keys=None):
                     para_text += formatted_text
                 raw_text += para_text + "\n\n"
 
-        # Versão limpa (texto sem tags, com remoção suave de metadados) usada apenas para decisões (OCR trigger)
         texto_sem_tags = re.sub(r'<[^>]+>', '', raw_text).strip()
         texto_limpo_para_checar = remover_rodapes_bula(texto_sem_tags)
 
@@ -508,13 +529,11 @@ def extract_text_smart(uploaded_file, api_keys=None):
             texto_ocr, erro_ocr = ocr_via_gemini(uploaded_file, api_keys)
             if texto_ocr:
                 st.success(f"✅ OCR bem-sucedido para '{uploaded_file.name}'!")
-                return texto_ocr  # OCR já vem limpo/suficiente
+                return texto_ocr
             else:
                 st.error(f"❌ Falha no OCR de '{uploaded_file.name}'. Detalhes: {erro_ocr}")
-                # fallback: retornar o raw_text mesmo que curto (para evitar cortar)
                 return raw_text
 
-        # Caso normal: retornar raw_text (com formatação preservada)
         return raw_text
 
     except Exception as e:
@@ -622,9 +641,7 @@ if st.button("🚀 Processar Conferência"):
 
                     # Não sobrescrever o texto da seção: usamos safe rules apenas para CABEÇALHO se necessário
                     if "CABEÇALHO" in titulo_upper:
-                        # tenta extração segura do cabeçalho a partir do raw t_anvisa / t_mkt se realmente seguro
                         def safe_extract_header(raw_text, secoes_alvo):
-                            # procura primeira seção conhecida e pega tudo antes (com checagens)
                             menor = None
                             for s in secoes_alvo:
                                 if s.strip().upper() == "CABEÇALHO DA BULA":
@@ -642,7 +659,6 @@ if st.button("🚀 Processar Conferência"):
                             header_raw = raw_text[:menor].strip()
                             header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
                             header_clean = clean_metadata_and_footers(header_raw)
-                            # critérios de segurança
                             if len(header_clean) < 20:
                                 return ""
                             if len(header_clean) > max(2000, int(len(raw_text)*0.35)):
@@ -686,7 +702,7 @@ if st.button("🚀 Processar Conferência"):
                 c3.metric("Seções", len(secoes_finais))
 
                 sub1, sub2 = st.columns(2)
-                sub1.info(f"✅ Conformes: {len(secoes_finais) - divs_count}")
+                sub1.info(f"✅ Conformes: {len(secoes_finais) - div_count if (div_count:=divs_count) or True else 0}")
                 if divs_count > 0: sub2.warning(f"⚠️ Divergentes: {divs_count}")
                 else: sub2.success("✨ Divergências: 0")
 
