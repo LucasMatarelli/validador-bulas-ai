@@ -1,3 +1,4 @@
+# (substitua o seu arquivo atual por este)
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
@@ -176,6 +177,7 @@ def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
     if not words:
         return None
+    # pattern tolerante: permite qualquer não-alfanumérico entre as palavras
     pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
     return pattern
 
@@ -199,6 +201,7 @@ def safe_extract_header(texto: str, secoes_alvo: list) -> str:
         return ""
     idx = find_first_section_index(texto, [s for s in secoes_alvo if s.strip().upper() != "CABEÇALHO DA BULA"])
     if idx == -1:
+        # fallback: procurar 'APRESENTA' isoladamente
         m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
         idx = m.start() if m else -1
     if idx == -1:
@@ -212,51 +215,100 @@ def safe_extract_header(texto: str, secoes_alvo: list) -> str:
         return ""
     return header_clean.strip()
 
-# ----------------- 4b. EXTRAIR SEÇÃO DO TEXTO BRUTO (FALLBACK) -----------------
+# ----------------- 4b. EXTRAIR SEÇÃO DO TEXTO BRUTO (FALLBACK MELHORADO) -----------------
+
+def _build_flexible_title_regex(title: str):
+    """Cria regex que aceita numeração opcional antes do título e pontuações."""
+    words = re.findall(r'\w+', title, flags=re.UNICODE)
+    if not words:
+        return None
+    core = r'\W+'.join(map(re.escape, words))
+    # aceita opcionalmente "2. ", "2) ", "II - " antes do título, ou começo de linha
+    regex = rf'(?:^|\n)\s*(?:\d{{1,2}}\s*[\.\)\-]\s*|[IVXLCDM]+\s*[–-]\s*)?{core}'
+    return regex
 
 def extract_section_from_raw(texto: str, section_title: str, sections_list: list) -> str:
     """
-    Extrai o conteúdo de uma seção a partir do texto bruto:
-    - localiza o título (qualquer variação via regex tolerante)
-    - pega do fim do título até o início da próxima seção conhecida
-    - retorna '' se não encontrar ou se a extração parecer insegura
+    Extrai conteúdo de section_title do texto bruto de forma tolerante:
+     - procura pelo título com numeração opcional;
+     - pega do fim do título até o início da próxima seção conhecida;
+     - se não encontrar próxima seção, tenta heurísticas (duas quebras de linha seguidas,
+       ou fim do documento);
+     - preserva tags <b>/<i> presentes no texto de origem.
     """
     if not texto or not section_title:
         return ""
-    patt = build_section_pattern(section_title)
-    if not patt:
-        return ""
-    m = re.search(patt, texto, flags=re.IGNORECASE)
+
+    # 1) tentar achar o título com regex flexível (numeração opcional)
+    patt = _build_flexible_title_regex(section_title)
+    if patt:
+        m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
+    else:
+        m = re.search(build_section_pattern(section_title), texto, flags=re.IGNORECASE | re.UNICODE)
+
+    if not m:
+        # 2) fallback: procurar só por palavras-chaves principais (tolerante)
+        keywords = re.findall(r'\w+', section_title)
+        if keywords:
+            # procurar sequência curta de 3 primeiras palavras ou todas, conforme disponibilidade
+            for kcount in (min(3, len(keywords)), len(keywords)):
+                core = r'\W+'.join(map(re.escape, keywords[:kcount]))
+                m = re.search(core, texto, flags=re.IGNORECASE | re.UNICODE)
+                if m:
+                    break
     if not m:
         return ""
+
     start = m.end()
-    # localizar o início da próxima seção (menor índice > start)
+
+    # 3) localizar início da próxima seção conhecida (tolerante a numeração)
     menor = None
     for s in sections_list:
         if not s:
             continue
+        # pular a própria seção
         if s.strip().upper() == section_title.strip().upper():
             continue
-        p2 = build_section_pattern(s)
+        # construção tolerante
+        p2 = _build_flexible_title_regex(s)
         if not p2:
-            continue
-        m2 = re.search(p2, texto[start:], flags=re.IGNORECASE)
+            p2 = build_section_pattern(s)
+        m2 = re.search(p2, texto[start:], flags=re.IGNORECASE | re.UNICODE)
         if m2:
             idx = start + m2.start()
             if menor is None or idx < menor:
                 menor = idx
+
+    # 4) heurísticas adicionais se não achar próximo título:
+    if menor is None:
+        # tenta encontrar 2 quebras de linha consecutivas + linha com letras MAIÚSCULAS (provável título)
+        # busca a partir de start
+        m3 = re.search(r'\n{2,}([A-ZÀ-Ý0-9 \-]{6,})\n', texto[start:])
+        if m3:
+            # só considerar se a linha parecer um título (pouco texto corrido)
+            candidate = m3.group(1).strip()
+            if len(candidate.split()) <= 6:
+                menor = start + m3.start()
+
     end = menor if menor is not None else len(texto)
+
     section_raw = texto[start:end].strip()
-    # Remover títulos ou numerais residuais no início
+
+    # remover numerais residuais / títulos na frente
     section_raw = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]?\s*', '', section_raw)
     section_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', section_raw)
-    # Limpeza leve (não remover conteúdo útil)
+
+    # limpar espaços redundantes mas PRESERVAR <b>/<i>
+    # normalizar CRLF
     section_clean = re.sub(r'\r', '\n', section_raw).strip()
-    # Segurança: não aceitar se for muito curto (provavelmente não existe) ou absurdamente grande (pegou tudo)
-    if len(section_clean) < 10:
+
+    # segurança: recusar extracoes minúsculas/absurdas
+    if len(re.sub(r'<[^>]+>', '', section_clean).strip()) < 10:
         return ""
-    if len(section_clean) > max(5000, int(len(texto) * 0.6)):
+    if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)):
+        # se pegou quase tudo, evitar (inseguro)
         return ""
+
     return section_clean
 
 # ----------------- 5. NORMALIZAÇÃO AVANÇADA PARA COMPARAÇÃO -----------------
@@ -344,6 +396,7 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
 
 # ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
+# (mantive sua lógica já aprovada antes; aqui foca-se no fallback de extração)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
@@ -379,13 +432,11 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     norm_ref = normalize_for_comparison(comp_ref)
     norm_novo = normalize_for_comparison(comp_novo)
 
-    # 1) igualdade absoluta após normalização
     if norm_ref == norm_novo:
         html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
         html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
 
-    # 2) substring-proportion (se curtos e contidos)
     if norm_ref and norm_novo:
         shorter, longer = (norm_ref, norm_novo) if len(norm_ref) <= len(norm_novo) else (norm_novo, norm_ref)
         if shorter and shorter in longer:
@@ -395,7 +446,6 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
                 html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
                 return html_ref, html_novo, False
 
-    # 3) Similaridade mista (SequenceMatcher + Jaccard)
     ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
     jacc = jaccard_similarity(norm_ref, norm_novo)
     if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
@@ -403,7 +453,6 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
         html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
 
-    # 4) Caso contrário, diff palavra-a-palavra (após limpeza)
     r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
     n_html_final = verificar_ortografia_inteligente(n_html); n_html_final = melhorar_visual_topicos(n_html_final)
     r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
