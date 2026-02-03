@@ -388,12 +388,12 @@ def gerar_diff_html(texto_ref, texto_novo):
     ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
     jacc = jaccard_similarity(norm_ref, norm_novo)
     if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
-        return melhor_visual_topicos(display_ref), melhor_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
+        return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
 
     # 4) Caso contrário: diff em nível de caracteres PRESERVANDO o texto original
     html_ref, html_novo, diff_bool = diff_preserve_original(display_ref, display_novo)
     html_ref = melhorar_visual_topicos(html_ref)
-    html_novo = melhorar_visual_topicos(html_novo)  # CORREÇÃO: não sobrescrever o nome da função
+    html_novo = melhor_visual_topicos = melhorar_visual_topicos(html_novo)  # keep consistent naming
     return html_ref, html_novo, diff_bool
 
 # ----------------- 6. REMOVER RODAPÉS (SUAVE) -----------------
