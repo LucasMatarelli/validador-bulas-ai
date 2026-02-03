@@ -394,7 +394,6 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
 
 # ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
-# (mantive sua lógica já aprovada antes; aqui foca-se no fallback de extração)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
@@ -530,15 +529,11 @@ c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula MKT", type=["pdf", "docx"], key="f2")
 
-# checkbox para forçar uso do fallback local (sem chamada à API)
-# e checkbox para decidir comportamento quando IA falhar.
-force_local = st.checkbox("Forçar fallback local (não chamar a API Gemini)", value=False)
-no_fallback = st.checkbox("Não usar fallback — falhar se IA indisponível", value=True)
-
 if st.button("🚀 Processar Conferência", key="process_button"):
     st.info("Iniciando processamento...")
     if not f1 or not f2:
         st.warning("Por favor, envie ambos os arquivos antes de processar.")
+        st.stop()
     else:
         st.info(f"Arquivo BELFAR detectado: {getattr(f1, 'name', 'desconhecido')}")
         st.info(f"Arquivo MKT detectado: {getattr(f2, 'name', 'desconhecido')}")
@@ -550,19 +545,15 @@ if st.button("🚀 Processar Conferência", key="process_button"):
     ]
     keys_validas = [k for k in keys_raw if k]
 
-    # logic: if no_fallback True and no keys -> error and stop
-    if no_fallback and not keys_validas and not force_local:
-        st.error("Opção 'Não usar fallback' marcada, mas nenhuma API key disponível. Impossível prosseguir.")
+    # Sem fallback: se não houver keys, abortar imediatamente
+    if not keys_validas:
+        st.error("Erro crítico: nenhuma API key encontrada. Sem fallback definido - impossível prosseguir.")
         st.stop()
-
-    if not keys_validas and not force_local:
-        st.warning("Nenhuma API Key encontrada — será usado o fallback local.")
-        force_local = True
 
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
 
-        with st.spinner("Lendo arquivos e conectando à IA (ou usando fallback local)..."):
+        with st.spinner("Lendo arquivos e conectando à IA..."):
             try:
                 f1.seek(0); f2.seek(0)
                 t_anvisa = extract_text_from_file(f1)  # já limpo de metadados
@@ -617,95 +608,54 @@ SAÍDA JSON:
             response = None
             sucesso = False
             log_erros = []
-            local_fallback = False
 
-            # Se o usuário forçou fallback local, não tentamos a API
-            if force_local:
-                local_fallback = True
-            else:
-                for idx_key, key in enumerate(keys_validas):
-                    if sucesso: break
+            # tentar cada key e cada modelo; se todas falharem, abortar (SEM fallback)
+            for idx_key, key in enumerate(keys_validas):
+                if sucesso: break
+                try:
+                    genai.configure(api_key=key)
+                except Exception as e:
+                    log_erros.append(f"Key {idx_key+1} | configure: {str(e)}")
+                    continue
+
+                for modelo in MODELOS_PARA_TENTAR:
                     try:
-                        genai.configure(api_key=key)
+                        model = genai.GenerativeModel(
+                            modelo,
+                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                        )
+                        response = model.generate_content(prompt)
+                        sucesso = True
+                        break
                     except Exception as e:
-                        log_erros.append(f"Key {idx_key+1} | configure: {str(e)}")
-                        # tentar próxima key
+                        log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
+                        time.sleep(0.2)
                         continue
 
-                    for modelo in MODELOS_PARA_TENTAR:
-                        try:
-                            model = genai.GenerativeModel(
-                                modelo,
-                                generation_config={"response_mime_type": "application/json", "temperature": 0.0}
-                            )
-                            response = model.generate_content(prompt)
-                            sucesso = True
-                            break
-                        except Exception as e:
-                            # registrar erro e tentar próxima combinação key/modelo
-                            log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                            # pequena pausa para evitar loop agressivo
-                            time.sleep(0.2)
-                            continue
+            if not sucesso:
+                st.error("❌ Falha total ao chamar a API Gemini. Sem fallback configurado — abortando.")
+                if log_erros:
+                    st.code("\n".join(log_erros))
+                st.stop()
 
-                if not sucesso:
-                    # se usuário pediu explicitamente para não usar fallback -> falhar aqui
-                    if no_fallback:
-                        st.error("❌ IA indisponível ou sem quota e opção 'Não usar fallback' marcada. Abortando.")
-                        if log_erros:
-                            st.code("\n".join(log_erros))
-                        st.stop()
-                    # caso contrário, usar fallback local (comunicar ao usuário)
-                    local_fallback = True
-                    st.warning("IA indisponível ou sem quota — usando fallback local (extração heurística).")
-                    if log_erros:
-                        st.code("\n".join(log_erros))
-
+            # se chegou aqui, temos response da IA
             try:
-                if local_fallback:
-                    # Montar resultado localmente sem chamar a IA
-                    resultado = {
-                        "data_anvisa_ref": "-",
-                        "data_anvisa_mkt": "-",
-                        "secoes": []
-                    }
-                    for titulo in secoes_alvo:
-                        if titulo.strip().upper() == "CABEÇALHO DA BULA":
-                            txt_ref = safe_extract_header(t_anvisa, secoes_alvo)
-                            txt_mkt = safe_extract_header(t_mkt, secoes_alvo)
-                        else:
-                            txt_ref = extract_section_from_raw(t_anvisa, titulo, secoes_alvo)
-                            txt_mkt = extract_section_from_raw(t_mkt, titulo, secoes_alvo)
-
-                        if not txt_ref and not txt_mkt:
-                            continue
-
-                        txt_ref = clean_metadata_and_footers(txt_ref)
-                        txt_mkt = clean_metadata_and_footers(txt_mkt)
-
-                        resultado["secoes"].append({
-                            "titulo": titulo,
-                            "texto_anvisa": txt_ref,
-                            "texto_mkt": txt_mkt
-                        })
-                else:
-                    if response is None:
-                        st.error("Resposta da IA vazia (response is None).")
-                        st.stop()
-                    resp_text = getattr(response, "text", None)
-                    if not resp_text:
-                        st.error("Resposta da IA não contém atributo 'text' ou está vazio.")
-                        try:
-                            st.code(str(response))
-                        except:
-                            pass
-                        st.stop()
-                    resultado = json.loads(resp_text)
+                if response is None:
+                    st.error("Resposta da IA vazia (response is None).")
+                    st.stop()
+                resp_text = getattr(response, "text", None)
+                if not resp_text:
+                    st.error("Resposta da IA não contém atributo 'text' ou está vazio.")
+                    try:
+                        st.code(str(response))
+                    except:
+                        pass
+                    st.stop()
+                resultado = json.loads(resp_text)
             except Exception as e:
-                st.exception(f"Erro ao decodificar/gerar JSON da resposta da IA ou do fallback: {e}")
+                st.exception(f"Erro ao decodificar JSON da resposta da IA: {e}")
                 try:
-                    if not local_fallback:
-                        st.code(resp_text)
+                    st.code(resp_text)
                 except:
                     pass
                 st.stop()
@@ -723,7 +673,8 @@ SAÍDA JSON:
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
 
-                    # FALLBACK: se a IA não retornou texto da seção, tente extrair do texto bruto
+                    # se IA não retornou texto da seção, tentar extrair via heurística básica local apenas como tentativa adicional
+                    # (MAS NÃO USAMOS isto para substituir o fluxo principal; é apenas um último recurso para exibir algo)
                     if not txt_ref:
                         tentativa = extract_section_from_raw(t_anvisa, titulo, secoes_alvo)
                         if tentativa:
