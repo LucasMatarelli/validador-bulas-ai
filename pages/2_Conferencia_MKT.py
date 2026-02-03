@@ -91,7 +91,6 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
-    "models/gemini-2.0-flash",
     "models/gemini-1.5-flash",
     "gemini-1.5-flash"
 ]
