@@ -1,4 +1,3 @@
-# (substitua o seu arquivo atual por este)
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
@@ -608,6 +607,7 @@ SAÍDA JSON:
             response = None
             sucesso = False
             log_erros = []
+            local_fallback = False
 
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
@@ -623,31 +623,65 @@ SAÍDA JSON:
                         break
                     except Exception as e:
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
+                        # Se houver indicação clara de quota, apenas registrar e continuar para próximas keys/modelos.
+                        # Pequeno sleep para evitar loop agressivo.
                         time.sleep(0.5)
                         continue
 
             if not sucesso:
-                st.error("❌ Falha Total. Detalhes:")
+                # Em vez de abortar na primeira falha total da IA (quota/model not found/etc.),
+                # utilizamos um fallback local que utiliza as funções de extração já presentes
+                # no código para montar o JSON de saída. Isso evita o erro 429/404 quando a API
+                # do Gemini estiver indisponível ou sem quota.
+                local_fallback = True
+                st.warning("IA indisponível ou sem quota. Usando fallback local (extração heurística). Detalhes:")
                 st.code("\n".join(log_erros))
-                st.stop()
 
             try:
-                if response is None:
-                    st.error("Resposta da IA vazia (response is None).")
-                    st.stop()
-                resp_text = getattr(response, "text", None)
-                if not resp_text:
-                    st.error("Resposta da IA não contém atributo 'text' ou está vazio.")
-                    try:
-                        st.code(str(response))
-                    except:
-                        pass
-                    st.stop()
-                resultado = json.loads(resp_text)
+                if local_fallback:
+                    # Montar resultado localmente sem chamar a IA
+                    resultado = {
+                        "data_anvisa_ref": "-",
+                        "data_anvisa_mkt": "-",
+                        "secoes": []
+                    }
+                    for titulo in secoes_alvo:
+                        if titulo.strip().upper() == "CABEÇALHO DA BULA":
+                            txt_ref = safe_extract_header(t_anvisa, secoes_alvo)
+                            txt_mkt = safe_extract_header(t_mkt, secoes_alvo)
+                        else:
+                            txt_ref = extract_section_from_raw(t_anvisa, titulo, secoes_alvo)
+                            txt_mkt = extract_section_from_raw(t_mkt, titulo, secoes_alvo)
+
+                        if not txt_ref and not txt_mkt:
+                            continue
+
+                        txt_ref = clean_metadata_and_footers(txt_ref)
+                        txt_mkt = clean_metadata_and_footers(txt_mkt)
+
+                        resultado["secoes"].append({
+                            "titulo": titulo,
+                            "texto_anvisa": txt_ref,
+                            "texto_mkt": txt_mkt
+                        })
+                else:
+                    if response is None:
+                        st.error("Resposta da IA vazia (response is None).")
+                        st.stop()
+                    resp_text = getattr(response, "text", None)
+                    if not resp_text:
+                        st.error("Resposta da IA não contém atributo 'text' ou está vazio.")
+                        try:
+                            st.code(str(response))
+                        except:
+                            pass
+                        st.stop()
+                    resultado = json.loads(resp_text)
             except Exception as e:
-                st.exception(f"Erro ao decodificar JSON da resposta da IA: {e}")
+                st.exception(f"Erro ao decodificar/gerar JSON da resposta da IA ou do fallback: {e}")
                 try:
-                    st.code(resp_text)
+                    if not local_fallback:
+                        st.code(resp_text)
                 except:
                     pass
                 st.stop()
