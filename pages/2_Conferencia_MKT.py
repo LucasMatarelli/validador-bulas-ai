@@ -530,6 +530,9 @@ c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula MKT", type=["pdf", "docx"], key="f2")
 
+# checkbox para forçar uso do fallback local (sem chamada à API)
+force_local = st.checkbox("Forçar fallback local (não chamar a API Gemini)", value=False)
+
 if st.button("🚀 Processar Conferência", key="process_button"):
     st.info("Iniciando processamento...")
     if not f1 or not f2:
@@ -545,14 +548,14 @@ if st.button("🚀 Processar Conferência", key="process_button"):
     ]
     keys_validas = [k for k in keys_raw if k]
 
-    if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key encontrada.")
-        st.stop()
+    if not keys_validas and not force_local:
+        st.warning("Nenhuma API Key encontrada — será usado o fallback local.")
+        force_local = True
 
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
 
-        with st.spinner("Lendo arquivos e conectando à IA..."):
+        with st.spinner("Lendo arquivos e conectando à IA (ou usando fallback local)..."):
             try:
                 f1.seek(0); f2.seek(0)
                 t_anvisa = extract_text_from_file(f1)  # já limpo de metadados
@@ -609,33 +612,40 @@ SAÍDA JSON:
             log_erros = []
             local_fallback = False
 
-            for idx_key, key in enumerate(keys_validas):
-                if sucesso: break
-                genai.configure(api_key=key)
-                for modelo in MODELOS_PARA_TENTAR:
+            # Se o usuário forçou fallback local, não tentamos a API
+            if force_local:
+                local_fallback = True
+            else:
+                for idx_key, key in enumerate(keys_validas):
+                    if sucesso: break
                     try:
-                        model = genai.GenerativeModel(
-                            modelo,
-                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
-                        )
-                        response = model.generate_content(prompt)
-                        sucesso = True
-                        break
+                        genai.configure(api_key=key)
                     except Exception as e:
-                        log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        # Se houver indicação clara de quota, apenas registrar e continuar para próximas keys/modelos.
-                        # Pequeno sleep para evitar loop agressivo.
-                        time.sleep(0.5)
+                        log_erros.append(f"Key {idx_key+1} | configure: {str(e)}")
+                        # tentar próxima key
                         continue
 
-            if not sucesso:
-                # Em vez de abortar na primeira falha total da IA (quota/model not found/etc.),
-                # utilizamos um fallback local que utiliza as funções de extração já presentes
-                # no código para montar o JSON de saída. Isso evita o erro 429/404 quando a API
-                # do Gemini estiver indisponível ou sem quota.
-                local_fallback = True
-                st.warning("IA indisponível ou sem quota. Usando fallback local (extração heurística). Detalhes:")
-                st.code("\n".join(log_erros))
+                    for modelo in MODELOS_PARA_TENTAR:
+                        try:
+                            model = genai.GenerativeModel(
+                                modelo,
+                                generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                            )
+                            response = model.generate_content(prompt)
+                            sucesso = True
+                            break
+                        except Exception as e:
+                            # registrar erro e tentar próxima combinação key/modelo
+                            log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
+                            # pequena pausa para evitar loop agressivo
+                            time.sleep(0.2)
+                            continue
+
+                if not sucesso:
+                    local_fallback = True
+                    st.warning("IA indisponível ou sem quota — usando fallback local (extração heurística).")
+                    if log_erros:
+                        st.code("\n".join(log_erros))
 
             try:
                 if local_fallback:
