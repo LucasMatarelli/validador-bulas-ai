@@ -91,6 +91,7 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
+    "models/gemini-2.0-flash",
     "models/gemini-1.5-flash",
     "gemini-1.5-flash"
 ]
@@ -530,7 +531,9 @@ f1 = c1.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula MKT", type=["pdf", "docx"], key="f2")
 
 # checkbox para forçar uso do fallback local (sem chamada à API)
+# e checkbox para decidir comportamento quando IA falhar.
 force_local = st.checkbox("Forçar fallback local (não chamar a API Gemini)", value=False)
+no_fallback = st.checkbox("Não usar fallback — falhar se IA indisponível", value=True)
 
 if st.button("🚀 Processar Conferência", key="process_button"):
     st.info("Iniciando processamento...")
@@ -546,6 +549,11 @@ if st.button("🚀 Processar Conferência", key="process_button"):
         st.secrets.get("GEMINI_API_KEY3")
     ]
     keys_validas = [k for k in keys_raw if k]
+
+    # logic: if no_fallback True and no keys -> error and stop
+    if no_fallback and not keys_validas and not force_local:
+        st.error("Opção 'Não usar fallback' marcada, mas nenhuma API key disponível. Impossível prosseguir.")
+        st.stop()
 
     if not keys_validas and not force_local:
         st.warning("Nenhuma API Key encontrada — será usado o fallback local.")
@@ -641,6 +649,13 @@ SAÍDA JSON:
                             continue
 
                 if not sucesso:
+                    # se usuário pediu explicitamente para não usar fallback -> falhar aqui
+                    if no_fallback:
+                        st.error("❌ IA indisponível ou sem quota e opção 'Não usar fallback' marcada. Abortando.")
+                        if log_erros:
+                            st.code("\n".join(log_erros))
+                        st.stop()
+                    # caso contrário, usar fallback local (comunicar ao usuário)
                     local_fallback = True
                     st.warning("IA indisponível ou sem quota — usando fallback local (extração heurística).")
                     if log_erros:
