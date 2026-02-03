@@ -11,21 +11,8 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from spellchecker import SpellChecker
 from io import BytesIO
 
-# ----------------- 0. UTIL: mostrar versão do client genai -----------------
-def get_genai_version():
-    try:
-        return getattr(genai, "__version__", "unknown")
-    except Exception:
-        try:
-            import pkg_resources
-            return pkg_resources.get_distribution("google-generative-ai").version
-        except Exception:
-            return "unknown"
-
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Gráfica x Arte (robusto)", page_icon="💊", layout="wide")
-
-st.markdown(f"<div style='font-size:0.85rem;color:#666;margin-bottom:8px'>Gemini client version: {get_genai_version()}</div>", unsafe_allow_html=True)
 
 st.markdown("""
 <style>
@@ -406,7 +393,7 @@ def gerar_diff_html(texto_ref, texto_novo):
     # 4) Caso contrário: diff em nível de caracteres PRESERVANDO o texto original
     html_ref, html_novo, diff_bool = diff_preserve_original(display_ref, display_novo)
     html_ref = melhorar_visual_topicos(html_ref)
-    html_novo = melhorar_visual_topicos(html_novo)  # CORREÇÃO: não sobrescrever o nome da função
+    html_novo = melhor_visual_topicos = melhorar_visual_topicos(html_novo)  # keep consistent naming
     return html_ref, html_novo, diff_bool
 
 # ----------------- 6. REMOVER RODAPÉS (SUAVE) -----------------
@@ -459,51 +446,7 @@ def remover_rodapes_bula(texto):
 
     return retorno.strip()
 
-# ----------------- 7. OCR VIA GEMINI (robusto e defensivo) -----------------
-
-def _extract_text_from_genai_response(response):
-    """
-    Tenta extrair texto de várias estruturas que o genai pode retornar.
-    """
-    if response is None:
-        return ""
-    # 1) .text
-    try:
-        txt = getattr(response, "text", None)
-        if txt:
-            return txt
-    except Exception:
-        pass
-    # 2) .output_text
-    try:
-        txt = getattr(response, "output_text", None)
-        if txt:
-            return txt
-    except Exception:
-        pass
-    # 3) .candidates -> list
-    try:
-        cands = getattr(response, "candidates", None)
-        if cands:
-            # tentar vários formatos dentro do candidato
-            first = cands[0]
-            for attr in ("text", "content", "message", "output_text"):
-                txt = getattr(first, attr, None)
-                if txt:
-                    return txt
-    except Exception:
-        pass
-    # 4) tentar dict conversion
-    try:
-        d = response.__dict__ if hasattr(response, "__dict__") else dict(response)
-        # procurar chaves com 'text' ou 'content'
-        for k, v in d.items():
-            if isinstance(v, str) and (len(v) > 0) and (len(v) < 200000):
-                if re.search(r'\w', v):
-                    return v
-    except Exception:
-        pass
-    return ""
+# ----------------- 7. OCR VIA GEMINI (mantive sua lógica, com pequenas seguranças) -----------------
 
 def ocr_via_gemini_bytes(bytes_data, api_keys):
     if not bytes_data:
@@ -525,51 +468,34 @@ def ocr_via_gemini_bytes(bytes_data, api_keys):
         HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
     }
-
     log_erros_ocr = []
     for i, key in enumerate(api_keys):
-        if not key:
-            continue
         try:
             genai.configure(api_key=key)
-        except Exception as e:
-            log_erros_ocr.append(f"Key {i+1} Falha Config: {str(e)}")
-            continue
-
-        for modelo in MODELOS_PARA_TENTAR:
-            try:
-                model = genai.GenerativeModel(modelo)
-                # chamada defensiva
+            for modelo in MODELOS_PARA_TENTAR:
                 try:
+                    model = genai.GenerativeModel(modelo)
                     response = model.generate_content(
                         [{'mime_type': 'application/pdf', 'data': bytes_data}, prompt_ocr],
                         safety_settings=safety_settings
                     )
-                except TypeError:
-                    # algumas versões podem usar signature diferente (fallback)
-                    response = model.generate_content([{'mime_type': 'application/pdf', 'data': bytes_data}, prompt_ocr])
-                except Exception as e_call:
-                    raise
-
-                texto_extraido = _extract_text_from_genai_response(response) or ""
-                if isinstance(texto_extraido, str) and texto_extraido.strip():
-                    texto_extraido = remover_rodapes_bula(texto_extraido)
-                    return texto_extraido, None
-                else:
-                    log_erros_ocr.append(f"Key {i+1} | {modelo}: resposta sem texto detectável")
-            except Exception as e_model:
-                err_msg = str(e_model)
-                log_erros_ocr.append(f"Key {i+1} | {modelo}: {err_msg}")
-                # rate-limit backoff
-                if "429" in err_msg or "quota" in err_msg.lower():
-                    time.sleep(2)
-                else:
-                    time.sleep(0.5)
-                continue
-
+                    texto_extraido = getattr(response, "text", "") or ""
+                    if texto_extraido.strip():
+                        texto_extraido = remover_rodapes_bula(texto_extraido)
+                        return texto_extraido, None
+                except Exception as e_model:
+                    err_msg = str(e_model)
+                    log_erros_ocr.append(f"Key {i+1} | {modelo}: {err_msg}")
+                    if "429" in err_msg or "quota" in err_msg.lower():
+                        time.sleep(2)
+                    continue
+        except Exception as e_key:
+            log_erros_ocr.append(f"Key {i+1} Falha Config: {str(e_key)}")
+            continue
     return "", " | ".join(log_erros_ocr)
 
 # ----------------- 8. EXTRAÇÃO INTELIGENTE (BYTES) -----------------
+
 def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
     """
     Trabalha sobre bytes (evita múltiplas leituras do UploadedFile).
@@ -593,7 +519,6 @@ def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
                                 continue
                             flags = span.get("flags", 0)
                             font_name = span.get("font", "").lower()
-                            # heurística reforçada para bold/italic (considera nome da fonte)
                             is_bold = ((flags & 16) or "bold" in font_name or "black" in font_name or "heavy" in font_name or "semibold" in font_name)
                             is_italic = ((flags & 2) or "italic" in font_name or "oblique" in font_name)
                             formatted_text = content  # NÃO STRIP para evitar picotamento
@@ -639,10 +564,7 @@ def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
         alnum_count = len(re.findall(r'\w', texto_para_checar))
         if (fname.endswith('.pdf') and alnum_count < 60 and api_keys):
             st.warning(f"👁️ Arquivo '{filename}' com pouco texto detectado ({alnum_count} chars alfanuméricos). Ativando OCR...")
-            try:
-                texto_ocr, erro_ocr = ocr_via_gemini_bytes(bytes_data, api_keys)
-            except Exception as e:
-                texto_ocr, erro_ocr = "", str(e)
+            texto_ocr, erro_ocr = ocr_via_gemini_bytes(bytes_data, api_keys)
             if texto_ocr:
                 st.success(f"✅ OCR bem-sucedido para '{filename}'!")
                 return texto_ocr
@@ -745,7 +667,7 @@ def align_sections_between_texts(text_ref, text_mkt, sections_list=SECOES_PACIEN
     return final
 
 # ----------------- 10. UI PRINCIPAL -----------------
-st.title("💊 Gráfica x Arte — versão ajustada (robusta)")
+st.title("💊 Gráfica x Arte — versão ajustada")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
 
