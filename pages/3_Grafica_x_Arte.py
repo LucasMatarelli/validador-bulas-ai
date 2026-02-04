@@ -73,7 +73,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title(APP_TITLE)
-st.markdown("<div class='small-muted'>Comparação automática de seções com preservação de <b>negrito</b> e <i>itálico</i>.</div>", unsafe_allow_html=True)
+st.markdown("<div class='small-muted'>Escolha o Tipo de Bula:</div>", unsafe_allow_html=True)
 
 # ----------------- UTIL HELPERS -----------------
 def strip_accents(s: str) -> str:
