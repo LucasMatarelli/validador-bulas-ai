@@ -18,7 +18,7 @@ from spellchecker import SpellChecker
 from io import BytesIO
 
 # ----------------- CONFIGURAÇÕES GLOBAIS -----------------
-APP_TITLE = "Gráfica x Arte"
+APP_TITLE = "💊 Gráfica x Arte"
 
 # Aumentado para suportar PDFs maiores e a latência dos novos modelos
 TIMEOUT_S = 40  
