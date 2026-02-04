@@ -90,12 +90,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
-# Mantive a lista padrão curta (não é mais a fonte primária), o novo código tenta descobrir modelos via ListModels.
+# Lista de modelos atualizada para tentar os IDs compatíveis com Gemini 2.5 / Gemini 3 / Gemma 3.
+# Mantive várias variantes (com e sem prefixo 'models/') para cobrir diferenças de naming.
 MODELOS_PARA_TENTAR = [
-    "gemini-1.5-flash",
-    "gemini-1.5",
-    "text-bison-001",
-    "chat-bison-001"
+    "models/gemini-2.5-flash", "gemini-2.5-flash",
+    "models/gemini-2.5", "gemini-2.5",
+    "models/gemini-3-flash", "gemini-3-flash",
+    "models/gemma-3-27b", "gemma-3-27b",
+    "models/gemma-3-12b", "gemma-3-12b",
+    "models/gemma-3-4b", "gemma-3-4b"
 ]
 
 SECOES_PACIENTE = [
@@ -118,170 +121,12 @@ SECOES_PROFISSIONAL = []
 
 SIMILARITY_THRESHOLD = 0.92  # mais rígido para reduzir falsos-positivos
 
-# ----------------- helpers para descoberta e uso de modelos -----------------
-
-def safe_list_models():
-    """
-    Tenta chamar genai.list_models() e retorna lista simples de nomes (strings).
-    Trata formatos diversos de retorno.
-    """
-    try:
-        res = genai.list_models()
-    except Exception as e:
-        # se list_models não existir ou falhar, propaga a exceção para o chamador
-        raise
-
-    model_names = []
-    # vários formatos possíveis: objeto com 'models' list, ou lista direta
-    if isinstance(res, dict):
-        candidates = []
-        if "models" in res and isinstance(res["models"], list):
-            candidates = res["models"]
-        elif "data" in res and isinstance(res["data"], list):
-            candidates = res["data"]
-        else:
-            # tentar interpretar por tentativa
-            candidates = []
-        for m in candidates:
-            if isinstance(m, dict):
-                # formatos possíveis: {'name': '...'} ou {'model': '...'}
-                name = m.get("name") or m.get("model") or m.get("id")
-                if name:
-                    model_names.append(name)
-            elif isinstance(m, str):
-                model_names.append(m)
-    elif isinstance(res, list):
-        for m in res:
-            if isinstance(m, str):
-                model_names.append(m)
-            elif isinstance(m, dict):
-                name = m.get("name") or m.get("model") or m.get("id")
-                if name:
-                    model_names.append(name)
-    else:
-        # objeto custom - tentar acessar atributo 'models'
-        try:
-            candidates = getattr(res, "models", None) or getattr(res, "data", None)
-            if candidates:
-                for m in candidates:
-                    if isinstance(m, dict):
-                        name = m.get("name") or m.get("model") or m.get("id")
-                        if name:
-                            model_names.append(name)
-        except Exception:
-            pass
-
-    # única filtragem: remover None e duplicatas, manter ordem
-    seen = set()
-    final = []
-    for n in model_names:
-        if not n:
-            continue
-        if n in seen:
-            continue
-        seen.add(n)
-        final.append(n)
-    return final
-
-def extract_text_from_genai_response(response_obj):
-    """
-    Extrai texto de várias formas de resposta possíveis:
-     - response.text
-     - response.candidates[0].content
-     - response['candidates'][0]['content']
-     - response['output'][0]['content']
-     - response.get('output')
-    Retorna string ou None.
-    """
-    # 1) atributo .text
-    try:
-        txt = getattr(response_obj, "text", None)
-        if txt:
-            return txt
-    except Exception:
-        pass
-
-    # 2) atributo .candidates (obj or dict)
-    try:
-        candidates = getattr(response_obj, "candidates", None)
-        if candidates and len(candidates) > 0:
-            first = candidates[0]
-            if isinstance(first, dict):
-                return first.get("content") or first.get("output") or first.get("text")
-            else:
-                # objeto com atributo 'content'?
-                return getattr(first, "content", None) or getattr(first, "text", None)
-    except Exception:
-        pass
-
-    # 3) dict-like
-    try:
-        if isinstance(response_obj, dict):
-            if "candidates" in response_obj and response_obj["candidates"]:
-                c0 = response_obj["candidates"][0]
-                if isinstance(c0, dict):
-                    return c0.get("content") or c0.get("output") or c0.get("text")
-            if "output" in response_obj and response_obj["output"]:
-                out0 = response_obj["output"][0]
-                if isinstance(out0, dict):
-                    return out0.get("content") or out0.get("text")
-            # alguns retornos têm 'result' -> 'content'
-            if "result" in response_obj:
-                r = response_obj["result"]
-                if isinstance(r, dict):
-                    return r.get("content") or r.get("text")
-    except Exception:
-        pass
-
-    # 4) tentar str()
-    try:
-        s = str(response_obj)
-        if s and len(s) > 0:
-            return s
-    except Exception:
-        pass
-
-    return None
-
-def choose_candidate_models_from_list(model_list):
-    """
-    Recebe uma lista de nomes de modelos e ordena/filtra candidatos prováveis para geração.
-    Prioriza nomes que contenham gemini, bison, text, chat.
-    """
-    priorities = []
-    for m in model_list:
-        lname = m.lower()
-        score = 0
-        if "gemini" in lname:
-            score += 100
-        if "bison" in lname:
-            score += 80
-        if "text" in lname:
-            score += 60
-        if "chat" in lname:
-            score += 50
-        # preferir modelos sem '-preview' ou '-beta' no nome
-        if "-preview" in lname or "-beta" in lname:
-            score -= 30
-        priorities.append((score, m))
-    priorities.sort(reverse=True, key=lambda x: x[0])
-    return [m for _, m in priorities]
-
-# ----------------- 3..9: o resto do código original (sem alterações lógicas substanciais) -----------------
-# Para brevidade aqui eu mantenho o mesmo código do seu app: limpeza, extração, comparação, UI, etc.
-# (copiei integralmente suas funções de limpeza/extracao/diff/visual para manter comportamento idêntico)
-
 # ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
-
 def clean_metadata_and_footers(texto: str) -> str:
     if not texto:
         return texto
     t = texto
-
-    # nomes de arquivo longos em MAIÚSCULAS/underscores
     t = re.sub(r'(?m)^\s*[A-Z0-9_]{8,}\s*$', '', t)
-
-    # linhas com metadados específicos
     patterns_line = [
         r'(?im)^\s*.*medida\s+da\s+bula.*$',
         r'(?im)^\s*.*tipologia\s+da\s+bula.*$',
@@ -293,8 +138,6 @@ def clean_metadata_and_footers(texto: str) -> str:
     ]
     for p in patterns_line:
         t = re.sub(p, '', t)
-
-    # dimensões e paginação
     t = re.sub(r'(?im)\d{1,2},\d{2}\s*cm\s*[x×X]\s*\d{1,2},\d{2}\s*cm', '', t)
     page_patterns = [
         r'(?im)\bBula(?:\s+ao\s+Paciente)?\s+P[aá]gina\s*\d+\s*(?:de|\/)\s*\d+\b',
@@ -304,33 +147,23 @@ def clean_metadata_and_footers(texto: str) -> str:
     ]
     for p in page_patterns:
         t = re.sub(p, '', t)
-
     t = re.sub(r'(?im)\bfrente\b', '', t)
     t = re.sub(r'(?im)\bverso\b', '', t)
     t = re.sub(r'(?im)\bBUL[_A-Z0-9-]*\b', '', t)
-
-    # remover quebras por hífen (quebra de sílaba no final de linha)
     t = re.sub(r'-\s*\n\s*', '', t)
-
-    # normalizações simples de espaçamento
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\r', '\n', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
-
-    # remover linhas vazias extras
     lines = [ln.rstrip() for ln in t.splitlines()]
     lines = [ln for ln in lines if ln.strip() != ""]
     t = "\n".join(lines)
-
     return t.strip()
 
 # ----------------- 4. LOCALIZAÇÃO DE TÍTULOS E EXTRAÇÃO DE CABEÇALHO (SEGURA) -----------------
-
 def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
     if not words:
         return None
-    # pattern tolerante: permite qualquer não-alfanumérico entre as palavras
     pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
     return pattern
 
@@ -354,7 +187,6 @@ def safe_extract_header(texto: str, secoes_alvo: list) -> str:
         return ""
     idx = find_first_section_index(texto, [s for s in secoes_alvo if s.strip().upper() != "CABEÇALHO DA BULA"])
     if idx == -1:
-        # fallback: procurar 'APRESENTA' isoladamente
         m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
         idx = m.start() if m else -1
     if idx == -1:
@@ -368,28 +200,23 @@ def safe_extract_header(texto: str, secoes_alvo: list) -> str:
         return ""
     return header_clean.strip()
 
-# ----------------- 4b. EXTRAIR SEÇÃO DO TEXTO BRUTO (FALLBACK MELHORADO) -----------------
-
+# ----------------- 4b. EXTRAIR SEÇÃO DO TEXTO BRUTO -----------------
 def _build_flexible_title_regex(title: str):
-    """Cria regex que aceita numeração opcional antes do título e pontuações."""
     words = re.findall(r'\w+', title, flags=re.UNICODE)
     if not words:
         return None
     core = r'\W+'.join(map(re.escape, words))
-    # aceita opcionalmente "2. ", "2) ", "II - " antes do título, ou começo de linha
     regex = rf'(?:^|\n)\s*(?:\d{{1,2}}\s*[\.\)\-]\s*|[IVXLCDM]+\s*[–-]\s*)?{core}'
     return regex
 
 def extract_section_from_raw(texto: str, section_title: str, sections_list: list) -> str:
     if not texto or not section_title:
         return ""
-
     patt = _build_flexible_title_regex(section_title)
     if patt:
         m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
     else:
         m = re.search(build_section_pattern(section_title), texto, flags=re.IGNORECASE | re.UNICODE)
-
     if not m:
         keywords = re.findall(r'\w+', section_title)
         if keywords:
@@ -400,9 +227,7 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
                     break
     if not m:
         return ""
-
     start = m.end()
-
     menor = None
     for s in sections_list:
         if not s:
@@ -417,32 +242,24 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
             idx = start + m2.start()
             if menor is None or idx < menor:
                 menor = idx
-
     if menor is None:
         m3 = re.search(r'\n{2,}([A-ZÀ-Ý0-9 \-]{6,})\n', texto[start:])
         if m3:
             candidate = m3.group(1).strip()
             if len(candidate.split()) <= 6:
                 menor = start + m3.start()
-
     end = menor if menor is not None else len(texto)
-
     section_raw = texto[start:end].strip()
-
     section_raw = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]?\s*', '', section_raw)
     section_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', section_raw)
-
     section_clean = re.sub(r'\r', '\n', section_raw).strip()
-
     if len(re.sub(r'<[^>]+>', '', section_clean).strip()) < 10:
         return ""
     if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)):
         return ""
-
     return section_clean
 
-# ----------------- 5. NORMALIZAÇÃO AVANÇADA PARA COMPARAÇÃO -----------------
-
+# ----------------- 5. NORMALIZAÇÃO PARA COMPARAÇÃO -----------------
 def strip_accents(s: str) -> str:
     return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('ASCII')
 
@@ -489,7 +306,6 @@ def jaccard_similarity(a: str, b: str) -> float:
     return len(inter) / len(union)
 
 # ----------------- 6. ORTOGRAFIA E VISUAL -----------------
-
 def verificar_ortografia_inteligente(texto):
     try:
         spell = SpellChecker(language='pt')
@@ -526,7 +342,6 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
 
 # ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
-
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
     novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
@@ -554,18 +369,14 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
 def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
-
     comp_ref = clean_metadata_and_footers(texto_ref)
     comp_novo = clean_metadata_and_footers(texto_novo)
-
     norm_ref = normalize_for_comparison(comp_ref)
     norm_novo = normalize_for_comparison(comp_novo)
-
     if norm_ref == norm_novo:
         html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
         html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
-
     if norm_ref and norm_novo:
         shorter, longer = (norm_ref, norm_novo) if len(norm_ref) <= len(norm_novo) else (norm_novo, norm_ref)
         if shorter and shorter in longer:
@@ -574,21 +385,18 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
                 html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
                 html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
                 return html_ref, html_novo, False
-
     ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
     jacc = jaccard_similarity(norm_ref, norm_novo)
     if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
         html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
         html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
-
     r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
     n_html_final = verificar_ortografia_inteligente(n_html); n_html_final = melhorar_visual_topicos(n_html_final)
     r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
     return r_html_final, n_html_final, diff_bool
 
 # ----------------- 8. EXTRAÇÃO DE TEXTO -----------------
-
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
@@ -686,7 +494,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
         with st.spinner("Lendo arquivos e conectando à IA..."):
             try:
                 f1.seek(0); f2.seek(0)
-                t_anvisa = extract_text_from_file(f1)  # já limpo de metadados
+                t_anvisa = extract_text_from_file(f1)
                 t_mkt = extract_text_from_file(f2)
                 st.info(f"Tamanho do texto BELFAR (após limpeza): {len(t_anvisa)}")
                 st.info(f"Tamanho do texto MKT (após limpeza): {len(t_mkt)}")
@@ -705,56 +513,52 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
             REGRAS CRÍTICAS DE EXTRAÇÃO:
 
-**CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
-IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
-PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
+    **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
+    IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
+    PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
 
-**SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
+    **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
 
-**FORMATAÇÃO**: 
-Manter <b> e <i> EXATAMENTE como está
-NÃO corrigir português
-NÃO resumir
-Ignorar linhas horizontais/elementos gráficos
+    **FORMATAÇÃO**: 
+    Manter <b> e <i> EXATAMENTE como está
+    NÃO corrigir português
+    NÃO resumir
+    Ignorar linhas horizontais/elementos gráficos
 
-Se uma seção não existir, NÃO inclua no JSON.
+    Se uma seção não existir, NÃO inclua no JSON.
 
-LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
+    LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
-SAÍDA JSON:
-{{
- "data_anvisa_ref": "dd/mm/aaaa",
- "data_anvisa_mkt": "dd/mm/aaaa",
- "secoes": [
-     {{
-         "titulo": "NOME EXATO DA SEÇÃO",
-         "texto_anvisa": "conteúdo completo",
-         "texto_mkt": "conteúdo completo"
-     }}
- ]
-}}
-"""
+    SAÍDA JSON:
+    {{
+     "data_anvisa_ref": "dd/mm/aaaa",
+     "data_anvisa_mkt": "dd/mm/aaaa",
+     "secoes": [
+         {{
+             "titulo": "NOME EXATO DA SEÇÃO",
+             "texto_anvisa": "conteúdo completo",
+             "texto_mkt": "conteúdo completo"
+         }}
+     ]
+    }}
+    """
 
             response = None
             sucesso = False
             log_erros = []
-            modelos_testados = []
 
-            # tentativa: para cada key, descubro modelos (list_models) e tento os mais prováveis
+            # tentar cada key e cada modelo; se todas falharem, abortar (SEM fallback extra)
             for idx_key, key in enumerate(keys_validas):
-                if sucesso:
-                    break
+                if sucesso: break
                 try:
                     genai.configure(api_key=key)
                 except Exception as e:
                     log_erros.append(f"Key {idx_key+1} | configure: {str(e)}")
                     continue
 
-                # 1) tentar modelos estáticos rápidos (se quiser manter)
                 for modelo in MODELOS_PARA_TENTAR:
-                    modelos_testados.append((idx_key+1, modelo))
                     try:
-                        st.info(f"Tentando modelo estático: {modelo} com key {idx_key+1}")
+                        st.info(f"Tentando modelo: {modelo} com key {idx_key+1}")
                         model = genai.GenerativeModel(
                             modelo,
                             generation_config={"response_mime_type": "application/json", "temperature": 0.0}
@@ -768,71 +572,20 @@ SAÍDA JSON:
                         time.sleep(0.2)
                         continue
 
-                if sucesso:
-                    break
-
-                # 2) descobrir modelos disponíveis via ListModels / list_models
-                try:
-                    st.info(f"Chamando ListModels para key {idx_key+1}...")
-                    available = safe_list_models()
-                    if not available:
-                        log_erros.append(f"Key {idx_key+1} | list_models retornou vazio ou formato inesperado.")
-                        continue
-
-                    st.info(f"Modelos retornados pela API (key {idx_key+1}): {available[:30]}{'...' if len(available)>30 else ''}")
-                    # escolher candidatos ordenados
-                    candidates = choose_candidate_models_from_list(available)
-                    # garantir que tentamos alguns nomes prioritários
-                    tried_local = set()
-                    for modelo in candidates:
-                        if modelo in tried_local:
-                            continue
-                        tried_local.add(modelo)
-                        modelos_testados.append((idx_key+1, modelo))
-                        try:
-                            st.info(f"Tentando modelo listado: {modelo} com key {idx_key+1}")
-                            # duas formas de chamar: genai.generate_text (se existir) ou GenerativeModel
-                            if hasattr(genai, "generate_text"):
-                                # tentativa com generate_text (API cliente pode expor isso)
-                                response = genai.generate_text(model=modelo, prompt=prompt)
-                            else:
-                                model = genai.GenerativeModel(
-                                    modelo,
-                                    generation_config={"response_mime_type": "application/json", "temperature": 0.0}
-                                )
-                                response = model.generate_content(prompt)
-                            sucesso = True
-                            st.info(f"Modelo aceito: {modelo}")
-                            break
-                        except Exception as e:
-                            log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                            time.sleep(0.2)
-                            continue
-
-                    if sucesso:
-                        break
-                    else:
-                        # mostrar os modelos disponíveis para o usuário (para colar aqui)
-                        st.warning(f"Key {idx_key+1}: não foi possível usar nenhum modelo automaticamente. Modelos disponíveis listados abaixo.")
-                        st.code("\n".join(available))
-                except Exception as e:
-                    log_erros.append(f"Key {idx_key+1} | list_models/descoberta: {str(e)}")
-                    continue
-
             if not sucesso:
                 st.error("❌ Falha total ao chamar a API Gemini/Generative. Sem fallback configurado — abortando.")
                 if log_erros:
                     st.code("\n".join(log_erros))
                 st.stop()
 
-            # se chegou aqui, temos response da IA
+            # processar resposta
             try:
                 if response is None:
                     st.error("Resposta da IA vazia (response is None).")
                     st.stop()
-                resp_text = extract_text_from_genai_response(response)
+                resp_text = getattr(response, "text", None)
                 if not resp_text:
-                    st.error("Resposta da IA não contém texto reconhecível.")
+                    st.error("Resposta da IA não contém atributo 'text' ou está vazio.")
                     try:
                         st.code(str(response))
                     except:
