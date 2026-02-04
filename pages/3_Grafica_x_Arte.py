@@ -1,4 +1,4 @@
-# app.py (correções: fallback de extração, remoção de números soltos, detecção de headers mais robusta, modo debug)
+# app.py (sem modo debug)
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
@@ -142,7 +142,6 @@ def remover_rodapes_bula(texto):
     retorno = re.sub(r'\n{3,}', '\n\n', retorno)
     return retorno.strip()
 
-# OCR helper (mantido)...
 def ocr_via_gemini_bytes(bytes_data, api_keys):
     if not bytes_data:
         return "", "Arquivo vazio para OCR"
@@ -189,7 +188,6 @@ def ocr_via_gemini_bytes(bytes_data, api_keys):
             continue
     return "", " | ".join(log_erros_ocr)
 
-# Extração inteligente com fallback para page.get_text("text") se blocks vazios
 def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
     try:
         raw_text = ""
@@ -221,7 +219,6 @@ def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
                                 formatted_text = f"<i>{content}</i>"
                             line_text += formatted_text
                         page_text_from_spans += line_text + "\n"
-                # se não extraímos nada por spans, usar fallback page.get_text("text")
                 if page_text_from_spans.strip():
                     raw_text += page_text_from_spans + "\n"
                 else:
@@ -270,10 +267,9 @@ def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
         st.error(f"Erro leitura: {str(e)}")
         return ""
 
-# Extração por headers robusta (remove prefixo numérico antes da busca e tenta até 8 tokens)
 def _normalize_line_for_search(line: str) -> str:
-    ln = re.sub(r'^\s*\d+\s*[\.\)\-]?\s*', '', line)  # remove prefixo numérico como "1." ou "1)"
-    ln = re.sub(r'^[^\w]+', '', ln)  # remove pontuação inicial
+    ln = re.sub(r'^\s*\d+\s*[\.\)\-]?\s*', '', line)
+    ln = re.sub(r'^[^\w]+', '', ln)
     return re.sub(r'\s+', ' ', strip_accents(ln).lower()).strip()
 
 def extract_sections_by_headers(text, sections_list=SECOES_PACIENTE):
@@ -300,7 +296,6 @@ def extract_sections_by_headers(text, sections_list=SECOES_PACIENTE):
             end = start + (len(orig_lines[line_idx]) if line_idx < len(orig_lines) else 0)
             found.append((start, end, s, line_idx))
             continue
-        # fallback: procurar tokens nas linhas (mais tolerante), até 8 tokens
         tokens_norm = [strip_accents(t).lower() for t in tokens]
         for idx, ln_norm in enumerate(norm_lines):
             pos = 0
@@ -327,7 +322,6 @@ def extract_sections_by_headers(text, sections_list=SECOES_PACIENTE):
         start_content = end
         end_content = found[idx+1][0] if idx+1 < len(found) else len(text)
         conteudo = text[start_content:end_content].strip()
-        # limpar e remover linhas numéricas no conteúdo
         conteudo = clean_metadata_and_footers(conteudo)
         conteudo_lines = [re.sub(r'^\s*\d+\s*[\.\)\-]?\s*', '', ln) for ln in conteudo.splitlines()]
         conteudo_lines = [ln for ln in conteudo_lines if not re.match(r'^\s*\d+\s*[\.\)]?\s*$', ln)]
@@ -347,7 +341,6 @@ def align_sections_between_texts(text_ref, text_mkt, sections_list=SECOES_PACIEN
         key = titulo.upper()
         txt_ref = mapa_ref.get(key, "")
         txt_mkt = mapa_mkt.get(key, "")
-        # heurísticas de fallback para preencher lado que está vazio
         if (not txt_ref) and txt_mkt:
             tokens = re.findall(r'\w+', titulo)
             if tokens:
@@ -406,9 +399,7 @@ def sanitize_title_for_display(titulo: str) -> str:
     t = re.sub(r'[\s\-\–\—]*\d{1,4}\s*$', '', t).strip()
     return t
 
-# UI
 st.title("💊 Gráfica x Arte (robusto)")
-debug_mode = st.checkbox("Modo debug extração (mostra trechos e linhas extraídas)", value=False)
 st.markdown("<div class='small-muted'>Comparação automática de seções com preservação de <b>negrito</b> e <i>itálico</i>.</div>", unsafe_allow_html=True)
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
@@ -434,11 +425,6 @@ if st.button("🚀 Processar Conferência"):
         t_anvisa = extract_text_smart_from_bytes(f1_bytes, f1.name, api_keys=keys_validas)
         t_mkt = extract_text_smart_from_bytes(f2_bytes, f2.name, api_keys=keys_validas)
 
-        if debug_mode:
-            st.subheader("DEBUG: trechos extraídos (primeiros 800 chars)")
-            st.text("Gráfica (início):\n" + (t_anvisa or "")[:800])
-            st.text("Arte (início):\n" + (t_mkt or "")[:800])
-
         if not t_anvisa or len(re.findall(r'\w', re.sub(r'<[^>]+>', '', t_anvisa))) < 20:
             st.error("ERRO: Conteúdo do arquivo GRÁFICA insuficiente para análise."); st.stop()
         if not t_mkt or len(re.findall(r'\w', re.sub(r'<[^>]+>', '', t_mkt))) < 20:
@@ -446,10 +432,6 @@ if st.button("🚀 Processar Conferência"):
 
     secoes_alvo = SECOES_PACIENTE
     dados_secoes = align_sections_between_texts(t_anvisa, t_mkt, secoes_alvo)
-
-    if debug_mode:
-        st.subheader("DEBUG: Seções encontradas (raw)")
-        st.json([{"titulo":s.get("titulo"), "len_ref":len(s.get("texto_anvisa") or ""), "len_mkt":len(s.get("texto_mkt") or "")} for s in dados_secoes])
 
     if not dados_secoes:
         st.info("Nenhuma seção padrão encontrada automaticamente. Extraindo conteúdo inteiro como fallback.")
