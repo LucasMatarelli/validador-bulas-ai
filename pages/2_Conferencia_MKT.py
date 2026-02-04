@@ -90,9 +90,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
+# Ajustei os modelos tentados para variantes que costumam ser aceitas pela API.
+# O problema original era que "gemini-1.5-flash" não existia/retornava 404 para sua versão da API.
 MODELOS_PARA_TENTAR = [
-    "models/gemini-1.5-flash",
-    "gemini-1.5-flash"
+    # variantes gemini 1.5/pro (com e sem prefixo), gemini 1.0 e um modelo compatível text-bison-001
+    "gemini-1.5-pro",
+    "models/gemini-1.5-pro",
+    "gemini-1.5",
+    "models/gemini-1.5",
+    "gemini-1.0",
+    "models/gemini-1.0",
+    "text-bison-001",
+    "models/text-bison-001"
 ]
 
 SECOES_PACIENTE = [
@@ -619,20 +628,24 @@ SAÍDA JSON:
 
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
+                        # registrar tentativa de modelo (útil para logs)
+                        st.info(f"Tentando modelo: {modelo} com key {idx_key+1}")
                         model = genai.GenerativeModel(
                             modelo,
                             generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
+                        st.info(f"Modelo aceito: {modelo}")
                         break
                     except Exception as e:
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
+                        # pequena pausa entre tentativas
                         time.sleep(0.2)
                         continue
 
             if not sucesso:
-                st.error("❌ Falha total ao chamar a API Gemini. Sem fallback configurado — abortando.")
+                st.error("❌ Falha total ao chamar a API Gemini/Generative. Sem fallback configurado — abortando.")
                 if log_erros:
                     st.code("\n".join(log_erros))
                 st.stop()
@@ -673,7 +686,7 @@ SAÍDA JSON:
                     txt_mkt = item.get('texto_mkt', '').strip()
 
                     # se IA não retornou texto da seção, tentar extrair via heurística básica local apenas como tentativa adicional
-                    # (MAS NÃO USAMOS isto para substituir o fluxo principal; é apenas um último recurso para exibir algo)
+                    # (MAS NÃO USOS isto para substituir o fluxo principal; é apenas um último recurso para exibir algo)
                     if not txt_ref:
                         tentativa = extract_section_from_raw(t_anvisa, titulo, secoes_alvo)
                         if tentativa:
