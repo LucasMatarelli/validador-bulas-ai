@@ -127,18 +127,15 @@ def clean_metadata_and_footers(texto: str) -> str:
     t = texto
 
     # Remover explicitamente a string e variações relacionadas solicitadas:
-    # - "Times New Roman", "Negrito", "Corpo 14", linhas com "contato", telefones e e-mails @belfar.com.br
-    # Removemos linhas inteiras que contenham esses termos, além de remover telefones e e-mails.
-    # 1) remover linhas que contenham as palavras-chave (case-insensitive)
     t = re.sub(r'(?im)^.*times\s+new\s+roman.*\n?', '', t)
     t = re.sub(r'(?im)^.*negrito.*\n?', '', t)
     t = re.sub(r'(?im)^.*corpo\s*14.*\n?', '', t)
     t = re.sub(r'(?im)^.*\bcontato\b.*\n?', '', t)
 
-    # 2) remover e-mails do domínio belfar.com.br (e similares)
+    # remover e-mails do domínio belfar.com.br
     t = re.sub(r'(?i)[\w\.-]+@belfar\.com\.br', '', t)
 
-    # 3) remover padrões de telefone comuns (variações com DDI/DDD, espaços, traços, parênteses)
+    # remover padrões de telefone comuns
     t = re.sub(r'(?m)(?:\+?\d{1,3}[-\s]?)?(?:\(?\d{2}\)?[-\s]?)?\d{4,5}[-\s]?\d{4}', '', t)
 
     # nomes de arquivo longos em MAIÚSCULAS/underscores
@@ -193,7 +190,6 @@ def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
     if not words:
         return None
-    # pattern tolerante: permite qualquer não-alfanumérico entre as palavras
     pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
     return pattern
 
@@ -217,7 +213,6 @@ def safe_extract_header(texto: str, secoes_alvo: list) -> str:
         return ""
     idx = find_first_section_index(texto, [s for s in secoes_alvo if s.strip().upper() != "CABEÇALHO DA BULA"])
     if idx == -1:
-        # fallback: procurar 'APRESENTA' isoladamente
         m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
         idx = m.start() if m else -1
     if idx == -1:
@@ -234,28 +229,17 @@ def safe_extract_header(texto: str, secoes_alvo: list) -> str:
 # ----------------- 4b. EXTRAIR SEÇÃO DO TEXTO BRUTO (FALLBACK MELHORADO) -----------------
 
 def _build_flexible_title_regex(title: str):
-    """Cria regex que aceita numeração opcional antes do título e pontuações."""
     words = re.findall(r'\w+', title, flags=re.UNICODE)
     if not words:
         return None
     core = r'\W+'.join(map(re.escape, words))
-    # aceita opcionalmente "2. ", "2) ", "II - " antes do título, ou começo de linha
     regex = rf'(?:^|\n)\s*(?:\d{{1,2}}\s*[\.\)\-]\s*|[IVXLCDM]+\s*[–-]\s*)?{core}'
     return regex
 
 def extract_section_from_raw(texto: str, section_title: str, sections_list: list) -> str:
-    """
-    Extrai conteúdo de section_title do texto bruto de forma tolerante:
-     - procura pelo título com numeração opcional;
-     - pega do fim do título até o início da próxima seção conhecida;
-     - se não encontrar próxima seção, tenta heurísticas (duas quebras de linha seguidas,
-       ou fim do documento);
-     - preserva tags <b>/<i> presentes no texto de origem.
-    """
     if not texto or not section_title:
         return ""
 
-    # 1) tentar achar o título com regex flexível (numeração opcional)
     patt = _build_flexible_title_regex(section_title)
     if patt:
         m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
@@ -263,10 +247,8 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
         m = re.search(build_section_pattern(section_title), texto, flags=re.IGNORECASE | re.UNICODE)
 
     if not m:
-        # 2) fallback: procurar só por palavras-chaves principais (tolerante)
         keywords = re.findall(r'\w+', section_title)
         if keywords:
-            # procurar sequência curta de 3 primeiras palavras ou todas, conforme disponibilidade
             for kcount in (min(3, len(keywords)), len(keywords)):
                 core = r'\W+'.join(map(re.escape, keywords[:kcount]))
                 m = re.search(core, texto, flags=re.IGNORECASE | re.UNICODE)
@@ -277,15 +259,12 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
 
     start = m.end()
 
-    # 3) localizar início da próxima seção conhecida (tolerante a numeração)
     menor = None
     for s in sections_list:
         if not s:
             continue
-        # pular a própria seção
         if s.strip().upper() == section_title.strip().upper():
             continue
-        # construção tolerante
         p2 = _build_flexible_title_regex(s)
         if not p2:
             p2 = build_section_pattern(s)
@@ -295,13 +274,9 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
             if menor is None or idx < menor:
                 menor = idx
 
-    # 4) heurísticas adicionais se não achar próximo título:
     if menor is None:
-        # tenta encontrar 2 quebras de linha consecutivas + linha com letras MAIÚSCULAS (provável título)
-        # busca a partir de start
         m3 = re.search(r'\n{2,}([A-ZÀ-Ý0-9 \-]{6,})\n', texto[start:])
         if m3:
-            # só considerar se a linha parecer um título (pouco texto corrido)
             candidate = m3.group(1).strip()
             if len(candidate.split()) <= 6:
                 menor = start + m3.start()
@@ -310,19 +285,14 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
 
     section_raw = texto[start:end].strip()
 
-    # remover numerais residuais / títulos na frente
     section_raw = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]?\s*', '', section_raw)
     section_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', section_raw)
 
-    # limpar espaços redundantes mas PRESERVAR <b>/<i>
-    # normalizar CRLF
     section_clean = re.sub(r'\r', '\n', section_raw).strip()
 
-    # segurança: recusar extracoes minúsculas/absurdas
     if len(re.sub(r'<[^>]+>', '', section_clean).strip()) < 10:
         return ""
     if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)):
-        # se pegou quase tudo, evitar (inseguro)
         return ""
 
     return section_clean
@@ -358,6 +328,8 @@ def normalize_for_comparison(text: str) -> str:
     t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
     t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
     t = re.sub(r'<[^>]+>', '', t)
+    # remover hífens e traços para que eles não provoquem diferenças
+    t = re.sub(r'[-–—]', ' ', t)
     t = strip_accents(t).lower()
     t = re.sub(r'[^a-z0-9\s]', ' ', t)
     t = re.sub(r'\s+', ' ', t).strip()
@@ -414,8 +386,12 @@ def destacar_datas(texto):
 # ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
+    # remover tags para comparar texto puro
     ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
     novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
+    # remover hífens/traços antes do split para que eles não provoquem diffs
+    ref_sem_tags = re.sub(r'[-–—]', ' ', ref_sem_tags)
+    novo_sem_tags = re.sub(r'[-–—]', ' ', novo_sem_tags)
     palavras_ref = ref_sem_tags.split()
     palavras_novo = novo_sem_tags.split()
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
@@ -444,8 +420,25 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     comp_ref = clean_metadata_and_footers(texto_ref)
     comp_novo = clean_metadata_and_footers(texto_novo)
 
-    norm_ref = normalize_for_comparison(comp_ref)
-    norm_novo = normalize_for_comparison(comp_novo)
+    # criar versões sem hífen para verificar similaridade ignorando traços
+    comp_ref_nohy = re.sub(r'[-–—]', ' ', comp_ref)
+    comp_novo_nohy = re.sub(r'[-–—]', ' ', comp_novo)
+
+    norm_ref_nohy = normalize_for_comparison(comp_ref_nohy)
+    norm_novo_nohy = normalize_for_comparison(comp_novo_nohy)
+
+    # Se, depois de remover hífens, os textos forem iguais, considerar CONFORME (ignorar só diferenças de traço)
+    if norm_ref_nohy == norm_novo_nohy:
+        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
+        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
+        return html_ref, html_novo, False
+
+    # continuar com o fluxo normal (com normalização completa)
+    comp_ref_norm = clean_metadata_and_footers(comp_ref)
+    comp_novo_norm = clean_metadata_and_footers(comp_novo)
+
+    norm_ref = normalize_for_comparison(comp_ref_norm)
+    norm_novo = normalize_for_comparison(comp_novo_norm)
 
     if norm_ref == norm_novo:
         html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
@@ -532,7 +525,6 @@ def extract_text_from_file(uploaded_file):
                         formatted_text = f"<i>{content}</i>"
                     para_text += formatted_text
                 text += para_text + "\n\n"
-        # limpeza inicial: remover metadados/rodapés assim que extrai o texto
         return clean_metadata_and_footers(text.strip())
     except Exception as e:
         st.error(f"Erro ao extrair texto do arquivo {getattr(uploaded_file, 'name', '')}: {str(e)}")
@@ -592,38 +584,43 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
             REGRAS CRÍTICAS DE EXTRAÇÃO:
 
-**CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
-IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
-PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
+    **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
+    IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
+    PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
 
-**SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
+    **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
 
-**FORMATAÇÃO**: 
-Manter <b> e <i> EXATAMENTE como está
-NÃO corrigir português
-NÃO resumir
-Ignorar linhas horizontais/elementos gráficos
+    **FORMATAÇÃO**: 
+    Manter <b> e <i> EXATAMENTE como está
+    NÃO corrigir português
+    NÃO resumir
+    Ignorar linhas horizontais/elementos gráficos
 
-Se uma seção não existir, NÃO inclua no JSON.
+    Se uma seção não existir, NÃO inclua no JSON.
 
-LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
+    LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
-SAÍDA JSON:
-{{
- "data_anvisa_ref": "dd/mm/aaaa",
- "data_anvisa_mkt": "dd/mm/aaaa",
- "secoes": [
-     {{
-         "titulo": "NOME EXATO DA SEÇÃO",
-         "texto_anvisa": "conteúdo completo",
-         "texto_mkt": "conteúdo completo"
-     }}
- ]
-}}
-"""
+    SAÍDA JSON:
+    {{
+     "data_anvisa_ref": "dd/mm/aaaa",
+     "data_anvisa_mkt": "dd/mm/aaaa",
+     "secoes": [
+         {{
+             "titulo": "NOME EXATO DA SEÇÃO",
+             "texto_anvisa": "conteúdo completo",
+             "texto_mkt": "conteúdo completo"
+         }}
+     ]
+    }}
+    """
+
             response = None
             sucesso = False
             log_erros = []
+
+            # Variáveis para armazenar datas extraídas APENAS de "DIZERES LEGAIS"
+            extracted_date_ref = "-"
+            extracted_date_mkt = "-"
 
             # tentar cada key e cada modelo; se todas falharem, abortar (SEM fallback extra)
             for idx_key, key in enumerate(keys_validas):
@@ -679,8 +676,9 @@ SAÍDA JSON:
                 st.stop()
 
             try:
-                data_ref = resultado.get("data_anvisa_ref", "-")
-                data_mkt = resultado.get("data_anvisa_mkt", "-")
+                # respeitar se IA retornou datas (mas vamos priorizar DIZERES LEGAIS localmente extraído)
+                data_ref_from_ai = resultado.get("data_anvisa_ref", "-")
+                data_mkt_from_ai = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
 
                 secoes_finais = []
@@ -701,7 +699,6 @@ SAÍDA JSON:
                         if tentativa2:
                             txt_mkt = tentativa2
 
-                    # limpeza leve dentro das seções (não remove conteúdo essencial)
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
 
@@ -718,8 +715,16 @@ SAÍDA JSON:
                         txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
                         txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
 
-                    # DIZERES LEGAIS: destacar datas da Anvisa em ambos os textos (BELFAR e MKT)
+                    # DIZERES LEGAIS: destacar datas da Anvisa e extrair explicitamente a data
                     if "DIZERES LEGAIS" in titulo.upper():
+                        # extrair data DD/MM/AAAA ou MM/AAAA (priorizar dd/mm/yyyy)
+                        padrao_data = re.search(r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})', txt_ref or "", flags=re.IGNORECASE)
+                        if padrao_data:
+                            extracted_date_ref = padrao_data.group(1)
+                        padrao_data2 = re.search(r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})', txt_mkt or "", flags=re.IGNORECASE)
+                        if padrao_data2:
+                            extracted_date_mkt = padrao_data2.group(1)
+
                         html_ref = destacar_datas(txt_ref).replace('\n', '<br>')
                         html_novo = destacar_datas(txt_mkt).replace('\n', '<br>')
                         html_ref = verificar_ortografia_inteligente(html_ref)
@@ -739,6 +744,10 @@ SAÍDA JSON:
                         "texto_mkt": html_novo,
                         "status": status
                     })
+
+                # Usar as datas extraídas APENAS de DIZERES LEGAIS (se encontradas), caso contrário usar o que veio da IA (ou "-")
+                data_ref = extracted_date_ref if extracted_date_ref != "-" else (data_ref_from_ai or "-")
+                data_mkt = extracted_date_mkt if extracted_date_mkt != "-" else (data_mkt_from_ai or "-")
 
                 st.markdown("### 📊 Resumo")
                 c1, c2, c3 = st.columns(3)
