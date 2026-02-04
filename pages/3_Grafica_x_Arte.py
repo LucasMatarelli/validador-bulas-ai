@@ -73,7 +73,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title(APP_TITLE)
-st.markdown("<div class='small-muted'>Escolha o Tipo de Bula:</div>", unsafe_allow_html=True)
+tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
 
 # ----------------- UTIL HELPERS -----------------
 def strip_accents(s: str) -> str:
