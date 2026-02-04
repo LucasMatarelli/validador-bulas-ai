@@ -1,4 +1,11 @@
-# app.py
+# app.py (ajustado)
+# - Usa lista ampliada de modelos (Gemini/Gemma variantes)
+# - Melhora extração de seções (remove interrogação no início do título, remove número residual no final)
+# - Remove linhas que contenham só números dentro do conteúdo das seções (evita rodapés/paginação aparecendo)
+# - Mantém OCR com preservação de <b>/<i>
+# - Melhora pequenas formatações visuais (CSS) para ficar "bonitinho"
+# - Mantém lógica de comparação mesmo quando uma das seções está vazia
+
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
@@ -19,36 +26,47 @@ st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
     .texto-box { 
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 0.95rem;
-        line-height: 1.7;
+        font-family: 'Segoe UI', system-ui, -apple-system, "Helvetica Neue", Arial;
+        font-size: 0.96rem;
+        line-height: 1.6;
         color: #212529;
         background-color: #ffffff;
-        padding: 25px;
+        padding: 22px;
         border-radius: 8px;
-        border: 1px solid #ced4da;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border: 1px solid #e6e9ec;
+        box-shadow: 0 6px 18px rgba(18, 40, 80, 0.03);
         text-align: left;
         min-height: 120px;
+        overflow-wrap: anywhere;
     }
-    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; font-weight: bold; }
-    .highlight-red { background-color: #f8d7da; color: #721c24; border-bottom: 2px solid #dc3545; font-weight: bold; cursor: help; }
-    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; }
-    .topico-item { display: block; margin-left: 20px; margin-bottom: 4px; text-indent: -15px; }
+    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 6px; border-radius: 5px; border: 1px solid #ffeeba; font-weight: 700; }
+    .highlight-red { background-color: #f8d7da; color: #721c24; border-bottom: 2px solid #dc3545; font-weight: 700; cursor: help; }
+    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 6px; border-radius: 5px; border: 1px solid #bee5eb; font-weight: 700; }
+    .topico-item { display: block; margin-left: 20px; margin-bottom: 6px; text-indent: -15px; }
     .border-ok { border-left: 6px solid #28a745 !important; }
     .border-warn { border-left: 6px solid #ffc107 !important; } 
     .border-info { border-left: 6px solid #17a2b8 !important; }
-    div[data-testid="stMetric"] { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center; }
-    section[data-testid="stSidebar"] { display: block !important; visibility: visible !important; width: 250px !important; min-width: 250px !important; max-width: 250px !important; margin-left: 0 !important; transform: translateX(0) !important; transition: none !important; position: relative !important; background-color: #f0f2f6 !important; z-index: 999 !important; }
-    section[data-testid="stSidebar"] > div:first-child { width: 250px !important; min-width: 250px !important; }
-    section[data-testid="stSidebar"][aria-expanded="false"], section[data-testid="stSidebar"][aria-expanded="true"] { margin-left: 0 !important; transform: translateX(0) !important; }
-    button[kind="header"], [data-testid="collapsedControl"], button[data-testid="baseButton-header"] { display: none !important; }
+    .titulo-secao { font-weight:700; letter-spacing: 0.2px; }
+    div[data-testid="stMetric"] { background-color: #fbfdff; border: 1px solid #eef3fa; padding: 12px; border-radius: 8px; text-align: center; box-shadow: none; }
+    section[data-testid="stSidebar"] { display: block !important; visibility: visible !important; width: 260px !important; min-width: 260px !important; max-width: 260px !important; margin-left: 0 !important; transform: translateX(0) !important; transition: none !important; position: relative !important; background-color: #f7f9fb !important; z-index: 999 !important; }
+    .small-muted { color: #6c757d; font-size: 0.88rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO -----------------
+# ----------------- 2. CONFIGURAÇÃO (modelos ampliados) -----------------
 MODELOS_PARA_TENTAR = [
-    "models/gemini-2.5-flash"
+    # Gemini 2.5 / 3 and common variants (with/without 'models/' prefix)
+    "models/gemini-2.5-flash", "gemini-2.5-flash",
+    "models/gemini-2.5", "gemini-2.5",
+    "models/gemini-3-flash", "gemini-3-flash",
+    "models/gemini-1.5-flash", "gemini-1.5-flash",
+    "models/gemini-1.5", "gemini-1.5",
+    # Gemma variants
+    "models/gemma-3-27b", "gemma-3-27b",
+    "models/gemma-3-12b", "gemma-3-12b",
+    "models/gemma-3-4b", "gemma-3-4b",
+    # fallback historically used
+    "models/text-bison-001", "text-bison-001", "chat-bison-001", "models/chat-bison-001"
 ]
 
 SECOES_PACIENTE = [
@@ -89,6 +107,17 @@ def clean_metadata_and_footers(texto: str) -> str:
     if not texto:
         return texto
     t = texto
+
+    # remover linhas que contenham só números (páginas ou códigos remanescentes)
+    lines = t.splitlines()
+    filtered = []
+    for ln in lines:
+        if re.match(r'^\s*\d+\s*$', ln):
+            continue
+        filtered.append(ln)
+    t = "\n".join(filtered)
+
+    # padrões antigos / metadados
     t = re.sub(r'(?m)^\s*[A-Z0-9_]{8,}\s*$', '', t)
     patterns_line = [
         r'(?im)^\s*.*medida\s+da\s+bula.*$',
@@ -101,6 +130,7 @@ def clean_metadata_and_footers(texto: str) -> str:
     ]
     for p in patterns_line:
         t = re.sub(p, '', t)
+
     t = re.sub(r'(?im)\d{1,2},\d{2}\s*cm\s*[x×X]\s*\d{1,2},\d{2}\s*cm', '', t)
     page_patterns = [
         r'(?im)\bBula(?:\s+ao\s+Paciente)?\s+P[aá]gina\s*\d+\s*(?:de|\/)\s*\d+\b',
@@ -110,16 +140,25 @@ def clean_metadata_and_footers(texto: str) -> str:
     ]
     for p in page_patterns:
         t = re.sub(p, '', t)
+
+    # rodapé comum e 'BUL...' file codes
     t = re.sub(r'(?im)\bfrente\b', '', t)
     t = re.sub(r'(?im)\bverso\b', '', t)
     t = re.sub(r'(?im)\bBUL[_A-Z0-9-]*\b', '', t)
+
+    # remover quebras por hífen (quebra de sílaba no final de linha)
     t = re.sub(r'-\s*\n\s*', '', t)
+
+    # espaços e quebras
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\r', '\n', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
+
+    # remover linhas vazias extras e linhas que sejam apenas pontuação/símbolos
     lines = [ln.rstrip() for ln in t.splitlines()]
-    lines = [ln for ln in lines if ln.strip() != ""]
+    lines = [ln for ln in lines if ln.strip() != "" and not re.match(r'^[\W_]{1,40}$', ln.strip())]
     t = "\n".join(lines)
+
     return t.strip()
 
 def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIENTE) -> str:
@@ -145,6 +184,8 @@ def normalize_for_comparison(text: str) -> str:
     t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
     t = re.sub(r'<[^>]+>', '', t)
     t = strip_accents(t).lower()
+    # ignorar hifens/traços para não marcar diffs por isso
+    t = re.sub(r'[-–—]', ' ', t)
     t = re.sub(r'[^a-z0-9\s]', ' ', t)
     t = re.sub(r'\s+', ' ', t).strip()
     return t
@@ -180,55 +221,32 @@ def verificar_ortografia_inteligente(texto):
 # ----------------- 5. DIFF ROBUSTO (COM PROTEÇÃO DE TAGS) -----------------
 
 def _protect_html_tags(s: str):
-    """
-    Substitui cada tag HTML (<...>) por um único caractere do Private Use Area
-    e retorna a string protegida + um mapeamento token->tag.
-    Isso evita que o difflib "pique" tags e insira spans dentro delas.
-    """
     if not s:
         return s, {}
-
     mapping = {}
     index = 0
-
     def repl(m):
         nonlocal index
-        # use private use unicode points (0xE000..)
         token = chr(0xE000 + index)
         mapping[token] = m.group(0)
         index += 1
         return token
-
-    # substitui tags por tokens únicos (por ocorrência)
     protected = re.sub(r'<[^>]+>', repl, s)
     return protected, mapping
 
 def _restore_html_tags(s: str, mapping: dict):
-    """
-    Substitui tokens únicos de volta para as tags originais.
-    """
     if not mapping:
         return s
-    # map keys são caracteres; substitua todos
     for token, tag in mapping.items():
         if token in s:
             s = s.replace(token, tag)
     return s
 
 def diff_preserve_original(text_a: str, text_b: str):
-    """
-    Faz diff em nível de caracteres preservando EXATAMENTE os textos originais,
-    protegendo tags HTML para NÃO quebrá-las. Envolve trechos divergentes com
-    <span class="highlight-yellow">...</span>.
-    Retorna (html_a, html_b, tem_diff)
-    """
     if text_a is None: text_a = ""
     if text_b is None: text_b = ""
-
-    # proteger tags em cada lado
     prot_a, map_a = _protect_html_tags(text_a)
     prot_b, map_b = _protect_html_tags(text_b)
-
     matcher = difflib.SequenceMatcher(None, prot_a, prot_b)
     parts_a = []
     parts_b = []
@@ -247,17 +265,12 @@ def diff_preserve_original(text_a: str, text_b: str):
         elif tag == 'insert':
             parts_b.append(f'<span class="highlight-yellow">{prot_b[j1:j2]}</span>')
             tem = True
-
-    # reconstruir strings protegidas
     out_a = ''.join(parts_a)
     out_b = ''.join(parts_b)
-
-    # restaurar tags originais para cada lado
     out_a = _restore_html_tags(out_a, map_a)
-    out_a = _restore_html_tags(out_a, map_b)  # caso tokens do outro lado estejam presentes (segurança)
+    out_a = _restore_html_tags(out_a, map_b)
     out_b = _restore_html_tags(out_b, map_b)
     out_b = _restore_html_tags(out_b, map_a)
-
     return out_a, out_b, tem
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
@@ -269,7 +282,6 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
-
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
             texto = " ".join(palavras_ref[i1:i2])
@@ -285,34 +297,32 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
         elif tag == 'insert':
             html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
-
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo):
     if texto_ref is None: texto_ref = ""
     if texto_novo is None: texto_novo = ""
-
     display_ref = texto_ref.replace('\n', '<br>')
     display_novo = texto_novo.replace('\n', '<br>')
-
     norm_ref = normalize_for_comparison(texto_ref)
     norm_novo = normalize_for_comparison(texto_novo)
-
+    # ignorar diferenças de traço/hífen se o conteúdo for igual sem eles
+    comp_ref_nohy = re.sub(r'[-–—]', ' ', normalize_for_comparison(texto_ref))
+    comp_novo_nohy = re.sub(r'[-–—]', ' ', normalize_for_comparison(texto_novo))
+    if comp_ref_nohy == comp_novo_nohy:
+        return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
     if norm_ref == norm_novo:
         return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
-
     if norm_ref and norm_novo:
         shorter, longer = (norm_ref, norm_novo) if len(norm_ref) <= len(norm_novo) else (norm_novo, norm_ref)
         if shorter and shorter in longer:
             prop = len(shorter) / max(1, len(longer))
             if prop >= 0.88:
                 return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
-
     ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
     jacc = jaccard_similarity(norm_ref, norm_novo)
     if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
         return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
-
     html_ref, html_novo, diff_bool = diff_preserve_original(display_ref, display_novo)
     html_ref = melhorar_visual_topicos(html_ref)
     html_novo = melhorar_visual_topicos(html_novo)
@@ -344,12 +354,15 @@ def remover_rodapes_bula(texto):
             continue
         if re.match(r'^[\d\W_]{1,30}$', ln_s):
             continue
+        # evitar manter linhas que sejam só números remanescentes
+        if re.match(r'^\s*\d+\s*$', ln_s):
+            continue
         linhas_filtradas.append(ln.rstrip())
     retorno = '\n'.join(linhas_filtradas)
     retorno = re.sub(r'\n{3,}', '\n\n', retorno)
     return retorno.strip()
 
-# ----------------- 7. OCR VIA GEMINI (mantive sua lógica, com pequenas seguranças) -----------------
+# ----------------- 7. OCR VIA GEMINI -----------------
 
 def ocr_via_gemini_bytes(bytes_data, api_keys):
     if not bytes_data:
@@ -420,7 +433,7 @@ def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
                             font_name = span.get("font", "").lower()
                             is_bold = ((flags & 16) or "bold" in font_name or "black" in font_name or "heavy" in font_name or "semibold" in font_name)
                             is_italic = ((flags & 2) or "italic" in font_name or "oblique" in font_name)
-                            formatted_text = content  # NÃO STRIP para evitar picotamento
+                            formatted_text = content  # preserve exactly
                             if is_bold and is_italic:
                                 formatted_text = f"<b><i>{content}</i></b>"
                             elif is_bold:
@@ -431,7 +444,6 @@ def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
                         raw_text += line_text + "\n"
                 raw_text += "\n"
             doc.close()
-
         elif fname.endswith('.docx'):
             try:
                 doc = docx.Document(BytesIO(bytes_data))
@@ -486,7 +498,12 @@ def extract_sections_by_headers(text, sections_list=SECOES_PACIENTE):
 
     found = []
     text_lines = text.splitlines()
-    text_norm_lines = [_normalize_line_for_search(ln) for ln in text_lines]
+    text_norm_lines = []
+    for ln in text_lines:
+        ln_norm = _normalize_line_for_search(ln)
+        # remover pontuação inicial que atrapalha (p.ex. '? APRESENTAÇÕES')
+        ln_norm = re.sub(r'^[^\w]+', '', ln_norm)
+        text_norm_lines.append(ln_norm)
 
     for s in sections_list:
         if not s:
@@ -504,6 +521,7 @@ def extract_sections_by_headers(text, sections_list=SECOES_PACIENTE):
         for idx, ln_norm in enumerate(text_norm_lines):
             pos = 0
             ok = True
+            # procurar as primeiras 3 tokens (ou menos, se não houver)
             for tk in tokens_norm[:3]:
                 p = ln_norm.find(tk, pos)
                 if p == -1:
@@ -526,6 +544,9 @@ def extract_sections_by_headers(text, sections_list=SECOES_PACIENTE):
         end_content = found[idx+1][0] if idx+1 < len(found) else len(text)
         conteudo = text[start_content:end_content].strip()
         conteudo = clean_metadata_and_footers(conteudo)
+        # remover linhas só com números residuais dentro do conteúdo
+        conteudo_lines = [ln for ln in conteudo.splitlines() if not re.match(r'^\s*\d+\s*$', ln)]
+        conteudo = "\n".join(conteudo_lines).strip()
         secoes.append({"titulo": titulo, "texto": conteudo})
     return secoes
 
@@ -546,8 +567,19 @@ def align_sections_between_texts(text_ref, text_mkt, sections_list=SECOES_PACIEN
         final.append({"titulo": titulo, "texto_anvisa": txt_ref, "texto_mkt": txt_mkt})
     return final
 
+# ----------------- sanitize title for display -----------------
+def sanitize_title_for_display(titulo: str) -> str:
+    if not titulo:
+        return ""
+    # remover interrogação inicial(s)
+    t = re.sub(r'^[\?\!\.\-\s]+', '', titulo).strip()
+    # remover número residual no final (ex: "COMPOSIÇÃO 1" ou "COMPOSIÇÃO - 1")
+    t = re.sub(r'[\s\-\–\—]*\d{1,4}\s*$', '', t).strip()
+    return t
+
 # ----------------- 10. UI PRINCIPAL -----------------
 st.title("💊 Gráfica x Arte (robusto)")
+st.markdown("<div class='small-muted'>Comparação automática de seções com preservação de <b>negrito</b> e <i>itálico</i>.</div>", unsafe_allow_html=True)
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
 
@@ -556,11 +588,12 @@ f1 = c1.file_uploader("📜 Gráfica", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Arte Vigente", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    keys_raw = [
-        st.secrets.get("GEMINI_API_KEY"),
-        st.secrets.get("GEMINI_API_KEY2"),
-        st.secrets.get("GEMINI_API_KEY3")
+    # aceitar diferentes nomes de secrets (você mencionou GEMNI_*)
+    secret_names = [
+        "GEMINI_API_KEY", "GEMINI_API_KEY1", "GEMINI_API_KEY2", "GEMINI_API_KEY3",
+        "GEMNI_API_KEY1", "GEMNI_API_KEY2", "GEMNI_API_KEY3"
     ]
+    keys_raw = [st.secrets.get(n) for n in secret_names]
     keys_validas = [k for k in keys_raw if k]
 
     if not f1 or not f2:
@@ -594,12 +627,14 @@ if st.button("🚀 Processar Conferência"):
     divs_count = 0
 
     for item in dados_secoes:
-        titulo = (item.get('titulo') or '').strip()
+        titulo_raw = (item.get('titulo') or '').strip()
+        titulo = sanitize_title_for_display(titulo_raw)
         txt_ref = (item.get('texto_anvisa') or "").strip()
         txt_mkt = (item.get('texto_mkt') or "").strip()
         titulo_upper = titulo.upper()
         eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
 
+        # cabeçalho tratamento
         if "CABEÇALHO" in titulo_upper:
             def safe_extract_header(raw_text, secoes_alvo):
                 menor = None
