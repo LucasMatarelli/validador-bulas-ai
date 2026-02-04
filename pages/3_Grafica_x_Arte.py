@@ -612,7 +612,7 @@ def extract_text_from_file(uploaded_file):
         return ""
 
 # ----------------- 9. UI PRINCIPAL E FLUXO -----------------
-st.title("💊 Conferência MKT")
+st.title("💊 Gráfica x Arte")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
 
