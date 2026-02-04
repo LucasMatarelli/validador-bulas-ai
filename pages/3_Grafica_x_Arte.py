@@ -1,11 +1,4 @@
-# app.py (ajustado)
-# - Usa lista ampliada de modelos (Gemini/Gemma variantes)
-# - Melhora extração de seções (remove interrogação no início do título, remove número residual no final)
-# - Remove linhas que contenham só números dentro do conteúdo das seções (evita rodapés/paginação aparecendo)
-# - Mantém OCR com preservação de <b>/<i>
-# - Melhora pequenas formatações visuais (CSS) para ficar "bonitinho"
-# - Mantém lógica de comparação mesmo quando uma das seções está vazia
-
+# app.py (ajustado para resolver: cabeçalhos com tags, linhas numéricas soltas, e seções concatenadas)
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
@@ -55,17 +48,14 @@ st.markdown("""
 
 # ----------------- 2. CONFIGURAÇÃO (modelos ampliados) -----------------
 MODELOS_PARA_TENTAR = [
-    # Gemini 2.5 / 3 and common variants (with/without 'models/' prefix)
     "models/gemini-2.5-flash", "gemini-2.5-flash",
     "models/gemini-2.5", "gemini-2.5",
     "models/gemini-3-flash", "gemini-3-flash",
     "models/gemini-1.5-flash", "gemini-1.5-flash",
     "models/gemini-1.5", "gemini-1.5",
-    # Gemma variants
     "models/gemma-3-27b", "gemma-3-27b",
     "models/gemma-3-12b", "gemma-3-12b",
     "models/gemma-3-4b", "gemma-3-4b",
-    # fallback historically used
     "models/text-bison-001", "text-bison-001", "chat-bison-001", "models/chat-bison-001"
 ]
 
@@ -108,16 +98,15 @@ def clean_metadata_and_footers(texto: str) -> str:
         return texto
     t = texto
 
-    # remover linhas que contenham só números (páginas ou códigos remanescentes)
+    # remover linhas que sejam apenas números ou números com ponto/parentese (ex: "1." "2)")
     lines = t.splitlines()
     filtered = []
     for ln in lines:
-        if re.match(r'^\s*\d+\s*$', ln):
+        if re.match(r'^\s*\d+\s*[\.\)]?\s*$', ln):
             continue
         filtered.append(ln)
     t = "\n".join(filtered)
 
-    # padrões antigos / metadados
     t = re.sub(r'(?m)^\s*[A-Z0-9_]{8,}\s*$', '', t)
     patterns_line = [
         r'(?im)^\s*.*medida\s+da\s+bula.*$',
@@ -130,7 +119,6 @@ def clean_metadata_and_footers(texto: str) -> str:
     ]
     for p in patterns_line:
         t = re.sub(p, '', t)
-
     t = re.sub(r'(?im)\d{1,2},\d{2}\s*cm\s*[x×X]\s*\d{1,2},\d{2}\s*cm', '', t)
     page_patterns = [
         r'(?im)\bBula(?:\s+ao\s+Paciente)?\s+P[aá]gina\s*\d+\s*(?:de|\/)\s*\d+\b',
@@ -141,20 +129,15 @@ def clean_metadata_and_footers(texto: str) -> str:
     for p in page_patterns:
         t = re.sub(p, '', t)
 
-    # rodapé comum e 'BUL...' file codes
     t = re.sub(r'(?im)\bfrente\b', '', t)
     t = re.sub(r'(?im)\bverso\b', '', t)
     t = re.sub(r'(?im)\bBUL[_A-Z0-9-]*\b', '', t)
-
-    # remover quebras por hífen (quebra de sílaba no final de linha)
     t = re.sub(r'-\s*\n\s*', '', t)
-
-    # espaços e quebras
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\r', '\n', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
 
-    # remover linhas vazias extras e linhas que sejam apenas pontuação/símbolos
+    # remover linhas vazias extras e linhas com só símbolos
     lines = [ln.rstrip() for ln in t.splitlines()]
     lines = [ln for ln in lines if ln.strip() != "" and not re.match(r'^[\W_]{1,40}$', ln.strip())]
     t = "\n".join(lines)
@@ -184,7 +167,6 @@ def normalize_for_comparison(text: str) -> str:
     t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
     t = re.sub(r'<[^>]+>', '', t)
     t = strip_accents(t).lower()
-    # ignorar hifens/traços para não marcar diffs por isso
     t = re.sub(r'[-–—]', ' ', t)
     t = re.sub(r'[^a-z0-9\s]', ' ', t)
     t = re.sub(r'\s+', ' ', t).strip()
@@ -306,7 +288,6 @@ def gerar_diff_html(texto_ref, texto_novo):
     display_novo = texto_novo.replace('\n', '<br>')
     norm_ref = normalize_for_comparison(texto_ref)
     norm_novo = normalize_for_comparison(texto_novo)
-    # ignorar diferenças de traço/hífen se o conteúdo for igual sem eles
     comp_ref_nohy = re.sub(r'[-–—]', ' ', normalize_for_comparison(texto_ref))
     comp_novo_nohy = re.sub(r'[-–—]', ' ', normalize_for_comparison(texto_novo))
     if comp_ref_nohy == comp_novo_nohy:
@@ -354,7 +335,6 @@ def remover_rodapes_bula(texto):
             continue
         if re.match(r'^[\d\W_]{1,30}$', ln_s):
             continue
-        # evitar manter linhas que sejam só números remanescentes
         if re.match(r'^\s*\d+\s*$', ln_s):
             continue
         linhas_filtradas.append(ln.rstrip())
@@ -363,7 +343,6 @@ def remover_rodapes_bula(texto):
     return retorno.strip()
 
 # ----------------- 7. OCR VIA GEMINI -----------------
-
 def ocr_via_gemini_bytes(bytes_data, api_keys):
     if not bytes_data:
         return "", "Arquivo vazio para OCR"
@@ -411,7 +390,6 @@ def ocr_via_gemini_bytes(bytes_data, api_keys):
     return "", " | ".join(log_erros_ocr)
 
 # ----------------- 8. EXTRAÇÃO INTELIGENTE (BYTES) -----------------
-
 def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
     try:
         raw_text = ""
@@ -433,7 +411,7 @@ def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
                             font_name = span.get("font", "").lower()
                             is_bold = ((flags & 16) or "bold" in font_name or "black" in font_name or "heavy" in font_name or "semibold" in font_name)
                             is_italic = ((flags & 2) or "italic" in font_name or "oblique" in font_name)
-                            formatted_text = content  # preserve exactly
+                            formatted_text = content
                             if is_bold and is_italic:
                                 formatted_text = f"<b><i>{content}</i></b>"
                             elif is_bold:
@@ -487,65 +465,77 @@ def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
         st.error(f"Erro leitura: {str(e)}")
         return ""
 
-# ----------------- 9. EXTRAÇÃO DETERMINÍSTICA DE SEÇÕES -----------------
-
+# ----------------- 9. EXTRAÇÃO DETERMINÍSTICA DE SEÇÕES (robusta) -----------------
 def _normalize_line_for_search(line: str) -> str:
     return re.sub(r'\s+', ' ', strip_accents(line).lower()).strip()
 
 def extract_sections_by_headers(text, sections_list=SECOES_PACIENTE):
+    """
+    Busca os títulos baseado em versão 'plain' (sem tags) por linha e utiliza índices de linhas
+    para extrair conteúdo preservando as tags originais.
+    """
     if not text:
         return []
 
-    found = []
-    text_lines = text.splitlines()
-    text_norm_lines = []
-    for ln in text_lines:
-        ln_norm = _normalize_line_for_search(ln)
-        # remover pontuação inicial que atrapalha (p.ex. '? APRESENTAÇÕES')
-        ln_norm = re.sub(r'^[^\w]+', '', ln_norm)
-        text_norm_lines.append(ln_norm)
+    # lines originais (com tags) e linhas "plain" (sem tags) para busca
+    orig_lines = text.splitlines()
+    plain_lines = [re.sub(r'<[^>]+>', '', ln) for ln in orig_lines]
+    norm_lines = [_normalize_line_for_search(re.sub(r'^[^\w]+', '', ln)) for ln in plain_lines]
 
+    found = []
     for s in sections_list:
         if not s:
             continue
         tokens = re.findall(r'\w+', s)
         if not tokens:
             continue
-        patt = r'(?im)\b' + r'\W+'.join(map(re.escape, tokens)) + r'\b'
-        m = re.search(patt, text)
+        # primeiro tente procura direta no texto plain completo (mais robusto)
+        patt = r'\b' + r'\W+'.join(map(re.escape, tokens)) + r'\b'
+        plain_text_all = "\n".join(plain_lines)
+        m = re.search(patt, plain_text_all, flags=re.IGNORECASE)
         if m:
-            found.append((m.start(), m.end(), s))
-            continue
+            # determinar em que linha isso ocorreu
+            before = plain_text_all[:m.start()]
+            line_idx = before.count("\n")
+            start = None
+            # map to orig_lines positions
+            if line_idx < len(orig_lines):
+                start = sum(len(l)+1 for l in orig_lines[:line_idx])
+                end = start + len(orig_lines[line_idx])
+                found.append((start, end, s, line_idx))
+                continue
 
+        # fallback: procurar por tokens nas linhas (mais tolerante a quebras)
         tokens_norm = [strip_accents(t).lower() for t in tokens]
-        for idx, ln_norm in enumerate(text_norm_lines):
+        for idx, ln_norm in enumerate(norm_lines):
             pos = 0
             ok = True
-            # procurar as primeiras 3 tokens (ou menos, se não houver)
-            for tk in tokens_norm[:3]:
+            max_tokens = min(6, len(tokens_norm))  # tentar até 6 tokens - mais tolerante para títulos longos
+            for tk in tokens_norm[:max_tokens]:
                 p = ln_norm.find(tk, pos)
                 if p == -1:
                     ok = False
                     break
                 pos = p + len(tk)
             if ok:
-                start_est = sum(len(l) + 1 for l in text_lines[:idx])
-                end_est = start_est + len(text_lines[idx])
-                found.append((start_est, end_est, s))
+                start_est = sum(len(l) + 1 for l in orig_lines[:idx])
+                end_est = start_est + len(orig_lines[idx])
+                found.append((start_est, end_est, s, idx))
                 break
 
     if not found:
         return []
 
+    # ordenar por posição
     found.sort(key=lambda x: x[0])
     secoes = []
-    for idx, (start, end, titulo) in enumerate(found):
+    for idx, (start, end, titulo, line_idx) in enumerate(found):
         start_content = end
         end_content = found[idx+1][0] if idx+1 < len(found) else len(text)
         conteudo = text[start_content:end_content].strip()
+        # limpar metadados/rodapés/linhas numéricas
         conteudo = clean_metadata_and_footers(conteudo)
-        # remover linhas só com números residuais dentro do conteúdo
-        conteudo_lines = [ln for ln in conteudo.splitlines() if not re.match(r'^\s*\d+\s*$', ln)]
+        conteudo_lines = [ln for ln in conteudo.splitlines() if not re.match(r'^\s*\d+\s*[\.\)]?\s*$', ln)]
         conteudo = "\n".join(conteudo_lines).strip()
         secoes.append({"titulo": titulo, "texto": conteudo})
     return secoes
@@ -562,6 +552,60 @@ def align_sections_between_texts(text_ref, text_mkt, sections_list=SECOES_PACIEN
         key = titulo.upper()
         txt_ref = mapa_ref.get(key, "")
         txt_mkt = mapa_mkt.get(key, "")
+        # fallback adicional: se um lado possui e o outro não, tentar localizar título no outro com busca mais solta
+        if (not txt_ref) and txt_mkt:
+            # procurar campo no text_ref por tokens do título
+            tokens = re.findall(r'\w+', titulo)
+            if tokens:
+                patt = r'\b' + r'\W+'.join(map(re.escape, tokens[:6])) + r'\b'
+                plain_ref = re.sub(r'<[^>]+>', '', text_ref or "")
+                m = re.search(patt, plain_ref, flags=re.IGNORECASE)
+                if m:
+                    # extrair conteúdo heurístico
+                    start = m.end()
+                    # procurar próximo título conhecido
+                    next_pos = None
+                    for s2 in sections_list:
+                        if not s2:
+                            continue
+                        if s2.strip().upper() == titulo.strip().upper():
+                            continue
+                        p2 = r'\b' + r'\W+'.join(re.findall(r'\w+', s2)) + r'\b'
+                        m2 = re.search(p2, plain_ref[start:], flags=re.IGNORECASE)
+                        if m2:
+                            pos2 = start + m2.start()
+                            if next_pos is None or pos2 < next_pos:
+                                next_pos = pos2
+                    end = next_pos if next_pos is not None else len(plain_ref)
+                    candidate = plain_ref[start:end].strip()
+                    candidate = clean_metadata_and_footers(candidate)
+                    if len(candidate) > 20:
+                        txt_ref = candidate
+        if (not txt_mkt) and txt_ref:
+            tokens = re.findall(r'\w+', titulo)
+            if tokens:
+                patt = r'\b' + r'\W+'.join(map(re.escape, tokens[:6])) + r'\b'
+                plain_mkt = re.sub(r'<[^>]+>', '', text_mkt or "")
+                m = re.search(patt, plain_mkt, flags=re.IGNORECASE)
+                if m:
+                    start = m.end()
+                    next_pos = None
+                    for s2 in sections_list:
+                        if not s2:
+                            continue
+                        if s2.strip().upper() == titulo.strip().upper():
+                            continue
+                        p2 = r'\b' + r'\W+'.join(re.findall(r'\w+', s2)) + r'\b'
+                        m2 = re.search(p2, plain_mkt[start:], flags=re.IGNORECASE)
+                        if m2:
+                            pos2 = start + m2.start()
+                            if next_pos is None or pos2 < next_pos:
+                                next_pos = pos2
+                    end = next_pos if next_pos is not None else len(plain_mkt)
+                    candidate = plain_mkt[start:end].strip()
+                    candidate = clean_metadata_and_footers(candidate)
+                    if len(candidate) > 20:
+                        txt_mkt = candidate
         if not txt_ref and not txt_mkt:
             continue
         final.append({"titulo": titulo, "texto_anvisa": txt_ref, "texto_mkt": txt_mkt})
@@ -571,9 +615,7 @@ def align_sections_between_texts(text_ref, text_mkt, sections_list=SECOES_PACIEN
 def sanitize_title_for_display(titulo: str) -> str:
     if not titulo:
         return ""
-    # remover interrogação inicial(s)
     t = re.sub(r'^[\?\!\.\-\s]+', '', titulo).strip()
-    # remover número residual no final (ex: "COMPOSIÇÃO 1" ou "COMPOSIÇÃO - 1")
     t = re.sub(r'[\s\-\–\—]*\d{1,4}\s*$', '', t).strip()
     return t
 
@@ -582,13 +624,11 @@ st.title("💊 Gráfica x Arte (robusto)")
 st.markdown("<div class='small-muted'>Comparação automática de seções com preservação de <b>negrito</b> e <i>itálico</i>.</div>", unsafe_allow_html=True)
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
-
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Gráfica", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Arte Vigente", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    # aceitar diferentes nomes de secrets (você mencionou GEMNI_*)
     secret_names = [
         "GEMINI_API_KEY", "GEMINI_API_KEY1", "GEMINI_API_KEY2", "GEMINI_API_KEY3",
         "GEMNI_API_KEY1", "GEMNI_API_KEY2", "GEMNI_API_KEY3"
@@ -599,7 +639,6 @@ if st.button("🚀 Processar Conferência"):
     if not f1 or not f2:
         st.warning("Adicione os arquivos.")
         st.stop()
-
     try:
         f1_bytes = f1.read()
         f2_bytes = f2.read()
@@ -634,7 +673,6 @@ if st.button("🚀 Processar Conferência"):
         titulo_upper = titulo.upper()
         eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
 
-        # cabeçalho tratamento
         if "CABEÇALHO" in titulo_upper:
             def safe_extract_header(raw_text, secoes_alvo):
                 menor = None
@@ -659,7 +697,6 @@ if st.button("🚀 Processar Conferência"):
                 if len(header_clean) > max(2000, int(len(raw_text)*0.35)):
                     return ""
                 return header_clean
-
             if (not txt_ref or len(txt_ref) < 50):
                 novo_ref = safe_extract_header(t_anvisa, secoes_alvo)
                 if novo_ref:
