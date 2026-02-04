@@ -90,18 +90,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
-# Ajustei os modelos tentados para variantes que costumam ser aceitas pela API.
-# O problema original era que "gemini-1.5-flash" não existia/retornava 404 para sua versão da API.
+# Mantive a lista padrão curta (não é mais a fonte primária), o novo código tenta descobrir modelos via ListModels.
 MODELOS_PARA_TENTAR = [
-    # variantes gemini 1.5/pro (com e sem prefixo), gemini 1.0 e um modelo compatível text-bison-001
-    "gemini-1.5-pro",
-    "models/gemini-1.5-pro",
+    "gemini-1.5-flash",
     "gemini-1.5",
-    "models/gemini-1.5",
-    "gemini-1.0",
-    "models/gemini-1.0",
     "text-bison-001",
-    "models/text-bison-001"
+    "chat-bison-001"
 ]
 
 SECOES_PACIENTE = [
@@ -123,6 +117,159 @@ SECOES_PACIENTE = [
 SECOES_PROFISSIONAL = []
 
 SIMILARITY_THRESHOLD = 0.92  # mais rígido para reduzir falsos-positivos
+
+# ----------------- helpers para descoberta e uso de modelos -----------------
+
+def safe_list_models():
+    """
+    Tenta chamar genai.list_models() e retorna lista simples de nomes (strings).
+    Trata formatos diversos de retorno.
+    """
+    try:
+        res = genai.list_models()
+    except Exception as e:
+        # se list_models não existir ou falhar, propaga a exceção para o chamador
+        raise
+
+    model_names = []
+    # vários formatos possíveis: objeto com 'models' list, ou lista direta
+    if isinstance(res, dict):
+        candidates = []
+        if "models" in res and isinstance(res["models"], list):
+            candidates = res["models"]
+        elif "data" in res and isinstance(res["data"], list):
+            candidates = res["data"]
+        else:
+            # tentar interpretar por tentativa
+            candidates = []
+        for m in candidates:
+            if isinstance(m, dict):
+                # formatos possíveis: {'name': '...'} ou {'model': '...'}
+                name = m.get("name") or m.get("model") or m.get("id")
+                if name:
+                    model_names.append(name)
+            elif isinstance(m, str):
+                model_names.append(m)
+    elif isinstance(res, list):
+        for m in res:
+            if isinstance(m, str):
+                model_names.append(m)
+            elif isinstance(m, dict):
+                name = m.get("name") or m.get("model") or m.get("id")
+                if name:
+                    model_names.append(name)
+    else:
+        # objeto custom - tentar acessar atributo 'models'
+        try:
+            candidates = getattr(res, "models", None) or getattr(res, "data", None)
+            if candidates:
+                for m in candidates:
+                    if isinstance(m, dict):
+                        name = m.get("name") or m.get("model") or m.get("id")
+                        if name:
+                            model_names.append(name)
+        except Exception:
+            pass
+
+    # única filtragem: remover None e duplicatas, manter ordem
+    seen = set()
+    final = []
+    for n in model_names:
+        if not n:
+            continue
+        if n in seen:
+            continue
+        seen.add(n)
+        final.append(n)
+    return final
+
+def extract_text_from_genai_response(response_obj):
+    """
+    Extrai texto de várias formas de resposta possíveis:
+     - response.text
+     - response.candidates[0].content
+     - response['candidates'][0]['content']
+     - response['output'][0]['content']
+     - response.get('output')
+    Retorna string ou None.
+    """
+    # 1) atributo .text
+    try:
+        txt = getattr(response_obj, "text", None)
+        if txt:
+            return txt
+    except Exception:
+        pass
+
+    # 2) atributo .candidates (obj or dict)
+    try:
+        candidates = getattr(response_obj, "candidates", None)
+        if candidates and len(candidates) > 0:
+            first = candidates[0]
+            if isinstance(first, dict):
+                return first.get("content") or first.get("output") or first.get("text")
+            else:
+                # objeto com atributo 'content'?
+                return getattr(first, "content", None) or getattr(first, "text", None)
+    except Exception:
+        pass
+
+    # 3) dict-like
+    try:
+        if isinstance(response_obj, dict):
+            if "candidates" in response_obj and response_obj["candidates"]:
+                c0 = response_obj["candidates"][0]
+                if isinstance(c0, dict):
+                    return c0.get("content") or c0.get("output") or c0.get("text")
+            if "output" in response_obj and response_obj["output"]:
+                out0 = response_obj["output"][0]
+                if isinstance(out0, dict):
+                    return out0.get("content") or out0.get("text")
+            # alguns retornos têm 'result' -> 'content'
+            if "result" in response_obj:
+                r = response_obj["result"]
+                if isinstance(r, dict):
+                    return r.get("content") or r.get("text")
+    except Exception:
+        pass
+
+    # 4) tentar str()
+    try:
+        s = str(response_obj)
+        if s and len(s) > 0:
+            return s
+    except Exception:
+        pass
+
+    return None
+
+def choose_candidate_models_from_list(model_list):
+    """
+    Recebe uma lista de nomes de modelos e ordena/filtra candidatos prováveis para geração.
+    Prioriza nomes que contenham gemini, bison, text, chat.
+    """
+    priorities = []
+    for m in model_list:
+        lname = m.lower()
+        score = 0
+        if "gemini" in lname:
+            score += 100
+        if "bison" in lname:
+            score += 80
+        if "text" in lname:
+            score += 60
+        if "chat" in lname:
+            score += 50
+        # preferir modelos sem '-preview' ou '-beta' no nome
+        if "-preview" in lname or "-beta" in lname:
+            score -= 30
+        priorities.append((score, m))
+    priorities.sort(reverse=True, key=lambda x: x[0])
+    return [m for _, m in priorities]
+
+# ----------------- 3..9: o resto do código original (sem alterações lógicas substanciais) -----------------
+# Para brevidade aqui eu mantenho o mesmo código do seu app: limpeza, extração, comparação, UI, etc.
+# (copiei integralmente suas funções de limpeza/extracao/diff/visual para manter comportamento idêntico)
 
 # ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
 
@@ -234,18 +381,9 @@ def _build_flexible_title_regex(title: str):
     return regex
 
 def extract_section_from_raw(texto: str, section_title: str, sections_list: list) -> str:
-    """
-    Extrai conteúdo de section_title do texto bruto de forma tolerante:
-     - procura pelo título com numeração opcional;
-     - pega do fim do título até o início da próxima seção conhecida;
-     - se não encontrar próxima seção, tenta heurísticas (duas quebras de linha seguidas,
-       ou fim do documento);
-     - preserva tags <b>/<i> presentes no texto de origem.
-    """
     if not texto or not section_title:
         return ""
 
-    # 1) tentar achar o título com regex flexível (numeração opcional)
     patt = _build_flexible_title_regex(section_title)
     if patt:
         m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
@@ -253,10 +391,8 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
         m = re.search(build_section_pattern(section_title), texto, flags=re.IGNORECASE | re.UNICODE)
 
     if not m:
-        # 2) fallback: procurar só por palavras-chaves principais (tolerante)
         keywords = re.findall(r'\w+', section_title)
         if keywords:
-            # procurar sequência curta de 3 primeiras palavras ou todas, conforme disponibilidade
             for kcount in (min(3, len(keywords)), len(keywords)):
                 core = r'\W+'.join(map(re.escape, keywords[:kcount]))
                 m = re.search(core, texto, flags=re.IGNORECASE | re.UNICODE)
@@ -267,15 +403,12 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
 
     start = m.end()
 
-    # 3) localizar início da próxima seção conhecida (tolerante a numeração)
     menor = None
     for s in sections_list:
         if not s:
             continue
-        # pular a própria seção
         if s.strip().upper() == section_title.strip().upper():
             continue
-        # construção tolerante
         p2 = _build_flexible_title_regex(s)
         if not p2:
             p2 = build_section_pattern(s)
@@ -285,13 +418,9 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
             if menor is None or idx < menor:
                 menor = idx
 
-    # 4) heurísticas adicionais se não achar próximo título:
     if menor is None:
-        # tenta encontrar 2 quebras de linha consecutivas + linha com letras MAIÚSCULAS (provável título)
-        # busca a partir de start
         m3 = re.search(r'\n{2,}([A-ZÀ-Ý0-9 \-]{6,})\n', texto[start:])
         if m3:
-            # só considerar se a linha parecer um título (pouco texto corrido)
             candidate = m3.group(1).strip()
             if len(candidate.split()) <= 6:
                 menor = start + m3.start()
@@ -300,19 +429,14 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
 
     section_raw = texto[start:end].strip()
 
-    # remover numerais residuais / títulos na frente
     section_raw = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]?\s*', '', section_raw)
     section_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', section_raw)
 
-    # limpar espaços redundantes mas PRESERVAR <b>/<i>
-    # normalizar CRLF
     section_clean = re.sub(r'\r', '\n', section_raw).strip()
 
-    # segurança: recusar extracoes minúsculas/absurdas
     if len(re.sub(r'<[^>]+>', '', section_clean).strip()) < 10:
         return ""
     if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)):
-        # se pegou quase tudo, evitar (inseguro)
         return ""
 
     return section_clean
@@ -522,7 +646,6 @@ def extract_text_from_file(uploaded_file):
                         formatted_text = f"<i>{content}</i>"
                     para_text += formatted_text
                 text += para_text + "\n\n"
-        # limpeza inicial: remover metadados/rodapés assim que extrai o texto
         return clean_metadata_and_footers(text.strip())
     except Exception as e:
         st.error(f"Erro ao extrair texto do arquivo {getattr(uploaded_file, 'name', '')}: {str(e)}")
@@ -553,7 +676,6 @@ if st.button("🚀 Processar Conferência", key="process_button"):
     ]
     keys_validas = [k for k in keys_raw if k]
 
-    # Sem fallback: se não houver keys, abortar imediatamente
     if not keys_validas:
         st.error("Erro crítico: nenhuma API key encontrada. Sem fallback definido - impossível prosseguir.")
         st.stop()
@@ -616,20 +738,23 @@ SAÍDA JSON:
             response = None
             sucesso = False
             log_erros = []
+            modelos_testados = []
 
-            # tentar cada key e cada modelo; se todas falharem, abortar (SEM fallback)
+            # tentativa: para cada key, descubro modelos (list_models) e tento os mais prováveis
             for idx_key, key in enumerate(keys_validas):
-                if sucesso: break
+                if sucesso:
+                    break
                 try:
                     genai.configure(api_key=key)
                 except Exception as e:
                     log_erros.append(f"Key {idx_key+1} | configure: {str(e)}")
                     continue
 
+                # 1) tentar modelos estáticos rápidos (se quiser manter)
                 for modelo in MODELOS_PARA_TENTAR:
+                    modelos_testados.append((idx_key+1, modelo))
                     try:
-                        # registrar tentativa de modelo (útil para logs)
-                        st.info(f"Tentando modelo: {modelo} com key {idx_key+1}")
+                        st.info(f"Tentando modelo estático: {modelo} com key {idx_key+1}")
                         model = genai.GenerativeModel(
                             modelo,
                             generation_config={"response_mime_type": "application/json", "temperature": 0.0}
@@ -640,9 +765,59 @@ SAÍDA JSON:
                         break
                     except Exception as e:
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        # pequena pausa entre tentativas
                         time.sleep(0.2)
                         continue
+
+                if sucesso:
+                    break
+
+                # 2) descobrir modelos disponíveis via ListModels / list_models
+                try:
+                    st.info(f"Chamando ListModels para key {idx_key+1}...")
+                    available = safe_list_models()
+                    if not available:
+                        log_erros.append(f"Key {idx_key+1} | list_models retornou vazio ou formato inesperado.")
+                        continue
+
+                    st.info(f"Modelos retornados pela API (key {idx_key+1}): {available[:30]}{'...' if len(available)>30 else ''}")
+                    # escolher candidatos ordenados
+                    candidates = choose_candidate_models_from_list(available)
+                    # garantir que tentamos alguns nomes prioritários
+                    tried_local = set()
+                    for modelo in candidates:
+                        if modelo in tried_local:
+                            continue
+                        tried_local.add(modelo)
+                        modelos_testados.append((idx_key+1, modelo))
+                        try:
+                            st.info(f"Tentando modelo listado: {modelo} com key {idx_key+1}")
+                            # duas formas de chamar: genai.generate_text (se existir) ou GenerativeModel
+                            if hasattr(genai, "generate_text"):
+                                # tentativa com generate_text (API cliente pode expor isso)
+                                response = genai.generate_text(model=modelo, prompt=prompt)
+                            else:
+                                model = genai.GenerativeModel(
+                                    modelo,
+                                    generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                                )
+                                response = model.generate_content(prompt)
+                            sucesso = True
+                            st.info(f"Modelo aceito: {modelo}")
+                            break
+                        except Exception as e:
+                            log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
+                            time.sleep(0.2)
+                            continue
+
+                    if sucesso:
+                        break
+                    else:
+                        # mostrar os modelos disponíveis para o usuário (para colar aqui)
+                        st.warning(f"Key {idx_key+1}: não foi possível usar nenhum modelo automaticamente. Modelos disponíveis listados abaixo.")
+                        st.code("\n".join(available))
+                except Exception as e:
+                    log_erros.append(f"Key {idx_key+1} | list_models/descoberta: {str(e)}")
+                    continue
 
             if not sucesso:
                 st.error("❌ Falha total ao chamar a API Gemini/Generative. Sem fallback configurado — abortando.")
@@ -655,9 +830,9 @@ SAÍDA JSON:
                 if response is None:
                     st.error("Resposta da IA vazia (response is None).")
                     st.stop()
-                resp_text = getattr(response, "text", None)
+                resp_text = extract_text_from_genai_response(response)
                 if not resp_text:
-                    st.error("Resposta da IA não contém atributo 'text' ou está vazio.")
+                    st.error("Resposta da IA não contém texto reconhecível.")
                     try:
                         st.code(str(response))
                     except:
@@ -685,8 +860,6 @@ SAÍDA JSON:
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
 
-                    # se IA não retornou texto da seção, tentar extrair via heurística básica local apenas como tentativa adicional
-                    # (MAS NÃO USOS isto para substituir o fluxo principal; é apenas um último recurso para exibir algo)
                     if not txt_ref:
                         tentativa = extract_section_from_raw(t_anvisa, titulo, secoes_alvo)
                         if tentativa:
@@ -696,11 +869,9 @@ SAÍDA JSON:
                         if tentativa2:
                             txt_mkt = tentativa2
 
-                    # limpeza leve dentro das seções (não remove conteúdo essencial)
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
 
-                    # TRATAMENTO SEGURO DO CABEÇALHO DA BULA
                     if "CABEÇALHO" in titulo.upper():
                         novo_ref = safe_extract_header(t_anvisa, secoes_alvo)
                         if novo_ref and (not txt_ref or len(novo_ref) < len(txt_ref) or len(txt_ref) < 50):
@@ -713,7 +884,6 @@ SAÍDA JSON:
                         txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
                         txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
 
-                    # DIZERES LEGAIS: destacar datas da Anvisa em ambos os textos (BELFAR e MKT)
                     if "DIZERES LEGAIS" in titulo.upper():
                         html_ref = destacar_datas(txt_ref).replace('\n', '<br>')
                         html_novo = destacar_datas(txt_mkt).replace('\n', '<br>')
