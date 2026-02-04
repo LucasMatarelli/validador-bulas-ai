@@ -119,6 +119,59 @@ SECOES_PROFISSIONAL = []
 
 SIMILARITY_THRESHOLD = 0.92  # mais rígido para reduzir falsos-positivos
 
+# ----------------- util: extração de JSON resiliente -----------------
+def extract_json_block(text: str) -> str:
+    """
+    Tenta encontrar o primeiro bloco JSON bem formado no texto fazendo balanceamento de chaves.
+    Retorna substring ou None.
+    """
+    if not text or '{' not in text:
+        return None
+    start = text.find('{')
+    depth = 0
+    in_string = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == '"' and not esc:
+            in_string = not in_string
+        if in_string:
+            esc = (ch == '\\' and not esc)
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:i+1]
+    return None
+
+def try_load_json_from_text(text: str):
+    """
+    Tenta json.loads direto; se falhar, tenta extrair bloco JSON e decodificar.
+    Retorna tuple (obj, error_message). Se sucesso, error_message is None.
+    """
+    if text is None:
+        return None, "response text is None"
+    # tentativa direta
+    try:
+        return json.loads(text), None
+    except Exception as e:
+        # tentar extrair bloco JSON balanceado
+        block = extract_json_block(text)
+        if block:
+            try:
+                return json.loads(block), None
+            except Exception as e2:
+                # tentar remover caracteres inválidos comuns e tentar de novo
+                cleaned = block.replace('\r', '\\r').replace('\n', '\\n')
+                try:
+                    return json.loads(cleaned), None
+                except Exception as e3:
+                    return None, f"json loads failed after extracting block: {e3}"
+        else:
+            return None, f"json loads failed and no JSON block found: {e}"
+
 # ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
 
 def clean_metadata_and_footers(texto: str) -> str:
@@ -126,22 +179,17 @@ def clean_metadata_and_footers(texto: str) -> str:
         return texto
     t = texto
 
-    # Remover explicitamente a string e variações relacionadas solicitadas:
+    # Remover explicitamente strings / contatos já solicitados
     t = re.sub(r'(?im)^.*times\s+new\s+roman.*\n?', '', t)
     t = re.sub(r'(?im)^.*negrito.*\n?', '', t)
     t = re.sub(r'(?im)^.*corpo\s*14.*\n?', '', t)
     t = re.sub(r'(?im)^.*\bcontato\b.*\n?', '', t)
-
-    # remover e-mails do domínio belfar.com.br
     t = re.sub(r'(?i)[\w\.-]+@belfar\.com\.br', '', t)
-
-    # remover padrões de telefone comuns
     t = re.sub(r'(?m)(?:\+?\d{1,3}[-\s]?)?(?:\(?\d{2}\)?[-\s]?)?\d{4,5}[-\s]?\d{4}', '', t)
 
     # nomes de arquivo longos em MAIÚSCULAS/underscores
     t = re.sub(r'(?m)^\s*[A-Z0-9_]{8,}\s*$', '', t)
 
-    # linhas com metadados específicos
     patterns_line = [
         r'(?im)^\s*.*medida\s+da\s+bula.*$',
         r'(?im)^\s*.*tipologia\s+da\s+bula.*$',
@@ -185,7 +233,6 @@ def clean_metadata_and_footers(texto: str) -> str:
     return t.strip()
 
 # ----------------- 4. LOCALIZAÇÃO DE TÍTULOS E EXTRAÇÃO DE CABEÇALHO (SEGURA) -----------------
-
 def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
     if not words:
@@ -226,8 +273,7 @@ def safe_extract_header(texto: str, secoes_alvo: list) -> str:
         return ""
     return header_clean.strip()
 
-# ----------------- 4b. EXTRAIR SEÇÃO DO TEXTO BRUTO (FALLBACK MELHORADO) -----------------
-
+# ----------------- 4b. EXTRAIR SEÇÃO DO TEXTO BRUTO -----------------
 def _build_flexible_title_regex(title: str):
     words = re.findall(r'\w+', title, flags=re.UNICODE)
     if not words:
@@ -239,13 +285,11 @@ def _build_flexible_title_regex(title: str):
 def extract_section_from_raw(texto: str, section_title: str, sections_list: list) -> str:
     if not texto or not section_title:
         return ""
-
     patt = _build_flexible_title_regex(section_title)
     if patt:
         m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
     else:
         m = re.search(build_section_pattern(section_title), texto, flags=re.IGNORECASE | re.UNICODE)
-
     if not m:
         keywords = re.findall(r'\w+', section_title)
         if keywords:
@@ -256,9 +300,7 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
                     break
     if not m:
         return ""
-
     start = m.end()
-
     menor = None
     for s in sections_list:
         if not s:
@@ -273,32 +315,24 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
             idx = start + m2.start()
             if menor is None or idx < menor:
                 menor = idx
-
     if menor is None:
         m3 = re.search(r'\n{2,}([A-ZÀ-Ý0-9 \-]{6,})\n', texto[start:])
         if m3:
             candidate = m3.group(1).strip()
             if len(candidate.split()) <= 6:
                 menor = start + m3.start()
-
     end = menor if menor is not None else len(texto)
-
     section_raw = texto[start:end].strip()
-
     section_raw = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]?\s*', '', section_raw)
     section_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', section_raw)
-
     section_clean = re.sub(r'\r', '\n', section_raw).strip()
-
     if len(re.sub(r'<[^>]+>', '', section_clean).strip()) < 10:
         return ""
     if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)):
         return ""
-
     return section_clean
 
-# ----------------- 5. NORMALIZAÇÃO AVANÇADA PARA COMPARAÇÃO -----------------
-
+# ----------------- 5. NORMALIZAÇÃO PARA COMPARAÇÃO -----------------
 def strip_accents(s: str) -> str:
     return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('ASCII')
 
@@ -328,7 +362,7 @@ def normalize_for_comparison(text: str) -> str:
     t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
     t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
     t = re.sub(r'<[^>]+>', '', t)
-    # remover hífens e traços para que eles não provoquem diferenças
+    # remover hífens/traços para que eles não provoquem diferenças
     t = re.sub(r'[-–—]', ' ', t)
     t = strip_accents(t).lower()
     t = re.sub(r'[^a-z0-9\s]', ' ', t)
@@ -347,7 +381,6 @@ def jaccard_similarity(a: str, b: str) -> float:
     return len(inter) / len(union)
 
 # ----------------- 6. ORTOGRAFIA E VISUAL -----------------
-
 def verificar_ortografia_inteligente(texto):
     try:
         spell = SpellChecker(language='pt')
@@ -377,19 +410,17 @@ def melhorar_visual_topicos(texto_html):
             novo_texto.append(linha)
     return "".join(novo_texto)
 
+# destaque de datas (visual)
 def destacar_datas(texto):
-    padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padrão\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+    padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padr[oã]o\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     def replacer(match):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
 
 # ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
-
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # remover tags para comparar texto puro
     ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
     novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
-    # remover hífens/traços antes do split para que eles não provoquem diffs
     ref_sem_tags = re.sub(r'[-–—]', ' ', ref_sem_tags)
     novo_sem_tags = re.sub(r'[-–—]', ' ', novo_sem_tags)
     palavras_ref = ref_sem_tags.split()
@@ -420,23 +451,18 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     comp_ref = clean_metadata_and_footers(texto_ref)
     comp_novo = clean_metadata_and_footers(texto_novo)
 
-    # criar versões sem hífen para verificar similaridade ignorando traços
     comp_ref_nohy = re.sub(r'[-–—]', ' ', comp_ref)
     comp_novo_nohy = re.sub(r'[-–—]', ' ', comp_novo)
-
     norm_ref_nohy = normalize_for_comparison(comp_ref_nohy)
     norm_novo_nohy = normalize_for_comparison(comp_novo_nohy)
 
-    # Se, depois de remover hífens, os textos forem iguais, considerar CONFORME (ignorar só diferenças de traço)
     if norm_ref_nohy == norm_novo_nohy:
         html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
         html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
 
-    # continuar com o fluxo normal (com normalização completa)
     comp_ref_norm = clean_metadata_and_footers(comp_ref)
     comp_novo_norm = clean_metadata_and_footers(comp_novo)
-
     norm_ref = normalize_for_comparison(comp_ref_norm)
     norm_novo = normalize_for_comparison(comp_novo_norm)
 
@@ -467,7 +493,6 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     return r_html_final, n_html_final, diff_bool
 
 # ----------------- 8. EXTRAÇÃO DE TEXTO -----------------
-
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
@@ -548,15 +573,16 @@ if st.button("🚀 Processar Conferência", key="process_button"):
         st.info(f"Arquivo BELFAR detectado: {getattr(f1, 'name', 'desconhecido')}")
         st.info(f"Arquivo MKT detectado: {getattr(f2, 'name', 'desconhecido')}")
 
-    keys_raw = [
-        st.secrets.get("GEMINI_API_KEY"),
-        st.secrets.get("GEMINI_API_KEY2"),
-        st.secrets.get("GEMINI_API_KEY3")
+    # tentar vários nomes de secrets, incluindo possíveis typos (GEMNI_)
+    secret_names = [
+        "GEMINI_API_KEY", "GEMINI_API_KEY1", "GEMINI_API_KEY2", "GEMINI_API_KEY3",
+        "GEMNI_API_KEY1", "GEMNI_API_KEY2", "GEMNI_API_KEY3"
     ]
+    keys_raw = [st.secrets.get(n) for n in secret_names]
     keys_validas = [k for k in keys_raw if k]
 
     if not keys_validas:
-        st.error("Erro crítico: nenhuma API key encontrada. Sem fallback definido - impossível prosseguir.")
+        st.error("Erro crítico: nenhuma API key encontrada nos secrets. Verifique os nomes (GEMINI_API_KEY / GEMINI_API_KEY2 / GEMINI_API_KEY3).")
         st.stop()
 
     if f1 and f2:
@@ -622,7 +648,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
             extracted_date_ref = "-"
             extracted_date_mkt = "-"
 
-            # tentar cada key e cada modelo; se todas falharem, abortar (SEM fallback extra)
+            # tentar cada key e cada modelo; se todas falharem, abortar
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
                 try:
@@ -653,30 +679,34 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                     st.code("\n".join(log_erros))
                 st.stop()
 
-            # processar resposta
+            # processar resposta da IA com parsing resiliente
             try:
                 if response is None:
                     st.error("Resposta da IA vazia (response is None).")
                     st.stop()
+
+                # tentar obter texto cru
                 resp_text = getattr(response, "text", None)
                 if not resp_text:
-                    st.error("Resposta da IA não contém atributo 'text' ou está vazio.")
-                    try:
-                        st.code(str(response))
-                    except:
-                        pass
-                    st.stop()
-                resultado = json.loads(resp_text)
-            except Exception as e:
-                st.exception(f"Erro ao decodificar JSON da resposta da IA: {e}")
-                try:
+                    # tentar str(response)
+                    resp_text = str(response)
+
+                obj, err = try_load_json_from_text(resp_text)
+                if obj is None:
+                    st.error(f"Erro ao decodificar JSON da resposta da IA: {err}")
                     st.code(resp_text)
+                    st.stop()
+                resultado = obj
+            except Exception as e:
+                st.exception(f"Erro ao processar resposta da IA: {e}")
+                try:
+                    st.code(str(response))
                 except:
                     pass
                 st.stop()
 
             try:
-                # respeitar se IA retornou datas (mas vamos priorizar DIZERES LEGAIS localmente extraído)
+                # não usamos datas globais da IA diretamente; vamos priorizar DIZERES LEGAIS localmente extraído
                 data_ref_from_ai = resultado.get("data_anvisa_ref", "-")
                 data_mkt_from_ai = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
@@ -684,12 +714,13 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                 secoes_finais = []
                 divs_count = 0
 
+                # regex estrita para frase + data (exige frase antes da data)
+                frase_padrao = r'Esta\s+bula\s+foi\s+atualizada\s+conforme\s+Bula\s+Padr[oã]o\s+aprovada\s+pela\s+Anvisa\s+em\s*(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
                 for item in dados_secoes:
                     titulo = item.get('titulo', '').strip()
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
 
-                    # se IA não retornou texto da seção, tentar extrair via heurística básica local apenas como tentativa adicional
                     if not txt_ref:
                         tentativa = extract_section_from_raw(t_anvisa, titulo, secoes_alvo)
                         if tentativa:
@@ -702,7 +733,6 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
 
-                    # TRATAMENTO SEGURO DO CABEÇALHO DA BULA
                     if "CABEÇALHO" in titulo.upper():
                         novo_ref = safe_extract_header(t_anvisa, secoes_alvo)
                         if novo_ref and (not txt_ref or len(novo_ref) < len(txt_ref) or len(txt_ref) < 50):
@@ -715,15 +745,14 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                         txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
                         txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
 
-                    # DIZERES LEGAIS: destacar datas da Anvisa e extrair explicitamente a data
+                    # DIZERES LEGAIS: extrair data SOMENTE se estiver exatamente com a frase especificada
                     if "DIZERES LEGAIS" in titulo.upper():
-                        # extrair data DD/MM/AAAA ou MM/AAAA (priorizar dd/mm/yyyy)
-                        padrao_data = re.search(r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})', txt_ref or "", flags=re.IGNORECASE)
-                        if padrao_data:
-                            extracted_date_ref = padrao_data.group(1)
-                        padrao_data2 = re.search(r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})', txt_mkt or "", flags=re.IGNORECASE)
-                        if padrao_data2:
-                            extracted_date_mkt = padrao_data2.group(1)
+                        m_ref = re.search(frase_padrao, txt_ref, flags=re.IGNORECASE)
+                        if m_ref:
+                            extracted_date_ref = m_ref.group(1)
+                        m_mkt = re.search(frase_padrao, txt_mkt, flags=re.IGNORECASE)
+                        if m_mkt:
+                            extracted_date_mkt = m_mkt.group(1)
 
                         html_ref = destacar_datas(txt_ref).replace('\n', '<br>')
                         html_novo = destacar_datas(txt_mkt).replace('\n', '<br>')
@@ -745,7 +774,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                         "status": status
                     })
 
-                # Usar as datas extraídas APENAS de DIZERES LEGAIS (se encontradas), caso contrário usar o que veio da IA (ou "-")
+                # Usar datas extraídas APENAS de DIZERES LEGAIS (se encontradas), senão usar o que veio da IA, senão "-"
                 data_ref = extracted_date_ref if extracted_date_ref != "-" else (data_ref_from_ai or "-")
                 data_mkt = extracted_date_mkt if extracted_date_mkt != "-" else (data_mkt_from_ai or "-")
 
