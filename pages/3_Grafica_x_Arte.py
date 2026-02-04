@@ -1,8 +1,7 @@
-# app.py - Gráfica x Arte
-# - Mantém seu fluxo original (extração, comparação, destacar datas em DIZERES LEGAIS)
-# - Se texto extraído localmente for < 1000 chars (sem tags) -> faz OCR remoto
-# - Para chamadas remotas (OCR e geração de JSON) tenta vários modelos/keys mas com timeout por tentativa
-# - Tenta modelos rapidamente: se demorar > TIMEOUT_S, pula para o próximo
+# app.py - Gráfica x Arte (Versão Gemini 2.5/3.0 com Proteção de Cota)
+# - Mantém seu fluxo original
+# - Focado em Gemini 2.5 Flash e Gemini 3 Flash
+# - Sistema de pausa automática (15s) para respeitar limite de 5 RPM
 
 import streamlit as st
 import google.generativeai as genai
@@ -20,14 +19,20 @@ from io import BytesIO
 
 # ----------------- CONFIGURAÇÕES GLOBAIS -----------------
 APP_TITLE = "Gráfica x Arte"
-TIMEOUT_S = 12                # timeout por tentativa de modelo (em segundos)
+
+# Aumentado para suportar PDFs maiores e a latência dos novos modelos
+TIMEOUT_S = 40  
+
+# Apenas os modelos que você confirmou ter acesso (da imagem)
 MODELOS_PARA_TENTAR_OCR = [
-    "models/gemini-2.5-flash", "models/gemini-2.5", "models/gemini-3-flash",
-    "models/gemma-3-27b", "models/gemma-3-12b"
+    "gemini-2.5-flash", 
+    "gemini-3-flash",
+    "gemma-3-27b-it"  # Gemma geralmente precisa do sufixo -it para seguir instruções
 ]
+
 MODELOS_PARA_TENTAR_GEN = [
-    "models/gemini-2.5-flash", "models/gemini-2.5", "models/gemini-3-flash",
-    "models/gemma-3-27b", "models/gemma-3-12b"
+    "gemini-2.5-flash",
+    "gemini-3-flash"
 ]
 
 # Seções esperadas
@@ -142,12 +147,12 @@ def call_model_with_timeout(api_key, modelo, payload, timeout_s=TIMEOUT_S):
     """
     Executa model.generate_content em thread separada com timeout.
     payload pode ser string (prompt) ou list (para OCR multipart).
-    Retorna response object ou raise Exception/TimeoutError.
     """
     def worker_call():
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(modelo)
         return model.generate_content(payload)
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
         future = ex.submit(worker_call)
         try:
@@ -158,55 +163,71 @@ def call_model_with_timeout(api_key, modelo, payload, timeout_s=TIMEOUT_S):
         except Exception as e:
             raise e
 
-# ----------------- OCR remoto (tenta modelos/keys com timeout por tentativa) -----------------
+# ----------------- OCR remoto com BACKOFF para COTA (429) -----------------
 def ocr_via_gemini_bytes(bytes_data, api_keys, modelos=MODELOS_PARA_TENTAR_OCR, timeout_s=TIMEOUT_S):
     if not bytes_data:
         return "", "Arquivo vazio para OCR"
+    
     prompt_ocr = """EXTRAIA APENAS O TEXTO DO PDF ABAIXO.
-Preserve as tags HTML <b> e <i> exatamente onde o texto está em negrito/itálico.
-NÃO inclua explicações ou JSON. Apenas o texto (com tags se houver)."""
-    safety_settings = {
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE
-    }
+    Preserve as tags HTML <b> e <i> exatamente onde o texto está em negrito/itálico.
+    NÃO inclua explicações ou JSON. Apenas o texto (com tags se houver)."""
+    
     errors = []
+    
     for i, key in enumerate(api_keys):
         for modelo in modelos:
             try:
-                payload = [{'mime_type':'application/pdf','data':bytes_data}, prompt_ocr]
+                # Payload: Prompt + Dados Binários (MimeType)
+                payload = [prompt_ocr, {'mime_type':'application/pdf', 'data':bytes_data}]
+                
                 resp = call_model_with_timeout(key, modelo, payload, timeout_s=timeout_s)
+                
                 texto_extraido = getattr(resp, "text", "") or ""
+                
+                # Se veio vazio, tenta próximo modelo
                 if not texto_extraido.strip():
                     errors.append(f"{modelo} returned empty")
                     continue
+                
+                # --- Limpeza Pós-OCR ---
                 texto_extraido = re.sub(r'^\s*(OCR\s*Result:|Texto extraído:|Resultado:)\s*', '', texto_extraido, flags=re.IGNORECASE)
                 texto_extraido = re.sub(r'^```(?:[\w\-]+)?\s*', '', texto_extraido)
                 texto_extraido = re.sub(r'\s*```$', '', texto_extraido)
                 texto_extraido = texto_extraido.replace('\r\n', '\n').replace('\r', '\n')
+                # Normaliza tags
                 texto_extraido = re.sub(r'<\s*b\s*>', '<b>', texto_extraido, flags=re.IGNORECASE)
                 texto_extraido = re.sub(r'<\s*/\s*b\s*>', '</b>', texto_extraido, flags=re.IGNORECASE)
                 texto_extraido = re.sub(r'<\s*i\s*>', '<i>', texto_extraido, flags=re.IGNORECASE)
                 texto_extraido = re.sub(r'<\s*/\s*i\s*>', '</i>', texto_extraido, flags=re.IGNORECASE)
+                
                 texto_extraido = remover_rodapes_bula(texto_extraido)
                 texto_extraido = clean_metadata_and_footers(texto_extraido)
+                
                 if not re.sub(r'<[^>]+>', '', texto_extraido).strip():
                     errors.append(f"{modelo} returned only tags/empty after cleaning")
                     continue
+                
                 return texto_extraido, None
+                
             except Exception as e:
-                errors.append(f"key#{i+1}:{modelo}:{str(e)}")
-                # try next model quickly
-                continue
+                msg_erro = str(e).lower()
+                errors.append(f"key#{i+1}:{modelo}: {str(e)}")
+                
+                # ---- AQUI ESTÁ A PROTEÇÃO DE COTA (5 RPM) ----
+                if "429" in msg_erro or "quota" in msg_erro:
+                    st.toast(f"⏳ Cota atingida no {modelo}. Pausando 15s...", icon="🛑")
+                    time.sleep(15) # Espera obrigatória para zerar o contador de minutos
+                elif "404" in msg_erro:
+                    pass # Modelo não achado, tenta o próximo imediatamente
+                else:
+                    time.sleep(1) # Erro genérico, espera curta
+                
+                continue # Tenta próximo modelo/key
+
     return "", " | ".join(errors)
 
-# ----------------- Funções de extração local (preservando <b>/<i>) -----------------
+# ----------------- Funções de extração local -----------------
 def extract_text_from_file_obj_bytes(bytes_data, filename):
-    """
-    Versão que aceita bytes buffer (usado internamente).
-    Mantém a mesma lógica de extract_text_from_file, mas recebe bytes e filename.
-    """
     try:
         text = ""
         fname = filename.lower()
@@ -216,35 +237,26 @@ def extract_text_from_file_obj_bytes(bytes_data, filename):
                 blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE).get("blocks", [])
                 page_text_spans = ""
                 for block in blocks:
-                    if block.get("type") != 0:
-                        continue
+                    if block.get("type") != 0: continue
                     for line in block.get("lines", []):
                         line_text = ""
                         for span in line.get("spans", []):
                             content = span.get("text", "")
-                            if not content:
-                                continue
+                            if not content: continue
                             flags = span.get("flags", 0)
                             font_name = span.get("font", "").lower()
                             is_bold = ((flags & 16) or "bold" in font_name or "black" in font_name or "heavy" in font_name or "semibold" in font_name)
                             is_italic = ((flags & 2) or "italic" in font_name or "oblique" in font_name)
                             formatted_text = content
-                            if is_bold and is_italic:
-                                formatted_text = f"<b><i>{content}</i></b>"
-                            elif is_bold:
-                                formatted_text = f"<b>{content}</b>"
-                            elif is_italic:
-                                formatted_text = f"<i>{content}</i>"
+                            if is_bold and is_italic: formatted_text = f"<b><i>{content}</i></b>"
+                            elif is_bold: formatted_text = f"<b>{content}</b>"
+                            elif is_italic: formatted_text = f"<i>{content}</i>"
                             line_text += formatted_text
                         page_text_spans += line_text + "\n"
-                # fallback to text if spans empty
-                if page_text_spans.strip():
-                    text += page_text_spans + "\n"
+                if page_text_spans.strip(): text += page_text_spans + "\n"
                 else:
-                    try:
-                        text += page.get_text("text") + "\n"
-                    except Exception:
-                        pass
+                    try: text += page.get_text("text") + "\n"
+                    except: pass
             doc.close()
         elif fname.endswith('.docx'):
             doc = docx.Document(BytesIO(bytes_data))
@@ -254,148 +266,68 @@ def extract_text_from_file_obj_bytes(bytes_data, filename):
                     content = run.text
                     if not content: continue
                     formatted = content
-                    if run.bold and run.italic:
-                        formatted = f"<b><i>{content}</i></b>"
-                    elif run.bold:
-                        formatted = f"<b>{content}</b>"
-                    elif run.italic:
-                        formatted = f"<i>{content}</i>"
+                    if run.bold and run.italic: formatted = f"<b><i>{content}</i></b>"
+                    elif run.bold: formatted = f"<b>{content}</b>"
+                    elif run.italic: formatted = f"<i>{content}</i>"
                     para_text += formatted
                 text += para_text + "\n\n"
-        else:
-            return ""
+        else: return ""
         return clean_metadata_and_footers(text.strip())
     except Exception as e:
         st.error(f"Erro extração local: {e}")
         return ""
 
-# ----------------- Funções de seção/diff (copiar do seu código original) -----------------
-# Para não tornar esta resposta imensamente maior, incluo abaixo as funções essenciais
-# que você já tinha e que não foram alteradas: build_section_pattern, extract_section_from_raw,
-# normalize_for_comparison, gerar_diff_html, diff_palavra_a_palavra, melhorar_visual_topicos,
-# verificar_ortografia_inteligente, destacar_datas, safe_extract_header, etc.
-# (Na prática, cole aqui as mesmas funções do seu arquivo original sem modificação.)
-# --- BEGIN copy helpers (use your existing implementations) ---
-
+# ----------------- Helpers Lógicos (Regex/Diff) -----------------
 def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
-    if not words:
-        return None
+    if not words: return None
     pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
     return pattern
 
 def _build_flexible_title_regex(title: str):
     words = re.findall(r'\w+', title, flags=re.UNICODE)
-    if not words:
-        return None
+    if not words: return None
     core = r'\W+'.join(map(re.escape, words))
     regex = rf'(?:^|\n)\s*(?:\d{{1,2}}\s*[\.\)\-]\s*|[IVXLCDM]+\s*[–-]\s*)?{core}'
     return regex
 
 def extract_section_from_raw(texto: str, section_title: str, sections_list: list) -> str:
-    if not texto or not section_title:
-        return ""
+    if not texto or not section_title: return ""
     patt = _build_flexible_title_regex(section_title)
-    if patt:
-        m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
-    else:
-        m = re.search(build_section_pattern(section_title), texto, flags=re.IGNORECASE | re.UNICODE)
+    if patt: m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
+    else: m = re.search(build_section_pattern(section_title), texto, flags=re.IGNORECASE | re.UNICODE)
     if not m:
         keywords = re.findall(r'\w+', section_title)
         if keywords:
             for kcount in (min(3, len(keywords)), len(keywords)):
                 core = r'\W+'.join(map(re.escape, keywords[:kcount]))
                 m = re.search(core, texto, flags=re.IGNORECASE | re.UNICODE)
-                if m:
-                    break
-    if not m:
-        return ""
+                if m: break
+    if not m: return ""
     start = m.end()
     menor = None
     for s in sections_list:
-        if not s:
-            continue
-        if s.strip().upper() == section_title.strip().upper():
-            continue
+        if not s: continue
+        if s.strip().upper() == section_title.strip().upper(): continue
         p2 = _build_flexible_title_regex(s)
-        if not p2:
-            p2 = build_section_pattern(s)
+        if not p2: p2 = build_section_pattern(s)
         m2 = re.search(p2, texto[start:], flags=re.IGNORECASE | re.UNICODE)
         if m2:
             idx = start + m2.start()
-            if menor is None or idx < menor:
-                menor = idx
+            if menor is None or idx < menor: menor = idx
     if menor is None:
         m3 = re.search(r'\n{2,}([A-ZÀ-Ý0-9 \-]{6,})\n', texto[start:])
         if m3:
             candidate = m3.group(1).strip()
-            if len(candidate.split()) <= 6:
-                menor = start + m3.start()
+            if len(candidate.split()) <= 6: menor = start + m3.start()
     end = menor if menor is not None else len(texto)
     section_raw = texto[start:end].strip()
     section_raw = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]?\s*', '', section_raw)
     section_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', section_raw)
     section_clean = re.sub(r'\r', '\n', section_raw).strip()
-    if len(re.sub(r'<[^>]+>', '', section_clean).strip()) < 10:
-        return ""
-    if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)):
-        return ""
+    if len(re.sub(r'<[^>]+>', '', section_clean).strip()) < 10: return ""
+    if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)): return ""
     return section_clean
-
-def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIENTE) -> str:
-    if not texto:
-        return texto
-    t = texto
-    for s in sections_list:
-        if not s or s.strip().upper() == "CABEÇALHO DA BULA":
-            continue
-        patt = build_section_pattern(s)
-        if patt:
-            t = re.sub(patt, ' ', t, flags=re.IGNORECASE)
-    t = re.sub(r'(?im)\bInform[aç]o(?:es)?\s+ao\s+paciente\b', ' ', t)
-    t = re.sub(r'\s{2,}', ' ', t)
-    return t.strip()
-
-def normalize_for_comparison(text: str) -> str:
-    if not text:
-        return ""
-    t = clean_metadata_and_footers(text)
-    t = remove_section_titles_for_comparison(t)
-    t = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]\s*', '', t)
-    t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
-    t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
-    t = re.sub(r'<[^>]+>', '', t)
-    t = re.sub(r'[-–—]', ' ', t)
-    t = strip_accents(t).lower()
-    t = re.sub(r'[^a-z0-9\s]', ' ', t)
-    t = re.sub(r'\s+', ' ', t).strip()
-    return t
-
-def diff_palavra_a_palavra(texto_ref, texto_novo):
-    ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
-    ref_sem_tags = re.sub(r'[-–—]', ' ', ref_sem_tags)
-    novo_sem_tags = re.sub(r'[-–—]', ' ', novo_sem_tags)
-    palavras_ref = ref_sem_tags.split()
-    palavras_novo = novo_sem_tags.split()
-    matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
-    html_ref_list = []
-    html_novo_list = []
-    tem_diff = False
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == 'equal':
-            texto = " ".join(palavras_ref[i1:i2]); html_ref_list.append(texto); html_novo_list.append(texto)
-        elif tag == 'replace':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
-            tem_diff = True
-        elif tag == 'delete':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            tem_diff = True
-        elif tag == 'insert':
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
-            tem_diff = True
-    return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def diff_preserve_original(text_a: str, text_b: str):
     if text_a is None: text_a = ""
@@ -450,31 +382,7 @@ def verificar_ortografia_inteligente(texto):
         whitelist = {'mg','ml','mcg','ui','g','kg','l','dl','mmhg','bpm','kcal','anvisa','cnpj','cep','sac','bula'}
         spell.word_frequency.load_words(whitelist)
         return texto
-    except:
-        return texto
-
-def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
-    if texto_ref is None: texto_ref = ""
-    if texto_novo is None: texto_novo = ""
-    display_ref = texto_ref.replace('\n','<br>'); display_novo = texto_novo.replace('\n','<br>')
-    comp_ref = clean_metadata_and_footers(texto_ref); comp_novo = clean_metadata_and_footers(texto_novo)
-    norm_ref = normalize_for_comparison(comp_ref); norm_novo = normalize_for_comparison(comp_novo)
-    comp_ref_nohy = re.sub(r'[-–—]',' ', norm_ref); comp_novo_nohy = re.sub(r'[-–—]',' ', norm_novo)
-    if comp_ref_nohy == comp_novo_nohy:
-        return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
-    if norm_ref == norm_novo:
-        return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
-    if norm_ref and norm_novo:
-        shorter, longer = (norm_ref, norm_novo) if len(norm_ref)<=len(norm_novo) else (norm_novo, norm_ref)
-        if shorter and shorter in longer:
-            return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
-    ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
-    jacc = jaccard_similarity(norm_ref, norm_novo)
-    if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
-        return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
-    r_html, n_html, diff_bool = diff_preserve_original(display_ref, display_novo)
-    r_html = melhorar_visual_topicos(r_html); n_html = verificar_ortografia_inteligente(n_html); n_html = melhorar_visual_topicos(n_html)
-    return r_html, n_html, diff_bool
+    except: return texto
 
 def normalize_for_comparison(text: str) -> str:
     if not text: return ""
@@ -489,15 +397,45 @@ def normalize_for_comparison(text: str) -> str:
     t = re.sub(r'\s+', ' ', t).strip()
     return t
 
+def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
+    if texto_ref is None: texto_ref = ""
+    if texto_novo is None: texto_novo = ""
+    display_ref = texto_ref.replace('\n','<br>'); display_novo = texto_novo.replace('\n','<br>')
+    comp_ref = clean_metadata_and_footers(texto_ref); comp_novo = clean_metadata_and_footers(texto_novo)
+    norm_ref = normalize_for_comparison(comp_ref); norm_novo = normalize_for_comparison(comp_novo)
+    if norm_ref == norm_novo:
+        return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
+    if norm_ref and norm_novo:
+        shorter, longer = (norm_ref, norm_novo) if len(norm_ref)<=len(norm_novo) else (norm_novo, norm_ref)
+        if shorter in longer:
+            return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
+    ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
+    jacc = jaccard_similarity(norm_ref, norm_novo)
+    if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
+        return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
+    r_html, n_html, diff_bool = diff_preserve_original(display_ref, display_novo)
+    r_html = melhorar_visual_topicos(r_html); n_html = verificar_ortografia_inteligente(n_html); n_html = melhorar_visual_topicos(n_html)
+    return r_html, n_html, diff_bool
+
 def destacar_datas(texto):
     padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padr[oã]o\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
-    def replacer(match):
-        return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
+    def replacer(match): return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, flags=re.IGNORECASE|re.DOTALL)
 
-# --- END copy helpers ---
+def safe_extract_header(texto, sections):
+    if not texto: return ""
+    lines = texto.splitlines()
+    header_acc = []
+    first_section_patts = [build_section_pattern(s) for s in sections[1:4]] # check next 3 sections
+    for ln in lines:
+        is_next_sec = False
+        for p in first_section_patts:
+            if p and re.search(p, ln, re.IGNORECASE): is_next_sec = True; break
+        if is_next_sec: break
+        header_acc.append(ln)
+    return "\n".join(header_acc).strip()
 
-# ----------------- INTERFACE (uploads e fluxo) -----------------
+# ----------------- INTERFACE -----------------
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Gráfica", type=["pdf","docx"], key="f1")
 f2 = c2.file_uploader("📜 Arte Vigente", type=["pdf","docx"], key="f2")
@@ -507,14 +445,12 @@ if st.button("🚀 Processar Conferência"):
     if not f1 or not f2:
         st.warning("Envie ambos os arquivos."); st.stop()
 
-    # carregar keys
     secret_names = ["GEMINI_API_KEY","GEMINI_API_KEY1","GEMINI_API_KEY2","GEMINI_API_KEY3","GEMNI_API_KEY1","GEMNI_API_KEY2","GEMNI_API_KEY3"]
     keys_raw = [st.secrets.get(n) for n in secret_names]
     keys_validas = [k for k in keys_raw if k]
     if not keys_validas:
         st.error("Nenhuma API key encontrada nos secrets."); st.stop()
 
-    # read bytes upfront
     f1_bytes = f1.read()
     f2_bytes = f2.read()
     buf1 = BytesIO(f1_bytes); buf1.name = getattr(f1,"name","grafica")
@@ -527,9 +463,9 @@ if st.button("🚀 Processar Conferência"):
     len_anvisa_plain = len(re.sub(r'<[^>]+>','', t_anvisa or ""))
     len_mkt_plain = len(re.sub(r'<[^>]+>','', t_mkt or ""))
 
-    # Se menor que 1000 -> OCR remoto (tenta rápido vários modelos/keys com timeout)
+    # OCR se < 1000 chars
     if len_anvisa_plain < 1000:
-        st.info(f"Gráfica tem {len_anvisa_plain} chars -> acionando OCR remoto...")
+        st.info(f"Gráfica tem {len_anvisa_plain} chars -> acionando OCR (Gemini 2.5/3)...")
         texto_ocr, err = ocr_via_gemini_bytes(f1_bytes, keys_validas, modelos=MODELOS_PARA_TENTAR_OCR, timeout_s=TIMEOUT_S)
         if texto_ocr:
             t_anvisa = texto_ocr
@@ -538,7 +474,7 @@ if st.button("🚀 Processar Conferência"):
             st.warning(f"OCR Gráfica falhou: {err} (mantendo extração local)")
 
     if len_mkt_plain < 1000:
-        st.info(f"Arte Vigente tem {len_mkt_plain} chars -> acionando OCR remoto...")
+        st.info(f"Arte Vigente tem {len_mkt_plain} chars -> acionando OCR (Gemini 2.5/3)...")
         texto_ocr2, err2 = ocr_via_gemini_bytes(f2_bytes, keys_validas, modelos=MODELOS_PARA_TENTAR_OCR, timeout_s=TIMEOUT_S)
         if texto_ocr2:
             t_mkt = texto_ocr2
@@ -552,7 +488,7 @@ if st.button("🚀 Processar Conferência"):
     if len(re.sub(r'<[^>]+>','', t_anvisa or "")) < 20 or len(re.sub(r'<[^>]+>','', t_mkt or "")) < 20:
         st.error("Conteúdo insuficiente após extração/OCR."); st.stop()
 
-    # Agora gerar prompt e chamar modelos generativos para extrair seções em JSON
+    # Extração de Seções (JSON)
     prompt = f"""
 Você é um Extrator de Dados Farmacêuticos Rigoroso.
 
@@ -562,23 +498,31 @@ INPUT TEXTO 2 (ARTE): {t_mkt[:150000]}
 REGRAS CRÍTICAS DE EXTRAÇÃO:
 - Mantenha <b> e <i> exatamente
 - Extraia seções listadas e retorne JSON com campos: data_anvisa_ref, data_anvisa_mkt, secoes[]
-- Veja instruções completas no app (mantidas)
+- Títulos: {SECOES_PACIENTE}
 """
-    # tentar vários modelos/keys rapidamente com timeout por tentativa
     response_obj = None
     errors = []
+    
+    # Loop de tentativas de Geração com Proteção 429
     for i, key in enumerate(keys_validas):
         for modelo in MODELOS_PARA_TENTAR_GEN:
             try:
+                # Payload simples para texto
                 resp = call_model_with_timeout(key, modelo, prompt, timeout_s=TIMEOUT_S)
                 response_obj = resp
-                st.info(f"Modelo gerativo aceito: {modelo} (key#{i+1})")
+                st.info(f"Modelo generativo aceito: {modelo} (key#{i+1})")
                 break
             except Exception as e:
-                errors.append(f"key#{i+1}|{modelo}:{str(e)}")
+                msg = str(e).lower()
+                errors.append(f"key#{i+1}|{modelo}:{msg}")
+                # Proteção Cota (5 RPM)
+                if "429" in msg or "quota" in msg:
+                    st.toast(f"⏳ Cota gerativa atingida ({modelo}). Aguardando 15s...", icon="🛑")
+                    time.sleep(15) 
+                else:
+                    time.sleep(1)
                 continue
-        if response_obj:
-            break
+        if response_obj: break
 
     if not response_obj:
         st.error("Falha ao chamar modelo generativo: " + (" | ".join(errors)))
@@ -586,46 +530,36 @@ REGRAS CRÍTICAS DE EXTRAÇÃO:
 
     resp_text = getattr(response_obj, "text", None) or str(response_obj)
 
-    # extrair JSON do texto retornado (mesma heurística que você já tinha)
     def extract_json_block_local(text: str):
         if not text or '{' not in text: return None
         start = text.find('{'); depth = 0; in_string = False; esc = False
         for i in range(start, len(text)):
             ch = text[i]
-            if ch == '"' and not esc:
-                in_string = not in_string
+            if ch == '"' and not esc: in_string = not in_string
             if in_string:
                 esc = (ch == '\\' and not esc); continue
             if ch == '{': depth += 1
             elif ch == '}':
                 depth -= 1
-                if depth == 0:
-                    return text[start:i+1]
+                if depth == 0: return text[start:i+1]
         return None
 
     try:
-        try:
-            resultado = json.loads(resp_text)
+        try: resultado = json.loads(resp_text)
         except Exception:
             bloco = extract_json_block_local(resp_text)
-            if bloco:
-                resultado = json.loads(bloco)
+            if bloco: resultado = json.loads(bloco)
             else:
                 st.error("Resposta do modelo não contém JSON válido.")
-                st.code(resp_text)
-                st.stop()
+                st.code(resp_text); st.stop()
     except Exception as e:
-        st.error(f"Erro ao decodificar JSON: {e}")
-        st.code(resp_text)
-        st.stop()
+        st.error(f"Erro ao decodificar JSON: {e}"); st.code(resp_text); st.stop()
 
-    # continuar com o processamento (uso das funções que já definimos)
     dados_secoes = resultado.get("secoes", [])
     secoes_finais = []
     divs_count = 0
-    extracted_date_ref = "-"
-    extracted_date_mkt = "-"
-
+    extracted_date_ref = resultado.get("data_anvisa_ref", "-")
+    extracted_date_mkt = resultado.get("data_anvisa_mkt", "-")
     frase_padrao = r'Esta\s+bula\s+foi\s+atualizada\s+conforme\s+Bula\s+Padr[oã]o\s+aprovada\s+pela\s+Anvisa\s+em\s*(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
 
     for item in dados_secoes:
@@ -642,20 +576,18 @@ REGRAS CRÍTICAS DE EXTRAÇÃO:
         txt_mkt = clean_metadata_and_footers(txt_mkt)
 
         if "CABEÇALHO" in titulo.upper():
-            novo_ref = safe_extract_header(t_anvisa, SECOES_PACIENTE) if 'safe_extract_header' in globals() else ""
-            if novo_ref and (not txt_ref or len(novo_ref) < len(txt_ref) or len(txt_ref) < 50):
-                txt_ref = novo_ref
-            novo_mkt = safe_extract_header(t_mkt, SECOES_PACIENTE) if 'safe_extract_header' in globals() else ""
-            if novo_mkt and (not txt_mkt or len(novo_mkt) < len(txt_mkt) or len(txt_mkt) < 50):
-                txt_mkt = novo_mkt
+            novo_ref = safe_extract_header(t_anvisa, SECOES_PACIENTE)
+            if novo_ref and (not txt_ref or len(novo_ref) < len(txt_ref) or len(txt_ref) < 50): txt_ref = novo_ref
+            novo_mkt = safe_extract_header(t_mkt, SECOES_PACIENTE)
+            if novo_mkt and (not txt_mkt or len(novo_mkt) < len(txt_mkt) or len(txt_mkt) < 50): txt_mkt = novo_mkt
             txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*','', txt_ref)
             txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*','', txt_mkt)
 
         if "DIZERES LEGAIS" in titulo.upper():
             m_ref = re.search(frase_padrao, txt_ref, flags=re.IGNORECASE)
-            if m_ref: extracted_date_ref = m_ref.group(1)
+            if m_ref and extracted_date_ref == "-": extracted_date_ref = m_ref.group(1)
             m_mkt = re.search(frase_padrao, txt_mkt, flags=re.IGNORECASE)
-            if m_mkt: extracted_date_mkt = m_mkt.group(1)
+            if m_mkt and extracted_date_mkt == "-": extracted_date_mkt = m_mkt.group(1)
             html_ref = destacar_datas(txt_ref).replace('\n','<br>')
             html_novo = destacar_datas(txt_mkt).replace('\n','<br>')
             html_ref = verificar_ortografia_inteligente(html_ref); html_novo = verificar_ortografia_inteligente(html_novo)
@@ -665,19 +597,15 @@ REGRAS CRÍTICAS DE EXTRAÇÃO:
             html_ref, html_novo, teve_diff = gerar_diff_html(txt_ref, txt_mkt, SECOES_PACIENTE)
             status = "DIVERGENTE" if teve_diff else "CONFORME"
             if teve_diff: divs_count += 1
-
         secoes_finais.append({"titulo": titulo, "texto_anvisa": html_ref, "texto_mkt": html_novo, "status": status})
 
-    # resultados
     st.markdown("### 📊 Resumo")
     c1, c2, c3 = st.columns(3)
     c1.metric("Data Gráfica", extracted_date_ref)
     c2.metric("Data Arte Vigente", extracted_date_mkt, delta="Igual" if extracted_date_ref == extracted_date_mkt and extracted_date_ref != "-" else "Diferente")
     c3.metric("Seções", len(secoes_finais))
-    if divs_count > 0:
-        st.warning(f"⚠️ Divergências encontradas em {divs_count} seção(ões).")
-    else:
-        st.success("✨ Divergências: 0")
+    if divs_count > 0: st.warning(f"⚠️ Divergências encontradas em {divs_count} seção(ões).")
+    else: st.success("✨ Divergências: 0")
     st.divider()
 
     for item in secoes_finais:
