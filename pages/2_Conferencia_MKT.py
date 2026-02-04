@@ -1,3 +1,6 @@
+# (arquivo completo, atualizado para extrair data APENAS quando presente em "DIZERES LEGAIS"
+#  com a frase exata: "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em (data)")
+
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
@@ -119,67 +122,13 @@ SECOES_PROFISSIONAL = []
 
 SIMILARITY_THRESHOLD = 0.92  # mais rígido para reduzir falsos-positivos
 
-# ----------------- util: extração de JSON resiliente -----------------
-def extract_json_block(text: str) -> str:
-    """
-    Tenta encontrar o primeiro bloco JSON bem formado no texto fazendo balanceamento de chaves.
-    Retorna substring ou None.
-    """
-    if not text or '{' not in text:
-        return None
-    start = text.find('{')
-    depth = 0
-    in_string = False
-    esc = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if ch == '"' and not esc:
-            in_string = not in_string
-        if in_string:
-            esc = (ch == '\\' and not esc)
-            continue
-        if ch == '{':
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0:
-                return text[start:i+1]
-    return None
-
-def try_load_json_from_text(text: str):
-    """
-    Tenta json.loads direto; se falhar, tenta extrair bloco JSON e decodificar.
-    Retorna tuple (obj, error_message). Se sucesso, error_message is None.
-    """
-    if text is None:
-        return None, "response text is None"
-    # tentativa direta
-    try:
-        return json.loads(text), None
-    except Exception as e:
-        # tentar extrair bloco JSON balanceado
-        block = extract_json_block(text)
-        if block:
-            try:
-                return json.loads(block), None
-            except Exception as e2:
-                # tentar remover caracteres inválidos comuns e tentar de novo
-                cleaned = block.replace('\r', '\\r').replace('\n', '\\n')
-                try:
-                    return json.loads(cleaned), None
-                except Exception as e3:
-                    return None, f"json loads failed after extracting block: {e3}"
-        else:
-            return None, f"json loads failed and no JSON block found: {e}"
-
 # ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
-
 def clean_metadata_and_footers(texto: str) -> str:
     if not texto:
         return texto
     t = texto
 
-    # Remover explicitamente strings / contatos já solicitados
+    # remover strings/e-mails/telefones conforme solicitado
     t = re.sub(r'(?im)^.*times\s+new\s+roman.*\n?', '', t)
     t = re.sub(r'(?im)^.*negrito.*\n?', '', t)
     t = re.sub(r'(?im)^.*corpo\s*14.*\n?', '', t)
@@ -362,7 +311,6 @@ def normalize_for_comparison(text: str) -> str:
     t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
     t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
     t = re.sub(r'<[^>]+>', '', t)
-    # remover hífens/traços para que eles não provoquem diferenças
     t = re.sub(r'[-–—]', ' ', t)
     t = strip_accents(t).lower()
     t = re.sub(r'[^a-z0-9\s]', ' ', t)
@@ -410,7 +358,6 @@ def melhorar_visual_topicos(texto_html):
             novo_texto.append(linha)
     return "".join(novo_texto)
 
-# destaque de datas (visual)
 def destacar_datas(texto):
     padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padr[oã]o\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     def replacer(match):
@@ -573,7 +520,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
         st.info(f"Arquivo BELFAR detectado: {getattr(f1, 'name', 'desconhecido')}")
         st.info(f"Arquivo MKT detectado: {getattr(f2, 'name', 'desconhecido')}")
 
-    # tentar vários nomes de secrets, incluindo possíveis typos (GEMNI_)
+    # tentar vários nomes de secrets (como você disse que tem GEMNI_API_KEY1 etc.)
     secret_names = [
         "GEMINI_API_KEY", "GEMINI_API_KEY1", "GEMINI_API_KEY2", "GEMINI_API_KEY3",
         "GEMNI_API_KEY1", "GEMNI_API_KEY2", "GEMNI_API_KEY3"
@@ -679,24 +626,54 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                     st.code("\n".join(log_erros))
                 st.stop()
 
-            # processar resposta da IA com parsing resiliente
+            # processar resposta da IA com parsing resiliente (mantive heurística de resgate de JSON)
             try:
                 if response is None:
                     st.error("Resposta da IA vazia (response is None).")
                     st.stop()
-
-                # tentar obter texto cru
                 resp_text = getattr(response, "text", None)
                 if not resp_text:
-                    # tentar str(response)
                     resp_text = str(response)
 
-                obj, err = try_load_json_from_text(resp_text)
-                if obj is None:
-                    st.error(f"Erro ao decodificar JSON da resposta da IA: {err}")
-                    st.code(resp_text)
-                    st.stop()
-                resultado = obj
+                # função auxiliar para extrair JSON balanceado do texto (já definida no topo)
+                def extract_json_block_local(text: str):
+                    if not text or '{' not in text:
+                        return None
+                    start = text.find('{')
+                    depth = 0
+                    in_string = False
+                    esc = False
+                    for i in range(start, len(text)):
+                        ch = text[i]
+                        if ch == '"' and not esc:
+                            in_string = not in_string
+                        if in_string:
+                            esc = (ch == '\\' and not esc)
+                            continue
+                        if ch == '{':
+                            depth += 1
+                        elif ch == '}':
+                            depth -= 1
+                            if depth == 0:
+                                return text[start:i+1]
+                    return None
+
+                # tentar carregar JSON diretamente, senão extrair bloco
+                try:
+                    resultado = json.loads(resp_text)
+                except Exception:
+                    bloco = extract_json_block_local(resp_text)
+                    if bloco:
+                        try:
+                            resultado = json.loads(bloco)
+                        except Exception as e:
+                            st.error(f"Erro ao decodificar JSON da resposta da IA (após extração de bloco): {e}")
+                            st.code(resp_text)
+                            st.stop()
+                    else:
+                        st.error("Erro ao decodificar JSON da resposta da IA: bloco JSON não encontrado")
+                        st.code(resp_text)
+                        st.stop()
             except Exception as e:
                 st.exception(f"Erro ao processar resposta da IA: {e}")
                 try:
@@ -706,16 +683,14 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                 st.stop()
 
             try:
-                # não usamos datas globais da IA diretamente; vamos priorizar DIZERES LEGAIS localmente extraído
-                data_ref_from_ai = resultado.get("data_anvisa_ref", "-")
-                data_mkt_from_ai = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
 
                 secoes_finais = []
                 divs_count = 0
 
-                # regex estrita para frase + data (exige frase antes da data)
+                # regex estrita: exige a frase seguida da data; aceita 'Padrão' com/sem acento
                 frase_padrao = r'Esta\s+bula\s+foi\s+atualizada\s+conforme\s+Bula\s+Padr[oã]o\s+aprovada\s+pela\s+Anvisa\s+em\s*(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
+
                 for item in dados_secoes:
                     titulo = item.get('titulo', '').strip()
                     txt_ref = item.get('texto_anvisa', '').strip()
@@ -745,7 +720,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                         txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
                         txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
 
-                    # DIZERES LEGAIS: extrair data SOMENTE se estiver exatamente com a frase especificada
+                    # DIZERES LEGAIS: extrair data SOMENTE se a frase exata + data estiver presente
                     if "DIZERES LEGAIS" in titulo.upper():
                         m_ref = re.search(frase_padrao, txt_ref, flags=re.IGNORECASE)
                         if m_ref:
@@ -774,14 +749,15 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                         "status": status
                     })
 
-                # Usar datas extraídas APENAS de DIZERES LEGAIS (se encontradas), senão usar o que veio da IA, senão "-"
-                data_ref = extracted_date_ref if extracted_date_ref != "-" else (data_ref_from_ai or "-")
-                data_mkt = extracted_date_mkt if extracted_date_mkt != "-" else (data_mkt_from_ai or "-")
+                # NOVA POLÍTICA: usar APENAS as datas extraídas diretamente de "DIZERES LEGAIS"
+                # Se não houver correspondência no texto dessa seção, fica "-"
+                data_ref = extracted_date_ref if extracted_date_ref != "-" else "-"
+                data_mkt = extracted_date_mkt if extracted_date_mkt != "-" else "-"
 
                 st.markdown("### 📊 Resumo")
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Data BELFAR", data_ref)
-                c2.metric("Data MKT", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
+                c2.metric("Data MKT", data_mkt, delta="Igual" if data_ref == data_mkt and data_ref != "-" else "Diferente")
                 c3.metric("Seções", len(secoes_finais))
 
                 sub1, sub2 = st.columns(2)
