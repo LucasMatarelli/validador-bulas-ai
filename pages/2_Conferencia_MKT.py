@@ -1,6 +1,4 @@
-# (arquivo completo, atualizado para extrair data APENAS quando presente em "DIZERES LEGAIS"
-#  com a frase exata: "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em (data)")
-
+# app.py (OCR melhorado e extração refinada; sidebar forçada aberta)
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
@@ -10,102 +8,68 @@ import difflib
 import re
 import unicodedata
 import time
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from spellchecker import SpellChecker
 from io import BytesIO
 
-# ----------------- 1. VISUAL & CSS -----------------
-st.set_page_config(page_title="Conferência MKT", page_icon="💊", layout="wide")
-
+# ----------------- Config UI -----------------
+st.set_page_config(page_title="Gráfica x Arte (robusto)", page_icon="💊", layout="wide")
 st.markdown("""
 <style>
-    [data-testid="stHeader"] { visibility: hidden; }
-
-    .texto-box { 
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 0.95rem;
-        line-height: 1.7;
-        color: #212529;
-        background-color: #ffffff;
-        padding: 25px;
-        border-radius: 8px;
-        border: 1px solid #ced4da;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        text-align: left;
-    }
-
-    .highlight-yellow { 
-        background-color: #fff3cd; color: #856404; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
-        font-weight: bold;
-    }
-
-    .highlight-blue { 
-        background-color: #d1ecf1; color: #0c5460; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
-    }
-
-    .topico-item {
-        display: block;
-        margin-left: 20px;
-        margin-bottom: 4px;
-        text-indent: -15px; 
-    }
-
-    .border-ok { border-left: 6px solid #28a745 !important; }
-    .border-warn { border-left: 6px solid #ffc107 !important; } 
-    .border-info { border-left: 6px solid #17a2b8 !important; }
-
-    div[data-testid="stMetric"] {
-        background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
-    }
-
     section[data-testid="stSidebar"] {
         display: block !important;
         visibility: visible !important;
-        width: 250px !important;
-        min-width: 250px !important;
-        max-width: 250px !important;
+        width: 260px !important;
+        min-width: 260px !important;
+        max-width: 260px !important;
         margin-left: 0 !important;
         transform: translateX(0) !important;
         transition: none !important;
         position: relative !important;
-        background-color: #f0f2f6 !important;
+        background-color: #f7f9fb !important;
         z-index: 999 !important;
     }
+    section[data-testid="stSidebar"] > div:first-child { width: 260px !important; min-width: 260px !important; }
+    button[kind="header"], [data-testid="collapsedControl"], button[data-testid="baseButton-header"] { display: none !important; }
 
-    section[data-testid="stSidebar"] > div:first-child {
-        width: 250px !important;
-        min-width: 250px !important;
+    [data-testid="stHeader"] { visibility: hidden; }
+    .texto-box { 
+        font-family: 'Segoe UI', system-ui, -apple-system, "Helvetica Neue", Arial;
+        font-size: 0.96rem;
+        line-height: 1.6;
+        color: #212529;
+        background-color: #ffffff;
+        padding: 22px;
+        border-radius: 8px;
+        border: 1px solid #e6e9ec;
+        box-shadow: 0 6px 18px rgba(18, 40, 80, 0.03);
+        text-align: left;
+        min-height: 120px;
+        overflow-wrap: anywhere;
     }
-
-    section[data-testid="stSidebar"][aria-expanded="false"],
-    section[data-testid="stSidebar"][aria-expanded="true"] {
-        margin-left: 0 !important;
-        transform: translateX(0) !important;
-    }
-
-    button[kind="header"],
-    [data-testid="collapsedControl"],
-    button[data-testid="baseButton-header"] {
-        display: none !important;
-    }
+    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 2px 6px; border-radius: 5px; border: 1px solid #ffeeba; font-weight: 700; }
+    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 6px; border-radius: 5px; border: 1px solid #bee5eb; font-weight: 700; }
+    .topico-item { display: block; margin-left: 20px; margin-bottom: 6px; text-indent: -15px; }
+    .border-ok { border-left: 6px solid #28a745 !important; }
+    .border-warn { border-left: 6px solid #ffc107 !important; }
+    .border-info { border-left: 6px solid #17a2b8 !important; }
+    .small-muted { color: #6c757d; font-size: 0.88rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- 2. CONFIGURAÇÃO -----------------
+# ----------------- Models & Sections -----------------
 MODELOS_PARA_TENTAR = [
     "models/gemini-2.5-flash", "gemini-2.5-flash",
     "models/gemini-2.5", "gemini-2.5",
     "models/gemini-3-flash", "gemini-3-flash",
     "models/gemma-3-27b", "gemma-3-27b",
     "models/gemma-3-12b", "gemma-3-12b",
-    "models/gemma-3-4b", "gemma-3-4b"
+    "models/gemma-3-4b", "gemma-3-4b",
+    "models/text-bison-001", "text-bison-001"
 ]
 
 SECOES_PACIENTE = [
-    "CABEÇALHO DA BULA",
-    "APRESENTAÇÕES",
-    "COMPOSIÇÃO",
+    "APRESENTAÇÕES", "COMPOSIÇÃO",
     "PARA QUE ESTE MEDICAMENTO É INDICADO?",
     "COMO ESTE MEDICAMENTO FUNCIONA?",
     "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?",
@@ -113,32 +77,42 @@ SECOES_PACIENTE = [
     "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?",
     "COMO DEVO USAR ESTE MEDICAMENTO?",
     "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?",
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?",
     "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?",
-    "O QUE FAZER SE ALGUÉM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?",
     "DIZERES LEGAIS"
 ]
 
-SECOES_PROFISSIONAL = []
+SIMILARITY_THRESHOLD = 0.92
 
-SIMILARITY_THRESHOLD = 0.92  # mais rígido para reduzir falsos-positivos
+# ----------------- Util functions -----------------
+def strip_accents(s: str) -> str:
+    return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('ASCII')
 
-# ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
+def tokenize_words(s: str):
+    return re.findall(r'\w+', s, flags=re.UNICODE)
+
+def jaccard_similarity(a: str, b: str) -> float:
+    sa = set(tokenize_words(a)); sb = set(tokenize_words(b))
+    if not sa and not sb: return 1.0
+    if not sa or not sb: return 0.0
+    inter = sa.intersection(sb); union = sa.union(sb)
+    return len(inter) / len(union)
+
+# ----------------- Cleaning helpers -----------------
 def clean_metadata_and_footers(texto: str) -> str:
     if not texto:
         return texto
     t = texto
-
-    # remover strings/e-mails/telefones conforme solicitado
-    t = re.sub(r'(?im)^.*times\s+new\s+roman.*\n?', '', t)
-    t = re.sub(r'(?im)^.*negrito.*\n?', '', t)
-    t = re.sub(r'(?im)^.*corpo\s*14.*\n?', '', t)
-    t = re.sub(r'(?im)^.*\bcontato\b.*\n?', '', t)
-    t = re.sub(r'(?i)[\w\.-]+@belfar\.com\.br', '', t)
-    t = re.sub(r'(?m)(?:\+?\d{1,3}[-\s]?)?(?:\(?\d{2}\)?[-\s]?)?\d{4,5}[-\s]?\d{4}', '', t)
-
-    # nomes de arquivo longos em MAIÚSCULAS/underscores
+    # remove lines that are only numbers (pagination remnants)
+    lines = t.splitlines()
+    filtered = []
+    for ln in lines:
+        if re.match(r'^\s*\d+\s*[\.\)]?\s*$', ln):
+            continue
+        filtered.append(ln)
+    t = "\n".join(filtered)
+    # common metadata patterns
     t = re.sub(r'(?m)^\s*[A-Z0-9_]{8,}\s*$', '', t)
-
     patterns_line = [
         r'(?im)^\s*.*medida\s+da\s+bula.*$',
         r'(?im)^\s*.*tipologia\s+da\s+bula.*$',
@@ -146,12 +120,9 @@ def clean_metadata_and_footers(texto: str) -> str:
         r'(?im)^\s*.*impress(ã|a)o.*:.*$',
         r'(?im)^\s*.*papel:.*$',
         r'(?im)^\s*.*cor:.*$',
-        r'(?im)^\s*.*frente\/verso.*$',
+        r'(?im)^\s*.*frente\/verso.*$'
     ]
-    for p in patterns_line:
-        t = re.sub(p, '', t)
-
-    # dimensões e paginação
+    for p in patterns_line: t = re.sub(p, '', t)
     t = re.sub(r'(?im)\d{1,2},\d{2}\s*cm\s*[x×X]\s*\d{1,2},\d{2}\s*cm', '', t)
     page_patterns = [
         r'(?im)\bBula(?:\s+ao\s+Paciente)?\s+P[aá]gina\s*\d+\s*(?:de|\/)\s*\d+\b',
@@ -159,193 +130,381 @@ def clean_metadata_and_footers(texto: str) -> str:
         r'(?im)\bP[aá]gina\s*\d+\s*(?:de|\/)\s*\d+\b',
         r'(?im)\bP[aá]gina\s*\d+\b'
     ]
-    for p in page_patterns:
-        t = re.sub(p, '', t)
-
-    t = re.sub(r'(?im)\bfrente\b', '', t)
-    t = re.sub(r'(?im)\bverso\b', '', t)
+    for p in page_patterns: t = re.sub(p, '', t)
+    t = re.sub(r'(?im)\bfrente\b', '', t); t = re.sub(r'(?im)\bverso\b', '', t)
     t = re.sub(r'(?im)\bBUL[_A-Z0-9-]*\b', '', t)
-
-    # remover quebras por hífen (quebra de sílaba no final de linha)
     t = re.sub(r'-\s*\n\s*', '', t)
-
-    # normalizações simples de espaçamento
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\r', '\n', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
-
-    # remover linhas vazias extras
     lines = [ln.rstrip() for ln in t.splitlines()]
-    lines = [ln for ln in lines if ln.strip() != ""]
+    lines = [ln for ln in lines if ln.strip() != "" and not re.match(r'^[\W_]{1,40}$', ln.strip())]
     t = "\n".join(lines)
-
     return t.strip()
 
-# ----------------- 4. LOCALIZAÇÃO DE TÍTULOS E EXTRAÇÃO DE CABEÇALHO (SEGURA) -----------------
-def build_section_pattern(title: str) -> str:
-    words = re.findall(r'\w+', title, flags=re.UNICODE)
-    if not words:
-        return None
-    pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
-    return pattern
-
-def find_first_section_index(texto: str, section_titles: list) -> int:
-    menor = None
-    for title in section_titles:
-        if not title:
-            continue
-        patt = build_section_pattern(title)
-        if not patt:
-            continue
-        m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
-        if m:
-            idx = m.start()
-            if menor is None or idx < menor:
-                menor = idx
-    return -1 if menor is None else menor
-
-def safe_extract_header(texto: str, secoes_alvo: list) -> str:
-    if not texto:
-        return ""
-    idx = find_first_section_index(texto, [s for s in secoes_alvo if s.strip().upper() != "CABEÇALHO DA BULA"])
-    if idx == -1:
-        m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
-        idx = m.start() if m else -1
-    if idx == -1:
-        return ""
-    header_raw = texto[:idx].strip()
-    header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
-    header_clean = clean_metadata_and_footers(header_raw)
-    if len(header_clean) < 20:
-        return ""
-    if len(header_clean) > max(2000, int(len(texto) * 0.35)):
-        return ""
-    return header_clean.strip()
-
-# ----------------- 4b. EXTRAIR SEÇÃO DO TEXTO BRUTO -----------------
-def _build_flexible_title_regex(title: str):
-    words = re.findall(r'\w+', title, flags=re.UNICODE)
-    if not words:
-        return None
-    core = r'\W+'.join(map(re.escape, words))
-    regex = rf'(?:^|\n)\s*(?:\d{{1,2}}\s*[\.\)\-]\s*|[IVXLCDM]+\s*[–-]\s*)?{core}'
-    return regex
-
-def extract_section_from_raw(texto: str, section_title: str, sections_list: list) -> str:
-    if not texto or not section_title:
-        return ""
-    patt = _build_flexible_title_regex(section_title)
-    if patt:
-        m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
-    else:
-        m = re.search(build_section_pattern(section_title), texto, flags=re.IGNORECASE | re.UNICODE)
-    if not m:
-        keywords = re.findall(r'\w+', section_title)
-        if keywords:
-            for kcount in (min(3, len(keywords)), len(keywords)):
-                core = r'\W+'.join(map(re.escape, keywords[:kcount]))
-                m = re.search(core, texto, flags=re.IGNORECASE | re.UNICODE)
-                if m:
-                    break
-    if not m:
-        return ""
-    start = m.end()
-    menor = None
-    for s in sections_list:
-        if not s:
-            continue
-        if s.strip().upper() == section_title.strip().upper():
-            continue
-        p2 = _build_flexible_title_regex(s)
-        if not p2:
-            p2 = build_section_pattern(s)
-        m2 = re.search(p2, texto[start:], flags=re.IGNORECASE | re.UNICODE)
-        if m2:
-            idx = start + m2.start()
-            if menor is None or idx < menor:
-                menor = idx
-    if menor is None:
-        m3 = re.search(r'\n{2,}([A-ZÀ-Ý0-9 \-]{6,})\n', texto[start:])
-        if m3:
-            candidate = m3.group(1).strip()
-            if len(candidate.split()) <= 6:
-                menor = start + m3.start()
-    end = menor if menor is not None else len(texto)
-    section_raw = texto[start:end].strip()
-    section_raw = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]?\s*', '', section_raw)
-    section_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', section_raw)
-    section_clean = re.sub(r'\r', '\n', section_raw).strip()
-    if len(re.sub(r'<[^>]+>', '', section_clean).strip()) < 10:
-        return ""
-    if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)):
-        return ""
-    return section_clean
-
-# ----------------- 5. NORMALIZAÇÃO PARA COMPARAÇÃO -----------------
-def strip_accents(s: str) -> str:
-    return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('ASCII')
-
-def tokenize_words(s: str):
-    return re.findall(r'\w+', s, flags=re.UNICODE)
-
-def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIENTE) -> str:
+def remover_rodapes_bula(texto: str) -> str:
     if not texto:
         return texto
     t = texto
-    for s in sections_list:
-        if not s or s.strip().upper() == "CABEÇALHO DA BULA":
+    patterns = [
+        r'\b\d+ª\s*PROVA\b.*',
+        r'Medida\s+do\s+bula.*',
+        r'Tipologia\s+de\s+bula[:\-]?.*',
+        r'Papel\s*[:\-]?.*',
+        r'FRENTE.*Medida.*',
+        r'conte[úu]do:.*atendimento@',
+        r'www\.[^\s]+',
+        r'[A-Z]{3,}\_\w{5,}'
+    ]
+    for p in patterns:
+        t = re.sub(p, '', t, flags=re.IGNORECASE)
+    lines = t.splitlines()
+    out = []
+    for ln in lines:
+        ln_s = ln.strip()
+        if not ln_s: continue
+        if re.match(r'^[\d\W_]{1,30}$', ln_s): continue
+        if re.match(r'^\s*\d+\s*$', ln_s): continue
+        out.append(ln.rstrip())
+    retorno = '\n'.join(out)
+    retorno = re.sub(r'\n{3,}', '\n\n', retorno)
+    return retorno.strip()
+
+# ----------------- OCR via Gemini (improved) -----------------
+def ocr_via_gemini_bytes(bytes_data, api_keys):
+    """
+    Calls the generative model to perform OCR on a PDF byte stream.
+    Returns extracted text (preferably with <b>/<i> preserved) or error message.
+    """
+    if not bytes_data:
+        return "", "Arquivo vazio para OCR"
+
+    # Stronger OCR prompt. Be explicit: only return the raw extracted text (no JSON, no commentary).
+    prompt_ocr = """EXTRAIA APENAS O TEXTO DO PDF ABAIXO.
+Preserve as tags HTML <b> e <i> exatamente onde o texto está em negrito/itálico.
+NÃO inclua explicações, títulos adicionais ou JSON.
+NÃO adicione cabeçalhos como "OCR result".
+Remova rodapés técnicos (medidas, tipologia, códigos) e mantenha o conteúdo do paciente.
+FORMATO: devolva apenas o texto puro (com <b> e <i> quando aplicável) e quebras de linha.
+
+PDF em anexo:"""
+
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE
+    }
+
+    log_err = []
+    for i, key in enumerate(api_keys):
+        try:
+            genai.configure(api_key=key)
+        except Exception as e:
+            log_err.append(f"Key {i+1} configure error: {e}")
             continue
-        patt = build_section_pattern(s)
-        if patt:
-            t = re.sub(patt, ' ', t, flags=re.IGNORECASE)
-    t = re.sub(r'(?im)\bInform[aç]o(?:es)?\s+ao\s+paciente\b', ' ', t)
-    t = re.sub(r'\s{2,}', ' ', t)
-    return t.strip()
 
-def normalize_for_comparison(text: str) -> str:
-    if not text:
-        return ""
-    t = clean_metadata_and_footers(text)
-    t = remove_section_titles_for_comparison(t)
-    t = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]\s*', '', t)
-    t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
-    t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
-    t = re.sub(r'<[^>]+>', '', t)
-    t = re.sub(r'[-–—]', ' ', t)
-    t = strip_accents(t).lower()
-    t = re.sub(r'[^a-z0-9\s]', ' ', t)
-    t = re.sub(r'\s+', ' ', t).strip()
-    return t
+        for modelo in MODELOS_PARA_TENTAR:
+            try:
+                model = genai.GenerativeModel(modelo)
+                # call - passing file bytes and prompt; response expected in .text
+                response = model.generate_content(
+                    [{'mime_type': 'application/pdf', 'data': bytes_data}, prompt_ocr],
+                    safety_settings=safety_settings,
+                    generation_config={"response_mime_type": "text/plain", "temperature": 0.0}
+                )
+                texto_extraido = getattr(response, "text", "") or ""
+                if not texto_extraido.strip():
+                    continue
 
-def jaccard_similarity(a: str, b: str) -> float:
-    sa = set(tokenize_words(a))
-    sb = set(tokenize_words(b))
-    if not sa and not sb:
-        return 1.0
-    if not sa or not sb:
-        return 0.0
-    inter = sa.intersection(sb)
-    union = sa.union(sb)
-    return len(inter) / len(union)
+                # Clean typical model prefixes/footers that some models add
+                # Remove common leading phrases the model might append
+                texto_extraido = re.sub(r'^\s*(OCR\s*Result:|Texto extraído:|Resultado:)\s*', '', texto_extraido, flags=re.IGNORECASE)
+                # If model put triple backticks or code fence, strip them
+                texto_extraido = re.sub(r'^```(?:[\w\-]+)?\s*', '', texto_extraido)
+                texto_extraido = re.sub(r'\s*```$', '', texto_extraido)
 
-# ----------------- 6. ORTOGRAFIA E VISUAL -----------------
-def verificar_ortografia_inteligente(texto):
+                # Remove trailing disclaimers that some models add
+                texto_extraido = re.sub(r'\n?--+\n?.*$', '', texto_extraido.strip(), flags=re.DOTALL)
+
+                # Normalize newlines
+                texto_extraido = texto_extraido.replace('\r\n', '\n').replace('\r', '\n')
+
+                # Post-process: remove odd repeated whitespace and ensure html tags intact
+                # Remove any accidental spaces inside tags
+                texto_extraido = re.sub(r'<\s+b\s*>', '<b>', texto_extraido, flags=re.IGNORECASE)
+                texto_extraido = re.sub(r'<\s*/\s*b\s*>', '</b>', texto_extraido, flags=re.IGNORECASE)
+                texto_extraido = re.sub(r'<\s+i\s*>', '<i>', texto_extraido, flags=re.IGNORECASE)
+                texto_extraido = re.sub(r'<\s*/\s*i\s*>', '</i>', texto_extraido, flags=re.IGNORECASE)
+
+                # Remove obvious footer lines
+                texto_extraido = remover_rodapes_bula(texto_extraido)
+                texto_extraido = clean_metadata_and_footers(texto_extraido)
+
+                # If still empty after cleaning, continue searching
+                if not re.sub(r'<[^>]+>', '', texto_extraido).strip():
+                    continue
+
+                return texto_extraido, None
+
+            except Exception as e_model:
+                err_msg = str(e_model)
+                log_err.append(f"Key {i+1} | {modelo}: {err_msg}")
+                # if rate-limited, small backoff
+                if "429" in err_msg or "quota" in err_msg.lower():
+                    time.sleep(2)
+                continue
+
+    return "", " | ".join(log_err)
+
+# ----------------- Smart extraction from bytes (preserve bold/italic when possible) -----------------
+def extract_text_smart_from_bytes(bytes_data, filename, api_keys=None):
+    """
+    1) Try to extract with PyMuPDF preserving styling (bold/italic -> <b>/<i>).
+    2) If extracted plain text is too small, call OCR via Gemini.
+    3) Return cleaned text (with <b>/<i> when possible).
+    """
     try:
-        spell = SpellChecker(language='pt')
-        whitelist = {'mg','ml','mcg','ui','g','kg','l','dl','mmhg','bpm','kcal','anvisa','cnpj','cep','sac','bula'}
-        spell.word_frequency.load_words(whitelist)
-        tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/\[\]])', texto)
-        resultado = []
-        for token in tokens:
-            if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
-                resultado.append(token); continue
-            palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
-            if (not palavra_limpa or len(palavra_limpa) < 4 or any(c.isdigit() for c in token) or '-' in palavra_limpa or palavra_limpa[0].isupper()):
-                resultado.append(token); continue
-            resultado.append(token)
-        return "".join(resultado)
-    except:
-        return texto
+        raw_text = ""
+        fname = filename.lower()
+        if fname.endswith('.pdf'):
+            doc = fitz.open(stream=bytes_data, filetype="pdf")
+            total_text_chars = 0
+            for page in doc:
+                blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE).get("blocks", [])
+                page_text_spans = ""
+                for block in blocks:
+                    if block.get("type") != 0:
+                        continue
+                    for line in block.get("lines", []):
+                        line_text = ""
+                        for span in line.get("spans", []):
+                            content = span.get("text", "")
+                            if content is None:
+                                continue
+                            flags = span.get("flags", 0)
+                            font_name = span.get("font", "").lower()
+                            is_bold = ((flags & 16) or "bold" in font_name or "black" in font_name or "heavy" in font_name or "semibold" in font_name)
+                            is_italic = ((flags & 2) or "italic" in font_name or "oblique" in font_name)
+                            formatted = content
+                            if is_bold and is_italic:
+                                formatted = f"<b><i>{content}</i></b>"
+                            elif is_bold:
+                                formatted = f"<b>{content}</b>"
+                            elif is_italic:
+                                formatted = f"<i>{content}</i>"
+                            line_text += formatted
+                        # Keep line breaks
+                        page_text_spans += line_text + "\n"
+                # If page_text_spans is empty or only whitespace, fallback to page.get_text("text")
+                if page_text_spans.strip():
+                    raw_text += page_text_spans + "\n"
+                    total_text_chars += len(re.sub(r'<[^>]+>', '', page_text_spans))
+                else:
+                    try:
+                        fallback = page.get_text("text") or ""
+                        raw_text += fallback + "\n"
+                        total_text_chars += len(fallback)
+                    except Exception:
+                        # ignore
+                        pass
+            doc.close()
+            # if very little extracted, call OCR
+            if total_text_chars < 60 and api_keys:
+                st.info(f"Arquivo '{filename}' com pouco texto detectado ({total_text_chars} chars). Usando OCR remoto...")
+                texto_ocr, err = ocr_via_gemini_bytes(bytes_data, api_keys)
+                if texto_ocr:
+                    return texto_ocr
+                else:
+                    st.warning(f"OCR remoto falhou: {err}. Retornando texto local (pode estar incompleto).")
+                    return clean_metadata_and_footers(raw_text)
+            return clean_metadata_and_footers(raw_text)
+
+        elif fname.endswith('.docx'):
+            try:
+                doc = docx.Document(BytesIO(bytes_data))
+            except Exception:
+                return "", "Erro ao abrir docx"
+            raw = ""
+            for para in doc.paragraphs:
+                para_text = ""
+                for run in para.runs:
+                    content = run.text
+                    if not content:
+                        continue
+                    formatted = content
+                    if run.bold and run.italic:
+                        formatted = f"<b><i>{content}</i></b>"
+                    elif run.bold:
+                        formatted = f"<b>{content}</b>"
+                    elif run.italic:
+                        formatted = f"<i>{content}</i>"
+                    para_text += formatted
+                raw += para_text + "\n\n"
+            return clean_metadata_and_footers(raw)
+
+        else:
+            return "", "Tipo de arquivo não suportado"
+
+    except Exception as e:
+        st.error(f"Erro leitura: {e}")
+        return ""
+
+# ----------------- Section extraction & diff (kept concise) -----------------
+def _normalize_line_for_search(line: str) -> str:
+    ln = re.sub(r'^\s*\d+\s*[\.\)\-]?\s*', '', line)
+    ln = re.sub(r'^[^\w]+', '', ln)
+    return re.sub(r'\s+', ' ', strip_accents(ln).lower()).strip()
+
+def extract_sections_by_headers(text, sections_list=SECOES_PACIENTE):
+    if not text:
+        return []
+    orig_lines = text.splitlines()
+    plain_lines = [re.sub(r'<[^>]+>', '', ln) for ln in orig_lines]
+    norm_lines = [_normalize_line_for_search(ln) for ln in plain_lines]
+    found = []
+    plain_text_all = "\n".join(plain_lines)
+    for s in sections_list:
+        if not s: continue
+        tokens = re.findall(r'\w+', s)
+        if not tokens: continue
+        patt = r'\b' + r'\W+'.join(map(re.escape, tokens)) + r'\b'
+        m = re.search(patt, plain_text_all, flags=re.IGNORECASE)
+        if m:
+            before = plain_text_all[:m.start()]
+            line_idx = before.count("\n")
+            start = sum(len(l)+1 for l in orig_lines[:line_idx]) if line_idx < len(orig_lines) else m.start()
+            end = start + (len(orig_lines[line_idx]) if line_idx < len(orig_lines) else 0)
+            found.append((start, end, s, line_idx))
+            continue
+        tokens_norm = [strip_accents(t).lower() for t in tokens]
+        for idx, ln_norm in enumerate(norm_lines):
+            pos = 0; ok = True
+            max_tokens = min(8, len(tokens_norm))
+            for tk in tokens_norm[:max_tokens]:
+                p = ln_norm.find(tk, pos)
+                if p == -1:
+                    ok = False; break
+                pos = p + len(tk)
+            if ok:
+                start_est = sum(len(l)+1 for l in orig_lines[:idx])
+                end_est = start_est + len(orig_lines[idx])
+                found.append((start_est, end_est, s, idx))
+                break
+    if not found: return []
+    found.sort(key=lambda x: x[0])
+    secoes = []
+    for idx, (start, end, titulo, line_idx) in enumerate(found):
+        start_content = end
+        end_content = found[idx+1][0] if idx+1 < len(found) else len(text)
+        conteudo = text[start_content:end_content].strip()
+        conteudo = clean_metadata_and_footers(conteudo)
+        conteudo_lines = [re.sub(r'^\s*\d+\s*[\.\)\-]?\s*', '', ln) for ln in conteudo.splitlines()]
+        conteudo_lines = [ln for ln in conteudo_lines if not re.match(r'^\s*\d+\s*[\.\)]?\s*$', ln)]
+        conteudo = "\n".join(conteudo_lines).strip()
+        secoes.append({"titulo": titulo, "texto": conteudo})
+    return secoes
+
+def align_sections_between_texts(text_ref, text_mkt, sections_list=SECOES_PACIENTE):
+    secoes_ref = extract_sections_by_headers(text_ref, sections_list)
+    secoes_mkt = extract_sections_by_headers(text_mkt, sections_list)
+    mapa_ref = {s['titulo'].upper(): s['texto'] for s in secoes_ref}
+    mapa_mkt = {s['titulo'].upper(): s['texto'] for s in secoes_mkt}
+    final = []
+    for titulo in sections_list:
+        if not titulo: continue
+        key = titulo.upper()
+        txt_ref = mapa_ref.get(key, "")
+        txt_mkt = mapa_mkt.get(key, "")
+        # fallback heuristics (try to find title in the other doc)
+        if (not txt_ref) and txt_mkt:
+            tokens = re.findall(r'\w+', titulo)
+            if tokens:
+                patt = r'\b' + r'\W+'.join(map(re.escape, tokens[:8])) + r'\b'
+                plain_ref = re.sub(r'<[^>]+>', '', text_ref or "")
+                m = re.search(patt, plain_ref, flags=re.IGNORECASE)
+                if m:
+                    start = m.end()
+                    next_pos = None
+                    for s2 in sections_list:
+                        if not s2: continue
+                        if s2.strip().upper() == titulo.strip().upper(): continue
+                        p2 = r'\b' + r'\W+'.join(re.findall(r'\w+', s2)) + r'\b'
+                        m2 = re.search(p2, plain_ref[start:], flags=re.IGNORECASE)
+                        if m2:
+                            pos2 = start + m2.start()
+                            if next_pos is None or pos2 < next_pos:
+                                next_pos = pos2
+                    end = next_pos if next_pos is not None else len(plain_ref)
+                    candidate = plain_ref[start:end].strip()
+                    candidate = clean_metadata_and_footers(candidate)
+                    if len(candidate) > 20: txt_ref = candidate
+        if (not txt_mkt) and txt_ref:
+            tokens = re.findall(r'\w+', titulo)
+            if tokens:
+                patt = r'\b' + r'\W+'.join(map(re.escape, tokens[:8])) + r'\b'
+                plain_mkt = re.sub(r'<[^>]+>', '', text_mkt or "")
+                m = re.search(patt, plain_mkt, flags=re.IGNORECASE)
+                if m:
+                    start = m.end()
+                    next_pos = None
+                    for s2 in sections_list:
+                        if not s2: continue
+                        if s2.strip().upper() == titulo.strip().upper(): continue
+                        p2 = r'\b' + r'\W+'.join(re.findall(r'\w+', s2)) + r'\b'
+                        m2 = re.search(p2, plain_mkt[start:], flags=re.IGNORECASE)
+                        if m2:
+                            pos2 = start + m2.start()
+                            if next_pos is None or pos2 < next_pos:
+                                next_pos = pos2
+                    end = next_pos if next_pos is not None else len(plain_mkt)
+                    candidate = plain_mkt[start:end].strip()
+                    candidate = clean_metadata_and_footers(candidate)
+                    if len(candidate) > 20: txt_mkt = candidate
+        if not txt_ref and not txt_mkt:
+            continue
+        final.append({"titulo": titulo, "texto_anvisa": txt_ref, "texto_mkt": txt_mkt})
+    return final
+
+# ----------------- Diff helpers and gerar_diff_html -----------------
+def _protect_html_tags(s: str):
+    if not s: return s, {}
+    mapping = {}; index = 0
+    def repl(m):
+        nonlocal index
+        token = chr(0xE000 + index)
+        mapping[token] = m.group(0)
+        index += 1
+        return token
+    protected = re.sub(r'<[^>]+>', repl, s)
+    return protected, mapping
+
+def _restore_html_tags(s: str, mapping: dict):
+    if not mapping: return s
+    for token, tag in mapping.items():
+        if token in s: s = s.replace(token, tag)
+    return s
+
+def diff_preserve_original(a: str, b: str):
+    a = a or ""; b = b or ""
+    pa, ma = _protect_html_tags(a); pb, mb = _protect_html_tags(b)
+    matcher = difflib.SequenceMatcher(None, pa, pb)
+    parts_a = []; parts_b = []; tem = False
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'equal':
+            parts_a.append(pa[i1:i2]); parts_b.append(pb[j1:j2])
+        elif tag == 'replace':
+            parts_a.append(f'<span class="highlight-yellow">{pa[i1:i2]}</span>')
+            parts_b.append(f'<span class="highlight-yellow">{pb[j1:j2]}</span>')
+            tem = True
+        elif tag == 'delete':
+            parts_a.append(f'<span class="highlight-yellow">{pa[i1:i2]}</span>'); tem = True
+        elif tag == 'insert':
+            parts_b.append(f'<span class="highlight-yellow">{pb[j1:j2]}</span>'); tem = True
+    out_a = ''.join(parts_a); out_b = ''.join(parts_b)
+    out_a = _restore_html_tags(out_a, ma); out_a = _restore_html_tags(out_a, mb)
+    out_b = _restore_html_tags(out_b, mb); out_b = _restore_html_tags(out_b, ma)
+    return out_a, out_b, tem
 
 def melhorar_visual_topicos(texto_html):
     linhas = re.split(r'(<br>|\n)', texto_html)
@@ -358,444 +517,159 @@ def melhorar_visual_topicos(texto_html):
             novo_texto.append(linha)
     return "".join(novo_texto)
 
-def destacar_datas(texto):
-    padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padr[oã]o\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
-    def replacer(match):
-        return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
-    return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
+def verificar_ortografia_inteligente(texto):
+    try:
+        spell = SpellChecker(language='pt')
+        whitelist = {'mg','ml','mcg','ui','g','kg','l','dl','mmhg','bpm','kcal','anvisa','cnpj','cep','sac','bula'}
+        spell.word_frequency.load_words(whitelist)
+        return texto
+    except:
+        return texto
 
-# ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
-def diff_palavra_a_palavra(texto_ref, texto_novo):
-    ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
-    ref_sem_tags = re.sub(r'[-–—]', ' ', ref_sem_tags)
-    novo_sem_tags = re.sub(r'[-–—]', ' ', novo_sem_tags)
-    palavras_ref = ref_sem_tags.split()
-    palavras_novo = novo_sem_tags.split()
-    matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
-    html_ref_list = []
-    html_novo_list = []
-    tem_diff = False
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == 'equal':
-            texto = " ".join(palavras_ref[i1:i2]); html_ref_list.append(texto); html_novo_list.append(texto)
-        elif tag == 'replace':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
-            tem_diff = True
-        elif tag == 'delete':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            tem_diff = True
-        elif tag == 'insert':
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
-            tem_diff = True
-    return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
-
-def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
-    if not texto_ref: texto_ref = ""
-    if not texto_novo: texto_novo = ""
-
-    comp_ref = clean_metadata_and_footers(texto_ref)
-    comp_novo = clean_metadata_and_footers(texto_novo)
-
-    comp_ref_nohy = re.sub(r'[-–—]', ' ', comp_ref)
-    comp_novo_nohy = re.sub(r'[-–—]', ' ', comp_novo)
-    norm_ref_nohy = normalize_for_comparison(comp_ref_nohy)
-    norm_novo_nohy = normalize_for_comparison(comp_novo_nohy)
-
-    if norm_ref_nohy == norm_novo_nohy:
-        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-        return html_ref, html_novo, False
-
-    comp_ref_norm = clean_metadata_and_footers(comp_ref)
-    comp_novo_norm = clean_metadata_and_footers(comp_novo)
-    norm_ref = normalize_for_comparison(comp_ref_norm)
-    norm_novo = normalize_for_comparison(comp_novo_norm)
-
+def gerar_diff_html(texto_ref, texto_novo):
+    if texto_ref is None: texto_ref = ""
+    if texto_novo is None: texto_novo = ""
+    display_ref = texto_ref.replace('\n', '<br>'); display_novo = texto_novo.replace('\n', '<br>')
+    comp_ref = clean_metadata_and_footers(texto_ref); comp_novo = clean_metadata_and_footers(texto_novo)
+    norm_ref = normalize_for_comparison(comp_ref); norm_novo = normalize_for_comparison(comp_novo)
+    comp_ref_nohy = re.sub(r'[-–—]', ' ', norm_ref); comp_novo_nohy = re.sub(r'[-–—]', ' ', norm_novo)
+    if comp_ref_nohy == comp_novo_nohy:
+        return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
     if norm_ref == norm_novo:
-        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-        return html_ref, html_novo, False
-
+        return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
     if norm_ref and norm_novo:
         shorter, longer = (norm_ref, norm_novo) if len(norm_ref) <= len(norm_novo) else (norm_novo, norm_ref)
         if shorter and shorter in longer:
-            prop = len(shorter) / max(1, len(longer))
-            if prop >= 0.88:
-                html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-                html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-                return html_ref, html_novo, False
-
+            return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
     ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
     jacc = jaccard_similarity(norm_ref, norm_novo)
     if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
-        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-        return html_ref, html_novo, False
+        return melhorar_visual_topicos(display_ref), melhorar_visual_topicos(verificar_ortografia_inteligente(display_novo)), False
+    r_html, n_html, diff_bool = diff_preserve_original(display_ref, display_novo)
+    r_html = melhorar_visual_topicos(r_html); n_html = verificar_ortografia_inteligente(n_html); n_html = melhorar_visual_topicos(n_html)
+    return r_html, n_html, diff_bool
 
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
-    n_html_final = verificar_ortografia_inteligente(n_html); n_html_final = melhorar_visual_topicos(n_html_final)
-    r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
-    return r_html_final, n_html_final, diff_bool
+def normalize_for_comparison(text: str) -> str:
+    if not text: return ""
+    t = clean_metadata_and_footers(text)
+    t = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]\s*', '', t)
+    t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
+    t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
+    t = re.sub(r'<[^>]+>', '', t)
+    t = strip_accents(t).lower()
+    t = re.sub(r'[-–—]', ' ', t)
+    t = re.sub(r'[^a-z0-9\s]', ' ', t)
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t
 
-# ----------------- 8. EXTRAÇÃO DE TEXTO -----------------
-def extract_text_from_file(uploaded_file):
-    try:
-        text = ""
-        name = getattr(uploaded_file, "name", "uploaded")
-        if name.lower().endswith('.pdf'):
-            uploaded_file.seek(0)
-            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            for page in doc:
-                blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
-                for block in blocks:
-                    if block.get("type") != 0:
-                        continue
-                    block_text = ""
-                    for line in block.get("lines", []):
-                        line_text = ""
-                        for span in line.get("spans", []):
-                            content = span.get("text", "")
-                            if not content.strip():
-                                line_text += content; continue
-                            flags = span.get("flags", 0)
-                            font_name = span.get("font", "").lower()
-                            is_bold = ((flags & 16) or "bold" in font_name or "black" in font_name or "heavy" in font_name or "semibold" in font_name)
-                            is_italic = ((flags & 2) or "italic" in font_name or "oblique" in font_name)
-                            formatted_text = content
-                            if is_bold and is_italic:
-                                formatted_text = f"<b><i>{content}</i></b>"
-                            elif is_bold:
-                                formatted_text = f"<b>{content}</b>"
-                            elif is_italic:
-                                formatted_text = f"<i>{content}</i>"
-                            line_text += formatted_text
-                        block_text += line_text.strip() + " "
-                    text += block_text.strip() + "\n\n"
-            doc.close()
-        elif name.lower().endswith('.docx'):
-            try:
-                uploaded_file.seek(0)
-                doc = docx.Document(uploaded_file)
-            except Exception:
-                uploaded_file.seek(0)
-                doc = docx.Document(BytesIO(uploaded_file.read()))
-            for para in doc.paragraphs:
-                para_text = ""
-                for run in para.runs:
-                    content = run.text
-                    if not content: continue
-                    is_bold = run.bold is True
-                    is_italic = run.italic is True
-                    formatted_text = content
-                    if is_bold and is_italic:
-                        formatted_text = f"<b><i>{content}</i></b>"
-                    elif is_bold:
-                        formatted_text = f"<b>{content}</b>"
-                    elif is_italic:
-                        formatted_text = f"<i>{content}</i>"
-                    para_text += formatted_text
-                text += para_text + "\n\n"
-        return clean_metadata_and_footers(text.strip())
-    except Exception as e:
-        st.error(f"Erro ao extrair texto do arquivo {getattr(uploaded_file, 'name', '')}: {str(e)}")
-        return ""
-
-# ----------------- 9. UI PRINCIPAL E FLUXO -----------------
-st.title("💊 Conferência MKT")
+# ----------------- UI flow -----------------
+st.title("💊 Gráfica x Arte (robusto)")
+st.markdown("<div class='small-muted'>Comparação automática de seções com preservação de <b>negrito</b> e <i>itálico</i>.</div>", unsafe_allow_html=True)
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
-
 c1, c2 = st.columns(2)
-f1 = c1.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f1")
-f2 = c2.file_uploader("📜 Bula MKT", type=["pdf", "docx"], key="f2")
+f1 = c1.file_uploader("📜 Gráfica", type=["pdf", "docx"], key="f1")
+f2 = c2.file_uploader("📜 Arte Vigente", type=["pdf", "docx"], key="f2")
 
-if st.button("🚀 Processar Conferência", key="process_button"):
-    st.info("Iniciando processamento...")
-    if not f1 or not f2:
-        st.warning("Por favor, envie ambos os arquivos antes de processar.")
-        st.stop()
-    else:
-        st.info(f"Arquivo BELFAR detectado: {getattr(f1, 'name', 'desconhecido')}")
-        st.info(f"Arquivo MKT detectado: {getattr(f2, 'name', 'desconhecido')}")
-
-    # tentar vários nomes de secrets (como você disse que tem GEMNI_API_KEY1 etc.)
-    secret_names = [
-        "GEMINI_API_KEY", "GEMINI_API_KEY1", "GEMINI_API_KEY2", "GEMINI_API_KEY3",
-        "GEMNI_API_KEY1", "GEMNI_API_KEY2", "GEMNI_API_KEY3"
-    ]
+if st.button("🚀 Processar Conferência"):
+    secret_names = ["GEMINI_API_KEY","GEMINI_API_KEY1","GEMINI_API_KEY2","GEMINI_API_KEY3","GEMNI_API_KEY1","GEMNI_API_KEY2","GEMNI_API_KEY3"]
     keys_raw = [st.secrets.get(n) for n in secret_names]
     keys_validas = [k for k in keys_raw if k]
 
-    if not keys_validas:
-        st.error("Erro crítico: nenhuma API key encontrada nos secrets. Verifique os nomes (GEMINI_API_KEY / GEMINI_API_KEY2 / GEMINI_API_KEY3).")
-        st.stop()
+    if not f1 or not f2:
+        st.warning("Adicione os arquivos."); st.stop()
 
-    if f1 and f2:
-        secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
+    try:
+        f1_bytes = f1.read(); f2_bytes = f2.read()
+    except Exception as e:
+        st.error(f"Erro ao ler arquivos: {e}"); st.stop()
 
-        with st.spinner("Lendo arquivos e conectando à IA..."):
-            try:
-                f1.seek(0); f2.seek(0)
-                t_anvisa = extract_text_from_file(f1)
-                t_mkt = extract_text_from_file(f2)
-                st.info(f"Tamanho do texto BELFAR (após limpeza): {len(t_anvisa)}")
-                st.info(f"Tamanho do texto MKT (após limpeza): {len(t_mkt)}")
-            except Exception as e:
-                st.exception(f"Falha ao extrair textos: {e}")
-                st.stop()
+    with st.spinner("Extraindo texto (local) e acionando OCR quando necessário..."):
+        t_anvisa = extract_text_smart_from_bytes(f1_bytes, f1.name, api_keys=keys_validas)
+        t_mkt = extract_text_smart_from_bytes(f2_bytes, f2.name, api_keys=keys_validas)
 
-            if len(t_anvisa) < 20 or len(t_mkt) < 20:
-                st.error("Arquivo vazio ou ilegível."); st.stop()
+        if not t_anvisa or len(re.findall(r'\w', re.sub(r'<[^>]+>', '', t_anvisa))) < 20:
+            st.error("ERRO: Conteúdo do arquivo GRÁFICA insuficiente para análise."); st.stop()
+        if not t_mkt or len(re.findall(r'\w', re.sub(r'<[^>]+>', '', t_mkt))) < 20:
+            st.error("ERRO: Conteúdo do arquivo ARTE insuficiente para análise."); st.stop()
 
-            prompt = f"""
-            Você é um Extrator de Dados Farmacêuticos Rigoroso.
+    secoes_alvo = SECOES_PACIENTE
+    dados_secoes = align_sections_between_texts(t_anvisa, t_mkt, secoes_alvo)
 
-            INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
-            INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
+    if not dados_secoes:
+        st.info("Nenhuma seção padrão encontrada automaticamente. Extraindo conteúdo inteiro como fallback.")
+        dados_secoes = [{"titulo": "CONTEÚDO INTEIRO", "texto_anvisa": t_anvisa, "texto_mkt": t_mkt}]
 
-            REGRAS CRÍTICAS DE EXTRAÇÃO:
+    secoes_finais = []; divs_count = 0
+    for item in dados_secoes:
+        titulo_raw = (item.get('titulo') or '').strip()
+        titulo = re.sub(r'^[\?\!\.\-\s]+', '', titulo_raw).strip()
+        titulo = re.sub(r'[\s\-\–\—]*\d{1,4}\s*$', '', titulo).strip()
+        txt_ref = (item.get('texto_anvisa') or "").strip()
+        txt_mkt = (item.get('texto_mkt') or "").strip()
+        titulo_upper = titulo.upper()
+        if "CABEÇALHO" in titulo_upper:
+            def safe_extract_header(raw_text, secoes_alvo):
+                menor = None
+                for s in secoes_alvo:
+                    if s.strip().upper() == "CABEÇALHO DA BULA": continue
+                    patt = r'\b' + r'\W+'.join(re.findall(r'\w+', s)) + r'\b'
+                    m = re.search(patt, raw_text, flags=re.IGNORECASE)
+                    if m:
+                        if menor is None or m.start() < menor: menor = m.start()
+                if menor is None:
+                    m = re.search(r'\bAPRESENTA\S*\b', raw_text, flags=re.IGNORECASE)
+                    menor = m.start() if m else None
+                if menor is None: return ""
+                header_raw = raw_text[:menor].strip()
+                header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
+                header_clean = clean_metadata_and_footers(header_raw)
+                if len(header_clean) < 20: return ""
+                if len(header_clean) > max(2000, int(len(raw_text)*0.35)): return ""
+                return header_clean
+            if (not txt_ref or len(txt_ref) < 50):
+                novo_ref = safe_extract_header(t_anvisa, secoes_alvo)
+                if novo_ref: txt_ref = novo_ref
+            if (not txt_mkt or len(txt_mkt) < 50):
+                novo_mkt = safe_extract_header(t_mkt, secoes_alvo)
+                if novo_mkt: txt_mkt = novo_mkt
+            txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
+            txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
 
-    **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
-    IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
-    PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
+        html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
+        status = "DIVERGENTE" if teve_diff else "CONFORME"
+        if teve_diff: divs_count += 1
 
-    **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
+        if not html_ref or re.sub(r'<[^>]+>', '', html_ref).strip() == "":
+            html_ref = '<i>(Sem conteúdo extraído)</i>'
+        if not html_mkt or re.sub(r'<[^>]+>', '', html_mkt).strip() == "":
+            html_mkt = '<i>(Sem conteúdo extraído)</i>'
 
-    **FORMATAÇÃO**: 
-    Manter <b> e <i> EXATAMENTE como está
-    NÃO corrigir português
-    NÃO resumir
-    Ignorar linhas horizontais/elementos gráficos
+        secoes_finais.append({"titulo": titulo, "texto_anvisa": html_ref, "texto_mkt": html_mkt, "status": status})
 
-    Se uma seção não existir, NÃO inclua no JSON.
+    # Resumo e exibição
+    st.markdown("### 📊 Resumo")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Seções analisadas", len(secoes_finais))
+    c2.metric("Divergências", divs_count)
+    c3.metric("API Keys (OCR)", len(keys_validas))
 
-    LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
+    if divs_count > 0:
+        st.warning(f"⚠️ Divergências encontradas em {divs_count} seção(ões).")
+    else:
+        st.success("✨ Divergências: 0")
 
-    SAÍDA JSON:
-    {{
-     "data_anvisa_ref": "dd/mm/aaaa",
-     "data_anvisa_mkt": "dd/mm/aaaa",
-     "secoes": [
-         {{
-             "titulo": "NOME EXATO DA SEÇÃO",
-             "texto_anvisa": "conteúdo completo",
-             "texto_mkt": "conteúdo completo"
-         }}
-     ]
-    }}
-    """
-
-            response = None
-            sucesso = False
-            log_erros = []
-
-            # Variáveis para armazenar datas extraídas APENAS de "DIZERES LEGAIS"
-            extracted_date_ref = "-"
-            extracted_date_mkt = "-"
-
-            # tentar cada key e cada modelo; se todas falharem, abortar
-            for idx_key, key in enumerate(keys_validas):
-                if sucesso: break
-                try:
-                    genai.configure(api_key=key)
-                except Exception as e:
-                    log_erros.append(f"Key {idx_key+1} | configure: {str(e)}")
-                    continue
-
-                for modelo in MODELOS_PARA_TENTAR:
-                    try:
-                        st.info(f"Tentando modelo: {modelo} com key {idx_key+1}")
-                        model = genai.GenerativeModel(
-                            modelo,
-                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
-                        )
-                        response = model.generate_content(prompt)
-                        sucesso = True
-                        st.info(f"Modelo aceito: {modelo}")
-                        break
-                    except Exception as e:
-                        log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(0.2)
-                        continue
-
-            if not sucesso:
-                st.error("❌ Falha total ao chamar a API Gemini/Generative. Sem fallback configurado — abortando.")
-                if log_erros:
-                    st.code("\n".join(log_erros))
-                st.stop()
-
-            # processar resposta da IA com parsing resiliente (mantive heurística de resgate de JSON)
-            try:
-                if response is None:
-                    st.error("Resposta da IA vazia (response is None).")
-                    st.stop()
-                resp_text = getattr(response, "text", None)
-                if not resp_text:
-                    resp_text = str(response)
-
-                # função auxiliar para extrair JSON balanceado do texto (já definida no topo)
-                def extract_json_block_local(text: str):
-                    if not text or '{' not in text:
-                        return None
-                    start = text.find('{')
-                    depth = 0
-                    in_string = False
-                    esc = False
-                    for i in range(start, len(text)):
-                        ch = text[i]
-                        if ch == '"' and not esc:
-                            in_string = not in_string
-                        if in_string:
-                            esc = (ch == '\\' and not esc)
-                            continue
-                        if ch == '{':
-                            depth += 1
-                        elif ch == '}':
-                            depth -= 1
-                            if depth == 0:
-                                return text[start:i+1]
-                    return None
-
-                # tentar carregar JSON diretamente, senão extrair bloco
-                try:
-                    resultado = json.loads(resp_text)
-                except Exception:
-                    bloco = extract_json_block_local(resp_text)
-                    if bloco:
-                        try:
-                            resultado = json.loads(bloco)
-                        except Exception as e:
-                            st.error(f"Erro ao decodificar JSON da resposta da IA (após extração de bloco): {e}")
-                            st.code(resp_text)
-                            st.stop()
-                    else:
-                        st.error("Erro ao decodificar JSON da resposta da IA: bloco JSON não encontrado")
-                        st.code(resp_text)
-                        st.stop()
-            except Exception as e:
-                st.exception(f"Erro ao processar resposta da IA: {e}")
-                try:
-                    st.code(str(response))
-                except:
-                    pass
-                st.stop()
-
-            try:
-                dados_secoes = resultado.get("secoes", [])
-
-                secoes_finais = []
-                divs_count = 0
-
-                # regex estrita: exige a frase seguida da data; aceita 'Padrão' com/sem acento
-                frase_padrao = r'Esta\s+bula\s+foi\s+atualizada\s+conforme\s+Bula\s+Padr[oã]o\s+aprovada\s+pela\s+Anvisa\s+em\s*(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
-
-                for item in dados_secoes:
-                    titulo = item.get('titulo', '').strip()
-                    txt_ref = item.get('texto_anvisa', '').strip()
-                    txt_mkt = item.get('texto_mkt', '').strip()
-
-                    if not txt_ref:
-                        tentativa = extract_section_from_raw(t_anvisa, titulo, secoes_alvo)
-                        if tentativa:
-                            txt_ref = tentativa
-                    if not txt_mkt:
-                        tentativa2 = extract_section_from_raw(t_mkt, titulo, secoes_alvo)
-                        if tentativa2:
-                            txt_mkt = tentativa2
-
-                    txt_ref = clean_metadata_and_footers(txt_ref)
-                    txt_mkt = clean_metadata_and_footers(txt_mkt)
-
-                    if "CABEÇALHO" in titulo.upper():
-                        novo_ref = safe_extract_header(t_anvisa, secoes_alvo)
-                        if novo_ref and (not txt_ref or len(novo_ref) < len(txt_ref) or len(txt_ref) < 50):
-                            txt_ref = novo_ref
-
-                        novo_mkt = safe_extract_header(t_mkt, secoes_alvo)
-                        if novo_mkt and (not txt_mkt or len(novo_mkt) < len(txt_mkt) or len(txt_mkt) < 50):
-                            txt_mkt = novo_mkt
-
-                        txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
-                        txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
-
-                    # DIZERES LEGAIS: extrair data SOMENTE se a frase exata + data estiver presente
-                    if "DIZERES LEGAIS" in titulo.upper():
-                        m_ref = re.search(frase_padrao, txt_ref, flags=re.IGNORECASE)
-                        if m_ref:
-                            extracted_date_ref = m_ref.group(1)
-                        m_mkt = re.search(frase_padrao, txt_mkt, flags=re.IGNORECASE)
-                        if m_mkt:
-                            extracted_date_mkt = m_mkt.group(1)
-
-                        html_ref = destacar_datas(txt_ref).replace('\n', '<br>')
-                        html_novo = destacar_datas(txt_mkt).replace('\n', '<br>')
-                        html_ref = verificar_ortografia_inteligente(html_ref)
-                        html_novo = verificar_ortografia_inteligente(html_novo)
-                        html_ref = melhorar_visual_topicos(html_ref)
-                        html_novo = melhorar_visual_topicos(html_novo)
-                        status = "CONFORME"
-                    else:
-                        html_ref, html_novo, teve_diff = gerar_diff_html(txt_ref, txt_mkt, secoes_alvo)
-                        status = "DIVERGENTE" if teve_diff else "CONFORME"
-                        if teve_diff:
-                            divs_count += 1
-
-                    secoes_finais.append({
-                        "titulo": titulo,
-                        "texto_anvisa": html_ref,
-                        "texto_mkt": html_novo,
-                        "status": status
-                    })
-
-                # NOVA POLÍTICA: usar APENAS as datas extraídas diretamente de "DIZERES LEGAIS"
-                # Se não houver correspondência no texto dessa seção, fica "-"
-                data_ref = extracted_date_ref if extracted_date_ref != "-" else "-"
-                data_mkt = extracted_date_mkt if extracted_date_mkt != "-" else "-"
-
-                st.markdown("### 📊 Resumo")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Data BELFAR", data_ref)
-                c2.metric("Data MKT", data_mkt, delta="Igual" if data_ref == data_mkt and data_ref != "-" else "Diferente")
-                c3.metric("Seções", len(secoes_finais))
-
-                sub1, sub2 = st.columns(2)
-                sub1.info(f"✅ Conformes: {len(secoes_finais) - divs_count}")
-                if divs_count > 0:
-                    sub2.warning(f"⚠️ Divergentes: {divs_count}")
-                else:
-                    sub2.success("✨ Divergências: 0")
-
-                st.divider()
-
-                for item in secoes_finais:
-                    status = item['status']
-                    titulo = item['titulo']
-
-                    if "DIZERES LEGAIS" in titulo.upper():
-                        icon, css, aberto = "⚖️", "border-info", False
-                    elif status == "CONFORME":
-                        icon, css, aberto = "✅", "border-ok", False
-                    else:
-                        icon, css, aberto = "⚠️", "border-warn", True
-
-                    with st.expander(f"{icon} {titulo}", expanded=aberto):
-                        ce, cd = st.columns(2)
-                        with ce:
-                            st.caption("BELFAR")
-                            st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
-                        with cd:
-                            st.caption("MKT")
-                            st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
-
-            except Exception as e:
-                st.exception(f"Erro ao processar resultado: {e}")
-                try:
-                    st.code(str(response))
-                except:
-                    pass
-                st.stop()
-
-else:
-    st.info("Aguardando ação. Adicione os arquivos e clique em 'Processar Conferência'.")
+    st.divider()
+    for item in secoes_finais:
+        status = item['status']; titulo = item['titulo'] or "Sem título"
+        if "DIZERES LEGAIS" in titulo.upper(): icon, css, aberto = "⚖️", "border-info", True
+        elif status == "CONFORME": icon, css, aberto = "✅", "border-ok", False
+        else: icon, css, aberto = "⚠️", "border-warn", True
+        with st.expander(f"{icon} {titulo}", expanded=aberto):
+            ce, cd = st.columns(2)
+            with ce:
+                st.caption("Gráfica")
+                st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
+            with cd:
+                st.caption("Arte")
+                st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
