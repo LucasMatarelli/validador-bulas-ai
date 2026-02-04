@@ -58,9 +58,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
+# ATUALIZADO: Modelos Gemini 2.5, 3.0 e Gemma 3 conforme solicitado
 MODELOS_PARA_TENTAR = [
-    "models/gemini-1.5-flash", 
-    "gemini-1.5-flash"
+    "gemini-2.5-flash",
+    "gemini-3-flash",
+    "gemma-3-27b-it"
 ]
 
 SECOES_PACIENTE = [
@@ -71,7 +73,7 @@ SECOES_PACIENTE = [
     "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
     "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
     "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?", 
-    "DIZERES LEGAis"
+    "DIZERES LEGAIS"
 ]
 
 SECOES_PROFISSIONAL = [
@@ -283,6 +285,7 @@ f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     
+    # ATUALIZADO: Uso das 3 API Keys conforme solicitado
     keys_raw = [
         st.secrets.get("GEMINI_API_KEY"),
         st.secrets.get("GEMINI_API_KEY2"),
