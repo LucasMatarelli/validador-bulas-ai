@@ -1,6 +1,6 @@
-# app.py - Gráfica x Arte (Versão Gemini 2.5/3.0 com Proteção de Cota)
-# - Mantém seu fluxo original
+# app.py - Gráfica x Arte (Versão Gemini 2.5/3.0 - Multi-Key "GEMNI")
 # - Focado em Gemini 2.5 Flash e Gemini 3 Flash
+# - Usa rotação de chaves (GEMNI_API_KEY1...3)
 # - Sistema de pausa automática (15s) para respeitar limite de 5 RPM
 
 import streamlit as st
@@ -18,16 +18,16 @@ from spellchecker import SpellChecker
 from io import BytesIO
 
 # ----------------- CONFIGURAÇÕES GLOBAIS -----------------
-APP_TITLE = "💊 Gráfica x Arte"
+APP_TITLE = "Gráfica x Arte"
 
-# Aumentado para suportar PDFs maiores e a latência dos novos modelos
+# Aumentado para suportar latência de rede/modelo
 TIMEOUT_S = 40  
 
-# Apenas os modelos que você confirmou ter acesso (da imagem)
+# Apenas os modelos disponíveis na sua conta (conforme print anterior)
 MODELOS_PARA_TENTAR_OCR = [
     "gemini-2.5-flash", 
     "gemini-3-flash",
-    "gemma-3-27b-it"  # Gemma geralmente precisa do sufixo -it para seguir instruções
+    "gemma-3-27b-it"  # Gemma precisa do sufixo -it para instruções
 ]
 
 MODELOS_PARA_TENTAR_GEN = [
@@ -73,7 +73,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title(APP_TITLE)
-st.markdown("<div class='small-muted'>Escolha o Tipo de Bula:</div>", unsafe_allow_html=True)
+st.markdown("<div class='small-muted'>Comparação automática de seções com preservação de <b>negrito</b> e <i>itálico</i>.</div>", unsafe_allow_html=True)
 
 # ----------------- UTIL HELPERS -----------------
 def strip_accents(s: str) -> str:
@@ -92,7 +92,6 @@ def jaccard_similarity(a: str, b: str) -> float:
 def clean_metadata_and_footers(texto: str) -> str:
     if not texto: return texto
     t = texto
-    # remove lines that are only numbers
     lines = t.splitlines()
     lines = [ln for ln in lines if not re.match(r'^\s*\d+\s*[\.\)]?\s*$', ln)]
     t = "\n".join(lines)
@@ -142,12 +141,9 @@ def remover_rodapes_bula(texto: str) -> str:
     retorno = re.sub(r'\n{3,}', '\n\n', retorno)
     return retorno.strip()
 
-# ----------------- chamada segura ao modelo com timeout -----------------
+# ----------------- CHAMADA SEGURA (TIMEOUT) -----------------
 def call_model_with_timeout(api_key, modelo, payload, timeout_s=TIMEOUT_S):
-    """
-    Executa model.generate_content em thread separada com timeout.
-    payload pode ser string (prompt) ou list (para OCR multipart).
-    """
+    """Executa model.generate_content em thread separada com timeout."""
     def worker_call():
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(modelo)
@@ -163,7 +159,7 @@ def call_model_with_timeout(api_key, modelo, payload, timeout_s=TIMEOUT_S):
         except Exception as e:
             raise e
 
-# ----------------- OCR remoto com BACKOFF para COTA (429) -----------------
+# ----------------- OCR COM ROTAÇÃO DE CHAVES E BACKOFF (COTA) -----------------
 def ocr_via_gemini_bytes(bytes_data, api_keys, modelos=MODELOS_PARA_TENTAR_OCR, timeout_s=TIMEOUT_S):
     if not bytes_data:
         return "", "Arquivo vazio para OCR"
@@ -174,19 +170,22 @@ def ocr_via_gemini_bytes(bytes_data, api_keys, modelos=MODELOS_PARA_TENTAR_OCR, 
     
     errors = []
     
+    # Itera sobre suas 3 chaves GEMNI
     for i, key in enumerate(api_keys):
         for modelo in modelos:
             try:
+                # Configura a key da vez
+                genai.configure(api_key=key)
+                
                 # Payload: Prompt + Dados Binários (MimeType)
                 payload = [prompt_ocr, {'mime_type':'application/pdf', 'data':bytes_data}]
                 
                 resp = call_model_with_timeout(key, modelo, payload, timeout_s=timeout_s)
-                
                 texto_extraido = getattr(resp, "text", "") or ""
                 
-                # Se veio vazio, tenta próximo modelo
+                # Se vazio, tenta próximo
                 if not texto_extraido.strip():
-                    errors.append(f"{modelo} returned empty")
+                    errors.append(f"{modelo} (key{i+1}) returned empty")
                     continue
                 
                 # --- Limpeza Pós-OCR ---
@@ -194,7 +193,6 @@ def ocr_via_gemini_bytes(bytes_data, api_keys, modelos=MODELOS_PARA_TENTAR_OCR, 
                 texto_extraido = re.sub(r'^```(?:[\w\-]+)?\s*', '', texto_extraido)
                 texto_extraido = re.sub(r'\s*```$', '', texto_extraido)
                 texto_extraido = texto_extraido.replace('\r\n', '\n').replace('\r', '\n')
-                # Normaliza tags
                 texto_extraido = re.sub(r'<\s*b\s*>', '<b>', texto_extraido, flags=re.IGNORECASE)
                 texto_extraido = re.sub(r'<\s*/\s*b\s*>', '</b>', texto_extraido, flags=re.IGNORECASE)
                 texto_extraido = re.sub(r'<\s*i\s*>', '<i>', texto_extraido, flags=re.IGNORECASE)
@@ -213,20 +211,22 @@ def ocr_via_gemini_bytes(bytes_data, api_keys, modelos=MODELOS_PARA_TENTAR_OCR, 
                 msg_erro = str(e).lower()
                 errors.append(f"key#{i+1}:{modelo}: {str(e)}")
                 
-                # ---- AQUI ESTÁ A PROTEÇÃO DE COTA (5 RPM) ----
+                # PROTEÇÃO DE COTA (429):
+                # Se bater cota numa key, espera 15s antes de tentar a PRÓXIMA key/modelo
                 if "429" in msg_erro or "quota" in msg_erro:
-                    st.toast(f"⏳ Cota atingida no {modelo}. Pausando 15s...", icon="🛑")
-                    time.sleep(15) # Espera obrigatória para zerar o contador de minutos
+                    st.toast(f"⏳ Cota atingida (Key {i+1}). Pausando 15s...", icon="🛑")
+                    time.sleep(15) 
                 elif "404" in msg_erro:
-                    pass # Modelo não achado, tenta o próximo imediatamente
+                    # Modelo não existe, pula rápido
+                    pass 
                 else:
-                    time.sleep(1) # Erro genérico, espera curta
+                    time.sleep(1)
                 
-                continue # Tenta próximo modelo/key
+                continue 
 
     return "", " | ".join(errors)
 
-# ----------------- Funções de extração local -----------------
+# ----------------- Extração Local -----------------
 def extract_text_from_file_obj_bytes(bytes_data, filename):
     try:
         text = ""
@@ -277,7 +277,7 @@ def extract_text_from_file_obj_bytes(bytes_data, filename):
         st.error(f"Erro extração local: {e}")
         return ""
 
-# ----------------- Helpers Lógicos (Regex/Diff) -----------------
+# ----------------- Helpers Lógicos -----------------
 def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
     if not words: return None
@@ -445,11 +445,15 @@ if st.button("🚀 Processar Conferência"):
     if not f1 or not f2:
         st.warning("Envie ambos os arquivos."); st.stop()
 
-    secret_names = ["GEMINI_API_KEY","GEMINI_API_KEY1","GEMINI_API_KEY2","GEMINI_API_KEY3","GEMNI_API_KEY1","GEMNI_API_KEY2","GEMNI_API_KEY3"]
+    # Leitura específica das chaves que você informou
+    secret_names = ["GEMNI_API_KEY1", "GEMNI_API_KEY2", "GEMNI_API_KEY3"]
     keys_raw = [st.secrets.get(n) for n in secret_names]
     keys_validas = [k for k in keys_raw if k]
+    
     if not keys_validas:
-        st.error("Nenhuma API key encontrada nos secrets."); st.stop()
+        st.error("Nenhuma chave 'GEMNI_API_KEY' encontrada nos secrets."); st.stop()
+    else:
+        st.write(f"Utilizando {len(keys_validas)} chaves de API para processamento.")
 
     f1_bytes = f1.read()
     f2_bytes = f2.read()
@@ -503,21 +507,24 @@ REGRAS CRÍTICAS DE EXTRAÇÃO:
     response_obj = None
     errors = []
     
-    # Loop de tentativas de Geração com Proteção 429
+    # Loop de tentativas de Geração com Rotação de Key e Proteção 429
     for i, key in enumerate(keys_validas):
+        genai.configure(api_key=key) # Garante que a key da vez está ativa
+        
         for modelo in MODELOS_PARA_TENTAR_GEN:
             try:
                 # Payload simples para texto
                 resp = call_model_with_timeout(key, modelo, prompt, timeout_s=TIMEOUT_S)
                 response_obj = resp
-                st.info(f"Modelo generativo aceito: {modelo} (key#{i+1})")
+                st.info(f"Modelo generativo aceito: {modelo} (usando Key {i+1})")
                 break
             except Exception as e:
                 msg = str(e).lower()
                 errors.append(f"key#{i+1}|{modelo}:{msg}")
+                
                 # Proteção Cota (5 RPM)
                 if "429" in msg or "quota" in msg:
-                    st.toast(f"⏳ Cota gerativa atingida ({modelo}). Aguardando 15s...", icon="🛑")
+                    st.toast(f"⏳ Cota atingida (Key {i+1}). Pausando 15s...", icon="🛑")
                     time.sleep(15) 
                 else:
                     time.sleep(1)
