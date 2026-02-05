@@ -1,7 +1,10 @@
-# app.py - Gráfica x Arte (Versão Final Ajustada)
-# - Removido "CABEÇALHO DA BULA"
-# - Correção de renderização de Negrito (**text** -> <b>text</b>)
-# - Mantido OCR automático e modelos Gemini 2.5/3.0
+# app.py - Gráfica x Arte (Versão Gemini 2.5/3.0 - OCR Integrado)
+# - Atualizado para extrair data APENAS em "DIZERES LEGAIS" com frase exata.
+# - Interface renomeada para Gráfica x Arte Vigente.
+# - OCR automático se texto local < 1000 chars.
+# - Modelos restritos: 2.5 Flash, 2.5 Flash Lite, 3 Flash.
+# - CABEÇALHO removido.
+# - Corrigido problema de negrito (**palavra** → <b>palavra</b>).
 
 import streamlit as st
 import google.generativeai as genai
@@ -89,13 +92,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
+# Lista restrita conforme solicitado
 MODELOS_PARA_TENTAR = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemini-3-flash"
 ]
 
-# REMOVIDO "CABEÇALHO DA BULA" DA LISTA
 SECOES_PACIENTE = [
     "APRESENTAÇÕES",
     "COMPOSIÇÃO",
@@ -113,9 +116,10 @@ SECOES_PACIENTE = [
 
 SIMILARITY_THRESHOLD = 0.92
 
-# ----------------- 3. LIMPEZA AUTOMATIZADA -----------------
+# ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
 def clean_metadata_and_footers(texto: str) -> str:
-    if not texto: return texto
+    if not texto:
+        return texto
     t = texto
 
     t = re.sub(r'(?im)^.*times\s+new\s+roman.*\n?', '', t)
@@ -136,7 +140,8 @@ def clean_metadata_and_footers(texto: str) -> str:
         r'(?im)^\s*.*cor:.*$',
         r'(?im)^\s*.*frente\/verso.*$',
     ]
-    for p in patterns_line: t = re.sub(p, '', t)
+    for p in patterns_line:
+        t = re.sub(p, '', t)
 
     t = re.sub(r'(?im)\d{1,2},\d{2}\s*cm\s*[x×X]\s*\d{1,2},\d{2}\s*cm', '', t)
     page_patterns = [
@@ -145,13 +150,15 @@ def clean_metadata_and_footers(texto: str) -> str:
         r'(?im)\bP[aá]gina\s*\d+\s*(?:de|\/)\s*\d+\b',
         r'(?im)\bP[aá]gina\s*\d+\b'
     ]
-    for p in page_patterns: t = re.sub(p, '', t)
+    for p in page_patterns:
+        t = re.sub(p, '', t)
 
     t = re.sub(r'(?im)\bfrente\b', '', t)
     t = re.sub(r'(?im)\bverso\b', '', t)
     t = re.sub(r'(?im)\bBUL[_A-Z0-9-]*\b', '', t)
 
     t = re.sub(r'-\s*\n\s*', '', t)
+
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\r', '\n', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
@@ -159,14 +166,29 @@ def clean_metadata_and_footers(texto: str) -> str:
     lines = [ln.rstrip() for ln in t.splitlines()]
     lines = [ln for ln in lines if ln.strip() != ""]
     t = "\n".join(lines)
+
     return t.strip()
 
-# ----------------- 4. HELPERS DE TEXTO E REGEX -----------------
+# ----------------- 4. LOCALIZAÇÃO DE TÍTULOS E EXTRAÇÃO -----------------
 def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
-    if not words: return None
+    if not words:
+        return None
     pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
     return pattern
+
+def find_first_section_index(texto: str, section_titles: list) -> int:
+    menor = None
+    for title in section_titles:
+        if not title: continue
+        patt = build_section_pattern(title)
+        if not patt: continue
+        m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
+        if m:
+            idx = m.start()
+            if menor is None or idx < menor:
+                menor = idx
+    return -1 if menor is None else menor
 
 def _build_flexible_title_regex(title: str):
     words = re.findall(r'\w+', title, flags=re.UNICODE)
@@ -215,12 +237,6 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
     if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)): return ""
     return section_clean
 
-def convert_markdown_bold_to_html(text: str) -> str:
-    """Corrige problemas onde o modelo ou OCR retorna **texto** em vez de <b>texto</b>"""
-    if not text: return text
-    # Converte **texto** para <b>texto</b>
-    return re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-
 # ----------------- 5. NORMALIZAÇÃO PARA COMPARAÇÃO -----------------
 def strip_accents(s: str) -> str:
     return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('ASCII')
@@ -232,6 +248,7 @@ def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIEN
     if not texto: return texto
     t = texto
     for s in sections_list:
+        if not s: continue
         patt = build_section_pattern(s)
         if patt: t = re.sub(patt, ' ', t, flags=re.IGNORECASE)
     t = re.sub(r'(?im)\bInform[aç]o(?:es)?\s+ao\s+paciente\b', ' ', t)
@@ -260,9 +277,28 @@ def jaccard_similarity(a: str, b: str) -> float:
     inter = sa.intersection(sb); union = sa.union(sb)
     return len(inter) / len(union)
 
-# ----------------- 6. ORTOGRAFIA E VISUAL -----------------
+# ----------------- 6. CONVERSÃO DE MARKDOWN PARA HTML -----------------
+def converter_markdown_para_html(texto: str) -> str:
+    """
+    Converte markdown (** para negrito, * para itálico) em tags HTML.
+    """
+    if not texto:
+        return texto
+    
+    # Converter **texto** para <b>texto</b>
+    texto = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', texto)
+    
+    # Converter *texto* para <i>texto</i> (apenas asterisco simples que não foi capturado acima)
+    texto = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', texto)
+    
+    return texto
+
+# ----------------- 7. ORTOGRAFIA E VISUAL -----------------
 def verificar_ortografia_inteligente(texto):
     try:
+        # Primeiro converter markdown para HTML
+        texto = converter_markdown_para_html(texto)
+        
         spell = SpellChecker(language='pt')
         whitelist = {'mg','ml','mcg','ui','g','kg','l','dl','mmhg','bpm','kcal','anvisa','cnpj','cep','sac','bula'}
         spell.word_frequency.load_words(whitelist)
@@ -276,7 +312,8 @@ def verificar_ortografia_inteligente(texto):
                 resultado.append(token); continue
             resultado.append(token)
         return "".join(resultado)
-    except: return texto
+    except: 
+        return converter_markdown_para_html(texto)
 
 def melhorar_visual_topicos(texto_html):
     linhas = re.split(r'(<br>|\n)', texto_html)
@@ -295,7 +332,7 @@ def destacar_datas(texto):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
 
-# ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
+# ----------------- 8. DIFF E REGRAS DE DECISÃO -----------------
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
     novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
@@ -328,10 +365,6 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
 
     comp_ref = clean_metadata_and_footers(texto_ref)
     comp_novo = clean_metadata_and_footers(texto_novo)
-
-    # Nova etapa: Forçar conversão de markdown (**bold**) para HTML (<b>bold</b>)
-    comp_ref = convert_markdown_bold_to_html(comp_ref)
-    comp_novo = convert_markdown_bold_to_html(comp_novo)
 
     comp_ref_nohy = re.sub(r'[-–—]', ' ', comp_ref)
     comp_novo_nohy = re.sub(r'[-–—]', ' ', comp_novo)
@@ -374,7 +407,7 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
     return r_html_final, n_html_final, diff_bool
 
-# ----------------- 8. EXTRAÇÃO DE TEXTO LOCAL -----------------
+# ----------------- 9. EXTRAÇÃO DE TEXTO LOCAL -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
@@ -429,7 +462,7 @@ def extract_text_from_file(uploaded_file):
         st.error(f"Erro ao extrair texto do arquivo {getattr(uploaded_file, 'name', '')}: {str(e)}")
         return ""
 
-# ----------------- 9. FUNÇÃO OCR (GEMINI) -----------------
+# ----------------- 10. FUNÇÃO OCR (GEMINI) -----------------
 def ocr_via_gemini(uploaded_file, keys_validas):
     """
     Função para realizar OCR usando Gemini 2.5 Flash quando o texto extraído localmente é insuficiente.
@@ -448,7 +481,6 @@ def ocr_via_gemini(uploaded_file, keys_validas):
     
     for key in keys_validas:
         genai.configure(api_key=key)
-        # Usar o modelo mais rápido e barato para OCR
         model = genai.GenerativeModel("gemini-2.5-flash")
         try:
             response = model.generate_content([
@@ -460,7 +492,7 @@ def ocr_via_gemini(uploaded_file, keys_validas):
             continue
     return ""
 
-# ----------------- 10. UI PRINCIPAL E FLUXO -----------------
+# ----------------- 11. UI PRINCIPAL E FLUXO -----------------
 st.title("💊 Gráfica x Arte")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
@@ -526,7 +558,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Conteúdo insuficiente para análise (Arquivo vazio ou ilegível)."); st.stop()
 
-            # Prompt para Análise Comparativa (SEM CABEÇALHO)
+            # Prompt para Análise Comparativa
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
 
@@ -535,11 +567,13 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
             REGRAS CRÍTICAS DE EXTRAÇÃO:
 
-    **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
+    **SEÇÕES**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
 
     **FORMATAÇÃO**: 
-    Manter <b> e <i> EXATAMENTE como está.
-    NÃO USE MARKDOWN (como **negrito**), USE HTML (<b>negrito</b>).
+    Manter <b> e <i> EXATAMENTE como está
+    NÃO corrigir português
+    NÃO resumir
+    Ignorar linhas horizontais/elementos gráficos
 
     Se uma seção não existir, NÃO inclua no JSON.
 
@@ -588,7 +622,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                         break
                     except Exception as e:
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(1) # Backoff simples
+                        time.sleep(1)
                         continue
 
             if not sucesso:
@@ -646,10 +680,6 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
-                    
-                    # CORREÇÃO CRÍTICA DE NEGRITO (Markdown -> HTML)
-                    txt_ref = convert_markdown_bold_to_html(txt_ref)
-                    txt_mkt = convert_markdown_bold_to_html(txt_mkt)
 
                     if "DIZERES LEGAIS" in titulo.upper():
                         m_ref = re.search(frase_padrao, txt_ref, flags=re.IGNORECASE)
