@@ -1,8 +1,7 @@
-# app.py - Gráfica x Arte (Versão Gemini 2.5/3.0 - OCR Integrado)
-# - Atualizado para extrair data APENAS em "DIZERES LEGAIS" com frase exata.
-# - Interface renomeada para Gráfica x Arte Vigente.
-# - OCR automático se texto local < 1000 chars.
-# - Modelos restritos: 2.5 Flash, 2.5 Flash Lite, 3 Flash.
+# app.py - Gráfica x Arte (Versão Final Ajustada)
+# - Removido "CABEÇALHO DA BULA"
+# - Correção de renderização de Negrito (**text** -> <b>text</b>)
+# - Mantido OCR automático e modelos Gemini 2.5/3.0
 
 import streamlit as st
 import google.generativeai as genai
@@ -90,15 +89,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
-# Lista restrita conforme solicitado
 MODELOS_PARA_TENTAR = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemini-3-flash"
 ]
 
+# REMOVIDO "CABEÇALHO DA BULA" DA LISTA
 SECOES_PACIENTE = [
-    "CABEÇALHO DA BULA",
     "APRESENTAÇÕES",
     "COMPOSIÇÃO",
     "PARA QUE ESTE MEDICAMENTO É INDICADO?",
@@ -115,10 +113,9 @@ SECOES_PACIENTE = [
 
 SIMILARITY_THRESHOLD = 0.92
 
-# ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
+# ----------------- 3. LIMPEZA AUTOMATIZADA -----------------
 def clean_metadata_and_footers(texto: str) -> str:
-    if not texto:
-        return texto
+    if not texto: return texto
     t = texto
 
     t = re.sub(r'(?im)^.*times\s+new\s+roman.*\n?', '', t)
@@ -139,8 +136,7 @@ def clean_metadata_and_footers(texto: str) -> str:
         r'(?im)^\s*.*cor:.*$',
         r'(?im)^\s*.*frente\/verso.*$',
     ]
-    for p in patterns_line:
-        t = re.sub(p, '', t)
+    for p in patterns_line: t = re.sub(p, '', t)
 
     t = re.sub(r'(?im)\d{1,2},\d{2}\s*cm\s*[x×X]\s*\d{1,2},\d{2}\s*cm', '', t)
     page_patterns = [
@@ -149,15 +145,13 @@ def clean_metadata_and_footers(texto: str) -> str:
         r'(?im)\bP[aá]gina\s*\d+\s*(?:de|\/)\s*\d+\b',
         r'(?im)\bP[aá]gina\s*\d+\b'
     ]
-    for p in page_patterns:
-        t = re.sub(p, '', t)
+    for p in page_patterns: t = re.sub(p, '', t)
 
     t = re.sub(r'(?im)\bfrente\b', '', t)
     t = re.sub(r'(?im)\bverso\b', '', t)
     t = re.sub(r'(?im)\bBUL[_A-Z0-9-]*\b', '', t)
 
     t = re.sub(r'-\s*\n\s*', '', t)
-
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\r', '\n', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
@@ -165,43 +159,14 @@ def clean_metadata_and_footers(texto: str) -> str:
     lines = [ln.rstrip() for ln in t.splitlines()]
     lines = [ln for ln in lines if ln.strip() != ""]
     t = "\n".join(lines)
-
     return t.strip()
 
-# ----------------- 4. LOCALIZAÇÃO DE TÍTULOS E EXTRAÇÃO -----------------
+# ----------------- 4. HELPERS DE TEXTO E REGEX -----------------
 def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
-    if not words:
-        return None
+    if not words: return None
     pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
     return pattern
-
-def find_first_section_index(texto: str, section_titles: list) -> int:
-    menor = None
-    for title in section_titles:
-        if not title: continue
-        patt = build_section_pattern(title)
-        if not patt: continue
-        m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
-        if m:
-            idx = m.start()
-            if menor is None or idx < menor:
-                menor = idx
-    return -1 if menor is None else menor
-
-def safe_extract_header(texto: str, secoes_alvo: list) -> str:
-    if not texto: return ""
-    idx = find_first_section_index(texto, [s for s in secoes_alvo if s.strip().upper() != "CABEÇALHO DA BULA"])
-    if idx == -1:
-        m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
-        idx = m.start() if m else -1
-    if idx == -1: return ""
-    header_raw = texto[:idx].strip()
-    header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
-    header_clean = clean_metadata_and_footers(header_raw)
-    if len(header_clean) < 20: return ""
-    if len(header_clean) > max(2000, int(len(texto) * 0.35)): return ""
-    return header_clean.strip()
 
 def _build_flexible_title_regex(title: str):
     words = re.findall(r'\w+', title, flags=re.UNICODE)
@@ -250,6 +215,12 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
     if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)): return ""
     return section_clean
 
+def convert_markdown_bold_to_html(text: str) -> str:
+    """Corrige problemas onde o modelo ou OCR retorna **texto** em vez de <b>texto</b>"""
+    if not text: return text
+    # Converte **texto** para <b>texto</b>
+    return re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+
 # ----------------- 5. NORMALIZAÇÃO PARA COMPARAÇÃO -----------------
 def strip_accents(s: str) -> str:
     return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('ASCII')
@@ -261,7 +232,6 @@ def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIEN
     if not texto: return texto
     t = texto
     for s in sections_list:
-        if not s or s.strip().upper() == "CABEÇALHO DA BULA": continue
         patt = build_section_pattern(s)
         if patt: t = re.sub(patt, ' ', t, flags=re.IGNORECASE)
     t = re.sub(r'(?im)\bInform[aç]o(?:es)?\s+ao\s+paciente\b', ' ', t)
@@ -358,6 +328,10 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
 
     comp_ref = clean_metadata_and_footers(texto_ref)
     comp_novo = clean_metadata_and_footers(texto_novo)
+
+    # Nova etapa: Forçar conversão de markdown (**bold**) para HTML (<b>bold</b>)
+    comp_ref = convert_markdown_bold_to_html(comp_ref)
+    comp_novo = convert_markdown_bold_to_html(comp_novo)
 
     comp_ref_nohy = re.sub(r'[-–—]', ' ', comp_ref)
     comp_novo_nohy = re.sub(r'[-–—]', ' ', comp_novo)
@@ -466,9 +440,6 @@ def ocr_via_gemini(uploaded_file, keys_validas):
     # MIME type detection basic
     mime_type = "application/pdf"
     if getattr(uploaded_file, "name", "").lower().endswith(".docx"):
-        # Docx via OCR is complex with Bytes, usually we rely on local extraction for DOCX.
-        # But if needed, Gemini doesn't natively support DOCX bytes directly in 'generate_content' image parts perfectly without conversion.
-        # Assuming PDF for OCR mostly.
         return "" 
     
     prompt_ocr = """EXTRAIA TODO O TEXTO DESTE ARQUIVO.
@@ -555,7 +526,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Conteúdo insuficiente para análise (Arquivo vazio ou ilegível)."); st.stop()
 
-            # Prompt para Análise Comparativa
+            # Prompt para Análise Comparativa (SEM CABEÇALHO)
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
 
@@ -564,17 +535,11 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
             REGRAS CRÍTICAS DE EXTRAÇÃO:
 
-    **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
-    IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
-    PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
-
     **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
 
     **FORMATAÇÃO**: 
-    Manter <b> e <i> EXATAMENTE como está
-    NÃO corrigir português
-    NÃO resumir
-    Ignorar linhas horizontais/elementos gráficos
+    Manter <b> e <i> EXATAMENTE como está.
+    NÃO USE MARKDOWN (como **negrito**), USE HTML (<b>negrito</b>).
 
     Se uma seção não existir, NÃO inclua no JSON.
 
@@ -681,14 +646,10 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
-
-                    if "CABEÇALHO" in titulo.upper():
-                        novo_ref = safe_extract_header(t_anvisa, secoes_alvo)
-                        if novo_ref and (not txt_ref or len(novo_ref) < len(txt_ref) or len(txt_ref) < 50): txt_ref = novo_ref
-                        novo_mkt = safe_extract_header(t_mkt, secoes_alvo)
-                        if novo_mkt and (not txt_mkt or len(novo_mkt) < len(txt_mkt) or len(txt_mkt) < 50): txt_mkt = novo_mkt
-                        txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
-                        txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
+                    
+                    # CORREÇÃO CRÍTICA DE NEGRITO (Markdown -> HTML)
+                    txt_ref = convert_markdown_bold_to_html(txt_ref)
+                    txt_mkt = convert_markdown_bold_to_html(txt_mkt)
 
                     if "DIZERES LEGAIS" in titulo.upper():
                         m_ref = re.search(frase_padrao, txt_ref, flags=re.IGNORECASE)
