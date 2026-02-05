@@ -1,5 +1,5 @@
 streamlit
-google-generativeai>=1.0.0
+google-generativeai
 pymupdf
 python-docx
 pyspellchecker
