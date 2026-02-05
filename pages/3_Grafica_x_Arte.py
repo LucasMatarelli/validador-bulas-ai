@@ -93,7 +93,6 @@ st.markdown("""
 # Lista restrita conforme solicitado
 MODELOS_PARA_TENTAR = [
     "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
     "gemini-3-flash"
 ]
 
