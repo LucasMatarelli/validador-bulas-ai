@@ -3,8 +3,6 @@
 # - Interface renomeada para Gráfica x Arte Vigente.
 # - OCR automático se texto local < 1000 chars.
 # - Modelos restritos: 2.5 Flash, 2.5 Flash Lite, 3 Flash.
-# - CABEÇALHO removido.
-# - Corrigido problema de negrito (**palavra** → <b>palavra</b>).
 
 import streamlit as st
 import google.generativeai as genai
@@ -100,6 +98,7 @@ MODELOS_PARA_TENTAR = [
 ]
 
 SECOES_PACIENTE = [
+    "CABEÇALHO DA BULA",
     "APRESENTAÇÕES",
     "COMPOSIÇÃO",
     "PARA QUE ESTE MEDICAMENTO É INDICADO?",
@@ -190,6 +189,20 @@ def find_first_section_index(texto: str, section_titles: list) -> int:
                 menor = idx
     return -1 if menor is None else menor
 
+def safe_extract_header(texto: str, secoes_alvo: list) -> str:
+    if not texto: return ""
+    idx = find_first_section_index(texto, [s for s in secoes_alvo if s.strip().upper() != "CABEÇALHO DA BULA"])
+    if idx == -1:
+        m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
+        idx = m.start() if m else -1
+    if idx == -1: return ""
+    header_raw = texto[:idx].strip()
+    header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
+    header_clean = clean_metadata_and_footers(header_raw)
+    if len(header_clean) < 20: return ""
+    if len(header_clean) > max(2000, int(len(texto) * 0.35)): return ""
+    return header_clean.strip()
+
 def _build_flexible_title_regex(title: str):
     words = re.findall(r'\w+', title, flags=re.UNICODE)
     if not words: return None
@@ -248,7 +261,7 @@ def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIEN
     if not texto: return texto
     t = texto
     for s in sections_list:
-        if not s: continue
+        if not s or s.strip().upper() == "CABEÇALHO DA BULA": continue
         patt = build_section_pattern(s)
         if patt: t = re.sub(patt, ' ', t, flags=re.IGNORECASE)
     t = re.sub(r'(?im)\bInform[aç]o(?:es)?\s+ao\s+paciente\b', ' ', t)
@@ -277,23 +290,24 @@ def jaccard_similarity(a: str, b: str) -> float:
     inter = sa.intersection(sb); union = sa.union(sb)
     return len(inter) / len(union)
 
-# ----------------- 6. CONVERSÃO DE MARKDOWN PARA HTML -----------------
-def converter_markdown_para_html(texto: str) -> str:
-    """
-    Converte markdown (** para negrito, * para itálico) em tags HTML.
-    """
-    if not texto:
-        return texto
-    
-    # Converter **texto** para <b>texto</b>
-    texto = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', texto)
-    
-    # Converter *texto* para <i>texto</i> (apenas asterisco simples que não foi capturado acima)
-    texto = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', texto)
-    
-    return texto
+# ----------------- 6. ORTOGRAFIA E VISUAL -----------------
+def verificar_ortografia_inteligente(texto):
+    try:
+        spell = SpellChecker(language='pt')
+        whitelist = {'mg','ml','mcg','ui','g','kg','l','dl','mmhg','bpm','kcal','anvisa','cnpj','cep','sac','bula'}
+        spell.word_frequency.load_words(whitelist)
+        tokens = re.split(r'(<[^>]+>|\s+|[().,:;!?/\[\]])', texto)
+        resultado = []
+        for token in tokens:
+            if not token.strip() or token.startswith('<') or not any(c.isalpha() for c in token):
+                resultado.append(token); continue
+            palavra_limpa = re.sub(r'[^a-zA-ZáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ-]', '', token)
+            if (not palavra_limpa or len(palavra_limpa) < 4 or any(c.isdigit() for c in token) or '-' in palavra_limpa or palavra_limpa[0].isupper()):
+                resultado.append(token); continue
+            resultado.append(token)
+        return "".join(resultado)
+    except: return texto
 
-# ----------------- 7. ORTOGRAFIA E VISUAL -----------------
 def melhorar_visual_topicos(texto_html):
     linhas = re.split(r'(<br>|\n)', texto_html)
     novo_texto = []
@@ -311,7 +325,7 @@ def destacar_datas(texto):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
 
-# ----------------- 8. DIFF E REGRAS DE DECISÃO -----------------
+# ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
     novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
@@ -351,13 +365,8 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     norm_novo_nohy = normalize_for_comparison(comp_novo_nohy)
 
     if norm_ref_nohy == norm_novo_nohy:
-        html_ref = converter_markdown_para_html(comp_ref)
-        html_ref = html_ref.replace('\n', '<br>')
-        html_ref = melhorar_visual_topicos(html_ref)
-        
-        html_novo = converter_markdown_para_html(comp_novo)
-        html_novo = html_novo.replace('\n', '<br>')
-        html_novo = melhorar_visual_topicos(html_novo)
+        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
+        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
 
     comp_ref_norm = clean_metadata_and_footers(comp_ref)
@@ -366,13 +375,8 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     norm_novo = normalize_for_comparison(comp_novo_norm)
 
     if norm_ref == norm_novo:
-        html_ref = converter_markdown_para_html(comp_ref)
-        html_ref = html_ref.replace('\n', '<br>')
-        html_ref = melhorar_visual_topicos(html_ref)
-        
-        html_novo = converter_markdown_para_html(comp_novo)
-        html_novo = html_novo.replace('\n', '<br>')
-        html_novo = melhorar_visual_topicos(html_novo)
+        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
+        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
 
     if norm_ref and norm_novo:
@@ -380,38 +384,23 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
         if shorter and shorter in longer:
             prop = len(shorter) / max(1, len(longer))
             if prop >= 0.88:
-                html_ref = converter_markdown_para_html(comp_ref)
-                html_ref = html_ref.replace('\n', '<br>')
-                html_ref = melhorar_visual_topicos(html_ref)
-                
-                html_novo = converter_markdown_para_html(comp_novo)
-                html_novo = html_novo.replace('\n', '<br>')
-                html_novo = melhorar_visual_topicos(html_novo)
+                html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
+                html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
                 return html_ref, html_novo, False
 
     ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
     jacc = jaccard_similarity(norm_ref, norm_novo)
     if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
-        html_ref = converter_markdown_para_html(comp_ref)
-        html_ref = html_ref.replace('\n', '<br>')
-        html_ref = melhorar_visual_topicos(html_ref)
-        
-        html_novo = converter_markdown_para_html(comp_novo)
-        html_novo = html_novo.replace('\n', '<br>')
-        html_novo = melhorar_visual_topicos(html_novo)
+        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
+        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
 
     r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
-    
-    n_html_final = converter_markdown_para_html(n_html)
-    n_html_final = melhorar_visual_topicos(n_html_final)
-    
-    r_html_final = converter_markdown_para_html(r_html)
-    r_html_final = melhorar_visual_topicos(r_html_final.replace('\n', '<br>'))
-    
+    n_html_final = verificar_ortografia_inteligente(n_html); n_html_final = melhorar_visual_topicos(n_html_final)
+    r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
     return r_html_final, n_html_final, diff_bool
 
-# ----------------- 9. EXTRAÇÃO DE TEXTO LOCAL -----------------
+# ----------------- 8. EXTRAÇÃO DE TEXTO LOCAL -----------------
 def extract_text_from_file(uploaded_file):
     try:
         text = ""
@@ -466,7 +455,7 @@ def extract_text_from_file(uploaded_file):
         st.error(f"Erro ao extrair texto do arquivo {getattr(uploaded_file, 'name', '')}: {str(e)}")
         return ""
 
-# ----------------- 10. FUNÇÃO OCR (GEMINI) -----------------
+# ----------------- 9. FUNÇÃO OCR (GEMINI) -----------------
 def ocr_via_gemini(uploaded_file, keys_validas):
     """
     Função para realizar OCR usando Gemini 2.5 Flash quando o texto extraído localmente é insuficiente.
@@ -477,6 +466,9 @@ def ocr_via_gemini(uploaded_file, keys_validas):
     # MIME type detection basic
     mime_type = "application/pdf"
     if getattr(uploaded_file, "name", "").lower().endswith(".docx"):
+        # Docx via OCR is complex with Bytes, usually we rely on local extraction for DOCX.
+        # But if needed, Gemini doesn't natively support DOCX bytes directly in 'generate_content' image parts perfectly without conversion.
+        # Assuming PDF for OCR mostly.
         return "" 
     
     prompt_ocr = """EXTRAIA TODO O TEXTO DESTE ARQUIVO.
@@ -485,6 +477,7 @@ def ocr_via_gemini(uploaded_file, keys_validas):
     
     for key in keys_validas:
         genai.configure(api_key=key)
+        # Usar o modelo mais rápido e barato para OCR
         model = genai.GenerativeModel("gemini-2.5-flash")
         try:
             response = model.generate_content([
@@ -496,7 +489,7 @@ def ocr_via_gemini(uploaded_file, keys_validas):
             continue
     return ""
 
-# ----------------- 11. UI PRINCIPAL E FLUXO -----------------
+# ----------------- 10. UI PRINCIPAL E FLUXO -----------------
 st.title("💊 Gráfica x Arte")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
@@ -571,7 +564,11 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
             REGRAS CRÍTICAS DE EXTRAÇÃO:
 
-    **SEÇÕES**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
+    **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
+    IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
+    PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
+
+    **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
 
     **FORMATAÇÃO**: 
     Manter <b> e <i> EXATAMENTE como está
@@ -626,7 +623,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                         break
                     except Exception as e:
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(1)
+                        time.sleep(1) # Backoff simples
                         continue
 
             if not sucesso:
@@ -685,22 +682,26 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
 
+                    if "CABEÇALHO" in titulo.upper():
+                        novo_ref = safe_extract_header(t_anvisa, secoes_alvo)
+                        if novo_ref and (not txt_ref or len(novo_ref) < len(txt_ref) or len(txt_ref) < 50): txt_ref = novo_ref
+                        novo_mkt = safe_extract_header(t_mkt, secoes_alvo)
+                        if novo_mkt and (not txt_mkt or len(novo_mkt) < len(txt_mkt) or len(txt_mkt) < 50): txt_mkt = novo_mkt
+                        txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
+                        txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
+
                     if "DIZERES LEGAIS" in titulo.upper():
                         m_ref = re.search(frase_padrao, txt_ref, flags=re.IGNORECASE)
                         if m_ref: extracted_date_ref = m_ref.group(1)
                         m_mkt = re.search(frase_padrao, txt_mkt, flags=re.IGNORECASE)
                         if m_mkt: extracted_date_mkt = m_mkt.group(1)
 
-                        html_ref = destacar_datas(txt_ref)
-                        html_ref = converter_markdown_para_html(html_ref)
-                        html_ref = html_ref.replace('\n', '<br>')
+                        html_ref = destacar_datas(txt_ref).replace('\n', '<br>')
+                        html_novo = destacar_datas(txt_mkt).replace('\n', '<br>')
+                        html_ref = verificar_ortografia_inteligente(html_ref)
+                        html_novo = verificar_ortografia_inteligente(html_novo)
                         html_ref = melhorar_visual_topicos(html_ref)
-                        
-                        html_novo = destacar_datas(txt_mkt)
-                        html_novo = converter_markdown_para_html(html_novo)
-                        html_novo = html_novo.replace('\n', '<br>')
                         html_novo = melhorar_visual_topicos(html_novo)
-                        
                         status = "CONFORME"
                     else:
                         html_ref, html_novo, teve_diff = gerar_diff_html(txt_ref, txt_mkt, secoes_alvo)
