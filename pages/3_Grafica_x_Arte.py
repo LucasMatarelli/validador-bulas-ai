@@ -267,27 +267,7 @@ def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIEN
     t = re.sub(r'\s{2,}', ' ', t)
     return t.strip()
 
-def normalize_for_comparison(text: str) -> str:
-    if not text: return ""
-    t = clean_metadata_and_footers(text)
-    t = remove_section_titles_for_comparison(t)
-    t = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]\s*', '', t)
-    t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
-    t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
-    t = re.sub(r'<[^>]+>', '', t)
-    t = re.sub(r'[-–—]', ' ', t)
-    t = strip_accents(t).lower()
-    t = re.sub(r'[^a-z0-9\s]', ' ', t)
-    t = re.sub(r'\s+', ' ', t).strip()
-    return t
 
-def jaccard_similarity(a: str, b: str) -> float:
-    sa = set(tokenize_words(a))
-    sb = set(tokenize_words(b))
-    if not sa and not sb: return 1.0
-    if not sa or not sb: return 0.0
-    inter = sa.intersection(sb); union = sa.union(sb)
-    return len(inter) / len(union)
 
 # ----------------- 6. ORTOGRAFIA E VISUAL -----------------
 def verificar_ortografia_inteligente(texto):
@@ -332,21 +312,51 @@ def limpar_sujeira_markdown(texto):
     # Remove ** ou * ou __ ou _ (substitui por nada)
     return re.sub(r'[\*_]', '', texto)
 
-def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # 1. Limpa Markdown antes de qualquer coisa (para visual e lógica)
-    texto_ref = limpar_sujeira_markdown(texto_ref)
-    texto_novo = limpar_sujeira_markdown(texto_novo)
+# ----------------- ATUALIZAÇÃO: IGNORAR INVISÍVEIS E FORMATAÇÃO -----------------
 
-    # 2. Remove tags HTML apenas para a lógica de comparação (matcher)
-    ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
+def normalize_for_comparison(text: str) -> str:
+    """
+    Limpeza PROFUNDA para garantir que só texto real seja comparado.
+    Remove espaços duplos, enters, caracteres invisíveis e pontuação irrelevante.
+    """
+    if not text: return ""
     
-    # Remove hifens e espaços extras
-    ref_sem_tags = re.sub(r'[-–—]', ' ', ref_sem_tags).strip()
-    novo_sem_tags = re.sub(r'[-–—]', ' ', novo_sem_tags).strip()
+    t = clean_metadata_and_footers(text)
     
-    palavras_ref = ref_sem_tags.split()
-    palavras_novo = novo_sem_tags.split()
+    # 1. Remove Markdown inventado pela IA (* e _)
+    t = re.sub(r'[\*_]', '', t)
+    
+    # 2. Padroniza aspas e traços (Smart quotes e dashes)
+    t = t.replace('“', '"').replace('”', '"').replace("’", "'").replace("‘", "'")
+    t = t.replace('–', '-').replace('—', '-')
+    
+    # 3. Remove tags HTML
+    t = re.sub(r'<[^>]+>', ' ', t)
+    
+    # 4. Remove caracteres invisíveis e espaços não separáveis (\xa0)
+    # Isso é o que geralmente causa o falso "Divergente" em textos iguais
+    t = t.replace('\xa0', ' ').replace('\u200b', '') 
+    
+    # 5. Remove tudo que não for letra ou número (opcional: manter pontuação básica)
+    # Para ser bem permissivo com "texto idêntico", normalizamos tudo para minúsculo e sem acento
+    t = strip_accents(t).lower()
+    t = re.sub(r'[^a-z0-9]', ' ', t) # Mantém apenas letras e números
+    
+    # 6. Colapsa espaços múltiplos em um só
+    t = re.sub(r'\s+', ' ', t).strip()
+    
+    return t
+
+def diff_palavra_a_palavra(texto_ref, texto_novo):
+    # Função auxiliar para limpar a lista de palavras para o diff
+    def limpar_para_diff(txt):
+        txt = re.sub(r'[\*_]', '', txt) # Tira Markdown
+        txt = re.sub(r'<[^>]+>', '', txt) # Tira HTML
+        txt = txt.replace('\xa0', ' ') # Tira espaço fantasma
+        return txt.split()
+
+    palavras_ref = limpar_para_diff(texto_ref)
+    palavras_novo = limpar_para_diff(texto_novo)
     
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
     html_ref_list = []
@@ -355,17 +365,29 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            # Pega o texto original (com tags HTML se existirem ali) baseado no índice
-            # Nota: Isso é uma aproximação, pois os índices são do texto sem tags.
-            # Para visualização simples, usamos as palavras limpas, mas se quiser manter negrito visual
-            # teríamos que realinhar. Para conferência de texto, exibir o texto limpo é mais seguro.
+            # Se for igual, apenas imprime o texto sem marcação
             texto = " ".join(palavras_ref[i1:i2])
             html_ref_list.append(texto)
             html_novo_list.append(texto)
         elif tag == 'replace':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
-            tem_diff = True
+            # Antes de marcar divergência, verifica se a diferença é só pontuação ou invisível
+            p_ref = " ".join(palavras_ref[i1:i2])
+            p_novo = " ".join(palavras_novo[j1:j2])
+            
+            # Normaliza ambos os trechos conflitantes
+            n_ref = re.sub(r'[^a-zA-Z0-9]', '', strip_accents(p_ref).lower())
+            n_novo = re.sub(r'[^a-zA-Z0-9]', '', strip_accents(p_novo).lower())
+            
+            if n_ref == n_novo and n_ref != "":
+                # FALSO POSITIVO: O texto é igual, só mudou pontuação ou espaço
+                html_ref_list.append(p_ref)
+                html_novo_list.append(p_novo)
+            else:
+                # REALMENTE DIFERENTE
+                html_ref_list.append(f'<span class="highlight-yellow">{p_ref}</span>')
+                html_novo_list.append(f'<span class="highlight-yellow">{p_novo}</span>')
+                tem_diff = True
+                
         elif tag == 'delete':
             html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
             tem_diff = True
@@ -379,38 +401,27 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
 
-    comp_ref = clean_metadata_and_footers(texto_ref)
-    comp_novo = clean_metadata_and_footers(texto_novo)
+    # Normalização Extrema para decisão macro
+    norm_ref = normalize_for_comparison(texto_ref)
+    norm_novo = normalize_for_comparison(texto_novo)
 
-    # --- CORREÇÃO PRINCIPAL: LIMPEZA DE ALUCINAÇÃO DE MARKDOWN ---
-    # Removemos * e _ aqui antes de qualquer normalização ou comparação
-    comp_ref = limpar_sujeira_markdown(comp_ref)
-    comp_novo = limpar_sujeira_markdown(comp_novo)
+    # 1. Se o "conteúdo real" (letras e números) for idêntico, aprova.
+    # Isso ignora pontuação, enters e espaços.
+    if norm_ref == norm_novo:
+        # Apenas formata para exibição, sem rodar diff
+        html_ref = limpar_sujeira_markdown(texto_ref).replace('\n', '<br>')
+        html_novo = limpar_sujeira_markdown(texto_novo).replace('\n', '<br>')
+        return melhorar_visual_topicos(html_ref), melhorar_visual_topicos(html_novo), False
 
-    # Normalização para comparação estrita
-    comp_ref_nohy = re.sub(r'[-–—]', ' ', comp_ref)
-    comp_novo_nohy = re.sub(r'[-–—]', ' ', comp_novo)
-    norm_ref_nohy = normalize_for_comparison(comp_ref_nohy)
-    norm_novo_nohy = normalize_for_comparison(comp_novo_nohy)
-
-    # 1. Se for idêntico (ignorando maiúsculas e espaços), aprova direto
-    if norm_ref_nohy == norm_novo_nohy:
-        html_ref = comp_ref.replace('\n', '<br>')
-        html_ref = melhorar_visual_topicos(html_ref)
-        
-        html_novo = verificar_ortografia_inteligente(comp_novo)
-        html_novo = html_novo.replace('\n', '<br>')
-        html_novo = melhorar_visual_topicos(html_novo)
-        return html_ref, html_novo, False
-
-    # 2. Se tiver diferença, roda o diff (já com os * e _ removidos pela função acima)
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
+    # 2. Se realmente tiver diferença de letras/números, roda o diff detalhado
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
     
     n_html_final = verificar_ortografia_inteligente(n_html)
     n_html_final = melhorar_visual_topicos(n_html_final)
     r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
     
     return r_html_final, n_html_final, diff_bool
+
 # ----------------- 8. EXTRAÇÃO DE TEXTO LOCAL -----------------
 def extract_text_from_file(uploaded_file):
     try:
