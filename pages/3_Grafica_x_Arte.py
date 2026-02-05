@@ -1,8 +1,7 @@
-# app.py - Gráfica x Arte (Versão Gemini 2.5/3.0 - OCR Integrado)
-# - Atualizado para extrair data APENAS em "DIZERES LEGAIS" com frase exata.
-# - Interface renomeada para Gráfica x Arte Vigente.
-# - OCR automático se texto local < 1000 chars.
-# - Modelos restritos: 2.5 Flash, 3 Flash.
+# app.py - Gráfica x Arte (Versão Final Ajustada)
+# - Removido "CABEÇALHO DA BULA"
+# - Correção de renderização de Negrito (**text** -> <b>text</b>)
+# - Mantido OCR automático e modelos Gemini 2.5/3.0
 
 import streamlit as st
 import google.generativeai as genai
@@ -90,14 +89,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
-# Lista restrita conforme solicitado
 MODELOS_PARA_TENTAR = [
     "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
     "gemini-3-flash"
 ]
 
+# REMOVIDO "CABEÇALHO DA BULA" DA LISTA
 SECOES_PACIENTE = [
-    "CABEÇALHO DA BULA",
     "APRESENTAÇÕES",
     "COMPOSIÇÃO",
     "PARA QUE ESTE MEDICAMENTO É INDICADO?",
@@ -114,10 +113,9 @@ SECOES_PACIENTE = [
 
 SIMILARITY_THRESHOLD = 0.92
 
-# ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
+# ----------------- 3. LIMPEZA AUTOMATIZADA -----------------
 def clean_metadata_and_footers(texto: str) -> str:
-    if not texto:
-        return texto
+    if not texto: return texto
     t = texto
 
     t = re.sub(r'(?im)^.*times\s+new\s+roman.*\n?', '', t)
@@ -138,8 +136,7 @@ def clean_metadata_and_footers(texto: str) -> str:
         r'(?im)^\s*.*cor:.*$',
         r'(?im)^\s*.*frente\/verso.*$',
     ]
-    for p in patterns_line:
-        t = re.sub(p, '', t)
+    for p in patterns_line: t = re.sub(p, '', t)
 
     t = re.sub(r'(?im)\d{1,2},\d{2}\s*cm\s*[x×X]\s*\d{1,2},\d{2}\s*cm', '', t)
     page_patterns = [
@@ -148,15 +145,13 @@ def clean_metadata_and_footers(texto: str) -> str:
         r'(?im)\bP[aá]gina\s*\d+\s*(?:de|\/)\s*\d+\b',
         r'(?im)\bP[aá]gina\s*\d+\b'
     ]
-    for p in page_patterns:
-        t = re.sub(p, '', t)
+    for p in page_patterns: t = re.sub(p, '', t)
 
     t = re.sub(r'(?im)\bfrente\b', '', t)
     t = re.sub(r'(?im)\bverso\b', '', t)
     t = re.sub(r'(?im)\bBUL[_A-Z0-9-]*\b', '', t)
 
     t = re.sub(r'-\s*\n\s*', '', t)
-
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\r', '\n', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
@@ -164,43 +159,14 @@ def clean_metadata_and_footers(texto: str) -> str:
     lines = [ln.rstrip() for ln in t.splitlines()]
     lines = [ln for ln in lines if ln.strip() != ""]
     t = "\n".join(lines)
-
     return t.strip()
 
-# ----------------- 4. LOCALIZAÇÃO DE TÍTULOS E EXTRAÇÃO -----------------
+# ----------------- 4. HELPERS DE TEXTO E REGEX -----------------
 def build_section_pattern(title: str) -> str:
     words = re.findall(r'\w+', title, flags=re.UNICODE)
-    if not words:
-        return None
+    if not words: return None
     pattern = r'\b' + r'\W+'.join(map(re.escape, words)) + r'\b'
     return pattern
-
-def find_first_section_index(texto: str, section_titles: list) -> int:
-    menor = None
-    for title in section_titles:
-        if not title: continue
-        patt = build_section_pattern(title)
-        if not patt: continue
-        m = re.search(patt, texto, flags=re.IGNORECASE | re.UNICODE)
-        if m:
-            idx = m.start()
-            if menor is None or idx < menor:
-                menor = idx
-    return -1 if menor is None else menor
-
-def safe_extract_header(texto: str, secoes_alvo: list) -> str:
-    if not texto: return ""
-    idx = find_first_section_index(texto, [s for s in secoes_alvo if s.strip().upper() != "CABEÇALHO DA BULA"])
-    if idx == -1:
-        m = re.search(r'\bAPRESENTA\S*\b', texto, flags=re.IGNORECASE)
-        idx = m.start() if m else -1
-    if idx == -1: return ""
-    header_raw = texto[:idx].strip()
-    header_raw = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', header_raw)
-    header_clean = clean_metadata_and_footers(header_raw)
-    if len(header_clean) < 20: return ""
-    if len(header_clean) > max(2000, int(len(texto) * 0.35)): return ""
-    return header_clean.strip()
 
 def _build_flexible_title_regex(title: str):
     words = re.findall(r'\w+', title, flags=re.UNICODE)
@@ -249,6 +215,12 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
     if len(re.sub(r'<[^>]+>', '', section_clean)) > max(8000, int(len(texto) * 0.8)): return ""
     return section_clean
 
+def convert_markdown_bold_to_html(text: str) -> str:
+    """Corrige problemas onde o modelo ou OCR retorna **texto** em vez de <b>texto</b>"""
+    if not text: return text
+    # Converte **texto** para <b>texto</b>
+    return re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+
 # ----------------- 5. NORMALIZAÇÃO PARA COMPARAÇÃO -----------------
 def strip_accents(s: str) -> str:
     return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('ASCII')
@@ -260,14 +232,33 @@ def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIEN
     if not texto: return texto
     t = texto
     for s in sections_list:
-        if not s or s.strip().upper() == "CABEÇALHO DA BULA": continue
         patt = build_section_pattern(s)
         if patt: t = re.sub(patt, ' ', t, flags=re.IGNORECASE)
     t = re.sub(r'(?im)\bInform[aç]o(?:es)?\s+ao\s+paciente\b', ' ', t)
     t = re.sub(r'\s{2,}', ' ', t)
     return t.strip()
 
+def normalize_for_comparison(text: str) -> str:
+    if not text: return ""
+    t = clean_metadata_and_footers(text)
+    t = remove_section_titles_for_comparison(t)
+    t = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]\s*', '', t)
+    t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
+    t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
+    t = re.sub(r'<[^>]+>', '', t)
+    t = re.sub(r'[-–—]', ' ', t)
+    t = strip_accents(t).lower()
+    t = re.sub(r'[^a-z0-9\s]', ' ', t)
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t
 
+def jaccard_similarity(a: str, b: str) -> float:
+    sa = set(tokenize_words(a))
+    sb = set(tokenize_words(b))
+    if not sa and not sb: return 1.0
+    if not sa or not sb: return 0.0
+    inter = sa.intersection(sb); union = sa.union(sb)
+    return len(inter) / len(union)
 
 # ----------------- 6. ORTOGRAFIA E VISUAL -----------------
 def verificar_ortografia_inteligente(texto):
@@ -304,122 +295,83 @@ def destacar_datas(texto):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
 
-# ----------------- 7. DIFF E REGRAS DE DECISÃO (CORRIGIDO: REMOVE MARKDOWN) -----------------
-
-def limpar_sujeira_markdown(texto):
-    """Remove asteriscos e underlines que a IA inventa, mantendo tags HTML."""
-    if not texto: return ""
-    # Remove ** ou * ou __ ou _ (substitui por nada)
-    return re.sub(r'[\*_]', '', texto)
-
-# ----------------- ATUALIZAÇÃO: IGNORAR INVISÍVEIS E FORMATAÇÃO -----------------
-
-def normalize_for_comparison(text: str) -> str:
-    """
-    Limpeza PROFUNDA para garantir que só texto real seja comparado.
-    Remove espaços duplos, enters, caracteres invisíveis e pontuação irrelevante.
-    """
-    if not text: return ""
-    
-    t = clean_metadata_and_footers(text)
-    
-    # 1. Remove Markdown inventado pela IA (* e _)
-    t = re.sub(r'[\*_]', '', t)
-    
-    # 2. Padroniza aspas e traços (Smart quotes e dashes)
-    t = t.replace('“', '"').replace('”', '"').replace("’", "'").replace("‘", "'")
-    t = t.replace('–', '-').replace('—', '-')
-    
-    # 3. Remove tags HTML
-    t = re.sub(r'<[^>]+>', ' ', t)
-    
-    # 4. Remove caracteres invisíveis e espaços não separáveis (\xa0)
-    # Isso é o que geralmente causa o falso "Divergente" em textos iguais
-    t = t.replace('\xa0', ' ').replace('\u200b', '') 
-    
-    # 5. Remove tudo que não for letra ou número (opcional: manter pontuação básica)
-    # Para ser bem permissivo com "texto idêntico", normalizamos tudo para minúsculo e sem acento
-    t = strip_accents(t).lower()
-    t = re.sub(r'[^a-z0-9]', ' ', t) # Mantém apenas letras e números
-    
-    # 6. Colapsa espaços múltiplos em um só
-    t = re.sub(r'\s+', ' ', t).strip()
-    
-    return t
-
+# ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # Função auxiliar para limpar a lista de palavras para o diff
-    def limpar_para_diff(txt):
-        txt = re.sub(r'[\*_]', '', txt) # Tira Markdown
-        txt = re.sub(r'<[^>]+>', '', txt) # Tira HTML
-        txt = txt.replace('\xa0', ' ') # Tira espaço fantasma
-        return txt.split()
-
-    palavras_ref = limpar_para_diff(texto_ref)
-    palavras_novo = limpar_para_diff(texto_novo)
-    
+    ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
+    novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
+    ref_sem_tags = re.sub(r'[-–—]', ' ', ref_sem_tags)
+    novo_sem_tags = re.sub(r'[-–—]', ' ', novo_sem_tags)
+    palavras_ref = ref_sem_tags.split()
+    palavras_novo = novo_sem_tags.split()
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
-    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            # Se for igual, apenas imprime o texto sem marcação
-            texto = " ".join(palavras_ref[i1:i2])
-            html_ref_list.append(texto)
-            html_novo_list.append(texto)
+            texto = " ".join(palavras_ref[i1:i2]); html_ref_list.append(texto); html_novo_list.append(texto)
         elif tag == 'replace':
-            # Antes de marcar divergência, verifica se a diferença é só pontuação ou invisível
-            p_ref = " ".join(palavras_ref[i1:i2])
-            p_novo = " ".join(palavras_novo[j1:j2])
-            
-            # Normaliza ambos os trechos conflitantes
-            n_ref = re.sub(r'[^a-zA-Z0-9]', '', strip_accents(p_ref).lower())
-            n_novo = re.sub(r'[^a-zA-Z0-9]', '', strip_accents(p_novo).lower())
-            
-            if n_ref == n_novo and n_ref != "":
-                # FALSO POSITIVO: O texto é igual, só mudou pontuação ou espaço
-                html_ref_list.append(p_ref)
-                html_novo_list.append(p_novo)
-            else:
-                # REALMENTE DIFERENTE
-                html_ref_list.append(f'<span class="highlight-yellow">{p_ref}</span>')
-                html_novo_list.append(f'<span class="highlight-yellow">{p_novo}</span>')
-                tem_diff = True
-                
+            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
+            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
+            tem_diff = True
         elif tag == 'delete':
             html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
             tem_diff = True
         elif tag == 'insert':
             html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
-            
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
 
-    # Normalização Extrema para decisão macro
-    norm_ref = normalize_for_comparison(texto_ref)
-    norm_novo = normalize_for_comparison(texto_novo)
+    comp_ref = clean_metadata_and_footers(texto_ref)
+    comp_novo = clean_metadata_and_footers(texto_novo)
 
-    # 1. Se o "conteúdo real" (letras e números) for idêntico, aprova.
-    # Isso ignora pontuação, enters e espaços.
+    # Nova etapa: Forçar conversão de markdown (**bold**) para HTML (<b>bold</b>)
+    comp_ref = convert_markdown_bold_to_html(comp_ref)
+    comp_novo = convert_markdown_bold_to_html(comp_novo)
+
+    comp_ref_nohy = re.sub(r'[-–—]', ' ', comp_ref)
+    comp_novo_nohy = re.sub(r'[-–—]', ' ', comp_novo)
+    norm_ref_nohy = normalize_for_comparison(comp_ref_nohy)
+    norm_novo_nohy = normalize_for_comparison(comp_novo_nohy)
+
+    if norm_ref_nohy == norm_novo_nohy:
+        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
+        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
+        return html_ref, html_novo, False
+
+    comp_ref_norm = clean_metadata_and_footers(comp_ref)
+    comp_novo_norm = clean_metadata_and_footers(comp_novo)
+    norm_ref = normalize_for_comparison(comp_ref_norm)
+    norm_novo = normalize_for_comparison(comp_novo_norm)
+
     if norm_ref == norm_novo:
-        # Apenas formata para exibição, sem rodar diff
-        html_ref = limpar_sujeira_markdown(texto_ref).replace('\n', '<br>')
-        html_novo = limpar_sujeira_markdown(texto_novo).replace('\n', '<br>')
-        return melhorar_visual_topicos(html_ref), melhorar_visual_topicos(html_novo), False
+        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
+        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
+        return html_ref, html_novo, False
 
-    # 2. Se realmente tiver diferença de letras/números, roda o diff detalhado
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
-    
-    n_html_final = verificar_ortografia_inteligente(n_html)
-    n_html_final = melhorar_visual_topicos(n_html_final)
+    if norm_ref and norm_novo:
+        shorter, longer = (norm_ref, norm_novo) if len(norm_ref) <= len(norm_novo) else (norm_novo, norm_ref)
+        if shorter and shorter in longer:
+            prop = len(shorter) / max(1, len(longer))
+            if prop >= 0.88:
+                html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
+                html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
+                return html_ref, html_novo, False
+
+    ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
+    jacc = jaccard_similarity(norm_ref, norm_novo)
+    if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
+        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
+        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
+        return html_ref, html_novo, False
+
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
+    n_html_final = verificar_ortografia_inteligente(n_html); n_html_final = melhorar_visual_topicos(n_html_final)
     r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
-    
     return r_html_final, n_html_final, diff_bool
 
 # ----------------- 8. EXTRAÇÃO DE TEXTO LOCAL -----------------
@@ -488,9 +440,6 @@ def ocr_via_gemini(uploaded_file, keys_validas):
     # MIME type detection basic
     mime_type = "application/pdf"
     if getattr(uploaded_file, "name", "").lower().endswith(".docx"):
-        # Docx via OCR is complex with Bytes, usually we rely on local extraction for DOCX.
-        # But if needed, Gemini doesn't natively support DOCX bytes directly in 'generate_content' image parts perfectly without conversion.
-        # Assuming PDF for OCR mostly.
         return "" 
     
     prompt_ocr = """EXTRAIA TODO O TEXTO DESTE ARQUIVO.
@@ -577,7 +526,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Conteúdo insuficiente para análise (Arquivo vazio ou ilegível)."); st.stop()
 
-            # Prompt para Análise Comparativa
+            # Prompt para Análise Comparativa (SEM CABEÇALHO)
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
 
@@ -586,17 +535,11 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
             REGRAS CRÍTICAS DE EXTRAÇÃO:
 
-    **CABEÇALHO DA BULA**: Extrair TODO o conteúdo desde o início do documento ATÉ (mas NÃO incluindo) o título "APRESENTAÇÕES". 
-    IMPORTANTE: Remover APENAS os algarismos romanos (I, II, III) e o hífen/traço, mantendo o texto.
-    PARAR antes de encontrar "APRESENTAÇÕES" ou qualquer variação.
-
     **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
 
     **FORMATAÇÃO**: 
-    Manter <b> e <i> EXATAMENTE como está
-    NÃO corrigir português
-    NÃO resumir
-    Ignorar linhas horizontais/elementos gráficos
+    Manter <b> e <i> EXATAMENTE como está.
+    NÃO USE MARKDOWN (como **negrito**), USE HTML (<b>negrito</b>).
 
     Se uma seção não existir, NÃO inclua no JSON.
 
@@ -703,14 +646,10 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
-
-                    if "CABEÇALHO" in titulo.upper():
-                        novo_ref = safe_extract_header(t_anvisa, secoes_alvo)
-                        if novo_ref and (not txt_ref or len(novo_ref) < len(txt_ref) or len(txt_ref) < 50): txt_ref = novo_ref
-                        novo_mkt = safe_extract_header(t_mkt, secoes_alvo)
-                        if novo_mkt and (not txt_mkt or len(novo_mkt) < len(txt_mkt) or len(txt_mkt) < 50): txt_mkt = novo_mkt
-                        txt_ref = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_ref)
-                        txt_mkt = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', txt_mkt)
+                    
+                    # CORREÇÃO CRÍTICA DE NEGRITO (Markdown -> HTML)
+                    txt_ref = convert_markdown_bold_to_html(txt_ref)
+                    txt_mkt = convert_markdown_bold_to_html(txt_mkt)
 
                     if "DIZERES LEGAIS" in titulo.upper():
                         m_ref = re.search(frase_padrao, txt_ref, flags=re.IGNORECASE)
