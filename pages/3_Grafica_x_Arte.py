@@ -2,7 +2,7 @@
 # - Atualizado para extrair data APENAS em "DIZERES LEGAIS" com frase exata.
 # - Interface renomeada para Gráfica x Arte Vigente.
 # - OCR automático se texto local < 1000 chars.
-# - Modelos restritos: 2.5 Flash, 2.5 Flash Lite, 3 Flash.
+# - Modelos restritos: 2.5 Flash, 3 Flash.
 
 import streamlit as st
 import google.generativeai as genai
