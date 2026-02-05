@@ -1,7 +1,6 @@
 # app.py - Gráfica x Arte (Versão Gemini 2.5/3.0 - Multi-Key "GEMNI")
-# - Focado em Gemini 2.5 Flash e Gemini 3 Flash
-# - Usa rotação de chaves (GEMNI_API_KEY1...3)
-# - Sistema de pausa automática (15s) para respeitar limite de 5 RPM
+# - Focado estritamente em: Gemini 2.5 Flash, 2.5 Lite e 3 Flash
+# - Requer: google-generativeai>=1.0.0
 
 import streamlit as st
 import google.generativeai as genai
@@ -13,29 +12,30 @@ import re
 import unicodedata
 import time
 import concurrent.futures
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from spellchecker import SpellChecker
 from io import BytesIO
 
 # ----------------- CONFIGURAÇÕES GLOBAIS -----------------
 APP_TITLE = "💊 Gráfica x Arte"
 
-# Aumentado para suportar latência de rede/modelo
-TIMEOUT_S = 40  
+# Aumentado para 90s para suportar PDFs pesados sem timeout
+TIMEOUT_S = 90  
 
-# Apenas os modelos disponíveis na sua conta (conforme print anterior)
+# LISTA ESTRITA DE MODELOS SOLICITADOS
+# A ordem tenta priorizar o Lite (mais cota) e o 3.0, deixando o 2.5 Flash (que estava lotado) pro fim.
 MODELOS_PARA_TENTAR_OCR = [
-    "gemini-2.5-flash", 
+    "gemini-2.5-flash-lite", 
     "gemini-3-flash",
-    "gemma-3-27b-it"  # Gemma precisa do sufixo -it para instruções
+    "gemini-2.5-flash"
 ]
 
 MODELOS_PARA_TENTAR_GEN = [
-    "gemini-2.5-flash",
-    "gemini-3-flash"
+    "gemini-2.5-flash-lite", 
+    "gemini-3-flash",
+    "gemini-2.5-flash"
 ]
 
-# Seções esperadas
+# Seções esperadas na Bula
 SECOES_PACIENTE = [
     "CABEÇALHO DA BULA",
     "APRESENTAÇÕES",
@@ -211,13 +211,12 @@ def ocr_via_gemini_bytes(bytes_data, api_keys, modelos=MODELOS_PARA_TENTAR_OCR, 
                 msg_erro = str(e).lower()
                 errors.append(f"key#{i+1}:{modelo}: {str(e)}")
                 
-                # PROTEÇÃO DE COTA (429):
-                # Se bater cota numa key, espera 15s antes de tentar a PRÓXIMA key/modelo
+                # PROTEÇÃO DE COTA (429) OU MODELO NÃO ENCONTRADO (404)
                 if "429" in msg_erro or "quota" in msg_erro:
                     st.toast(f"⏳ Cota atingida (Key {i+1}). Pausando 15s...", icon="🛑")
                     time.sleep(15) 
                 elif "404" in msg_erro:
-                    # Modelo não existe, pula rápido
+                    # Se o nome estiver errado (ex: google mudou o ID), ele apenas pula
                     pass 
                 else:
                     time.sleep(1)
