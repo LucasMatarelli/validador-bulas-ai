@@ -326,30 +326,42 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
 
 # ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
+# ----------------- 7. DIFF E REGRAS DE DECISÃO (ATUALIZADO) -----------------
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
     novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
+    
+    # Remove hifens para evitar falsos positivos em quebras de linha
     ref_sem_tags = re.sub(r'[-–—]', ' ', ref_sem_tags)
     novo_sem_tags = re.sub(r'[-–—]', ' ', novo_sem_tags)
+    
     palavras_ref = ref_sem_tags.split()
     palavras_novo = novo_sem_tags.split()
+    
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
+    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            texto = " ".join(palavras_ref[i1:i2]); html_ref_list.append(texto); html_novo_list.append(texto)
+            texto = " ".join(palavras_ref[i1:i2])
+            html_ref_list.append(texto)
+            html_novo_list.append(texto)
         elif tag == 'replace':
+            # Marca amarelo nos dois lados
             html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
             html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
         elif tag == 'delete':
+            # Marca amarelo no texto de referência (o que sumiu)
             html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
             tem_diff = True
         elif tag == 'insert':
+            # Marca amarelo no texto novo (o que foi adicionado)
             html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
+            
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
 def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
@@ -359,45 +371,36 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
     comp_ref = clean_metadata_and_footers(texto_ref)
     comp_novo = clean_metadata_and_footers(texto_novo)
 
+    # Normalização básica para checar igualdade estrita (ignora case e espaços duplos)
     comp_ref_nohy = re.sub(r'[-–—]', ' ', comp_ref)
     comp_novo_nohy = re.sub(r'[-–—]', ' ', comp_novo)
     norm_ref_nohy = normalize_for_comparison(comp_ref_nohy)
     norm_novo_nohy = normalize_for_comparison(comp_novo_nohy)
 
+    # 1. Checagem de Identidade Estrita
+    # Se, após limpar pontuação e caixa alta, for igual, retorna CONFORME.
     if norm_ref_nohy == norm_novo_nohy:
-        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
+        html_ref = comp_ref.replace('\n', '<br>')
+        html_ref = melhorar_visual_topicos(html_ref)
+        
+        html_novo = verificar_ortografia_inteligente(comp_novo)
+        html_novo = html_novo.replace('\n', '<br>')
+        html_novo = melhorar_visual_topicos(html_novo)
         return html_ref, html_novo, False
 
-    comp_ref_norm = clean_metadata_and_footers(comp_ref)
-    comp_novo_norm = clean_metadata_and_footers(comp_novo)
-    norm_ref = normalize_for_comparison(comp_ref_norm)
-    norm_novo = normalize_for_comparison(comp_novo_norm)
-
-    if norm_ref == norm_novo:
-        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-        return html_ref, html_novo, False
-
-    if norm_ref and norm_novo:
-        shorter, longer = (norm_ref, norm_novo) if len(norm_ref) <= len(norm_novo) else (norm_novo, norm_ref)
-        if shorter and shorter in longer:
-            prop = len(shorter) / max(1, len(longer))
-            if prop >= 0.88:
-                html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-                html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-                return html_ref, html_novo, False
-
-    ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
-    jacc = jaccard_similarity(norm_ref, norm_novo)
-    if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
-        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-        return html_ref, html_novo, False
-
+    # --- REMOVIDO: Blocos de "Subset" e "Similarity Threshold" ---
+    # Antes, o código aceitava textos 92% parecidos como iguais.
+    # Agora, se não caiu no "if" acima (idêntico), ele OBRIGATORIAMENTE vai para o diff.
+    
+    # 2. Gera o Diff Palavra a Palavra para qualquer diferença
     r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
-    n_html_final = verificar_ortografia_inteligente(n_html); n_html_final = melhorar_visual_topicos(n_html_final)
+    
+    # Processamento visual final
+    n_html_final = verificar_ortografia_inteligente(n_html)
+    n_html_final = melhorar_visual_topicos(n_html_final)
     r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
+    
+    # O diff_bool garante que se houve replace/insert/delete, retorna True (DIVERGENTE)
     return r_html_final, n_html_final, diff_bool
 
 # ----------------- 8. EXTRAÇÃO DE TEXTO LOCAL -----------------
