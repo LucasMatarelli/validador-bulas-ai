@@ -291,54 +291,24 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
             tem_diff = True
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
-def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
+def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
+    
+    # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for igual, ignora formatação
+    if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
+        html_novo = melhorar_visual_topicos(texto_novo.replace('\n', '<br>'))
+        return texto_ref.replace('\n', '<br>'), html_novo, False
 
-    comp_ref = clean_metadata_and_footers(texto_ref)
-    comp_novo = clean_metadata_and_footers(texto_novo)
-    comp_ref = convert_markdown_bold_to_html(comp_ref)
-    comp_novo = convert_markdown_bold_to_html(comp_novo)
-
-    comp_ref_nohy = re.sub(r'[-–—]', ' ', comp_ref)
-    comp_novo_nohy = re.sub(r'[-–—]', ' ', comp_novo)
-    norm_ref_nohy = normalize_for_comparison(comp_ref_nohy)
-    norm_novo_nohy = normalize_for_comparison(comp_novo_nohy)
-
-    if norm_ref_nohy == norm_novo_nohy:
-        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-        return html_ref, html_novo, False
-
-    comp_ref_norm = clean_metadata_and_footers(comp_ref)
-    comp_novo_norm = clean_metadata_and_footers(comp_novo)
-    norm_ref = normalize_for_comparison(comp_ref_norm)
-    norm_novo = normalize_for_comparison(comp_novo_norm)
-
-    if norm_ref == norm_novo:
-        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-        return html_ref, html_novo, False
-
-    if norm_ref and norm_novo:
-        shorter, longer = (norm_ref, norm_novo) if len(norm_ref) <= len(norm_novo) else (norm_novo, norm_ref)
-        if shorter and shorter in longer:
-            prop = len(shorter) / max(1, len(longer))
-            if prop >= 0.88:
-                html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-                html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-                return html_ref, html_novo, False
-
-    ratio = difflib.SequenceMatcher(None, norm_ref, norm_novo).ratio()
-    jacc = jaccard_similarity(norm_ref, norm_novo)
-    if ratio >= SIMILARITY_THRESHOLD or jacc >= SIMILARITY_THRESHOLD:
-        html_ref = comp_ref.replace('\n', '<br>'); html_ref = melhorar_visual_topicos(html_ref)
-        html_novo = verificar_ortografia_inteligente(comp_novo); html_novo = html_novo.replace('\n', '<br>'); html_novo = melhorar_visual_topicos(html_novo)
-        return html_ref, html_novo, False
-
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(comp_ref, comp_novo)
-    n_html_final = verificar_ortografia_inteligente(n_html); n_html_final = melhorar_visual_topicos(n_html_final)
-    r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
+    # 2. Se falhar na nuclear, faz o diff detalhado
+    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
+    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
+    
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
+    
+    n_html_final = melhorar_visual_topicos(n_html)
+    r_html_final = r_html.replace('\n', '<br>')
+    
     return r_html_final, n_html_final, diff_bool
 
 # ----------------- 8. EXTRAÇÃO DE TEXTO LOCAL -----------------
