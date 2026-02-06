@@ -235,22 +235,31 @@ def destacar_datas(texto):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=0, flags=re.IGNORECASE | re.DOTALL)
 
-# ----------------- 7. DIFF E REGRAS DE DECISÃO -----------------
+# ----------------- 7. DIFF E REGRAS DE DECISÃO (AJUSTADO PARA MANTER NEGRITO) -----------------
+
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    ref_sem_tags = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_sem_tags = re.sub(r'<[^>]+>', '', texto_novo)
-    ref_sem_tags = re.sub(r'[-–—]', ' ', ref_sem_tags)
-    novo_sem_tags = re.sub(r'[-–—]', ' ', novo_sem_tags)
-    palavras_ref = ref_sem_tags.split()
-    palavras_novo = novo_sem_tags.split()
+    # REMOVIDO: A limpeza de tags (<[^>]+>) foi retirada para que o diff enxergue o negrito/itálico.
+    
+    # Apenas normalizamos traços para evitar falsos positivos de hifenização
+    ref_tratado = re.sub(r'[-–—]', ' ', texto_ref)
+    novo_tratado = re.sub(r'[-–—]', ' ', texto_novo)
+    
+    palavras_ref = ref_tratado.split()
+    palavras_novo = novo_tratado.split()
+    
     matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
+    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            texto = " ".join(palavras_ref[i1:i2]); html_ref_list.append(texto); html_novo_list.append(texto)
+            # Se for igual, mantém o texto original (que pode conter <b> ou <i>)
+            texto = " ".join(palavras_ref[i1:i2])
+            html_ref_list.append(texto)
+            html_novo_list.append(texto)
         elif tag == 'replace':
+            # Se for diferente (inclusive se mudou só o negrito), marca amarelo e mantém a tag se existir
             html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
             html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
@@ -260,29 +269,30 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
         elif tag == 'insert':
             html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
             tem_diff = True
+            
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
-# --- SUA NOVA FUNÇÃO INTEGRADA AQUI ---
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for igual, ignora formatação
+    # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for EXATAMENTE igual (ignorando formatação)
+    # A gente exibe o texto "Novo" formatado, pois ele é visualmente mais agradável
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
         html_novo = melhorar_visual_topicos(texto_novo.replace('\n', '<br>'))
+        # Retorna o texto original com as tags de formatação intactas
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
     # 2. Se falhar na nuclear, faz o diff detalhado
-    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
+    # AQUI ESTÁ A MUDANÇA: Não removemos mais as tags HTML antes de enviar para o diff
+    # Passamos o texto COM as tags <b> e <i> para que elas sejam consideradas na comparação
     
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
+    r_html, n_html, diff_bool = diff_palavra_a_palavra(texto_ref, texto_novo)
     
     n_html_final = melhorar_visual_topicos(n_html)
-    r_html_final = r_html.replace('\n', '<br>')
+    r_html_final = melhorar_visual_topicos(r_html.replace('\n', '<br>'))
     
     return r_html_final, n_html_final, diff_bool
-
 # ----------------- 8. EXTRAÇÃO DE TEXTO LOCAL -----------------
 def extract_text_from_file(uploaded_file):
     try:
