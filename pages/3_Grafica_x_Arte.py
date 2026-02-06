@@ -1,8 +1,4 @@
-# app.py - Gráfica x Arte (Versão Final Ajustada)
-# - Removido "CABEÇALHO DA BULA"
-# - Correção de renderização de Negrito (**text** -> <b>text</b>)
-# - Mantido OCR automático e modelos Gemini 2.5/3.0
-
+# app.py - Gráfica x Arte (Versão Final Corrigida JSON)
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
@@ -33,6 +29,9 @@ st.markdown("""
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         text-align: left;
+        height: 100%;
+        overflow-y: auto;
+        max-height: 600px;
     }
 
     .highlight-yellow { 
@@ -60,31 +59,6 @@ st.markdown("""
     div[data-testid="stMetric"] {
         background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
     }
-
-    section[data-testid="stSidebar"] {
-        display: block !important;
-        visibility: visible !important;
-        width: 250px !important;
-        min-width: 250px !important;
-        max-width: 250px !important;
-        margin-left: 0 !important;
-        transform: translateX(0) !important;
-        transition: none !important;
-        position: relative !important;
-        background-color: #f0f2f6 !important;
-        z-index: 999 !important;
-    }
-
-    section[data-testid="stSidebar"] > div:first-child {
-        width: 250px !important;
-        min-width: 250px !important;
-    }
-
-    button[kind="header"],
-    [data-testid="collapsedControl"],
-    button[data-testid="baseButton-header"] {
-        display: none !important;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -92,10 +66,9 @@ st.markdown("""
 MODELOS_PARA_TENTAR = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-3-flash"
+    "gemini-1.5-flash"
 ]
 
-# REMOVIDO "CABEÇALHO DA BULA" DA LISTA
 SECOES_PACIENTE = [
     "APRESENTAÇÕES",
     "COMPOSIÇÃO",
@@ -124,7 +97,6 @@ def clean_metadata_and_footers(texto: str) -> str:
     t = re.sub(r'(?im)^.*\bcontato\b.*\n?', '', t)
     t = re.sub(r'(?i)[\w\.-]+@belfar\.com\.br', '', t)
     t = re.sub(r'(?m)(?:\+?\d{1,3}[-\s]?)?(?:\(?\d{2}\)?[-\s]?)?\d{4,5}[-\s]?\d{4}', '', t)
-
     t = re.sub(r'(?m)^\s*[A-Z0-9_]{8,}\s*$', '', t)
 
     patterns_line = [
@@ -150,7 +122,6 @@ def clean_metadata_and_footers(texto: str) -> str:
     t = re.sub(r'(?im)\bfrente\b', '', t)
     t = re.sub(r'(?im)\bverso\b', '', t)
     t = re.sub(r'(?im)\bBUL[_A-Z0-9-]*\b', '', t)
-
     t = re.sub(r'-\s*\n\s*', '', t)
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\r', '\n', t)
@@ -216,9 +187,7 @@ def extract_section_from_raw(texto: str, section_title: str, sections_list: list
     return section_clean
 
 def convert_markdown_bold_to_html(text: str) -> str:
-    """Corrige problemas onde o modelo ou OCR retorna **texto** em vez de <b>texto</b>"""
     if not text: return text
-    # Converte **texto** para <b>texto</b>
     return re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
 
 # ----------------- 5. NORMALIZAÇÃO PARA COMPARAÇÃO -----------------
@@ -328,8 +297,6 @@ def gerar_diff_html(texto_ref, texto_novo, secoes_alvo=SECOES_PACIENTE):
 
     comp_ref = clean_metadata_and_footers(texto_ref)
     comp_novo = clean_metadata_and_footers(texto_novo)
-
-    # Nova etapa: Forçar conversão de markdown (**bold**) para HTML (<b>bold</b>)
     comp_ref = convert_markdown_bold_to_html(comp_ref)
     comp_novo = convert_markdown_bold_to_html(comp_novo)
 
@@ -406,11 +373,9 @@ def extract_text_from_file(uploaded_file):
             doc.close()
         elif name.lower().endswith('.docx'):
             try:
-                uploaded_file.seek(0)
-                doc = docx.Document(uploaded_file)
-            except Exception:
-                uploaded_file.seek(0)
-                doc = docx.Document(BytesIO(uploaded_file.read()))
+                uploaded_file.seek(0); doc = docx.Document(uploaded_file)
+            except:
+                uploaded_file.seek(0); doc = docx.Document(BytesIO(uploaded_file.read()))
             for para in doc.paragraphs:
                 para_text = ""
                 for run in para.runs:
@@ -431,16 +396,10 @@ def extract_text_from_file(uploaded_file):
 
 # ----------------- 9. FUNÇÃO OCR (GEMINI) -----------------
 def ocr_via_gemini(uploaded_file, keys_validas):
-    """
-    Função para realizar OCR usando Gemini 2.5 Flash quando o texto extraído localmente é insuficiente.
-    """
     uploaded_file.seek(0)
     bytes_data = uploaded_file.read()
-    
-    # MIME type detection basic
     mime_type = "application/pdf"
-    if getattr(uploaded_file, "name", "").lower().endswith(".docx"):
-        return "" 
+    if getattr(uploaded_file, "name", "").lower().endswith(".docx"): return "" 
     
     prompt_ocr = """EXTRAIA TODO O TEXTO DESTE ARQUIVO.
     Mantenha formatação <b> e <i> onde apropriado.
@@ -448,21 +407,30 @@ def ocr_via_gemini(uploaded_file, keys_validas):
     
     for key in keys_validas:
         genai.configure(api_key=key)
-        # Usar o modelo mais rápido e barato para OCR
         model = genai.GenerativeModel("gemini-2.5-flash")
         try:
-            response = model.generate_content([
-                {'mime_type': mime_type, 'data': bytes_data},
-                prompt_ocr
-            ])
+            response = model.generate_content([{'mime_type': mime_type, 'data': bytes_data}, prompt_ocr])
             return clean_metadata_and_footers(response.text)
-        except Exception:
-            continue
+        except Exception: continue
     return ""
 
-# ----------------- 10. UI PRINCIPAL E FLUXO -----------------
-st.title("💊 Gráfica x Arte")
+# ----------------- 10. CLEAN JSON HELPER (NOVA) -----------------
+def clean_json_string(text):
+    """Remove blocos de código Markdown (```json ... ```) e limpa espaços."""
+    if not text: return ""
+    # Tentar regex para pegar conteúdo dentro de ```json ... ```
+    match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    # Tentar regex para pegar conteúdo dentro de ``` ... ``` genérico
+    match_generic = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
+    if match_generic:
+        return match_generic.group(1).strip()
+    # Se não tiver markdown, assume que é o texto puro
+    return text.strip()
 
+# ----------------- 11. UI PRINCIPAL E FLUXO -----------------
+st.title("💊 Gráfica x Arte")
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente",), horizontal=True)
 
 c1, c2 = st.columns(2)
@@ -472,158 +440,133 @@ f2 = c2.file_uploader("📜 Arte Vigente", type=["pdf", "docx"], key="f2")
 if st.button("🚀 Processar Conferência", key="process_button"):
     st.info("Iniciando processamento...")
     if not f1 or not f2:
-        st.warning("Por favor, envie ambos os arquivos antes de processar.")
-        st.stop()
+        st.warning("Por favor, envie ambos os arquivos antes de processar."); st.stop()
     
-    # Identificar chaves
-    secret_names = [
-        "GEMINI_API_KEY", "GEMINI_API_KEY1", "GEMINI_API_KEY2", "GEMINI_API_KEY3",
-        "GEMNI_API_KEY1", "GEMNI_API_KEY2", "GEMNI_API_KEY3"
-    ]
+    secret_names = ["GEMINI_API_KEY", "GEMINI_API_KEY1", "GEMINI_API_KEY2", "GEMINI_API_KEY3", "GEMNI_API_KEY1", "GEMNI_API_KEY2", "GEMNI_API_KEY3"]
     keys_raw = [st.secrets.get(n) for n in secret_names]
     keys_validas = [k for k in keys_raw if k]
 
     if not keys_validas:
-        st.error("Erro crítico: nenhuma API key encontrada nos secrets.")
-        st.stop()
+        st.error("Erro crítico: nenhuma API key encontrada nos secrets."); st.stop()
 
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE
-
         with st.spinner("Lendo arquivos e analisando conteúdo..."):
             try:
-                # 1. Extração Local
                 f1.seek(0); f2.seek(0)
                 t_anvisa = extract_text_from_file(f1)
                 t_mkt = extract_text_from_file(f2)
                 
-                # 2. Verificação de OCR (Se < 1000 chars)
+                # OCR Trigger
                 if len(t_anvisa) < 1000:
-                    st.info(f"Gráfica: Texto local insuficiente ({len(t_anvisa)} chars). Acionando OCR via IA...")
+                    st.info(f"Gráfica: Texto local insuficiente ({len(t_anvisa)} chars). Acionando OCR...")
                     ocr_res = ocr_via_gemini(f1, keys_validas)
-                    if len(ocr_res) > len(t_anvisa):
-                        t_anvisa = ocr_res
-                        st.success("OCR Gráfica realizado com sucesso.")
-                    else:
-                        st.warning("OCR Gráfica não retornou mais texto que a extração local.")
-
+                    if len(ocr_res) > len(t_anvisa): t_anvisa = ocr_res; st.success("OCR Gráfica OK.")
+                    else: st.warning("OCR Gráfica não melhorou o resultado.")
                 if len(t_mkt) < 1000:
-                    st.info(f"Arte Vigente: Texto local insuficiente ({len(t_mkt)} chars). Acionando OCR via IA...")
+                    st.info(f"Arte: Texto local insuficiente ({len(t_mkt)} chars). Acionando OCR...")
                     ocr_res2 = ocr_via_gemini(f2, keys_validas)
-                    if len(ocr_res2) > len(t_mkt):
-                        t_mkt = ocr_res2
-                        st.success("OCR Arte Vigente realizado com sucesso.")
-                    else:
-                        st.warning("OCR Arte Vigente não retornou mais texto que a extração local.")
+                    if len(ocr_res2) > len(t_mkt): t_mkt = ocr_res2; st.success("OCR Arte OK.")
+                    else: st.warning("OCR Arte não melhorou o resultado.")
 
                 st.info(f"Tamanho final Gráfica: {len(t_anvisa)} caracteres")
-                st.info(f"Tamanho final Arte Vigente: {len(t_mkt)} caracteres")
+                st.info(f"Tamanho final Arte: {len(t_mkt)} caracteres")
+
+                # Corte de segurança para input (evita estouro de contexto de entrada)
+                input_grafica = t_anvisa[:150000]
+                input_arte = t_mkt[:150000]
 
             except Exception as e:
-                st.exception(f"Falha ao processar arquivos: {e}")
-                st.stop()
+                st.exception(f"Falha ao processar arquivos: {e}"); st.stop()
 
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
-                st.error("Conteúdo insuficiente para análise (Arquivo vazio ou ilegível)."); st.stop()
+                st.error("Conteúdo insuficiente para análise."); st.stop()
 
-            # Prompt para Análise Comparativa (SEM CABEÇALHO)
+            # PROMPT CORRIGIDO (JSON PURO)
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
 
-            INPUT TEXTO 1 (GRÁFICA): {t_anvisa[:150000]}
-            INPUT TEXTO 2 (ARTE VIGENTE): {t_mkt[:150000]}
+            INPUT TEXTO 1 (GRÁFICA): {input_grafica}
+            INPUT TEXTO 2 (ARTE VIGENTE): {input_arte}
 
-            REGRAS CRÍTICAS DE EXTRAÇÃO:
+            TAREFA: Extrair o texto de cada seção listada abaixo para ambos os inputs.
 
-    **SEÇÕES NORMAIS**: A partir de "APRESENTAÇÕES" até "DIZERES LEGAIS", extrair cada seção completa.
+            REGRAS CRÍTICAS:
+            1. Responda APENAS em JSON válido.
+            2. NÃO use formatação Markdown (sem ```json).
+            3. Mantenha <b> e <i>. Converta markdown **bold** para <b>bold</b>.
+            4. Se o texto for muito longo, NÃO TRUNQUE a resposta no meio de uma string JSON.
+            5. LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
-    **FORMATAÇÃO**: 
-    Manter <b> e <i> EXATAMENTE como está.
-    NÃO USE MARKDOWN (como **negrito**), USE HTML (<b>negrito</b>).
-
-    Se uma seção não existir, NÃO inclua no JSON.
-
-    LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
-
-    SAÍDA JSON:
-    {{
-     "data_anvisa_ref": "dd/mm/aaaa",
-     "data_anvisa_mkt": "dd/mm/aaaa",
-     "secoes": [
-         {{
-             "titulo": "NOME EXATO DA SEÇÃO",
-             "texto_anvisa": "conteúdo completo da Gráfica",
-             "texto_mkt": "conteúdo completo da Arte Vigente"
-         }}
-     ]
-    }}
-    """
+            SAÍDA JSON ESPERADA:
+            {{
+             "secoes": [
+                 {{
+                     "titulo": "NOME DA SEÇÃO",
+                     "texto_anvisa": "conteúdo completo da Gráfica",
+                     "texto_mkt": "conteúdo completo da Arte Vigente"
+                 }}
+             ]
+            }}
+            """
 
             response = None
             sucesso = False
             log_erros = []
-
-            # Variáveis para armazenar datas extraídas APENAS de "DIZERES LEGAIS"
             extracted_date_ref = "-"
             extracted_date_mkt = "-"
 
-            # Loop de Tentativas (Modelos + Keys)
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
                 try:
                     genai.configure(api_key=key)
                 except Exception as e:
-                    log_erros.append(f"Key {idx_key+1} config error: {str(e)}")
-                    continue
+                    log_erros.append(f"Key {idx_key+1} config error: {str(e)}"); continue
 
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
                         st.info(f"Analisando com modelo: {modelo} (Key {idx_key+1})...")
                         model = genai.GenerativeModel(
                             modelo,
-                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                            generation_config={
+                                "response_mime_type": "application/json", 
+                                "temperature": 0.1,
+                                # AUMENTADO PARA PREVENIR CORTE DE RESPOSTA COM TEXTOS GRANDES
+                                "max_output_tokens": 65536 
+                            }
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
                         break
                     except Exception as e:
                         log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                        time.sleep(1) # Backoff simples
-                        continue
+                        time.sleep(1); continue
 
             if not sucesso:
-                st.error("❌ Falha total ao chamar a API Gemini. Verifique logs abaixo.")
-                if log_erros:
-                    st.code("\n".join(log_erros))
-                st.stop()
+                st.error("❌ Falha na API Gemini."); st.code("\n".join(log_erros)); st.stop()
 
-            # Processamento da Resposta
             try:
                 resp_text = getattr(response, "text", None) or str(response)
-
-                def extract_json_block_local(text: str):
-                    if not text or '{' not in text: return None
-                    start = text.find('{'); depth = 0; in_string = False; esc = False
-                    for i in range(start, len(text)):
-                        ch = text[i]
-                        if ch == '"' and not esc: in_string = not in_string
-                        if in_string: esc = (ch == '\\' and not esc); continue
-                        if ch == '{': depth += 1
-                        elif ch == '}':
-                            depth -= 1
-                            if depth == 0: return text[start:i+1]
-                    return None
-
+                # LIMPEZA ROBUSTA DO JSON
+                resp_text_limpo = clean_json_string(resp_text)
+                
                 try:
-                    resultado = json.loads(resp_text)
-                except Exception:
-                    bloco = extract_json_block_local(resp_text)
-                    if bloco: resultado = json.loads(bloco)
-                    else: st.error("JSON inválido na resposta da IA."); st.stop()
+                    resultado = json.loads(resp_text_limpo)
+                except json.JSONDecodeError as e:
+                    # Tentar recuperar se tiver caracteres estranhos no final
+                    try:
+                        end_idx = resp_text_limpo.rfind('}')
+                        if end_idx != -1:
+                            resultado = json.loads(resp_text_limpo[:end_idx+1])
+                        else:
+                            raise e
+                    except:
+                        st.error(f"Erro JSON Inválido: {e}")
+                        st.text_area("Dump Resposta IA (Parcial)", resp_text_limpo[:1000])
+                        st.stop()
 
             except Exception as e:
-                st.exception(f"Erro ao decodificar resposta: {e}")
-                st.stop()
+                st.exception(f"Erro ao processar resposta: {e}"); st.stop()
 
             try:
                 dados_secoes = resultado.get("secoes", [])
@@ -636,7 +579,7 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                     txt_ref = item.get('texto_anvisa', '').strip()
                     txt_mkt = item.get('texto_mkt', '').strip()
 
-                    # Fallback extração local se a IA falhar em trazer o texto
+                    # Fallback extração local
                     if not txt_ref:
                         tentativa = extract_section_from_raw(t_anvisa, titulo, secoes_alvo)
                         if tentativa: txt_ref = tentativa
@@ -646,8 +589,6 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
                     txt_ref = clean_metadata_and_footers(txt_ref)
                     txt_mkt = clean_metadata_and_footers(txt_mkt)
-                    
-                    # CORREÇÃO CRÍTICA DE NEGRITO (Markdown -> HTML)
                     txt_ref = convert_markdown_bold_to_html(txt_ref)
                     txt_mkt = convert_markdown_bold_to_html(txt_mkt)
 
@@ -714,8 +655,6 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                             st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.exception(f"Erro ao processar resultado final: {e}")
-                st.stop()
-
+                st.exception(f"Erro ao processar resultado final: {e}"); st.stop()
 else:
     st.info("Aguardando arquivos.")
