@@ -1,4 +1,4 @@
-# app.py - Gráfica x Arte (Versão Final Corrigida JSON)
+# app.py - Gráfica x Arte (Versão Final com Diff Ajustado)
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
@@ -83,8 +83,6 @@ SECOES_PACIENTE = [
     "O QUE FAZER SE ALGUÉM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?",
     "DIZERES LEGAIS"
 ]
-
-SIMILARITY_THRESHOLD = 0.92
 
 # ----------------- 3. LIMPEZA AUTOMATIZADA -----------------
 def clean_metadata_and_footers(texto: str) -> str:
@@ -190,44 +188,17 @@ def convert_markdown_bold_to_html(text: str) -> str:
     if not text: return text
     return re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
 
-# ----------------- 5. NORMALIZAÇÃO PARA COMPARAÇÃO -----------------
-def strip_accents(s: str) -> str:
-    return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('ASCII')
-
-def tokenize_words(s: str):
-    return re.findall(r'\w+', s, flags=re.UNICODE)
-
-def remove_section_titles_for_comparison(texto: str, sections_list=SECOES_PACIENTE) -> str:
-    if not texto: return texto
-    t = texto
-    for s in sections_list:
-        patt = build_section_pattern(s)
-        if patt: t = re.sub(patt, ' ', t, flags=re.IGNORECASE)
-    t = re.sub(r'(?im)\bInform[aç]o(?:es)?\s+ao\s+paciente\b', ' ', t)
-    t = re.sub(r'\s{2,}', ' ', t)
-    return t.strip()
-
-def normalize_for_comparison(text: str) -> str:
-    if not text: return ""
-    t = clean_metadata_and_footers(text)
-    t = remove_section_titles_for_comparison(t)
-    t = re.sub(r'(?m)^\s*\d+\s*[\.\)\-]\s*', '', t)
-    t = re.sub(r'\b\d+\s*[\.\)]\s+', ' ', t)
-    t = re.sub(r'(?m)^\s*[IVXLCDM]+\s*[–-]\s*', '', t)
-    t = re.sub(r'<[^>]+>', '', t)
-    t = re.sub(r'[-–—]', ' ', t)
-    t = strip_accents(t).lower()
-    t = re.sub(r'[^a-z0-9\s]', ' ', t)
-    t = re.sub(r'\s+', ' ', t).strip()
+# ----------------- 5. HELPERS DE COMPARAÇÃO (Novos) -----------------
+def normalizacao_nuclear(texto: str) -> str:
+    """Remove tudo: acentos, tags html, pontuação e espaços, para checar conteúdo puro."""
+    if not texto: return ""
+    # Remove tags HTML
+    t = re.sub(r'<[^>]+>', '', texto)
+    # Remove acentos
+    t = unicodedata.normalize('NFKD', t).encode('ASCII', 'ignore').decode('ASCII')
+    # Mantém apenas letras e números, tudo minúsculo
+    t = re.sub(r'[^a-z0-9]', '', t.lower())
     return t
-
-def jaccard_similarity(a: str, b: str) -> float:
-    sa = set(tokenize_words(a))
-    sb = set(tokenize_words(b))
-    if not sa and not sb: return 1.0
-    if not sa or not sb: return 0.0
-    inter = sa.intersection(sb); union = sa.union(sb)
-    return len(inter) / len(union)
 
 # ----------------- 6. ORTOGRAFIA E VISUAL -----------------
 def verificar_ortografia_inteligente(texto):
@@ -291,6 +262,7 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
             tem_diff = True
     return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
 
+# --- SUA NOVA FUNÇÃO INTEGRADA AQUI ---
 def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
@@ -384,19 +356,14 @@ def ocr_via_gemini(uploaded_file, keys_validas):
         except Exception: continue
     return ""
 
-# ----------------- 10. CLEAN JSON HELPER (NOVA) -----------------
+# ----------------- 10. CLEAN JSON HELPER -----------------
 def clean_json_string(text):
     """Remove blocos de código Markdown (```json ... ```) e limpa espaços."""
     if not text: return ""
-    # Tentar regex para pegar conteúdo dentro de ```json ... ```
     match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    # Tentar regex para pegar conteúdo dentro de ``` ... ``` genérico
+    if match: return match.group(1).strip()
     match_generic = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
-    if match_generic:
-        return match_generic.group(1).strip()
-    # Se não tiver markdown, assume que é o texto puro
+    if match_generic: return match_generic.group(1).strip()
     return text.strip()
 
 # ----------------- 11. UI PRINCIPAL E FLUXO -----------------
@@ -442,7 +409,6 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                 st.info(f"Tamanho final Gráfica: {len(t_anvisa)} caracteres")
                 st.info(f"Tamanho final Arte: {len(t_mkt)} caracteres")
 
-                # Corte de segurança para input (evita estouro de contexto de entrada)
                 input_grafica = t_anvisa[:150000]
                 input_arte = t_mkt[:150000]
 
@@ -501,7 +467,6 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                             generation_config={
                                 "response_mime_type": "application/json", 
                                 "temperature": 0.1,
-                                # AUMENTADO PARA PREVENIR CORTE DE RESPOSTA COM TEXTOS GRANDES
                                 "max_output_tokens": 65536 
                             }
                         )
@@ -517,13 +482,11 @@ if st.button("🚀 Processar Conferência", key="process_button"):
 
             try:
                 resp_text = getattr(response, "text", None) or str(response)
-                # LIMPEZA ROBUSTA DO JSON
                 resp_text_limpo = clean_json_string(resp_text)
                 
                 try:
                     resultado = json.loads(resp_text_limpo)
                 except json.JSONDecodeError as e:
-                    # Tentar recuperar se tiver caracteres estranhos no final
                     try:
                         end_idx = resp_text_limpo.rfind('}')
                         if end_idx != -1:
@@ -576,7 +539,8 @@ if st.button("🚀 Processar Conferência", key="process_button"):
                         html_novo = melhorar_visual_topicos(html_novo)
                         status = "CONFORME"
                     else:
-                        html_ref, html_novo, teve_diff = gerar_diff_html(txt_ref, txt_mkt, secoes_alvo)
+                        # AQUI ESTAVA A MUDANÇA PRINCIPAL NA CHAMADA
+                        html_ref, html_novo, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff: divs_count += 1
 
