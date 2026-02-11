@@ -58,7 +58,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
-# ATUALIZADO: Modelos Gemini 2.5, 3.0 e Gemma 3 conforme solicitado
 MODELOS_PARA_TENTAR = [
     "gemini-2.5-flash",
     "gemini-3-flash",
@@ -143,12 +142,10 @@ def gerar_diff_html(texto_ref, texto_novo):
     if not texto_ref: texto_ref = ""
     if not texto_novo: texto_novo = ""
     
-    # 1. CHECAGEM NUCLEAR: Se o conteúdo alfanumérico for igual, ignora formatação
     if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
         html_novo = melhorar_visual_topicos(texto_novo.replace('\n', '<br>'))
         return texto_ref.replace('\n', '<br>'), html_novo, False
 
-    # 2. Se falhar na nuclear, faz o diff detalhado
     ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
     novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
     
@@ -173,12 +170,10 @@ def extract_text_from_file(uploaded_file):
                         for s in l.get("spans", []):
                             content = s["text"]
                             font_props = s["font"].lower()
-                            font_size = s.get("size", 0)
                             flags = s.get("flags", 0)
                             
-                            # Detecção mais rigorosa de negrito
                             is_bold = (
-                                (flags & 16) or  # Flag de bold
+                                (flags & 16) or 
                                 "bold" in font_props or 
                                 "black" in font_props or
                                 "heavy" in font_props or
@@ -187,9 +182,8 @@ def extract_text_from_file(uploaded_file):
                                 font_props.endswith("-bold")
                             )
                             
-                            # Detecção mais rigorosa de itálico
                             is_italic = (
-                                (flags & 2) or  # Flag de itálico
+                                (flags & 2) or 
                                 "italic" in font_props or
                                 "oblique" in font_props or
                                 font_props.endswith("-i") or
@@ -197,7 +191,6 @@ def extract_text_from_file(uploaded_file):
                             )
                             
                             res = content
-                            # Aplica itálico ANTES de negrito para preservar ambos
                             if is_italic: 
                                 res = f"<i>{res}</i>"
                             if is_bold: 
@@ -212,13 +205,24 @@ def extract_text_from_file(uploaded_file):
                 para_txt = ""
                 for run in para.runs:
                     res = run.text
-                    # Aplica itálico ANTES de negrito
                     if run.italic: 
                         res = f"<i>{res}</i>"
                     if run.bold: 
                         res = f"<b>{res}</b>"
                     para_txt += res
                 text += para_txt + "\n\n"
+        
+        # ---------------------------------------------------------
+        # NOVO: LIMPEZA DE CABEÇALHOS, RODAPÉS E PAGINAÇÃO
+        # ---------------------------------------------------------
+        # Remove coisas como "Bula ao Paciente Página 1 de 9" ou "Bula do Paciente - R.V08 Página 1 de 10"
+        text = re.sub(r'(?i)bula[^\n]*?p[áa]gina[^\n]*?\d+\s*de\s*\d+', '', text)
+        # Remove também se a paginação estiver sozinha ou em outra linha "Página 1 de 10"
+        text = re.sub(r'(?i)p[áa]gina[^\n]*?\d+\s*de\s*\d+', '', text)
+        # Limpa quebras de linha duplas extras geradas pela remoção
+        text = re.sub(r'\n\s*\n', '\n\n', text)
+        # ---------------------------------------------------------
+        
         return text
     except: 
         return ""
@@ -260,13 +264,6 @@ st.markdown("""
     button[data-testid="baseButton-header"] {
         display: none !important;
     }
-    
-    /* Resto do seu CSS */
-    .texto-box { 
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 0.95rem;
-        /* ... resto do CSS ... */
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -285,7 +282,6 @@ f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     
-    # ATUALIZADO: Uso das 3 API Keys conforme solicitado
     keys_raw = [
         st.secrets.get("GEMINI_API_KEY"),
         st.secrets.get("GEMINI_API_KEY2"),
