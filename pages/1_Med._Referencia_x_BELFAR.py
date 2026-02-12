@@ -196,7 +196,8 @@ def extract_text_from_file(uploaded_file):
                             if is_bold: 
                                 res = f"<b>{res}</b>"
                             
-                            line_txt += res
+                            # AQUI ESTA A CORRECAO: Adicionei ' + " "' para evitar palavras coladas
+                            line_txt += res + " "
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
