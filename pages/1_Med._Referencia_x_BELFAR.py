@@ -282,6 +282,9 @@ f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     
+    # ----------------------------------------------------
+    # AQUI ESTÁ A LÓGICA DAS 3 CHAVES!
+    # ----------------------------------------------------
     keys_raw = [
         st.secrets.get("GEMINI_API_KEY"),
         st.secrets.get("GEMINI_API_KEY2"),
@@ -290,7 +293,7 @@ if st.button("🚀 Processar Conferência"):
     keys_validas = [k for k in keys_raw if k]
 
     if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key encontrada.")
+        st.error("Erro Crítico: Nenhuma API Key encontrada nos Secrets.")
         st.stop()
 
     if f1 and f2:
@@ -336,6 +339,9 @@ if st.button("🚀 Processar Conferência"):
             sucesso = False
             log_erros = []
 
+            # ----------------------------------------------------
+            # LOOP QUE TESTA AS CHAVES ATÉ UMA FUNCIONAR
+            # ----------------------------------------------------
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
                 genai.configure(api_key=key)
@@ -354,7 +360,7 @@ if st.button("🚀 Processar Conferência"):
                         continue
 
             if not sucesso:
-                st.error("❌ Falha Total. Detalhes:")
+                st.error("❌ Falha Total. Todas as chaves e modelos falharam. Detalhes:")
                 st.code("\n".join(log_erros))
                 st.stop()
             
