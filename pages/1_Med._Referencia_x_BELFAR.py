@@ -16,36 +16,27 @@ st.markdown("""
     [data-testid="stHeader"] { visibility: hidden; }
     
     .texto-box { 
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 0.95rem;
-        line-height: 1.7;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-size: 1rem;
+        line-height: 1.6;
         color: #212529;
         background-color: #ffffff;
         padding: 25px;
         border-radius: 8px;
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        text-align: justify; /* Textos perfeitamente alinhados como em documentos oficiais */
-    }
-    
-    /* Layout idêntico para os tópicos / marcadores */
-    .topico {
-        display: block;
-        margin-left: 20px;
-        text-indent: -15px;
-        margin-bottom: 6px;
+        text-align: justify; /* Garante o alinhamento reto igual ao arquivo original */
     }
     
     /* DIVERGÊNCIA (Amarelo) */
     .highlight-yellow { 
         background-color: #fff3cd; color: #856404; 
-        padding: 0px 2px; border-radius: 3px; border: 1px solid #ffeeba; 
-        font-weight: bold;
+        padding: 0px 2px; border-radius: 3px; font-weight: bold;
     }
     
     .highlight-blue { 
         background-color: #d1ecf1; color: #0c5460; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
+        padding: 2px 4px; border-radius: 4px; font-weight: bold; 
     }
     
     .border-ok { border-left: 6px solid #28a745 !important; }
@@ -92,40 +83,6 @@ def destacar_datas(texto):
     def replacer(match):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-def formatar_layout(texto):
-    """Constrói o layout HTML garantindo recuos, parágrafos reais e texto justificado."""
-    if not texto: return ""
-    
-    # 1. Padroniza tipos de quebras de linha
-    texto = texto.replace('\r\n', '\n').replace('\r', '\n')
-    
-    # 2. Transforma quebras de linha SIMPLES em espaço (para unir frases do mesmo parágrafo)
-    texto = re.sub(r'(?<!\n)\n(?!\n)', ' ', texto)
-    
-    # 3. Transforma quebras múltiplas em apenas quebra dupla (parágrafo)
-    texto = re.sub(r'\n{2,}', '\n\n', texto)
-    
-    linhas = texto.split('\n\n')
-    resultado = []
-    
-    for linha in linhas:
-        linha = linha.strip()
-        if not linha: continue
-        
-        # Limpa excesso de espaços no meio gerados pela união
-        linha = re.sub(r'[ \t]+', ' ', linha)
-        
-        linha_limpa = re.sub(r'<[^>]+>', '', linha).strip()
-        
-        # Identifica se é um tópico de lista
-        if re.match(r'^([-•*]|[a-zA-Z]\)|[0-9]+\.)\s+', linha_limpa):
-            resultado.append(f'<div class="topico">{linha}</div>')
-        else:
-            # É um parágrafo normal
-            resultado.append(f'<div style="margin-bottom: 12px;">{linha}</div>')
-            
-    return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     tokens_ref = re.split(r'(\s+)', texto_ref)
@@ -179,30 +136,19 @@ def extract_text_from_file(uploaded_file):
                             font_props = s["font"].lower()
                             flags = s.get("flags", 0)
                             
-                            is_bold = (
-                                (flags & 16) or 
-                                "bold" in font_props or 
-                                "black" in font_props or
-                                "heavy" in font_props or
-                                "semibold" in font_props or
-                                font_props.endswith("-b") or
-                                font_props.endswith("-bold")
-                            )
-                            
-                            is_italic = (
-                                (flags & 2) or 
-                                "italic" in font_props or
-                                "oblique" in font_props or
-                                font_props.endswith("-i") or
-                                font_props.endswith("-italic")
-                            )
+                            is_bold = ((flags & 16) or "bold" in font_props or "black" in font_props or "heavy" in font_props or "semibold" in font_props)
+                            is_italic = ((flags & 2) or "italic" in font_props or "oblique" in font_props)
                             
                             res = content
                             if is_italic: res = f"<i>{res}</i>"
                             if is_bold: res = f"<b>{res}</b>"
                             
                             line_txt += res + " "
+                        
+                        # Remove a quebra de linha interna do PDF unindo com espaço
                         block_text += line_txt.strip() + " " 
+                    
+                    # Separa os blocos (parágrafos reais) com duas quebras de linha
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
@@ -223,9 +169,11 @@ def extract_text_from_file(uploaded_file):
         text = re.sub(r'(?i)p[áa]gina[^\n]*?\d+\s*de\s*\d+', '', text)
         text = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[^\n]+', '', text)
         text = re.sub(r'(?i)\b[a-z0-9_]+_bula_(?:paciente|profissional)[^\n]*', '', text)
-        text = re.sub(r'\n\s*\n', '\n\n', text)
         
-        return text
+        # Previne buracos gigantes removendo excesso de quebras vazias
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        
+        return text.strip()
     except: 
         return ""
 
@@ -282,9 +230,6 @@ f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
     
-    # ----------------------------------------------------
-    # AQUI ESTÁ A LÓGICA DAS 3 CHAVES!
-    # ----------------------------------------------------
     keys_raw = [
         st.secrets.get("GEMINI_API_KEY"),
         st.secrets.get("GEMINI_API_KEY2"),
@@ -339,9 +284,6 @@ if st.button("🚀 Processar Conferência"):
             sucesso = False
             log_erros = []
 
-            # ----------------------------------------------------
-            # LOOP QUE TESTA AS CHAVES ATÉ UMA FUNCIONAR
-            # ----------------------------------------------------
             for idx_key, key in enumerate(keys_validas):
                 if sucesso: break
                 genai.configure(api_key=key)
@@ -390,13 +332,15 @@ if st.button("🚀 Processar Conferência"):
                             html_mkt = txt_mkt
                             html_ref = txt_ref
                             
-                        html_ref = formatar_layout(html_ref)
-                        html_mkt = formatar_layout(html_mkt)
+                        # Converte as quebras de linha limpas direto para HTML
+                        html_ref = html_ref.replace('\n', '<br>')
+                        html_mkt = html_mkt.replace('\n', '<br>')
                     else:
                         html_ref_raw, html_mkt_raw, teve_diff = diff_palavra_a_palavra(txt_ref, txt_mkt)
                         
-                        html_ref = formatar_layout(html_ref_raw)
-                        html_mkt = formatar_layout(html_mkt_raw)
+                        # Converte as quebras de linha limpas direto para HTML
+                        html_ref = html_ref_raw.replace('\n', '<br>')
+                        html_mkt = html_mkt_raw.replace('\n', '<br>')
                         
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff: divs_count += 1
