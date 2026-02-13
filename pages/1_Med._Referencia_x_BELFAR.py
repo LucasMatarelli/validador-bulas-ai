@@ -25,7 +25,7 @@ st.markdown("""
         border-radius: 8px;
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        text-align: justify; /* Alinhamento idêntico a documentos formais */
+        text-align: justify; /* Textos perfeitamente alinhados como em documentos oficiais */
     }
     
     /* Layout idêntico para os tópicos / marcadores */
@@ -33,7 +33,7 @@ st.markdown("""
         display: block;
         margin-left: 20px;
         text-indent: -15px;
-        margin-bottom: 4px;
+        margin-bottom: 6px;
     }
     
     /* DIVERGÊNCIA (Amarelo) */
@@ -94,24 +94,36 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_layout(texto):
-    """Constrói o layout HTML garantindo recuos, espaçamentos e parágrafos idênticos ao original."""
+    """Constrói o layout HTML garantindo recuos, parágrafos reais e texto justificado."""
     if not texto: return ""
-    linhas = texto.split('\n')
+    
+    # 1. Padroniza tipos de quebras de linha
+    texto = texto.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # 2. Transforma quebras de linha SIMPLES em espaço (para unir frases do mesmo parágrafo)
+    texto = re.sub(r'(?<!\n)\n(?!\n)', ' ', texto)
+    
+    # 3. Transforma quebras múltiplas em apenas quebra dupla (parágrafo)
+    texto = re.sub(r'\n{2,}', '\n\n', texto)
+    
+    linhas = texto.split('\n\n')
     resultado = []
     
     for linha in linhas:
-        if not linha.strip():
-            resultado.append("<br>")
-            continue
+        linha = linha.strip()
+        if not linha: continue
         
-        # Limpa as tags HTML só para checar os marcadores visuais no início
+        # Limpa excesso de espaços no meio gerados pela união
+        linha = re.sub(r'[ \t]+', ' ', linha)
+        
         linha_limpa = re.sub(r'<[^>]+>', '', linha).strip()
         
-        # Identifica se é um tópico de lista (Ex: -, •, *, 1., a) )
+        # Identifica se é um tópico de lista
         if re.match(r'^([-•*]|[a-zA-Z]\)|[0-9]+\.)\s+', linha_limpa):
             resultado.append(f'<div class="topico">{linha}</div>')
         else:
-            resultado.append(f'<div>{linha}</div>')
+            # É um parágrafo normal
+            resultado.append(f'<div style="margin-bottom: 12px;">{linha}</div>')
             
     return "".join(resultado)
 
@@ -127,7 +139,6 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     html_novo_list = []
     tem_diff = False
     
-    # Envolve apenas as palavras. Deixa quebras de linha e espaços fora da tag <span> para não quebrar o layout HTML.
     def envolver_diferenca(tokens):
         res = []
         for t in tokens:
@@ -187,13 +198,11 @@ def extract_text_from_file(uploaded_file):
                             )
                             
                             res = content
-                            if is_italic: 
-                                res = f"<i>{res}</i>"
-                            if is_bold: 
-                                res = f"<b>{res}</b>"
+                            if is_italic: res = f"<i>{res}</i>"
+                            if is_bold: res = f"<b>{res}</b>"
                             
                             line_txt += res + " "
-                        block_text += line_txt + " " 
+                        block_text += line_txt.strip() + " " 
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
@@ -201,32 +210,20 @@ def extract_text_from_file(uploaded_file):
                 para_txt = ""
                 for run in para.runs:
                     res = run.text
-                    if run.italic: 
-                        res = f"<i>{res}</i>"
-                    if run.bold: 
-                        res = f"<b>{res}</b>"
+                    if run.italic: res = f"<i>{res}</i>"
+                    if run.bold: res = f"<b>{res}</b>"
                     para_txt += res
                 text += para_txt + "\n\n"
         
         # ---------------------------------------------------------
         # LIMPEZA AVANÇADA DE FORMATAÇÃO E RODAPÉS
         # ---------------------------------------------------------
-        # 1. Junta palavras divididas por hífen entre quebras/spans (Ex: Henoch- Schoenlein)
         text = re.sub(r'(\w)-\s+(\w)', r'\1-\2', text)
-        
-        # 2. Remove paginação padrão
         text = re.sub(r'(?i)bula[^\n]*?p[áa]gina[^\n]*?\d+\s*de\s*\d+', '', text)
         text = re.sub(r'(?i)p[áa]gina[^\n]*?\d+\s*de\s*\d+', '', text)
-        
-        # 3. Remove rodapés de controle de versão da indústria (Ex: 1 VP14 = Voltaren_Bula_Paciente 5)
         text = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[^\n]+', '', text)
-        
-        # 4. Remove nomes de arquivo perdidos como rodapé (Ex: Medicamento_Bula_Paciente 03)
         text = re.sub(r'(?i)\b[a-z0-9_]+_bula_(?:paciente|profissional)[^\n]*', '', text)
-        
-        # 5. Limpa excesso de quebras de linha duplas extras geradas pela remoção
         text = re.sub(r'\n\s*\n', '\n\n', text)
-        # ---------------------------------------------------------
         
         return text
     except: 
@@ -237,7 +234,6 @@ st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
     
-    /* SIDEBAR SEMPRE ABERTA E TRAVADA */
     section[data-testid="stSidebar"] {
         display: block !important;
         visibility: visible !important;
@@ -263,7 +259,6 @@ st.markdown("""
         transform: translateX(0) !important;
     }
     
-    /* Remove todos os botões de colapsar */
     button[kind="header"],
     [data-testid="collapsedControl"],
     button[data-testid="baseButton-header"] {
@@ -389,13 +384,11 @@ if st.button("🚀 Processar Conferência"):
                             html_mkt = txt_mkt
                             html_ref = txt_ref
                             
-                        # Aplica o formatador em seções ignoradas
                         html_ref = formatar_layout(html_ref)
                         html_mkt = formatar_layout(html_mkt)
                     else:
                         html_ref_raw, html_mkt_raw, teve_diff = diff_palavra_a_palavra(txt_ref, txt_mkt)
                         
-                        # Aplica o formatador nos resultados da análise detalhada
                         html_ref = formatar_layout(html_ref_raw)
                         html_mkt = formatar_layout(html_mkt_raw)
                         
