@@ -84,7 +84,6 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_html(texto):
-    """Lógica avançada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
     if not texto: return ""
     
     texto = texto.replace('\r\n', '\n').replace('\r', '\n')
@@ -113,18 +112,14 @@ def formatar_html(texto):
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # ========================================================
-    # LIMPEZA NINJA: Remove invisíveis e espaços que geram falsos positivos
-    # ========================================================
     def limpar_espacos(t):
         t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
-        t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
-        t = re.sub(r' ([.,;:?!])', r'\1', t) # Tira espaço antes de ponto final/vírgula
+        t = re.sub(r'[ \t]+', ' ', t)
+        t = re.sub(r' ([.,;:?!])', r'\1', t)
         return t
         
     texto_ref = limpar_espacos(texto_ref)
     texto_novo = limpar_espacos(texto_novo)
-    # ========================================================
 
     tokens_ref = re.split(r'(\s+)', texto_ref)
     tokens_novo = re.split(r'(\s+)', texto_novo)
@@ -214,14 +209,10 @@ def extract_text_from_file(uploaded_file):
                     para_txt += res
                 text += para_txt + "\n\n"
         
-        # ---------------------------------------------------------
-        # LIMPEZA CIRÚRGICA DE FORMATAÇÃO E RODAPÉS
-        # ---------------------------------------------------------
         text = re.sub(r'(\w)-\s+(\w)', r'\1-\2', text)
         text = re.sub(r'(?i)(?:bula\s+)?p[áa]gina\s+\d+\s+de\s+\d+', '', text)
         text = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[a-zA-Z0-9_]+\s*\d*', '', text)
         text = re.sub(r'(?i)\b[a-zA-Z0-9_]+_bula_(?:paciente|profissional)\s*\d*', '', text)
-        # ---------------------------------------------------------
         
         return text
     except: 
@@ -302,8 +293,9 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Arquivo vazio ou ilegível."); st.stop()
 
+            # MUDANÇA CRUCIAL NO PROMPT: Regras rígidas para evitar quebra de JSON
             prompt = f"""
-            Você é um Extrator de Dados Farmacêuticos Rigoroso.
+            Você é um Extrator de Dados Farmacêuticos Rigoroso. DEVOLVA APENAS UM JSON VÁLIDO.
             
             INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
             INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
@@ -313,7 +305,11 @@ if st.button("🚀 Processar Conferência"):
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA NENHUMA FRASE.
             3. PRESERVAR RIGOROSAMENTE formatação <b> e <i>.
             4. MANTER todas as tags <b></b> e <i></i> EXATAMENTE como aparecem no texto.
-            5. PRESERVAR AS QUEBRAS DE PARÁGRAFOS (\\n\\n). Nunca junte dois parágrafos que estavam separados.
+            
+            REGRAS CRÍTICAS DO JSON:
+            - NUNCA use quebras de linha literais (Enter) dentro dos valores. Substitua sempre por '\\n'.
+            - ESCAPE todas as aspas duplas internas do texto usando '\\"'.
+            - O resultado deve ser estritamente parseável por `json.loads()`.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
@@ -364,7 +360,8 @@ if st.button("🚀 Processar Conferência"):
                 elif texto_resposta.startswith('```'):
                     texto_resposta = texto_resposta[3:-3]
                 
-                resultado = json.loads(texto_resposta)
+                # MUDANÇA CRUCIAL NO PYTHON: strict=False para tolerar pequenas falhas da IA
+                resultado = json.loads(texto_resposta, strict=False)
                 
                 data_ref = resultado.get("data_anvisa_ref", "-")
                 data_mkt = resultado.get("data_anvisa_mkt", "-")
