@@ -25,14 +25,21 @@ st.markdown("""
         border-radius: 8px;
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        text-align: left;
-        white-space: pre-wrap; /* MANTÉM AS QUEBRAS DE LINHA E PARÁGRAFOS ORIGINAIS */
+        text-align: justify; /* Alinhamento idêntico a documentos formais */
+    }
+    
+    /* Layout idêntico para os tópicos / marcadores */
+    .topico {
+        display: block;
+        margin-left: 20px;
+        text-indent: -15px;
+        margin-bottom: 4px;
     }
     
     /* DIVERGÊNCIA (Amarelo) */
     .highlight-yellow { 
         background-color: #fff3cd; color: #856404; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #ffeeba; 
+        padding: 0px 2px; border-radius: 3px; border: 1px solid #ffeeba; 
         font-weight: bold;
     }
     
@@ -86,8 +93,29 @@ def destacar_datas(texto):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
+def formatar_layout(texto):
+    """Constrói o layout HTML garantindo recuos, espaçamentos e parágrafos idênticos ao original."""
+    if not texto: return ""
+    linhas = texto.split('\n')
+    resultado = []
+    
+    for linha in linhas:
+        if not linha.strip():
+            resultado.append("<br>")
+            continue
+        
+        # Limpa as tags HTML só para checar os marcadores visuais no início
+        linha_limpa = re.sub(r'<[^>]+>', '', linha).strip()
+        
+        # Identifica se é um tópico de lista (Ex: -, •, *, 1., a) )
+        if re.match(r'^([-•*]|[a-zA-Z]\)|[0-9]+\.)\s+', linha_limpa):
+            resultado.append(f'<div class="topico">{linha}</div>')
+        else:
+            resultado.append(f'<div>{linha}</div>')
+            
+    return "".join(resultado)
+
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # O uso do regex mantem espaços e quebras de linha preservados como tokens isolados
     tokens_ref = re.split(r'(\s+)', texto_ref)
     tokens_novo = re.split(r'(\s+)', texto_novo)
     
@@ -99,28 +127,28 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     html_novo_list = []
     tem_diff = False
     
+    # Envolve apenas as palavras. Deixa quebras de linha e espaços fora da tag <span> para não quebrar o layout HTML.
+    def envolver_diferenca(tokens):
+        res = []
+        for t in tokens:
+            if not t.strip(): 
+                res.append(t)
+            else:
+                res.append(f'<span class="highlight-yellow">{t}</span>')
+        return "".join(res)
+
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
             html_ref_list.append("".join(tokens_ref[i1:i2]))
             html_novo_list.append("".join(tokens_novo[j1:j2]))
         elif tag in ['replace', 'delete', 'insert']:
-            # Trata Texto Referência
             if tag in ['replace', 'delete']:
-                chunk_ref = "".join(tokens_ref[i1:i2])
-                if chunk_ref.strip(): # Só marca como divergência visual se não for apenas uma quebra de linha perdida
-                    html_ref_list.append(f'<span class="highlight-yellow">{chunk_ref}</span>')
-                    tem_diff = True
-                else:
-                    html_ref_list.append(chunk_ref)
+                html_ref_list.append(envolver_diferenca(tokens_ref[i1:i2]))
+                if "".join(tokens_ref[i1:i2]).strip(): tem_diff = True
             
-            # Trata Texto Novo
             if tag in ['replace', 'insert']:
-                chunk_novo = "".join(tokens_novo[j1:j2])
-                if chunk_novo.strip():
-                    html_novo_list.append(f'<span class="highlight-yellow">{chunk_novo}</span>')
-                    tem_diff = True
-                else:
-                    html_novo_list.append(chunk_novo)
+                html_novo_list.append(envolver_diferenca(tokens_novo[j1:j2]))
+                if "".join(tokens_novo[j1:j2]).strip(): tem_diff = True
                 
     return "".join(html_ref_list), "".join(html_novo_list), tem_diff
 
@@ -360,8 +388,17 @@ if st.button("🚀 Processar Conferência"):
                         else:
                             html_mkt = txt_mkt
                             html_ref = txt_ref
+                            
+                        # Aplica o formatador em seções ignoradas
+                        html_ref = formatar_layout(html_ref)
+                        html_mkt = formatar_layout(html_mkt)
                     else:
-                        html_ref, html_mkt, teve_diff = diff_palavra_a_palavra(txt_ref, txt_mkt)
+                        html_ref_raw, html_mkt_raw, teve_diff = diff_palavra_a_palavra(txt_ref, txt_mkt)
+                        
+                        # Aplica o formatador nos resultados da análise detalhada
+                        html_ref = formatar_layout(html_ref_raw)
+                        html_mkt = formatar_layout(html_mkt_raw)
+                        
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff: divs_count += 1
 
