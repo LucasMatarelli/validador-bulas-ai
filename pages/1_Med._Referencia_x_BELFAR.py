@@ -84,24 +84,40 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_html(texto):
-    """Constrói blocos HTML idênticos ao documento original (Word/PDF) sem quebrar tags."""
+    """Lógica avançada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
     if not texto: return ""
     
-    # Separa o texto em blocos reais (parágrafos)
-    blocos = re.split(r'\n+', texto)
+    # 1. Padroniza quebras de linha
+    texto = texto.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # 2. Transforma quebras duplas (parágrafos reais) no marcador forte de bloco
+    texto = re.sub(r'\n{2,}', '@@BLOCO@@', texto)
+    
+    # 3. Identifica quebra simples onde a PRÓXIMA linha começa com um tracinho/marcador
+    # Isso impede que os tracinhos grudem no parágrafo anterior!
+    padrao_lista = r'\n(?=\s*(?:<[^>]+>)*\s*(?:[-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+)'
+    texto = re.sub(padrao_lista, '@@BLOCO@@', texto)
+    
+    # 4. As outras quebras simples eram só frases quebradas pelo PDF. Junta com espaço.
+    texto = texto.replace('\n', ' ')
+    
+    # 5. Limpa espaços duplos
+    texto = re.sub(r'[ \t]+', ' ', texto)
+    
+    blocos = texto.split('@@BLOCO@@')
     resultado = []
     
     for bloco in blocos:
         bloco_limpo = bloco.strip()
         if not bloco_limpo: continue
         
-        # Analisa o texto sem as tags HTML para ver se é um marcador de lista
         texto_sem_tags = re.sub(r'<[^>]+>', '', bloco_limpo).strip()
         
-        # Se for tópico de lista (- • * 1. a)), aplica recuo. Se não, é parágrafo normal.
-        if re.match(r'^([-•*]|[a-zA-Z]\)|[0-9]+\.)\s+', texto_sem_tags):
+        # Se for um item de lista (tracinho, bolinha, a), 1.), aplica recuo e alinhamento
+        if re.match(r'^([-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+', texto_sem_tags):
             resultado.append(f'<div style="margin-left: 20px; text-indent: -15px; margin-bottom: 8px; text-align: justify;">{bloco_limpo}</div>')
         else:
+            # Se for parágrafo normal, apenas justifica
             resultado.append(f'<div style="margin-bottom: 12px; text-align: justify;">{bloco_limpo}</div>')
             
     return "".join(resultado)
@@ -121,7 +137,7 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     def envolver_diferenca(tokens):
         res = []
         for t in tokens:
-            # Não aplica a marcação amarela em espaços ou quebras de linha
+            # Só pinta de amarelo se for palavra. Quebras e espaços ficam intocados.
             if re.match(r'^\s+$', t) or not t: 
                 res.append(t)
             else:
@@ -182,8 +198,9 @@ def extract_text_from_file(uploaded_file):
                             if is_bold: res = f"<b>{res}</b>"
                             
                             line_txt += res + " "
-                        block_text += line_txt.strip() + " " 
-                    # Garante que cada bloco extraído vire um parágrafo isolado
+                        
+                        # MUDANÇA CRUCIAL: Agora preserva a quebra física da linha do PDF!
+                        block_text += line_txt.strip() + "\n" 
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
@@ -199,17 +216,9 @@ def extract_text_from_file(uploaded_file):
         # ---------------------------------------------------------
         # LIMPEZA CIRÚRGICA DE FORMATAÇÃO E RODAPÉS
         # ---------------------------------------------------------
-        # 1. Junta palavras divididas por hífen (Ex: Henoch- Schoenlein)
         text = re.sub(r'(\w)-\s+(\w)', r'\1-\2', text)
-        
-        # 2. Remove "Página X de Y" isolado ou com Bula antes
         text = re.sub(r'(?i)(?:bula\s+)?p[áa]gina\s+\d+\s+de\s+\d+', '', text)
-        
-        # 3. Remove APENAS o código de controle de versão (Ex: VP14 = Voltaren_Bula_Paciente 5), 
-        #    preservando o resto da linha se houver texto válido.
         text = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[a-zA-Z0-9_]+\s*\d*', '', text)
-        
-        # 4. Remove nomes de arquivos que ficam como rodapé
         text = re.sub(r'(?i)\b[a-zA-Z0-9_]+_bula_(?:paciente|profissional)\s*\d*', '', text)
         # ---------------------------------------------------------
         
@@ -347,7 +356,6 @@ if st.button("🚀 Processar Conferência"):
                 st.stop()
             
             try:
-                # Tratamento de segurança caso a IA coloque blocos markdown em volta do JSON
                 texto_resposta = response.text.strip()
                 if texto_resposta.startswith('```json'):
                     texto_resposta = texto_resposta[7:-3]
