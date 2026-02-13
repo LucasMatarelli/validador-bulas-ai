@@ -26,6 +26,7 @@ st.markdown("""
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         text-align: left;
+        white-space: pre-wrap; /* MANTÉM AS QUEBRAS DE LINHA E PARÁGRAFOS ORIGINAIS */
     }
     
     /* DIVERGÊNCIA (Amarelo) */
@@ -38,13 +39,6 @@ st.markdown("""
     .highlight-blue { 
         background-color: #d1ecf1; color: #0c5460; 
         padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
-    }
-    
-    .topico-item {
-        display: block;
-        margin-left: 20px;
-        margin-bottom: 4px;
-        text-indent: -15px; 
     }
     
     .border-ok { border-left: 6px solid #28a745 !important; }
@@ -86,26 +80,6 @@ SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
-def normalizacao_nuclear(texto):
-    """Remove TUDO que não seja letra ou número para comparação de conteúdo."""
-    if not texto: return ""
-    t = re.sub(r'<[^>]+>', '', texto)
-    t = unicodedata.normalize('NFKD', t).encode('ASCII', 'ignore').decode('ASCII')
-    t = re.sub(r'[^a-zA-Z0-9]', '', t)
-    return t.lower()
-
-def melhorar_visual_topicos(texto_html):
-    """Transforma marcadores txt em visual HTML bonito"""
-    linhas = re.split(r'(<br>|\n)', texto_html)
-    novo_texto = []
-    for linha in linhas:
-        if re.search(r'^\s*[-•*]\s+', re.sub(r'<[^>]+>', '', linha).strip()):
-            linha_limpa = re.sub(r'^\s*[-•*]\s+', '', linha)
-            novo_texto.append(f'<div class="topico-item">• {linha_limpa}</div>')
-        else:
-            novo_texto.append(linha)
-    return "".join(novo_texto)
-
 def destacar_datas(texto):
     padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padrão\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     def replacer(match):
@@ -113,48 +87,42 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    palavras_ref = texto_ref.split()
-    palavras_novo = texto_novo.split()
-    matcher = difflib.SequenceMatcher(None, palavras_ref, palavras_novo)
+    # O uso do regex mantem espaços e quebras de linha preservados como tokens isolados
+    tokens_ref = re.split(r'(\s+)', texto_ref)
+    tokens_novo = re.split(r'(\s+)', texto_novo)
+    
+    tokens_ref = [t for t in tokens_ref if t]
+    tokens_novo = [t for t in tokens_novo if t]
+
+    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            texto = " ".join(palavras_ref[i1:i2])
-            html_ref_list.append(texto)
-            html_novo_list.append(texto)
-        elif tag == 'replace':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
-            tem_diff = True
-        elif tag == 'delete':
-            html_ref_list.append(f'<span class="highlight-yellow">{" ".join(palavras_ref[i1:i2])}</span>')
-            tem_diff = True
-        elif tag == 'insert':
-            html_novo_list.append(f'<span class="highlight-yellow">{" ".join(palavras_novo[j1:j2])}</span>')
-            tem_diff = True
+            html_ref_list.append("".join(tokens_ref[i1:i2]))
+            html_novo_list.append("".join(tokens_novo[j1:j2]))
+        elif tag in ['replace', 'delete', 'insert']:
+            # Trata Texto Referência
+            if tag in ['replace', 'delete']:
+                chunk_ref = "".join(tokens_ref[i1:i2])
+                if chunk_ref.strip(): # Só marca como divergência visual se não for apenas uma quebra de linha perdida
+                    html_ref_list.append(f'<span class="highlight-yellow">{chunk_ref}</span>')
+                    tem_diff = True
+                else:
+                    html_ref_list.append(chunk_ref)
             
-    return " ".join(html_ref_list), " ".join(html_novo_list), tem_diff
-
-def gerar_diff_html(texto_ref, texto_novo):
-    if not texto_ref: texto_ref = ""
-    if not texto_novo: texto_novo = ""
-    
-    if normalizacao_nuclear(texto_ref) == normalizacao_nuclear(texto_novo):
-        html_novo = melhorar_visual_topicos(texto_novo.replace('\n', '<br>'))
-        return texto_ref.replace('\n', '<br>'), html_novo, False
-
-    ref_limpo = re.sub(r'<[^>]+>', '', texto_ref)
-    novo_limpo = re.sub(r'<[^>]+>', '', texto_novo)
-    
-    r_html, n_html, diff_bool = diff_palavra_a_palavra(ref_limpo, novo_limpo)
-    
-    n_html_final = melhorar_visual_topicos(n_html)
-    r_html_final = r_html.replace('\n', '<br>')
-    
-    return r_html_final, n_html_final, diff_bool
+            # Trata Texto Novo
+            if tag in ['replace', 'insert']:
+                chunk_novo = "".join(tokens_novo[j1:j2])
+                if chunk_novo.strip():
+                    html_novo_list.append(f'<span class="highlight-yellow">{chunk_novo}</span>')
+                    tem_diff = True
+                else:
+                    html_novo_list.append(chunk_novo)
+                
+    return "".join(html_ref_list), "".join(html_novo_list), tem_diff
 
 def extract_text_from_file(uploaded_file):
     try:
@@ -196,7 +164,6 @@ def extract_text_from_file(uploaded_file):
                             if is_bold: 
                                 res = f"<b>{res}</b>"
                             
-                            # AQUI ESTA A CORRECAO: Adicionei ' + " "' para evitar palavras coladas
                             line_txt += res + " "
                         block_text += line_txt + " " 
                     text += block_text.strip() + "\n\n"
@@ -214,13 +181,22 @@ def extract_text_from_file(uploaded_file):
                 text += para_txt + "\n\n"
         
         # ---------------------------------------------------------
-        # NOVO: LIMPEZA DE CABEÇALHOS, RODAPÉS E PAGINAÇÃO
+        # LIMPEZA AVANÇADA DE FORMATAÇÃO E RODAPÉS
         # ---------------------------------------------------------
-        # Remove coisas como "Bula ao Paciente Página 1 de 9" ou "Bula do Paciente - R.V08 Página 1 de 10"
+        # 1. Junta palavras divididas por hífen entre quebras/spans (Ex: Henoch- Schoenlein)
+        text = re.sub(r'(\w)-\s+(\w)', r'\1-\2', text)
+        
+        # 2. Remove paginação padrão
         text = re.sub(r'(?i)bula[^\n]*?p[áa]gina[^\n]*?\d+\s*de\s*\d+', '', text)
-        # Remove também se a paginação estiver sozinha ou em outra linha "Página 1 de 10"
         text = re.sub(r'(?i)p[áa]gina[^\n]*?\d+\s*de\s*\d+', '', text)
-        # Limpa quebras de linha duplas extras geradas pela remoção
+        
+        # 3. Remove rodapés de controle de versão da indústria (Ex: 1 VP14 = Voltaren_Bula_Paciente 5)
+        text = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[^\n]+', '', text)
+        
+        # 4. Remove nomes de arquivo perdidos como rodapé (Ex: Medicamento_Bula_Paciente 03)
+        text = re.sub(r'(?i)\b[a-z0-9_]+_bula_(?:paciente|profissional)[^\n]*', '', text)
+        
+        # 5. Limpa excesso de quebras de linha duplas extras geradas pela remoção
         text = re.sub(r'\n\s*\n', '\n\n', text)
         # ---------------------------------------------------------
         
@@ -384,12 +360,8 @@ if st.button("🚀 Processar Conferência"):
                         else:
                             html_mkt = txt_mkt
                             html_ref = txt_ref
-                        
-                        html_mkt = html_mkt.replace('\n', '<br>')
-                        html_ref = html_ref.replace('\n', '<br>')
-                        html_mkt = melhorar_visual_topicos(html_mkt)
                     else:
-                        html_ref, html_mkt, teve_diff = gerar_diff_html(txt_ref, txt_mkt)
+                        html_ref, html_mkt, teve_diff = diff_palavra_a_palavra(txt_ref, txt_mkt)
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff: divs_count += 1
 
