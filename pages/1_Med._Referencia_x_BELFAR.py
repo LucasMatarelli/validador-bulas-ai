@@ -5,7 +5,6 @@ import docx
 import json
 import difflib
 import re
-import unicodedata
 import time
 
 # ----------------- 1. VISUAL & CSS -----------------
@@ -16,8 +15,8 @@ st.markdown("""
     [data-testid="stHeader"] { visibility: hidden; }
     
     .texto-box { 
-        font-family: 'Segoe UI', Arial, sans-serif;
-        font-size: 1rem;
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 0.95rem;
         line-height: 1.6;
         color: #212529;
         background-color: #ffffff;
@@ -25,18 +24,18 @@ st.markdown("""
         border-radius: 8px;
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        text-align: justify; /* Garante o alinhamento reto igual ao arquivo original */
     }
     
     /* DIVERGÊNCIA (Amarelo) */
     .highlight-yellow { 
         background-color: #fff3cd; color: #856404; 
-        padding: 0px 2px; border-radius: 3px; font-weight: bold;
+        padding: 0px 2px; border-radius: 3px; border: 1px solid #ffeeba; 
+        font-weight: bold;
     }
     
     .highlight-blue { 
         background-color: #d1ecf1; color: #0c5460; 
-        padding: 2px 4px; border-radius: 4px; font-weight: bold; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
     }
     
     .border-ok { border-left: 6px solid #28a745 !important; }
@@ -84,6 +83,29 @@ def destacar_datas(texto):
         return f'{match.group(1)}<span class="highlight-blue">{match.group(2)}</span>'
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
+def formatar_html(texto):
+    """Constrói blocos HTML idênticos ao documento original (Word/PDF) sem quebrar tags."""
+    if not texto: return ""
+    
+    # Separa o texto em blocos reais (parágrafos)
+    blocos = re.split(r'\n+', texto)
+    resultado = []
+    
+    for bloco in blocos:
+        bloco_limpo = bloco.strip()
+        if not bloco_limpo: continue
+        
+        # Analisa o texto sem as tags HTML para ver se é um marcador de lista
+        texto_sem_tags = re.sub(r'<[^>]+>', '', bloco_limpo).strip()
+        
+        # Se for tópico de lista (- • * 1. a)), aplica recuo. Se não, é parágrafo normal.
+        if re.match(r'^([-•*]|[a-zA-Z]\)|[0-9]+\.)\s+', texto_sem_tags):
+            resultado.append(f'<div style="margin-left: 20px; text-indent: -15px; margin-bottom: 8px; text-align: justify;">{bloco_limpo}</div>')
+        else:
+            resultado.append(f'<div style="margin-bottom: 12px; text-align: justify;">{bloco_limpo}</div>')
+            
+    return "".join(resultado)
+
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     tokens_ref = re.split(r'(\s+)', texto_ref)
     tokens_novo = re.split(r'(\s+)', texto_novo)
@@ -99,7 +121,8 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     def envolver_diferenca(tokens):
         res = []
         for t in tokens:
-            if not t.strip(): 
+            # Não aplica a marcação amarela em espaços ou quebras de linha
+            if re.match(r'^\s+$', t) or not t: 
                 res.append(t)
             else:
                 res.append(f'<span class="highlight-yellow">{t}</span>')
@@ -136,19 +159,31 @@ def extract_text_from_file(uploaded_file):
                             font_props = s["font"].lower()
                             flags = s.get("flags", 0)
                             
-                            is_bold = ((flags & 16) or "bold" in font_props or "black" in font_props or "heavy" in font_props or "semibold" in font_props)
-                            is_italic = ((flags & 2) or "italic" in font_props or "oblique" in font_props)
+                            is_bold = (
+                                (flags & 16) or 
+                                "bold" in font_props or 
+                                "black" in font_props or
+                                "heavy" in font_props or
+                                "semibold" in font_props or
+                                font_props.endswith("-b") or
+                                font_props.endswith("-bold")
+                            )
+                            
+                            is_italic = (
+                                (flags & 2) or 
+                                "italic" in font_props or
+                                "oblique" in font_props or
+                                font_props.endswith("-i") or
+                                font_props.endswith("-italic")
+                            )
                             
                             res = content
                             if is_italic: res = f"<i>{res}</i>"
                             if is_bold: res = f"<b>{res}</b>"
                             
                             line_txt += res + " "
-                        
-                        # Remove a quebra de linha interna do PDF unindo com espaço
                         block_text += line_txt.strip() + " " 
-                    
-                    # Separa os blocos (parágrafos reais) com duas quebras de linha
+                    # Garante que cada bloco extraído vire um parágrafo isolado
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
@@ -162,18 +197,23 @@ def extract_text_from_file(uploaded_file):
                 text += para_txt + "\n\n"
         
         # ---------------------------------------------------------
-        # LIMPEZA AVANÇADA DE FORMATAÇÃO E RODAPÉS
+        # LIMPEZA CIRÚRGICA DE FORMATAÇÃO E RODAPÉS
         # ---------------------------------------------------------
+        # 1. Junta palavras divididas por hífen (Ex: Henoch- Schoenlein)
         text = re.sub(r'(\w)-\s+(\w)', r'\1-\2', text)
-        text = re.sub(r'(?i)bula[^\n]*?p[áa]gina[^\n]*?\d+\s*de\s*\d+', '', text)
-        text = re.sub(r'(?i)p[áa]gina[^\n]*?\d+\s*de\s*\d+', '', text)
-        text = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[^\n]+', '', text)
-        text = re.sub(r'(?i)\b[a-z0-9_]+_bula_(?:paciente|profissional)[^\n]*', '', text)
         
-        # Previne buracos gigantes removendo excesso de quebras vazias
-        text = re.sub(r'\n{3,}', '\n\n', text)
+        # 2. Remove "Página X de Y" isolado ou com Bula antes
+        text = re.sub(r'(?i)(?:bula\s+)?p[áa]gina\s+\d+\s+de\s+\d+', '', text)
         
-        return text.strip()
+        # 3. Remove APENAS o código de controle de versão (Ex: VP14 = Voltaren_Bula_Paciente 5), 
+        #    preservando o resto da linha se houver texto válido.
+        text = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[a-zA-Z0-9_]+\s*\d*', '', text)
+        
+        # 4. Remove nomes de arquivos que ficam como rodapé
+        text = re.sub(r'(?i)\b[a-zA-Z0-9_]+_bula_(?:paciente|profissional)\s*\d*', '', text)
+        # ---------------------------------------------------------
+        
+        return text
     except: 
         return ""
 
@@ -307,7 +347,15 @@ if st.button("🚀 Processar Conferência"):
                 st.stop()
             
             try:
-                resultado = json.loads(response.text)
+                # Tratamento de segurança caso a IA coloque blocos markdown em volta do JSON
+                texto_resposta = response.text.strip()
+                if texto_resposta.startswith('```json'):
+                    texto_resposta = texto_resposta[7:-3]
+                elif texto_resposta.startswith('```'):
+                    texto_resposta = texto_resposta[3:-3]
+                
+                resultado = json.loads(texto_resposta)
+                
                 data_ref = resultado.get("data_anvisa_ref", "-")
                 data_mkt = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
@@ -332,15 +380,13 @@ if st.button("🚀 Processar Conferência"):
                             html_mkt = txt_mkt
                             html_ref = txt_ref
                             
-                        # Converte as quebras de linha limpas direto para HTML
-                        html_ref = html_ref.replace('\n', '<br>')
-                        html_mkt = html_mkt.replace('\n', '<br>')
+                        html_ref = formatar_html(html_ref)
+                        html_mkt = formatar_html(html_mkt)
                     else:
                         html_ref_raw, html_mkt_raw, teve_diff = diff_palavra_a_palavra(txt_ref, txt_mkt)
                         
-                        # Converte as quebras de linha limpas direto para HTML
-                        html_ref = html_ref_raw.replace('\n', '<br>')
-                        html_mkt = html_mkt_raw.replace('\n', '<br>')
+                        html_ref = formatar_html(html_ref_raw)
+                        html_mkt = formatar_html(html_mkt_raw)
                         
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff: divs_count += 1
