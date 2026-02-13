@@ -5,6 +5,7 @@ import docx
 import json
 import difflib
 import re
+import unicodedata
 import time
 
 # ----------------- 1. VISUAL & CSS -----------------
@@ -77,6 +78,34 @@ SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
+def extrair_json_seguro(texto_resposta):
+    """Cura o JSON caso a IA tenha cortado o final da string por falta de tokens."""
+    texto = texto_resposta.strip()
+    if texto.startswith('```json'): texto = texto[7:]
+    elif texto.startswith('```'): texto = texto[3:]
+    if texto.endswith('```'): texto = texto[:-3]
+    texto = texto.strip()
+
+    try:
+        return json.loads(texto, strict=False)
+    except json.JSONDecodeError:
+        pass # Falhou de primeira, vamos tentar curar o final
+
+    # Tenta adicionar fechamentos comuns caso o texto tenha sido decepado
+    fechamentos = ['', '"}', '}]}', ']}', '}', '"]}]}', '"]}']
+    for f in fechamentos:
+        try:
+            return json.loads(texto + f, strict=False)
+        except:
+            try:
+                # Tenta fechar uma aspa dupla que ficou aberta no meio de uma palavra
+                return json.loads(texto + '"' + f, strict=False)
+            except:
+                pass
+                
+    # Se der erro crítico e absoluto, cria uma estrutura vazia para a tela não dar crash
+    return {"data_anvisa_ref": "Erro Extração", "data_anvisa_mkt": "Erro Extração", "secoes": []}
+
 def destacar_datas(texto):
     padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padrão\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     def replacer(match):
@@ -112,10 +141,11 @@ def formatar_html(texto):
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
+    # LIMPEZA NINJA: Nivela os dois textos para evitar "falsos positivos" por espaçamento oculto
     def limpar_espacos(t):
-        t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
-        t = re.sub(r'[ \t]+', ' ', t)
-        t = re.sub(r' ([.,;:?!])', r'\1', t)
+        t = unicodedata.normalize('NFKC', t) # Transforma caracteres estranhos em normais
+        t = re.sub(r'[\u200b\u200c\u200d\u2060\ufeff\xad]', '', t) # Mata caracteres com largura zero
+        t = re.sub(r'[ \t]+', ' ', t) # Nivela duplo/triplo espaço
         return t
         
     texto_ref = limpar_espacos(texto_ref)
@@ -285,7 +315,7 @@ if st.button("🚀 Processar Conferência"):
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
 
-        with st.spinner("Lendo arquivos e conectando à IA..."):
+        with st.spinner("Lendo arquivos e conectando à IA (Este processo pode demorar para bulas grandes)..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
@@ -293,7 +323,6 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Arquivo vazio ou ilegível."); st.stop()
 
-            # MUDANÇA CRUCIAL NO PROMPT: Regras rígidas para evitar quebra de JSON
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso. DEVOLVA APENAS UM JSON VÁLIDO.
             
@@ -338,7 +367,12 @@ if st.button("🚀 Processar Conferência"):
                     try:
                         model = genai.GenerativeModel(
                             modelo, 
-                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                            # MUDANÇA ABSOLUTA: Forçando a IA a não cortar o final do texto
+                            generation_config={
+                                "response_mime_type": "application/json", 
+                                "temperature": 0.0,
+                                "max_output_tokens": 8192
+                            }
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
@@ -353,16 +387,15 @@ if st.button("🚀 Processar Conferência"):
                 st.code("\n".join(log_erros))
                 st.stop()
             
+            # Aqui rodamos a nova função de proteção contra quebra de JSON
+            resultado = extrair_json_seguro(response.text)
+            
+            if len(resultado.get("secoes", [])) == 0:
+                st.error("A IA gerou um formato irreconhecível mesmo após as tentativas de recuperação. A bula pode ser excessivamente longa.")
+                st.code(response.text[:500] + "\n\n...\n\n" + response.text[-500:])
+                st.stop()
+            
             try:
-                texto_resposta = response.text.strip()
-                if texto_resposta.startswith('```json'):
-                    texto_resposta = texto_resposta[7:-3]
-                elif texto_resposta.startswith('```'):
-                    texto_resposta = texto_resposta[3:-3]
-                
-                # MUDANÇA CRUCIAL NO PYTHON: strict=False para tolerar pequenas falhas da IA
-                resultado = json.loads(texto_resposta, strict=False)
-                
                 data_ref = resultado.get("data_anvisa_ref", "-")
                 data_mkt = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
@@ -434,7 +467,6 @@ if st.button("🚀 Processar Conferência"):
                             st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"Erro ao processar JSON: {e}")
-                st.code(response.text)
+                st.error(f"Erro inesperado ao renderizar: {e}")
     else:
         st.warning("Adicione os arquivos.")
