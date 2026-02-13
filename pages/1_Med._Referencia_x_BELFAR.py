@@ -87,21 +87,13 @@ def formatar_html(texto):
     """Lógica avançada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
     if not texto: return ""
     
-    # 1. Padroniza quebras de linha
     texto = texto.replace('\r\n', '\n').replace('\r', '\n')
-    
-    # 2. Transforma quebras duplas (parágrafos reais) no marcador forte de bloco
     texto = re.sub(r'\n{2,}', '@@BLOCO@@', texto)
     
-    # 3. Identifica quebra simples onde a PRÓXIMA linha começa com um tracinho/marcador
-    # Isso impede que os tracinhos grudem no parágrafo anterior!
     padrao_lista = r'\n(?=\s*(?:<[^>]+>)*\s*(?:[-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+)'
     texto = re.sub(padrao_lista, '@@BLOCO@@', texto)
     
-    # 4. As outras quebras simples eram só frases quebradas pelo PDF. Junta com espaço.
     texto = texto.replace('\n', ' ')
-    
-    # 5. Limpa espaços duplos
     texto = re.sub(r'[ \t]+', ' ', texto)
     
     blocos = texto.split('@@BLOCO@@')
@@ -113,16 +105,27 @@ def formatar_html(texto):
         
         texto_sem_tags = re.sub(r'<[^>]+>', '', bloco_limpo).strip()
         
-        # Se for um item de lista (tracinho, bolinha, a), 1.), aplica recuo e alinhamento
         if re.match(r'^([-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+', texto_sem_tags):
             resultado.append(f'<div style="margin-left: 20px; text-indent: -15px; margin-bottom: 8px; text-align: justify;">{bloco_limpo}</div>')
         else:
-            # Se for parágrafo normal, apenas justifica
             resultado.append(f'<div style="margin-bottom: 12px; text-align: justify;">{bloco_limpo}</div>')
             
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
+    # ========================================================
+    # LIMPEZA NINJA: Remove invisíveis e espaços que geram falsos positivos
+    # ========================================================
+    def limpar_espacos(t):
+        t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
+        t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
+        t = re.sub(r' ([.,;:?!])', r'\1', t) # Tira espaço antes de ponto final/vírgula
+        return t
+        
+    texto_ref = limpar_espacos(texto_ref)
+    texto_novo = limpar_espacos(texto_novo)
+    # ========================================================
+
     tokens_ref = re.split(r'(\s+)', texto_ref)
     tokens_novo = re.split(r'(\s+)', texto_novo)
     
@@ -137,7 +140,6 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     def envolver_diferenca(tokens):
         res = []
         for t in tokens:
-            # Só pinta de amarelo se for palavra. Quebras e espaços ficam intocados.
             if re.match(r'^\s+$', t) or not t: 
                 res.append(t)
             else:
@@ -199,7 +201,6 @@ def extract_text_from_file(uploaded_file):
                             
                             line_txt += res + " "
                         
-                        # MUDANÇA CRUCIAL: Agora preserva a quebra física da linha do PDF!
                         block_text += line_txt.strip() + "\n" 
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
@@ -309,9 +310,10 @@ if st.button("🚀 Processar Conferência"):
 
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
-            2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA.
-            3. PRESERVAR RIGOROSAMENTE formatação <b> e <i>. NÃO corrigir português.
+            2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA NENHUMA FRASE.
+            3. PRESERVAR RIGOROSAMENTE formatação <b> e <i>.
             4. MANTER todas as tags <b></b> e <i></i> EXATAMENTE como aparecem no texto.
+            5. PRESERVAR AS QUEBRAS DE PARÁGRAFOS (\\n\\n). Nunca junte dois parágrafos que estavam separados.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
