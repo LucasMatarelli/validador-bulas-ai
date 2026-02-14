@@ -5,7 +5,6 @@ import docx
 import json
 import difflib
 import re
-import unicodedata
 import time
 
 # ----------------- 1. VISUAL & CSS -----------------
@@ -27,6 +26,7 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
     
+    /* DIVERGÊNCIA (Amarelo) */
     .highlight-yellow { 
         background-color: #fff3cd; color: #856404; 
         padding: 0px 2px; border-radius: 3px; border: 1px solid #ffeeba; 
@@ -77,30 +77,6 @@ SECOES_SEM_COMPARACAO = ["APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"]
 
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
-def extrair_json_seguro(texto_resposta):
-    texto = texto_resposta.strip()
-    if texto.startswith('```json'): texto = texto[7:]
-    elif texto.startswith('```'): texto = texto[3:]
-    if texto.endswith('```'): texto = texto[:-3]
-    texto = texto.strip()
-
-    try:
-        return json.loads(texto, strict=False)
-    except json.JSONDecodeError:
-        pass 
-
-    fechamentos = ['', '"}', '}]}', ']}', '}', '"]}]}', '"]}']
-    for f in fechamentos:
-        try:
-            return json.loads(texto + f, strict=False)
-        except:
-            try:
-                return json.loads(texto + '"' + f, strict=False)
-            except:
-                pass
-                
-    return {"data_anvisa_ref": "-", "data_anvisa_mkt": "-", "secoes": []}
-
 def destacar_datas(texto):
     padrao = r'(Esta\s+bula\s+foi\s+(?:atualizada\s+conforme\s+Bula\s+Padrão\s+)?aprovada\s+pela\s+Anvisa\s+em\s*)(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})'
     def replacer(match):
@@ -108,6 +84,7 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_html(texto):
+    """Lógica avançada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
     if not texto: return ""
     
     texto = texto.replace('\r\n', '\n').replace('\r', '\n')
@@ -136,15 +113,18 @@ def formatar_html(texto):
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
+    # ========================================================
+    # LIMPEZA NINJA: Remove invisíveis e espaços que geram falsos positivos
+    # ========================================================
     def limpar_espacos(t):
-        t = unicodedata.normalize('NFKC', t)
-        t = re.sub(r'[\u200b\u200c\u200d\u2060\ufeff\xad]', '', t)
-        t = re.sub(r'[ \t]+', ' ', t)
-        t = re.sub(r' ([.,;:?!])', r'\1', t)
+        t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
+        t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
+        t = re.sub(r' ([.,;:?!])', r'\1', t) # Tira espaço antes de ponto final/vírgula
         return t
         
     texto_ref = limpar_espacos(texto_ref)
     texto_novo = limpar_espacos(texto_novo)
+    # ========================================================
 
     tokens_ref = re.split(r'(\s+)', texto_ref)
     tokens_novo = re.split(r'(\s+)', texto_novo)
@@ -234,10 +214,14 @@ def extract_text_from_file(uploaded_file):
                     para_txt += res
                 text += para_txt + "\n\n"
         
+        # ---------------------------------------------------------
+        # LIMPEZA CIRÚRGICA DE FORMATAÇÃO E RODAPÉS
+        # ---------------------------------------------------------
         text = re.sub(r'(\w)-\s+(\w)', r'\1-\2', text)
         text = re.sub(r'(?i)(?:bula\s+)?p[áa]gina\s+\d+\s+de\s+\d+', '', text)
         text = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[a-zA-Z0-9_]+\s*\d*', '', text)
         text = re.sub(r'(?i)\b[a-zA-Z0-9_]+_bula_(?:paciente|profissional)\s*\d*', '', text)
+        # ---------------------------------------------------------
         
         return text
     except: 
@@ -310,7 +294,7 @@ if st.button("🚀 Processar Conferência"):
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
 
-        with st.spinner("Lendo arquivos e conectando à IA (Bulas grandes são processadas em lotes)..."):
+        with st.spinner("Lendo arquivos e conectando à IA..."):
             f1.seek(0); f2.seek(0)
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
@@ -318,93 +302,76 @@ if st.button("🚀 Processar Conferência"):
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Arquivo vazio ou ilegível."); st.stop()
 
-            # --- SISTEMA DE CHUNKING (LOTES) PARA BURLAR O LIMITE DE TOKENS ---
-            tamanho_lote = 4
-            lotes_secoes = [secoes_alvo[i:i + tamanho_lote] for i in range(0, len(secoes_alvo), tamanho_lote)]
+            prompt = f"""
+            Você é um Extrator de Dados Farmacêuticos Rigoroso.
             
-            secoes_finais_completas = []
-            data_ref_global = "-"
-            data_mkt_global = "-"
-            divs_count_global = 0
+            INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
+            INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
+
+            SUA MISSÃO:
+            1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
+            2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA NENHUMA FRASE.
+            3. PRESERVAR RIGOROSAMENTE formatação <b> e <i>.
+            4. MANTER todas as tags <b></b> e <i></i> EXATAMENTE como aparecem no texto.
+            5. PRESERVAR AS QUEBRAS DE PARÁGRAFOS (\\n\\n). Nunca junte dois parágrafos que estavam separados.
+
+            LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
+
+            SAÍDA JSON:
+            {{
+                "data_anvisa_ref": "dd/mm/aaaa",
+                "data_anvisa_mkt": "dd/mm/aaaa",
+                "secoes": [
+                    {{
+                        "titulo": "NOME DA SEÇÃO",
+                        "texto_anvisa": "...",
+                        "texto_mkt": "..."
+                    }}
+                ]
+            }}
+            """
             
-            barra_progresso = st.progress(0)
-            status_texto = st.empty()
+            response = None
+            sucesso = False
+            log_erros = []
 
-            for indice_lote, lote in enumerate(lotes_secoes):
-                status_texto.markdown(f"**Processando lote {indice_lote + 1} de {len(lotes_secoes)}...** (Extraindo seções: {', '.join(lote)})")
+            for idx_key, key in enumerate(keys_validas):
+                if sucesso: break
+                genai.configure(api_key=key)
+                for modelo in MODELOS_PARA_TENTAR:
+                    try:
+                        model = genai.GenerativeModel(
+                            modelo, 
+                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                        )
+                        response = model.generate_content(prompt)
+                        sucesso = True
+                        break 
+                    except Exception as e:
+                        log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
+                        time.sleep(0.5)
+                        continue
+
+            if not sucesso:
+                st.error("❌ Falha Total. Todas as chaves e modelos falharam. Detalhes:")
+                st.code("\n".join(log_erros))
+                st.stop()
+            
+            try:
+                texto_resposta = response.text.strip()
+                if texto_resposta.startswith('```json'):
+                    texto_resposta = texto_resposta[7:-3]
+                elif texto_resposta.startswith('```'):
+                    texto_resposta = texto_resposta[3:-3]
                 
-                prompt = f"""
-                Você é um Extrator de Dados Farmacêuticos Rigoroso. DEVOLVA APENAS UM JSON VÁLIDO.
+                resultado = json.loads(texto_resposta)
                 
-                INPUT TEXTO 1 (REF): {t_anvisa[:150000]}
-                INPUT TEXTO 2 (MKT): {t_mkt[:150000]}
-
-                SUA MISSÃO:
-                1. Extrair DATA DE APROVAÇÃO se encontrar (frase exata "aprovada pela Anvisa em...").
-                2. Extrair TODO o conteúdo APENAS das seções listadas abaixo. NÃO RESUMA NADA.
-                3. PRESERVAR RIGOROSAMENTE formatação <b> e <i>.
-                4. MANTER todas as tags <b></b> e <i></i> EXATAMENTE como aparecem no texto.
-                
-                REGRAS CRÍTICAS DO JSON:
-                - NUNCA use quebras de linha literais (Enter) dentro dos valores. Substitua sempre por '\\n'.
-                - ESCAPE todas as aspas duplas internas do texto usando '\\"'.
-                - O resultado deve ser estritamente parseável por `json.loads()`.
-
-                LISTA DE SEÇÕES ESPERADAS NESTE LOTE: {lote}
-
-                SAÍDA JSON:
-                {{
-                    "data_anvisa_ref": "dd/mm/aaaa ou '-'",
-                    "data_anvisa_mkt": "dd/mm/aaaa ou '-'",
-                    "secoes": [
-                        {{
-                            "titulo": "NOME DA SEÇÃO",
-                            "texto_anvisa": "...",
-                            "texto_mkt": "..."
-                        }}
-                    ]
-                }}
-                """
-                
-                response = None
-                sucesso = False
-                log_erros = []
-
-                for idx_key, key in enumerate(keys_validas):
-                    if sucesso: break
-                    genai.configure(api_key=key)
-                    for modelo in MODELOS_PARA_TENTAR:
-                        try:
-                            model = genai.GenerativeModel(
-                                modelo, 
-                                generation_config={
-                                    "response_mime_type": "application/json", 
-                                    "temperature": 0.0,
-                                    "max_output_tokens": 8192
-                                }
-                            )
-                            response = model.generate_content(prompt)
-                            sucesso = True
-                            break 
-                        except Exception as e:
-                            log_erros.append(f"Key {idx_key+1} | {modelo}: {str(e)}")
-                            time.sleep(0.5)
-                            continue
-
-                if not sucesso:
-                    st.error(f"❌ Falha no lote {indice_lote + 1}. Detalhes:")
-                    st.code("\n".join(log_erros))
-                    st.stop()
-                
-                resultado = extrair_json_seguro(response.text)
-                
-                # Atualiza as datas globais apenas se encontrou algo novo e válido
-                if data_ref_global == "-" and resultado.get("data_anvisa_ref") not in ["-", None, "Erro Extração"]:
-                    data_ref_global = resultado.get("data_anvisa_ref")
-                if data_mkt_global == "-" and resultado.get("data_anvisa_mkt") not in ["-", None, "Erro Extração"]:
-                    data_mkt_global = resultado.get("data_anvisa_mkt")
-
+                data_ref = resultado.get("data_anvisa_ref", "-")
+                data_mkt = resultado.get("data_anvisa_mkt", "-")
                 dados_secoes = resultado.get("secoes", [])
+                
+                secoes_finais = []
+                divs_count = 0
 
                 for item in dados_secoes:
                     titulo = item.get('titulo', '').strip()
@@ -432,49 +399,45 @@ if st.button("🚀 Processar Conferência"):
                         html_mkt = formatar_html(html_mkt_raw)
                         
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
-                        if teve_diff: divs_count_global += 1
+                        if teve_diff: divs_count += 1
 
-                    secoes_finais_completas.append({
+                    secoes_finais.append({
                         "titulo": titulo, "texto_anvisa": html_ref, "texto_mkt": html_mkt, "status": status
                     })
+
+                st.markdown("### 📊 Resumo")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Data Referência", data_ref)
+                c2.metric("Data BELFAR", data_mkt, delta="Igual" if data_ref == data_mkt else "Diferente")
+                c3.metric("Seções", len(secoes_finais))
+
+                sub1, sub2 = st.columns(2)
+                sub1.info(f"✅ Conformes: {len(secoes_finais) - divs_count}")
+                if divs_count > 0: sub2.warning(f"⚠️ Divergentes: {divs_count}")
+                else: sub2.success("✨ Divergências: 0")
+
+                st.divider()
+
+                for item in secoes_finais:
+                    status = item['status']
+                    titulo = item['titulo']
                     
-                barra_progresso.progress((indice_lote + 1) / len(lotes_secoes))
-                time.sleep(1) # Pausa amigável para a API não bloquear por taxa de requisição
+                    if "DIZERES LEGAIS" in titulo.upper(): icon, css, aberto = "⚖️", "border-info", True
+                    elif any(b in titulo.upper() for b in SECOES_SEM_COMPARACAO): icon, css, aberto = "🔒", "border-ok", False
+                    elif status == "CONFORME": icon, css, aberto = "✅", "border-ok", False
+                    else: icon, css, aberto = "⚠️", "border-warn", True
 
-            status_texto.empty() # Limpa o texto de status
-            barra_progresso.empty() # Limpa a barra
+                    with st.expander(f"{icon} {titulo}", expanded=aberto):
+                        ce, cd = st.columns(2)
+                        with ce:
+                            st.caption("Referência")
+                            st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
+                        with cd:
+                            st.caption("BELFAR")
+                            st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
 
-            # --- RENDERIZAÇÃO FINAL ---
-            st.markdown("### 📊 Resumo")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Data Referência", data_ref_global)
-            c2.metric("Data BELFAR", data_mkt_global, delta="Igual" if data_ref_global == data_mkt_global else "Diferente")
-            c3.metric("Seções Conferidas", len(secoes_finais_completas))
-
-            sub1, sub2 = st.columns(2)
-            sub1.info(f"✅ Conformes: {len(secoes_finais_completas) - divs_count_global}")
-            if divs_count_global > 0: sub2.warning(f"⚠️ Divergentes: {divs_count_global}")
-            else: sub2.success("✨ Divergências: 0")
-
-            st.divider()
-
-            for item in secoes_finais_completas:
-                status = item['status']
-                titulo = item['titulo']
-                
-                if "DIZERES LEGAIS" in titulo.upper(): icon, css, aberto = "⚖️", "border-info", True
-                elif any(b in titulo.upper() for b in SECOES_SEM_COMPARACAO): icon, css, aberto = "🔒", "border-ok", False
-                elif status == "CONFORME": icon, css, aberto = "✅", "border-ok", False
-                else: icon, css, aberto = "⚠️", "border-warn", True
-
-                with st.expander(f"{icon} {titulo}", expanded=aberto):
-                    ce, cd = st.columns(2)
-                    with ce:
-                        st.caption("Referência")
-                        st.markdown(f'<div class="texto-box {css}">{item["texto_anvisa"]}</div>', unsafe_allow_html=True)
-                    with cd:
-                        st.caption("BELFAR")
-                        st.markdown(f'<div class="texto-box {css}">{item["texto_mkt"]}</div>', unsafe_allow_html=True)
-
+            except Exception as e:
+                st.error(f"Erro ao processar JSON: {e}")
+                st.code(response.text)
     else:
         st.warning("Adicione os arquivos.")
