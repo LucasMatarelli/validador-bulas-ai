@@ -113,9 +113,18 @@ def formatar_html(texto):
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # ========================================================
-    # LIMPEZA NINJA: Remove invisíveis e espaços que geram falsos positivos
-    # ========================================================
+    tokens_ref = [t for t in tokens_ref if t]
+    tokens_novo = [t for t in tokens_novo if t]
+
+    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
+    
+    # ADICIONE APENAS ESTA LINHA ABAIXO:
+    matcher.set_seqs([t.lower() for t in tokens_ref], [t.lower() for t in tokens_novo])
+
+    html_ref_list = []
+    html_novo_list = []
+    tem_diff = False
+    
     def limpar_espacos(t):
         t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
         t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
