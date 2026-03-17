@@ -121,6 +121,7 @@ SECOES_PACIENTE = [
 SECOES_PROFISSIONAL = []
 
 SIMILARITY_THRESHOLD = 0.92  # mais rígido para reduzir falsos-positivos
+SIMILARITY_THRESHOLD = 1.1
 
 # ----------------- 3. LIMPEZA AUTOMATIZADA (METADADOS E RODAPÉS) -----------------
 def clean_metadata_and_footers(texto: str) -> str:
