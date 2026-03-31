@@ -113,6 +113,11 @@ def formatar_html(texto):
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
+    # --- ADICIONADO: Inicializa as variáveis vazias para evitar o erro de "unbound local variable" ---
+    tokens_ref = []
+    tokens_novo = []
+    # -----------------------------------------------------------------------------------------------
+
     tokens_ref = [t for t in tokens_ref if t]
     tokens_novo = [t for t in tokens_novo if t]
 
@@ -142,6 +147,11 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     tokens_novo = [t for t in tokens_novo if t]
 
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
+    
+    # --- ADICIONADO: Colocando a regra no "matcher" definitivo para realmente funcionar ---
+    matcher.set_seqs([t.lower() for t in tokens_ref], [t.lower() for t in tokens_novo])
+    # --------------------------------------------------------------------------------------
+
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
