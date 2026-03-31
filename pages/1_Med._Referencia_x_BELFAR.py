@@ -113,39 +113,13 @@ def formatar_html(texto):
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    tokens_ref = [t for t in tokens_ref if t]
-    tokens_novo = [t for t in tokens_novo if t]
-
-    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
-    
-    # ADICIONE APENAS ESTA LINHA ABAIXO:
-    matcher.set_seqs([t.lower() for t in tokens_ref], [t.lower() for t in tokens_novo])
-
-    html_ref_list = []
-    html_novo_list = []
-    tem_diff = False
-    
+    # 1. Funções internas de limpeza
     def limpar_espacos(t):
         t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
         t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
         t = re.sub(r' ([.,;:?!])', r'\1', t) # Tira espaço antes de ponto final/vírgula
         return t
         
-    texto_ref = limpar_espacos(texto_ref)
-    texto_novo = limpar_espacos(texto_novo)
-    # ========================================================
-
-    tokens_ref = re.split(r'(\s+)', texto_ref)
-    tokens_novo = re.split(r'(\s+)', texto_novo)
-    
-    tokens_ref = [t for t in tokens_ref if t]
-    tokens_novo = [t for t in tokens_novo if t]
-
-    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
-    html_ref_list = []
-    html_novo_list = []
-    tem_diff = False
-    
     def envolver_diferenca(tokens):
         res = []
         for t in tokens:
@@ -154,6 +128,29 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
             else:
                 res.append(f'<span class="highlight-yellow">{t}</span>')
         return "".join(res)
+
+    # 2. Limpar os textos primeiro
+    texto_ref = limpar_espacos(texto_ref)
+    texto_novo = limpar_espacos(texto_novo)
+
+    # 3. Gerar os tokens (Agora sim a variável nasce!)
+    tokens_ref = re.split(r'(\s+)', texto_ref)
+    tokens_novo = re.split(r'(\s+)', texto_novo)
+    
+    # 4. Remover tokens vazios
+    tokens_ref = [t for t in tokens_ref if t]
+    tokens_novo = [t for t in tokens_novo if t]
+
+    # 5. Criar o Matcher
+    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
+    
+    # 6. Ignorar Case-Sensitive na hora de comparar (A linha que você queria adicionar)
+    matcher.set_seqs([t.lower() for t in tokens_ref], [t.lower() for t in tokens_novo])
+
+    # 7. Processar as diferenças
+    html_ref_list = []
+    html_novo_list = []
+    tem_diff = False
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
