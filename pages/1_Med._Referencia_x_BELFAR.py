@@ -348,7 +348,7 @@ if st.button("🚀 Processar Conferência"):
                     try:
                         model = genai.GenerativeModel(
                             modelo, 
-                            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+                            generation_config={"response_mime_type": "application/json", "temperature": 0.0, "max_output_tokens": 8192}
                         )
                         response = model.generate_content(prompt)
                         sucesso = True
