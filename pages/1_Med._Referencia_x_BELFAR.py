@@ -124,7 +124,7 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
     
     # ADICIONE APENAS ESTA LINHA ABAIXO:
-    matcher.set_seqs([t.lower() for t in tokens_ref], [t.lower() for t in tokens_novo])
+    matcher.set_seqs(tokens_ref, tokens_novo)
 
     html_ref_list = []
     html_novo_list = []
@@ -149,7 +149,7 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
     
     # --- ADICIONADO: Colocando a regra no "matcher" definitivo para realmente funcionar ---
-    matcher.set_seqs([t.lower() for t in tokens_ref], [t.lower() for t in tokens_novo])
+    matcher.set_seqs(tokens_ref, tokens_novo)
     # --------------------------------------------------------------------------------------
 
     html_ref_list = []
