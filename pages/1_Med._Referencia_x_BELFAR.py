@@ -84,7 +84,7 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_html(texto):
-    """Lógica avançada original restaurada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
+    """Lógica avançada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
     if not texto: return ""
     
     texto = texto.replace('\r\n', '\n').replace('\r', '\n')
@@ -113,6 +113,24 @@ def formatar_html(texto):
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
+    # --- ADICIONADO: Inicializa as variáveis vazias para evitar o erro de "unbound local variable" ---
+    tokens_ref = []
+    tokens_novo = []
+    # -----------------------------------------------------------------------------------------------
+
+    tokens_ref = [t for t in tokens_ref if t]
+    tokens_novo = [t for t in tokens_novo if t]
+
+    # FIX: autojunk=False para evitar falsas divergências em blocos longos
+    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
+    
+    # FIX: Removido o .lower() para marcar divergência em maiúsculas/minúsculas
+    matcher.set_seqs(tokens_ref, tokens_novo)
+
+    html_ref_list = []
+    html_novo_list = []
+    tem_diff = False
+    
     def limpar_espacos(t):
         t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
         t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
@@ -121,6 +139,7 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
         
     texto_ref = limpar_espacos(texto_ref)
     texto_novo = limpar_espacos(texto_novo)
+    # ========================================================
 
     tokens_ref = re.split(r'(\s+)', texto_ref)
     tokens_novo = re.split(r'(\s+)', texto_novo)
@@ -128,9 +147,14 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     tokens_ref = [t for t in tokens_ref if t]
     tokens_novo = [t for t in tokens_novo if t]
 
-    # autojunk=False resolve o problema de marcar parágrafos idênticos como erro!
+    # FIX: autojunk=False novamente
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
     
+    # --- ADICIONADO: Colocando a regra no "matcher" definitivo para realmente funcionar ---
+    # FIX: Removido o .lower()
+    matcher.set_seqs(tokens_ref, tokens_novo)
+    # --------------------------------------------------------------------------------------
+
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
