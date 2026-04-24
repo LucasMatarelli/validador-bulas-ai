@@ -24,7 +24,7 @@ st.markdown("""
         border-radius: 8px;
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; /* OBRIGA O NAVEGADOR A MANTER O LAYOUT E PARÁGRAFOS DO PDF */
+        white-space: pre-wrap; 
     }
     
     /* DIVERGÊNCIA (Amarelo) */
@@ -85,7 +85,6 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_html(texto):
-    """Apenas repassa o texto. O 'white-space: pre-wrap' no CSS garante o layout original."""
     if not texto: return ""
     return texto
 
@@ -96,14 +95,12 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     texto_ref = limpar_sujeiras_invisiveis(texto_ref)
     texto_novo = limpar_sujeiras_invisiveis(texto_novo)
 
-    # Usa re.split para separar, mas mantendo os espaços originais intocados
     tokens_ref = re.split(r'(\s+)', texto_ref)
     tokens_novo = re.split(r'(\s+)', texto_novo)
     
     tokens_ref = [t for t in tokens_ref if t]
     tokens_novo = [t for t in tokens_novo if t]
 
-    # autojunk=False É A CORREÇÃO: Impede que blocos grandes e idênticos sejam marcados como erro
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
 
     html_ref_list = []
@@ -174,7 +171,9 @@ def extract_text_from_file(uploaded_file):
                             
                             line_txt += res + " "
                         
-                        block_text += line_txt.strip() + "\n" 
+                        # --- CORREÇÃO AQUI ---
+                        # Trocado o "\n" por " " para juntar as linhas do mesmo parágrafo
+                        block_text += line_txt.strip() + " " 
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
