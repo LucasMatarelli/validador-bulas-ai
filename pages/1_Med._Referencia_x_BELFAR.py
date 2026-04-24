@@ -24,7 +24,7 @@ st.markdown("""
         border-radius: 8px;
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; /* CORREÇÃO 1: Mantém os espaçamentos originais */
+        white-space: pre-wrap; /* OBRIGA O NAVEGADOR A MANTER O LAYOUT E PARÁGRAFOS DO PDF */
     }
     
     /* DIVERGÊNCIA (Amarelo) */
@@ -85,74 +85,26 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_html(texto):
-    """Lógica avançada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
+    """Apenas repassa o texto. O 'white-space: pre-wrap' no CSS garante o layout original."""
     if not texto: return ""
-    
-    texto = texto.replace('\r\n', '\n').replace('\r', '\n')
-    texto = re.sub(r'\n{2,}', '@@BLOCO@@', texto)
-    
-    padrao_lista = r'\n(?=\s*(?:<[^>]+>)*\s*(?:[-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+)'
-    texto = re.sub(padrao_lista, '@@BLOCO@@', texto)
-    
-    # CORREÇÃO 2: Substitui por <br> em vez de espaço para não destruir a quebra de linha original
-    texto = texto.replace('\n', '<br>') 
-    texto = re.sub(r'[ \t]+', ' ', texto)
-    
-    blocos = texto.split('@@BLOCO@@')
-    resultado = []
-    
-    for bloco in blocos:
-        bloco_limpo = bloco.strip()
-        if not bloco_limpo: continue
-        
-        texto_sem_tags = re.sub(r'<[^>]+>', '', bloco_limpo).strip()
-        
-        if re.match(r'^([-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+', texto_sem_tags):
-            resultado.append(f'<div style="margin-left: 20px; text-indent: -15px; margin-bottom: 8px; text-align: justify;">{bloco_limpo}</div>')
-        else:
-            resultado.append(f'<div style="margin-bottom: 12px; text-align: justify;">{bloco_limpo}</div>')
-            
-    return "".join(resultado)
+    return texto
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # --- ADICIONADO: Inicializa as variáveis vazias para evitar o erro de "unbound local variable" ---
-    tokens_ref = []
-    tokens_novo = []
-    # -----------------------------------------------------------------------------------------------
-
-    tokens_ref = [t for t in tokens_ref if t]
-    tokens_novo = [t for t in tokens_novo if t]
-
-    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
-    
-    # ADICIONE APENAS ESTA LINHA ABAIXO:
-    matcher.set_seqs(tokens_ref, tokens_novo)
-
-    html_ref_list = []
-    html_novo_list = []
-    tem_diff = False
-    
-    def limpar_espacos(t):
-        t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
-        t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
-        t = re.sub(r' ([.,;:?!])', r'\1', t) # Tira espaço antes de ponto final/vírgula
-        return t
+    def limpar_sujeiras_invisiveis(t):
+        return t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
         
-    texto_ref = limpar_espacos(texto_ref)
-    texto_novo = limpar_espacos(texto_novo)
-    # ========================================================
+    texto_ref = limpar_sujeiras_invisiveis(texto_ref)
+    texto_novo = limpar_sujeiras_invisiveis(texto_novo)
 
+    # Usa re.split para separar, mas mantendo os espaços originais intocados
     tokens_ref = re.split(r'(\s+)', texto_ref)
     tokens_novo = re.split(r'(\s+)', texto_novo)
     
     tokens_ref = [t for t in tokens_ref if t]
     tokens_novo = [t for t in tokens_novo if t]
 
-    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
-    
-    # --- ADICIONADO: Colocando a regra no "matcher" definitivo para realmente funcionar ---
-    matcher.set_seqs(tokens_ref, tokens_novo)
-    # --------------------------------------------------------------------------------------
+    # autojunk=False É A CORREÇÃO: Impede que blocos grandes e idênticos sejam marcados como erro
+    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
 
     html_ref_list = []
     html_novo_list = []
