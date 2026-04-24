@@ -24,7 +24,6 @@ st.markdown("""
         border-radius: 8px;
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        white-space: pre-wrap; 
     }
     
     /* DIVERGÊNCIA (Amarelo) */
@@ -85,15 +84,43 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_html(texto):
+    """Lógica avançada original restaurada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
     if not texto: return ""
-    return texto
+    
+    texto = texto.replace('\r\n', '\n').replace('\r', '\n')
+    texto = re.sub(r'\n{2,}', '@@BLOCO@@', texto)
+    
+    padrao_lista = r'\n(?=\s*(?:<[^>]+>)*\s*(?:[-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+)'
+    texto = re.sub(padrao_lista, '@@BLOCO@@', texto)
+    
+    texto = texto.replace('\n', ' ')
+    texto = re.sub(r'[ \t]+', ' ', texto)
+    
+    blocos = texto.split('@@BLOCO@@')
+    resultado = []
+    
+    for bloco in blocos:
+        bloco_limpo = bloco.strip()
+        if not bloco_limpo: continue
+        
+        texto_sem_tags = re.sub(r'<[^>]+>', '', bloco_limpo).strip()
+        
+        if re.match(r'^([-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+', texto_sem_tags):
+            resultado.append(f'<div style="margin-left: 20px; text-indent: -15px; margin-bottom: 8px; text-align: justify;">{bloco_limpo}</div>')
+        else:
+            resultado.append(f'<div style="margin-bottom: 12px; text-align: justify;">{bloco_limpo}</div>')
+            
+    return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    def limpar_sujeiras_invisiveis(t):
-        return t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
+    def limpar_espacos(t):
+        t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
+        t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
+        t = re.sub(r' ([.,;:?!])', r'\1', t) # Tira espaço antes de ponto final/vírgula
+        return t
         
-    texto_ref = limpar_sujeiras_invisiveis(texto_ref)
-    texto_novo = limpar_sujeiras_invisiveis(texto_novo)
+    texto_ref = limpar_espacos(texto_ref)
+    texto_novo = limpar_espacos(texto_novo)
 
     tokens_ref = re.split(r'(\s+)', texto_ref)
     tokens_novo = re.split(r'(\s+)', texto_novo)
@@ -101,8 +128,9 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     tokens_ref = [t for t in tokens_ref if t]
     tokens_novo = [t for t in tokens_novo if t]
 
+    # autojunk=False resolve o problema de marcar parágrafos idênticos como erro!
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
-
+    
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
@@ -171,9 +199,7 @@ def extract_text_from_file(uploaded_file):
                             
                             line_txt += res + " "
                         
-                        # --- CORREÇÃO AQUI ---
-                        # Trocado o "\n" por " " para juntar as linhas do mesmo parágrafo
-                        block_text += line_txt.strip() + " " 
+                        block_text += line_txt.strip() + "\n" 
                     text += block_text.strip() + "\n\n"
         elif uploaded_file.name.lower().endswith('.docx'):
             doc = docx.Document(uploaded_file)
