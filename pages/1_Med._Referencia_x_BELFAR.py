@@ -24,6 +24,8 @@ st.markdown("""
         border-radius: 8px;
         border: 1px solid #ced4da;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        white-space: pre-wrap; /* ESSENCIAL: Mantém os espaços e quebras de linha originais */
+        word-break: break-word;
     }
     
     /* DIVERGÊNCIA (Amarelo) */
@@ -84,60 +86,24 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_html(texto):
-    """Lógica avançada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
+    """
+    Agora passa o texto quase inalterado. 
+    O 'white-space: pre-wrap' no CSS cuidará de manter o layout original.
+    """
     if not texto: return ""
-    
-    texto = texto.replace('\r\n', '\n').replace('\r', '\n')
-    texto = re.sub(r'\n{2,}', '@@BLOCO@@', texto)
-    
-    padrao_lista = r'\n(?=\s*(?:<[^>]+>)*\s*(?:[-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+)'
-    texto = re.sub(padrao_lista, '@@BLOCO@@', texto)
-    
-    texto = texto.replace('\n', ' ')
-    texto = re.sub(r'[ \t]+', ' ', texto)
-    
-    blocos = texto.split('@@BLOCO@@')
-    resultado = []
-    
-    for bloco in blocos:
-        bloco_limpo = bloco.strip()
-        if not bloco_limpo: continue
-        
-        texto_sem_tags = re.sub(r'<[^>]+>', '', bloco_limpo).strip()
-        
-        if re.match(r'^([-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+', texto_sem_tags):
-            resultado.append(f'<div style="margin-left: 20px; text-indent: -15px; margin-bottom: 8px; text-align: justify;">{bloco_limpo}</div>')
-        else:
-            resultado.append(f'<div style="margin-bottom: 12px; text-align: justify;">{bloco_limpo}</div>')
-            
-    return "".join(resultado)
+    return texto
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # --- ADICIONADO: Inicializa as variáveis vazias para evitar o erro de "unbound local variable" ---
     tokens_ref = []
     tokens_novo = []
-    # -----------------------------------------------------------------------------------------------
 
-    tokens_ref = [t for t in tokens_ref if t]
-    tokens_novo = [t for t in tokens_novo if t]
-
-    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
-    
-    # ADICIONE APENAS ESTA LINHA ABAIXO:
-    matcher.set_seqs(tokens_ref, tokens_novo)
-
-    html_ref_list = []
-    html_novo_list = []
-    tem_diff = False
-    
-    def limpar_espacos(t):
+    def limpar_sujeiras_invisiveis(t):
+        # Remove apenas caracteres invisíveis de formatação, preservando espaços e quebras originais
         t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
-        t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
-        t = re.sub(r' ([.,;:?!])', r'\1', t) # Tira espaço antes de ponto final/vírgula
         return t
         
-    texto_ref = limpar_espacos(texto_ref)
-    texto_novo = limpar_espacos(texto_novo)
+    texto_ref = limpar_sujeiras_invisiveis(texto_ref)
+    texto_novo = limpar_sujeiras_invisiveis(texto_novo)
     # ========================================================
 
     tokens_ref = re.split(r'(\s+)', texto_ref)
@@ -148,9 +114,8 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
 
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo)
     
-    # --- ADICIONADO: Colocando a regra no "matcher" definitivo para realmente funcionar ---
+    # Mantém a exigência estrita (maiúsculas e minúsculas)
     matcher.set_seqs(tokens_ref, tokens_novo)
-    # --------------------------------------------------------------------------------------
 
     html_ref_list = []
     html_novo_list = []
@@ -159,6 +124,7 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     def envolver_diferenca(tokens):
         res = []
         for t in tokens:
+            # Se for apenas espaço ou quebra de linha, não pinta de amarelo para não bugar o visual
             if re.match(r'^\s+$', t) or not t: 
                 res.append(t)
             else:
@@ -231,7 +197,7 @@ def extract_text_from_file(uploaded_file):
                     if run.italic: res = f"<i>{res}</i>"
                     if run.bold: res = f"<b>{res}</b>"
                     para_txt += res
-                text += para_txt + "\n\n"
+                text += para_txt + "\n"
         
         # ---------------------------------------------------------
         # LIMPEZA CIRÚRGICA DE FORMATAÇÃO E RODAPÉS
@@ -332,7 +298,7 @@ if st.button("🚀 Processar Conferência"):
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA NENHUMA FRASE.
             3. PRESERVAR RIGOROSAMENTE formatação <b> e <i>.
             4. MANTER todas as tags <b></b> e <i></i> EXATAMENTE como aparecem no texto.
-            5. PRESERVAR AS QUEBRAS DE PARÁGRAFOS (\\n\\n). Nunca junte dois parágrafos que estavam separados.
+            5. PRESERVAR AS QUEBRAS DE PARÁGRAFOS (\\n\\n) E ESPAÇAMENTOS. Nunca junte dois parágrafos que estavam separados.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
 
@@ -394,8 +360,8 @@ if st.button("🚀 Processar Conferência"):
 
                 for item in dados_secoes:
                     titulo = item.get('titulo', '').strip()
-                    txt_ref = item.get('texto_anvisa', '').strip()
-                    txt_mkt = item.get('texto_mkt', '').strip()
+                    txt_ref = item.get('texto_anvisa', '')
+                    txt_mkt = item.get('texto_mkt', '')
                     
                     titulo_upper = titulo.upper()
                     eh_blindada = any(b in titulo_upper for b in SECOES_SEM_COMPARACAO)
