@@ -1,11 +1,17 @@
 import streamlit as st
 import google.generativeai as genai
-import fitz  # PyMuPDF
-import docx
 import json
 import difflib
 import re
 import time
+import os
+import tempfile
+import asyncio
+import nest_asyncio
+from llama_parse import LlamaParse
+
+# Necessário para o LlamaParse rodar liso dentro do Streamlit sem dar erro de thread
+nest_asyncio.apply()
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
@@ -51,8 +57,9 @@ st.markdown("""
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
     "gemini-2.5-flash",
-    "gemini-3-flash",
-    "gemma-3-27b-it"
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro"
 ]
 
 SECOES_PACIENTE = [
@@ -87,6 +94,11 @@ def formatar_html(texto):
     """Lógica avançada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
     if not texto: return ""
     
+    # Converte o Markdown do LlamaParse para as tags HTML que seu layout usa
+    texto = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', texto)
+    texto = re.sub(r'(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)', r'<i>\1</i>', texto)
+    texto = re.sub(r'\_(.*?)\_', r'<i>\1</i>', texto)
+    
     texto = texto.replace('\r\n', '\n').replace('\r', '\n')
     texto = re.sub(r'\n{2,}', '@@BLOCO@@', texto)
     
@@ -113,18 +125,13 @@ def formatar_html(texto):
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
-    # --- ADICIONADO: Inicializa as variáveis vazias para evitar o erro de "unbound local variable" ---
     tokens_ref = []
     tokens_novo = []
-    # -----------------------------------------------------------------------------------------------
 
     tokens_ref = [t for t in tokens_ref if t]
     tokens_novo = [t for t in tokens_novo if t]
 
-    # FIX: autojunk=False para evitar falsas divergências em blocos longos
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
-    
-    # FIX: Removido o .lower() para marcar divergência em maiúsculas/minúsculas
     matcher.set_seqs(tokens_ref, tokens_novo)
 
     html_ref_list = []
@@ -133,13 +140,12 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     
     def limpar_espacos(t):
         t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
-        t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
-        t = re.sub(r' ([.,;:?!])', r'\1', t) # Tira espaço antes de ponto final/vírgula
+        t = re.sub(r'[ \t]+', ' ', t) 
+        t = re.sub(r' ([.,;:?!])', r'\1', t) 
         return t
         
     texto_ref = limpar_espacos(texto_ref)
     texto_novo = limpar_espacos(texto_novo)
-    # ========================================================
 
     tokens_ref = re.split(r'(\s+)', texto_ref)
     tokens_novo = re.split(r'(\s+)', texto_novo)
@@ -147,13 +153,8 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
     tokens_ref = [t for t in tokens_ref if t]
     tokens_novo = [t for t in tokens_novo if t]
 
-    # FIX: autojunk=False novamente
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
-    
-    # --- ADICIONADO: Colocando a regra no "matcher" definitivo para realmente funcionar ---
-    # FIX: Removido o .lower()
     matcher.set_seqs(tokens_ref, tokens_novo)
-    # --------------------------------------------------------------------------------------
 
     html_ref_list = []
     html_novo_list = []
@@ -183,70 +184,37 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
                 
     return "".join(html_ref_list), "".join(html_novo_list), tem_diff
 
-def extract_text_from_file(uploaded_file):
+def extract_text_from_file_with_llamaparse(uploaded_file, api_key):
     try:
-        text = ""
-        if uploaded_file.name.lower().endswith('.pdf'):
-            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            for page in doc: 
-                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
-                for b in blocks:
-                    block_text = ""
-                    for l in b.get("lines", []):
-                        line_txt = ""
-                        for s in l.get("spans", []):
-                            content = s["text"]
-                            font_props = s["font"].lower()
-                            flags = s.get("flags", 0)
-                            
-                            is_bold = (
-                                (flags & 16) or 
-                                "bold" in font_props or 
-                                "black" in font_props or
-                                "heavy" in font_props or
-                                "semibold" in font_props or
-                                font_props.endswith("-b") or
-                                font_props.endswith("-bold")
-                            )
-                            
-                            is_italic = (
-                                (flags & 2) or 
-                                "italic" in font_props or
-                                "oblique" in font_props or
-                                font_props.endswith("-i") or
-                                font_props.endswith("-italic")
-                            )
-                            
-                            res = content
-                            if is_italic: res = f"<i>{res}</i>"
-                            if is_bold: res = f"<b>{res}</b>"
-                            
-                            line_txt += res + " "
-                        
-                        block_text += line_txt.strip() + "\n" 
-                    text += block_text.strip() + "\n\n"
-        elif uploaded_file.name.lower().endswith('.docx'):
-            doc = docx.Document(uploaded_file)
-            for para in doc.paragraphs: 
-                para_txt = ""
-                for run in para.runs:
-                    res = run.text
-                    if run.italic: res = f"<i>{res}</i>"
-                    if run.bold: res = f"<b>{res}</b>"
-                    para_txt += res
-                text += para_txt + "\n\n"
+        # Cria um arquivo temporário no disco (LlamaParse exige o caminho do arquivo)
+        suffix = f".{uploaded_file.name.split('.')[-1]}"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(uploaded_file.getvalue())
+            temp_path = tmp.name
+
+        # Inicializa a IA do LlamaParse focada em manter a estrutura (Markdown)
+        parser = LlamaParse(
+            api_key=api_key,
+            result_type="markdown",
+            verbose=False,
+            language="pt"
+        )
+
+        docs = parser.load_data(temp_path)
+        texto_completo = "\n\n".join([doc.text for doc in docs])
+
+        # Exclui o arquivo temporário por segurança
+        os.unlink(temp_path)
         
-        # ---------------------------------------------------------
-        # LIMPEZA CIRÚRGICA DE FORMATAÇÃO E RODAPÉS
-        # ---------------------------------------------------------
-        text = re.sub(r'(\w)-\s+(\w)', r'\1-\2', text)
-        text = re.sub(r'(?i)(?:bula\s+)?p[áa]gina\s+\d+\s+de\s+\d+', '', text)
-        text = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[a-zA-Z0-9_]+\s*\d*', '', text)
-        text = re.sub(r'(?i)\b[a-zA-Z0-9_]+_bula_(?:paciente|profissional)\s*\d*', '', text)
-        # ---------------------------------------------------------
+        # Limpeza cirúrgica de formatação e rodapés
+        texto_completo = re.sub(r'(\w)-\s+(\w)', r'\1-\2', texto_completo)
+        texto_completo = re.sub(r'(?i)(?:bula\s+)?p[áa]gina\s+\d+\s+de\s+\d+', '', texto_completo)
+        texto_completo = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[a-zA-Z0-9_]+\s*\d*', '', texto_completo)
+        texto_completo = re.sub(r'(?i)\b[a-zA-Z0-9_]+_bula_(?:paciente|profissional)\s*\d*', '', texto_completo)
         
-        return text
-    except: 
+        return texto_completo
+    except Exception as e:
+        st.error(f"Erro na extração LlamaParse: {e}")
         return ""
 
 # ============= CRIA O MENU LATERAL =============
@@ -308,22 +276,27 @@ if st.button("🚀 Processar Conferência"):
         st.secrets.get("GEMINI_API_KEY3")
     ]
     keys_validas = [k for k in keys_raw if k]
+    llama_key = st.secrets.get("LLAMAPARSE_API_KEY")
 
     if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key encontrada nos Secrets.")
+        st.error("Erro Crítico: Nenhuma API Key do Gemini encontrada nos Secrets.")
+        st.stop()
+        
+    if not llama_key:
+        st.error("Erro Crítico: LLAMAPARSE_API_KEY não encontrada nos Secrets. Adicione sua chave do LlamaParse.")
         st.stop()
 
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
 
-        with st.spinner("Lendo arquivos e conectando à IA..."):
-            f1.seek(0); f2.seek(0)
-            t_anvisa = extract_text_from_file(f1)
-            t_mkt = extract_text_from_file(f2)
+        with st.spinner("Lendo PDFs com IA LlamaParse (Isso pode levar alguns segundos)..."):
+            t_anvisa = extract_text_from_file_with_llamaparse(f1, llama_key)
+            t_mkt = extract_text_from_file_with_llamaparse(f2, llama_key)
 
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Arquivo vazio ou ilegível."); st.stop()
 
+        with st.spinner("Analisando divergências com Gemini..."):
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
             
@@ -333,8 +306,8 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA NENHUMA FRASE.
-            3. PRESERVAR RIGOROSAMENTE formatação <b> e <i>.
-            4. MANTER todas as tags <b></b> e <i></i> EXATAMENTE como aparecem no texto.
+            3. O texto fornecido foi extraído em Markdown. Preserve marcações de negrito e quebras de linha.
+            4. MANTER todas as tags **negrito** e *itálico* EXATAMENTE como aparecem no texto.
             5. PRESERVAR AS QUEBRAS DE PARÁGRAFOS (\\n\\n). Nunca junte dois parágrafos que estavam separados.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
@@ -383,7 +356,8 @@ if st.button("🚀 Processar Conferência"):
                 texto_resposta = response.text.strip()
                 if texto_resposta.startswith('```json'):
                     texto_resposta = texto_resposta[7:-3]
-                elif texto_resposta.startswith('```'):
+                elif texto_resposta.startswith('
+```'):
                     texto_resposta = texto_resposta[3:-3]
                 
                 resultado = json.loads(texto_resposta)
