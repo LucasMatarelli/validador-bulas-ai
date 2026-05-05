@@ -22,6 +22,23 @@ MODELOS_PARA_TENTAR = [
     "gemini-1.5-pro"
 ]
 
+SECOES_PACIENTE = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", 
+    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
+    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
+    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
+    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
+    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
+    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?"
+]
+
+SECOES_PROFISSIONAL = [
+    "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
+    "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
+    "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
+    "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE"
+]
+
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
 def extract_text_from_file(uploaded_file):
@@ -50,7 +67,10 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo, vermelho, azul):
     for page in doc:
         # AMARELO PASTEL (Divergências Inteligentes) - Opacidade 25%
         for frase in amarelo:
-            for area in page.search_for(frase):
+            # TRAVA ANTI-TRAVAMENTO: Ignora espaços vazios ou letras soltas
+            if not frase or len(str(frase).strip()) < 4: continue
+            
+            for area in page.search_for(str(frase)):
                 annot = page.add_highlight_annot(area)
                 annot.set_colors(stroke=(1, 1, 0))
                 annot.set_opacity(0.25)
@@ -58,7 +78,9 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo, vermelho, azul):
 
         # VERMELHO PASTEL (Erros Reais de Português) - Opacidade 25%
         for frase in vermelho:
-            for area in page.search_for(frase):
+            if not frase or len(str(frase).strip()) < 4: continue
+            
+            for area in page.search_for(str(frase)):
                 annot = page.add_highlight_annot(area)
                 annot.set_colors(stroke=(1, 0, 0)) 
                 annot.set_opacity(0.25)
@@ -66,7 +88,9 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo, vermelho, azul):
 
         # AZUL PASTEL (Data da Anvisa) - Opacidade 25%
         for frase in azul:
-            for area in page.search_for(frase):
+            if not frase or len(str(frase).strip()) < 4: continue
+            
+            for area in page.search_for(str(frase)):
                 annot = page.add_highlight_annot(area)
                 annot.set_colors(stroke=(0, 0.5, 1)) 
                 annot.set_opacity(0.25)
@@ -105,16 +129,20 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
         st.stop()
 
     if f1 and f2:
-        with st.spinner("Lendo arquivos..."):
+        texto_resposta_ia = ""
+        sucesso_ia = False
+        
+        # SPINNER 1: APENAS A INTELIGÊNCIA ARTIFICIAL
+        with st.spinner("🧠 Lendo arquivos e analisando com IA (Isso pode levar de 1 a 2 minutos)..."):
             f1.seek(0); f2.seek(0)
             
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
 
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
-                st.error("Arquivo vazio ou ilegível."); st.stop()
+                st.error("Arquivo vazio ou ilegível.")
+                st.stop()
 
-            # IA FAZ A AUDITORIA INTELIGENTE AGORA (Substitui o difflib)
             prompt = f"""
             Você é um Auditor Farmacêutico Sênior. 
             Audite a bula BELFAR usando a bula REFERÊNCIA como base.
@@ -136,19 +164,16 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
 
             Se não achar divergências ou erros ortográficos, retorne listas vazias [].
 
-            SAÍDA JSON OBRIGATÓRIA:
+            SAÍDA JSON OBRIGATÓRIA (sem formatação markdown, apenas o json):
             {{
                 "divergencias_belfar": ["trecho exato divergente 1", "trecho exato divergente 2"],
                 "erros_ortograficos": ["trecho com erro de gramatica"],
                 "data_anvisa": ["aprovada pela Anvisa em..."]
             }}
             """
-            
-            response = None
-            sucesso = False
 
             for key in keys_validas:
-                if sucesso: break
+                if sucesso_ia: break
                 genai.configure(api_key=key)
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
@@ -157,63 +182,70 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
                             generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                         )
                         response = model_instance.generate_content(prompt)
-                        sucesso = True
+                        texto_resposta_ia = response.text
+                        sucesso_ia = True
                         break 
                     except Exception as e:
                         time.sleep(0.5)
                         continue
 
-            if not sucesso:
-                st.error("❌ Falha Total da IA na Auditoria.")
-                st.stop()
+        if not sucesso_ia:
+            st.error("❌ Falha Total da IA na Auditoria. (Pode ser excesso de cota ou erro de API).")
+            st.stop()
             
+        # SPINNER 2: PINTURA DOS PDFS (Separado e isolado para não dar o bug do infinito)
+        with st.spinner("🖌️ Auditoria concluída! Pintando os PDFs e montando a tela..."):
             try:
-                # Blindagem contra o bug de crases do GitHub
                 tag_inicio = chr(96) * 3 + "json"
                 tag_fim = chr(96) * 3
+                texto_limpo = texto_resposta_ia.replace(tag_inicio, "").replace(tag_fim, "").strip()
                 
-                texto_resposta = response.text.replace(tag_inicio, "").replace(tag_fim, "").strip()
-                resultado = json.loads(texto_resposta)
+                # Caso a IA retorne "json" solto no começo
+                if texto_limpo.startswith("json"):
+                    texto_limpo = texto_limpo[4:].strip()
+
+                resultado = json.loads(texto_limpo)
                 
-                divergencias_mkt = resultado.get("divergencias_belfar", [])
-                erros_vermelhos = resultado.get("erros_ortograficos", [])
-                datas_azuis_mkt = resultado.get("data_anvisa", [])
+                # Proteção extra contra nulos na API
+                divergencias_mkt = resultado.get("divergencias_belfar") or []
+                erros_vermelhos = resultado.get("erros_ortograficos") or []
+                datas_azuis_mkt = resultado.get("data_anvisa") or []
 
-                with st.spinner("Pintando os PDFs e montando a tela Lado a Lado..."):
-                    f1.seek(0)
-                    f2.seek(0)
-                    
-                    # Gera as fotos com as marcações translúcidas (A Referência fica limpa ou só com Azul da data)
-                    fotos_ref = gerar_imagens_pdf_grifado(f1, [], [], []) # Referência não leva amarelo/vermelho aqui pra ficar limpa visualmente
-                    fotos_mkt = gerar_imagens_pdf_grifado(f2, divergencias_mkt, erros_vermelhos, datas_azuis_mkt)
-
-                    st.markdown("""
-                    ### 🎨 Legenda da Auditoria Inteligente:
-                    * 🟡 **Amarelo (Suave):** Divergência real de conteúdo (ignora layout e cabeçalhos).
-                    * 🔴 **Vermelho (Suave):** Erro de ortografia (ignora termos médicos e nomes de doenças).
-                    * 🔵 **Azul (Suave):** Data da Anvisa.
-                    """)
-                    st.divider()
-
-                    max_pages = max(len(fotos_ref), len(fotos_mkt))
-                    
-                    for i in range(max_pages):
-                        st.markdown(f"#### Página {i+1}")
-                        col_esq, col_dir = st.columns(2)
-                        
-                        with col_esq:
-                            st.caption("📜 Bula Referência (Visão Limpa)")
-                            if i < len(fotos_ref):
-                                st.image(fotos_ref[i], use_container_width=True)
-                                
-                        with col_dir:
-                            st.caption("📜 Bula BELFAR (Auditoria IA)")
-                            if i < len(fotos_mkt):
-                                st.image(fotos_mkt[i], use_container_width=True)
-                        st.divider()
+                f1.seek(0); f2.seek(0)
+                
+                fotos_ref = gerar_imagens_pdf_grifado(f1, [], [], [])
+                fotos_mkt = gerar_imagens_pdf_grifado(f2, divergencias_mkt, erros_vermelhos, datas_azuis_mkt)
 
             except Exception as e:
-                st.error(f"Erro ao desenhar o PDF: {e}")
-                st.code(response.text)
+                st.error("Erro interno ao processar a pintura do PDF.")
+                st.code(texto_resposta_ia)
+                st.stop()
+
+        # RENDERIZAÇÃO FINAL NA TELA (Só executa se tudo der certo)
+        st.markdown("""
+        ### 🎨 Legenda da Auditoria Inteligente:
+        * 🟡 **Amarelo (Suave):** Divergência real de conteúdo (ignora layout e cabeçalhos).
+        * 🔴 **Vermelho (Suave):** Erro de ortografia (ignora termos médicos e nomes de doenças).
+        * 🔵 **Azul (Suave):** Data da Anvisa.
+        """)
+        st.divider()
+
+        max_pages = max(len(fotos_ref), len(fotos_mkt))
+        
+        for i in range(max_pages):
+            st.markdown(f"#### Página {i+1}")
+            col_esq, col_dir = st.columns(2)
+            
+            with col_esq:
+                st.caption("📜 Bula Referência (Visão Limpa)")
+                if i < len(fotos_ref):
+                    st.image(fotos_ref[i], use_container_width=True)
+                    
+            with col_dir:
+                st.caption("📜 Bula BELFAR (Auditoria IA)")
+                if i < len(fotos_mkt):
+                    st.image(fotos_mkt[i], use_container_width=True)
+            st.divider()
+
     else:
         st.warning("Adicione os arquivos PDF para iniciar.")
