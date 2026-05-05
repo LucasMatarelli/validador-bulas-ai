@@ -1,17 +1,11 @@
 import streamlit as st
 import google.generativeai as genai
+import fitz  # PyMuPDF
+import docx
 import json
 import difflib
 import re
 import time
-import os
-import tempfile
-import asyncio
-import nest_asyncio
-from llama_parse import LlamaParse
-
-# Necessário para o LlamaParse rodar liso dentro do Streamlit sem dar erro de thread
-nest_asyncio.apply()
 
 # ----------------- 1. VISUAL & CSS -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
@@ -33,21 +27,32 @@ st.markdown("""
     }
     
     /* DIVERGÊNCIA (Amarelo) */
-    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0px 2px; border-radius: 3px; border: 1px solid #ffeeba; font-weight: bold; }
-    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; }
+    .highlight-yellow { 
+        background-color: #fff3cd; color: #856404; 
+        padding: 0px 2px; border-radius: 3px; border: 1px solid #ffeeba; 
+        font-weight: bold;
+    }
+    
+    .highlight-blue { 
+        background-color: #d1ecf1; color: #0c5460; 
+        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
+    }
+    
     .border-ok { border-left: 6px solid #28a745 !important; }
     .border-warn { border-left: 6px solid #ffc107 !important; } 
     .border-info { border-left: 6px solid #17a2b8 !important; }
-    div[data-testid="stMetric"] { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center; }
+
+    div[data-testid="stMetric"] {
+        background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------- 2. CONFIGURAÇÃO -----------------
 MODELOS_PARA_TENTAR = [
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
+    "gemini-3-flash",
+    "gemma-3-27b-it"
 ]
 
 SECOES_PACIENTE = [
@@ -79,50 +84,80 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_html(texto):
+    """Lógica avançada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
     if not texto: return ""
-    texto = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', texto)
-    texto = re.sub(r'(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)', r'<i>\1</i>', texto)
-    texto = re.sub(r'\_(.*?)\_', r'<i>\1</i>', texto)
+    
     texto = texto.replace('\r\n', '\n').replace('\r', '\n')
     texto = re.sub(r'\n{2,}', '@@BLOCO@@', texto)
+    
     padrao_lista = r'\n(?=\s*(?:<[^>]+>)*\s*(?:[-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+)'
     texto = re.sub(padrao_lista, '@@BLOCO@@', texto)
+    
     texto = texto.replace('\n', ' ')
     texto = re.sub(r'[ \t]+', ' ', texto)
+    
     blocos = texto.split('@@BLOCO@@')
     resultado = []
+    
     for bloco in blocos:
         bloco_limpo = bloco.strip()
         if not bloco_limpo: continue
+        
         texto_sem_tags = re.sub(r'<[^>]+>', '', bloco_limpo).strip()
+        
         if re.match(r'^([-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+', texto_sem_tags):
             resultado.append(f'<div style="margin-left: 20px; text-indent: -15px; margin-bottom: 8px; text-align: justify;">{bloco_limpo}</div>')
         else:
             resultado.append(f'<div style="margin-bottom: 12px; text-align: justify;">{bloco_limpo}</div>')
+            
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
+    # --- ADICIONADO: Inicializa as variáveis vazias para evitar o erro de "unbound local variable" ---
     tokens_ref = []
     tokens_novo = []
+    # -----------------------------------------------------------------------------------------------
+
+    tokens_ref = [t for t in tokens_ref if t]
+    tokens_novo = [t for t in tokens_novo if t]
+
+    # FIX: autojunk=False para evitar falsas divergências em blocos longos
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
+    
+    # FIX: Removido o .lower() para marcar divergência em maiúsculas/minúsculas
     matcher.set_seqs(tokens_ref, tokens_novo)
+
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
     
     def limpar_espacos(t):
         t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
-        t = re.sub(r'[ \t]+', ' ', t) 
-        t = re.sub(r' ([.,;:?!])', r'\1', t) 
+        t = re.sub(r'[ \t]+', ' ', t) # Transforma múltiplos espaços em 1 só
+        t = re.sub(r' ([.,;:?!])', r'\1', t) # Tira espaço antes de ponto final/vírgula
         return t
         
     texto_ref = limpar_espacos(texto_ref)
     texto_novo = limpar_espacos(texto_novo)
-    tokens_ref = [t for t in re.split(r'(\s+)', texto_ref) if t]
-    tokens_novo = [t for t in re.split(r'(\s+)', texto_novo) if t]
+    # ========================================================
 
+    tokens_ref = re.split(r'(\s+)', texto_ref)
+    tokens_novo = re.split(r'(\s+)', texto_novo)
+    
+    tokens_ref = [t for t in tokens_ref if t]
+    tokens_novo = [t for t in tokens_novo if t]
+
+    # FIX: autojunk=False novamente
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
+    
+    # --- ADICIONADO: Colocando a regra no "matcher" definitivo para realmente funcionar ---
+    # FIX: Removido o .lower()
     matcher.set_seqs(tokens_ref, tokens_novo)
+    # --------------------------------------------------------------------------------------
+
+    html_ref_list = []
+    html_novo_list = []
+    tem_diff = False
     
     def envolver_diferenca(tokens):
         res = []
@@ -141,87 +176,154 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
             if tag in ['replace', 'delete']:
                 html_ref_list.append(envolver_diferenca(tokens_ref[i1:i2]))
                 if "".join(tokens_ref[i1:i2]).strip(): tem_diff = True
+            
             if tag in ['replace', 'insert']:
                 html_novo_list.append(envolver_diferenca(tokens_novo[j1:j2]))
                 if "".join(tokens_novo[j1:j2]).strip(): tem_diff = True
                 
     return "".join(html_ref_list), "".join(html_novo_list), tem_diff
 
-def extract_text_from_file_with_llamaparse(uploaded_file, api_key):
+def extract_text_from_file(uploaded_file):
     try:
-        suffix = f".{uploaded_file.name.split('.')[-1]}"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded_file.getvalue())
-            temp_path = tmp.name
-
-        parser = LlamaParse(
-            api_key=api_key,
-            result_type="markdown",
-            verbose=False,
-            language="pt"
-        )
-        docs = parser.load_data(temp_path)
-        texto_completo = "\\n\\n".join([doc.text for doc in docs])
-        os.unlink(temp_path)
+        text = ""
+        if uploaded_file.name.lower().endswith('.pdf'):
+            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+            for page in doc: 
+                blocks = page.get_text("dict", flags=11, sort=True)["blocks"]
+                for b in blocks:
+                    block_text = ""
+                    for l in b.get("lines", []):
+                        line_txt = ""
+                        for s in l.get("spans", []):
+                            content = s["text"]
+                            font_props = s["font"].lower()
+                            flags = s.get("flags", 0)
+                            
+                            is_bold = (
+                                (flags & 16) or 
+                                "bold" in font_props or 
+                                "black" in font_props or
+                                "heavy" in font_props or
+                                "semibold" in font_props or
+                                font_props.endswith("-b") or
+                                font_props.endswith("-bold")
+                            )
+                            
+                            is_italic = (
+                                (flags & 2) or 
+                                "italic" in font_props or
+                                "oblique" in font_props or
+                                font_props.endswith("-i") or
+                                font_props.endswith("-italic")
+                            )
+                            
+                            res = content
+                            if is_italic: res = f"<i>{res}</i>"
+                            if is_bold: res = f"<b>{res}</b>"
+                            
+                            line_txt += res + " "
+                        
+                        block_text += line_txt.strip() + "\n" 
+                    text += block_text.strip() + "\n\n"
+        elif uploaded_file.name.lower().endswith('.docx'):
+            doc = docx.Document(uploaded_file)
+            for para in doc.paragraphs: 
+                para_txt = ""
+                for run in para.runs:
+                    res = run.text
+                    if run.italic: res = f"<i>{res}</i>"
+                    if run.bold: res = f"<b>{res}</b>"
+                    para_txt += res
+                text += para_txt + "\n\n"
         
-        texto_completo = re.sub(r'(\w)-\s+(\w)', r'\1-\2', texto_completo)
-        texto_completo = re.sub(r'(?i)(?:bula\s+)?p[áa]gina\s+\d+\s+de\s+\d+', '', texto_completo)
-        texto_completo = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[a-zA-Z0-9_]+\s*\d*', '', texto_completo)
-        texto_completo = re.sub(r'(?i)\b[a-zA-Z0-9_]+_bula_(?:paciente|profissional)\s*\d*', '', texto_completo)
+        # ---------------------------------------------------------
+        # LIMPEZA CIRÚRGICA DE FORMATAÇÃO E RODAPÉS
+        # ---------------------------------------------------------
+        text = re.sub(r'(\w)-\s+(\w)', r'\1-\2', text)
+        text = re.sub(r'(?i)(?:bula\s+)?p[áa]gina\s+\d+\s+de\s+\d+', '', text)
+        text = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[a-zA-Z0-9_]+\s*\d*', '', text)
+        text = re.sub(r'(?i)\b[a-zA-Z0-9_]+_bula_(?:paciente|profissional)\s*\d*', '', text)
+        # ---------------------------------------------------------
         
-        return texto_completo
-    except Exception as e:
-        st.error(f"Erro na extração LlamaParse: {e}")
+        return text
+    except: 
         return ""
 
 # ============= CRIA O MENU LATERAL =============
 st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
-    section[data-testid="stSidebar"] { display: block !important; visibility: visible !important; width: 250px !important; min-width: 250px !important; max-width: 250px !important; margin-left: 0 !important; transform: translateX(0) !important; transition: none !important; position: relative !important; background-color: #f0f2f6 !important; z-index: 999 !important; }
-    section[data-testid="stSidebar"] > div:first-child { width: 250px !important; min-width: 250px !important; }
-    section[data-testid="stSidebar"][aria-expanded="false"], section[data-testid="stSidebar"][aria-expanded="true"] { margin-left: 0 !important; transform: translateX(0) !important; }
-    button[kind="header"], [data-testid="collapsedControl"], button[data-testid="baseButton-header"] { display: none !important; }
+    
+    section[data-testid="stSidebar"] {
+        display: block !important;
+        visibility: visible !important;
+        width: 250px !important;
+        min-width: 250px !important;
+        max-width: 250px !important;
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
+        transition: none !important;
+        position: relative !important;
+        background-color: #f0f2f6 !important;
+        z-index: 999 !important;
+    }
+    
+    section[data-testid="stSidebar"] > div:first-child {
+        width: 250px !important;
+        min-width: 250px !important;
+    }
+    
+    section[data-testid="stSidebar"][aria-expanded="false"],
+    section[data-testid="stSidebar"][aria-expanded="true"] {
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
+    }
+    
+    button[kind="header"],
+    [data-testid="collapsedControl"],
+    button[data-testid="baseButton-header"] {
+        display: none !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Med. Referência x BELFAR")
 
-tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente", "Profissional"), horizontal=True)
+tipo_bula = st.radio(
+    "Escolha o Tipo de Bula:",
+    ("Paciente", "Profissional"),
+    horizontal=True
+)
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
+    
     keys_raw = [
         st.secrets.get("GEMINI_API_KEY"),
         st.secrets.get("GEMINI_API_KEY2"),
         st.secrets.get("GEMINI_API_KEY3")
     ]
     keys_validas = [k for k in keys_raw if k]
-    llama_key = st.secrets.get("LLAMAPARSE_API_KEY")
 
     if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key do Gemini encontrada nos Secrets.")
-        st.stop()
-        
-    if not llama_key:
-        st.error("Erro Crítico: LLAMAPARSE_API_KEY não encontrada nos Secrets. Adicione sua chave do LlamaParse.")
+        st.error("Erro Crítico: Nenhuma API Key encontrada nos Secrets.")
         st.stop()
 
     if f1 and f2:
         secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
 
-        with st.spinner("Lendo PDFs com IA LlamaParse (Isso pode levar alguns segundos)..."):
-            t_anvisa = extract_text_from_file_with_llamaparse(f1, llama_key)
-            t_mkt = extract_text_from_file_with_llamaparse(f2, llama_key)
+        with st.spinner("Lendo arquivos e conectando à IA..."):
+            f1.seek(0); f2.seek(0)
+            t_anvisa = extract_text_from_file(f1)
+            t_mkt = extract_text_from_file(f2)
 
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
                 st.error("Arquivo vazio ou ilegível."); st.stop()
 
-        with st.spinner("Analisando divergências com Gemini..."):
             prompt = f"""
             Você é um Extrator de Dados Farmacêuticos Rigoroso.
             
@@ -231,8 +333,8 @@ if st.button("🚀 Processar Conferência"):
             SUA MISSÃO:
             1. Extrair DATA DE APROVAÇÃO (frase exata "aprovada pela Anvisa em...").
             2. Extrair TODO o conteúdo de cada seção. NÃO RESUMA NENHUMA FRASE.
-            3. O texto fornecido foi extraído em Markdown. Preserve marcações de negrito e quebras de linha.
-            4. MANTER todas as tags **negrito** e *itálico* EXATAMENTE como aparecem no texto.
+            3. PRESERVAR RIGOROSAMENTE formatação <b> e <i>.
+            4. MANTER todas as tags <b></b> e <i></i> EXATAMENTE como aparecem no texto.
             5. PRESERVAR AS QUEBRAS DE PARÁGRAFOS (\\n\\n). Nunca junte dois parágrafos que estavam separados.
 
             LISTA DE SEÇÕES ESPERADAS: {secoes_alvo}
@@ -260,11 +362,11 @@ if st.button("🚀 Processar Conferência"):
                 genai.configure(api_key=key)
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
-                        model_instance = genai.GenerativeModel(
+                        model = genai.GenerativeModel(
                             modelo, 
                             generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                         )
-                        response = model_instance.generate_content(prompt)
+                        response = model.generate_content(prompt)
                         sucesso = True
                         break 
                     except Exception as e:
@@ -274,13 +376,15 @@ if st.button("🚀 Processar Conferência"):
 
             if not sucesso:
                 st.error("❌ Falha Total. Todas as chaves e modelos falharam. Detalhes:")
-                st.code("\\n".join(log_erros))
+                st.code("\n".join(log_erros))
                 st.stop()
             
             try:
-                # Código a prova de falhas: limpa o JSON sem usar startswith ou aspas que o GitHub quebra
                 texto_resposta = response.text.strip()
-                texto_resposta = texto_resposta.replace("```json", "").replace("```", "").strip()
+                if texto_resposta.startswith('```json'):
+                    texto_resposta = texto_resposta[7:-3]
+                elif texto_resposta.startswith('```'):
+                    texto_resposta = texto_resposta[3:-3]
                 
                 resultado = json.loads(texto_resposta)
                 
@@ -302,15 +406,20 @@ if st.button("🚀 Processar Conferência"):
                     if eh_blindada:
                         status = "CONFORME"
                         if "DIZERES LEGAIS" in titulo_upper:
-                            html_mkt = destacar_datas(formatar_html(txt_mkt))
-                            html_ref = destacar_datas(formatar_html(txt_ref))
+                            html_mkt = destacar_datas(txt_mkt)
+                            html_ref = destacar_datas(txt_ref)
                         else:
-                            html_mkt = formatar_html(txt_mkt)
-                            html_ref = formatar_html(txt_ref)
+                            html_mkt = txt_mkt
+                            html_ref = txt_ref
+                            
+                        html_ref = formatar_html(html_ref)
+                        html_mkt = formatar_html(html_mkt)
                     else:
-                        html_ref_raw, html_mkt_raw, teve_diff = diff_palavra_a_palavra(formatar_html(txt_ref), formatar_html(txt_mkt))
-                        html_ref = html_ref_raw
-                        html_mkt = html_mkt_raw
+                        html_ref_raw, html_mkt_raw, teve_diff = diff_palavra_a_palavra(txt_ref, txt_mkt)
+                        
+                        html_ref = formatar_html(html_ref_raw)
+                        html_mkt = formatar_html(html_mkt_raw)
+                        
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff: divs_count += 1
 
