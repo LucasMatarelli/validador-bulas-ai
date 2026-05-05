@@ -278,12 +278,9 @@ if st.button("🚀 Processar Conferência"):
                 st.stop()
             
             try:
+                # Código a prova de falhas: limpa o JSON sem usar startswith ou aspas que o GitHub quebra
                 texto_resposta = response.text.strip()
-                if texto_resposta.startswith('```json'):
-                    texto_resposta = texto_resposta[7:-3]
-                elif texto_resposta.startswith('
-```'):
-                    texto_resposta = texto_resposta[3:-3]
+                texto_resposta = texto_resposta.replace("```json", "").replace("```", "").strip()
                 
                 resultado = json.loads(texto_resposta)
                 
