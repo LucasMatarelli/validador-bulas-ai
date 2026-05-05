@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
-import docx
 import json
 import difflib
 import re
@@ -88,7 +87,7 @@ def achar_frases_divergentes(texto_ref, texto_novo):
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag in ['replace', 'insert']:
             # Pega o bloco de palavras divergentes e junta numa frase só
-            frase = "".join(tokens_novo[j1:j2]).strip()
+            frase = " ".join(tokens_novo[j1:j2]).strip()
             # Se tiver mais que 3 letras (evita pintar vírgulas sozinhas)
             if len(frase) > 3:
                 frases_com_erro.append(frase)
@@ -205,8 +204,12 @@ if st.button("🚀 Processar Auditoria Visual"):
                 st.stop()
             
             try:
-                texto_resposta = response.text.replace("```json", "").replace("
-```", "").strip()
+                # TRUQUE PARA O GITHUB NÃO CORTAR O CÓDIGO
+                # Usando multiplicação de strings para esconder as crases do Markdown
+                tag_inicio = "`" * 3 + "json"
+                tag_fim = "`" * 3
+                
+                texto_resposta = response.text.replace(tag_inicio, "").replace(tag_fim, "").strip()
                 resultado = json.loads(texto_resposta)
                 dados_secoes = resultado.get("secoes", [])
                 
@@ -225,23 +228,22 @@ if st.button("🚀 Processar Auditoria Visual"):
                         frases_divergentes = achar_frases_divergentes(txt_ref, txt_mkt)
                         todas_frases_para_grifar.extend(frases_divergentes)
 
-        with st.spinner("Pintando o PDF da BELFAR e gerando imagens..."):
-            # Reseta o ponteiro do arquivo PDF para ler do começo
-            f2.seek(0)
-            
-            # Chama a Mágica! Passa o PDF e as frases que devem ficar amarelas
-            fotos_da_bula = gerar_imagens_pdf_grifado(f2, todas_frases_para_grifar)
+                with st.spinner("Pintando o PDF da BELFAR e gerando imagens..."):
+                    # Reseta o ponteiro do arquivo PDF para ler do começo
+                    f2.seek(0)
+                    
+                    # Chama a Mágica! Passa o PDF e as frases que devem ficar amarelas
+                    fotos_da_bula = gerar_imagens_pdf_grifado(f2, todas_frases_para_grifar)
 
-            st.success("✅ Auditoria Concluída! Veja o resultado grifado abaixo:")
-            st.divider()
+                    st.success("✅ Auditoria Concluída! Veja o resultado grifado abaixo:")
+                    st.divider()
 
-            # Mostra as imagens geradas na tela do usuário
-            for i, imagem_bytes in enumerate(fotos_da_bula):
-                st.markdown(f"### Página {i+1}")
-                st.image(imagem_bytes, use_container_width=True)
+                    # Mostra as imagens geradas na tela do usuário
+                    for i, imagem_bytes in enumerate(fotos_da_bula):
+                        st.markdown(f"### Página {i+1}")
+                        st.image(imagem_bytes, use_container_width=True)
 
             except Exception as e:
-                st.error(f"Erro ao processar JSON: {e}")
-                st.code(response.text)
+                st.error(f"Erro ao processar: {e}")
     else:
         st.warning("Adicione os arquivos PDF.")
