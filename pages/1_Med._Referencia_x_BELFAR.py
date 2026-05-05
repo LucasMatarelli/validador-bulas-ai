@@ -60,14 +60,13 @@ def extract_text_from_file(uploaded_file):
 # ----------------- 4. A MÁGICA: PINTAR OS PDFS LADO A LADO -----------------
 
 def gerar_imagens_pdf_grifado(uploaded_file, amarelo, vermelho, azul):
-    """Abre o PDF e aplica o marca-texto translúcido (Pastel) para leitura fácil."""
+    """Abre o PDF e aplica o marca-texto translúcido (Pastel) com Altíssima Resolução."""
     doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
     imagens_geradas = []
 
     for page in doc:
         # AMARELO PASTEL (Divergências Inteligentes) - Opacidade 25%
         for frase in amarelo:
-            # TRAVA ANTI-TRAVAMENTO: Ignora espaços vazios ou letras soltas
             if not frase or len(str(frase).strip()) < 4: continue
             
             for area in page.search_for(str(frase)):
@@ -96,8 +95,12 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo, vermelho, azul):
                 annot.set_opacity(0.25)
                 annot.update()
 
-        # Print em alta resolução (Zoom 2x)
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        # AQUI ESTÁ A CORREÇÃO DE QUALIDADE:
+        # Aumentamos o Zoom de 2x para 4x. Isso garante nitidez de monitores 4K/Retina.
+        zoom = 4
+        matriz_alta_resolucao = fitz.Matrix(zoom, zoom)
+        
+        pix = page.get_pixmap(matrix=matriz_alta_resolucao)
         imagens_geradas.append(pix.tobytes("png"))
         
     return imagens_geradas
@@ -194,7 +197,7 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
             st.stop()
             
         # SPINNER 2: PINTURA DOS PDFS (Separado e isolado para não dar o bug do infinito)
-        with st.spinner("🖌️ Auditoria concluída! Pintando os PDFs e montando a tela..."):
+        with st.spinner("🖌️ Auditoria concluída! Pintando os PDFs em Alta Resolução e montando a tela..."):
             try:
                 tag_inicio = chr(96) * 3 + "json"
                 tag_fim = chr(96) * 3
