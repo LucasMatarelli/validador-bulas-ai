@@ -33,24 +33,12 @@ st.markdown("""
     }
     
     /* DIVERGÊNCIA (Amarelo) */
-    .highlight-yellow { 
-        background-color: #fff3cd; color: #856404; 
-        padding: 0px 2px; border-radius: 3px; border: 1px solid #ffeeba; 
-        font-weight: bold;
-    }
-    
-    .highlight-blue { 
-        background-color: #d1ecf1; color: #0c5460; 
-        padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; 
-    }
-    
+    .highlight-yellow { background-color: #fff3cd; color: #856404; padding: 0px 2px; border-radius: 3px; border: 1px solid #ffeeba; font-weight: bold; }
+    .highlight-blue { background-color: #d1ecf1; color: #0c5460; padding: 2px 4px; border-radius: 4px; border: 1px solid #bee5eb; font-weight: bold; }
     .border-ok { border-left: 6px solid #28a745 !important; }
     .border-warn { border-left: 6px solid #ffc107 !important; } 
     .border-info { border-left: 6px solid #17a2b8 !important; }
-
-    div[data-testid="stMetric"] {
-        background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center;
-    }
+    div[data-testid="stMetric"] { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 5px; text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -91,49 +79,33 @@ def destacar_datas(texto):
     return re.sub(padrao, replacer, texto, count=1, flags=re.IGNORECASE | re.DOTALL)
 
 def formatar_html(texto):
-    """Lógica avançada para respeitar tracinhos de listas e alinhar tudo perfeitamente."""
     if not texto: return ""
-    
-    # Converte o Markdown do LlamaParse para as tags HTML que seu layout usa
     texto = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', texto)
     texto = re.sub(r'(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)', r'<i>\1</i>', texto)
     texto = re.sub(r'\_(.*?)\_', r'<i>\1</i>', texto)
-    
     texto = texto.replace('\r\n', '\n').replace('\r', '\n')
     texto = re.sub(r'\n{2,}', '@@BLOCO@@', texto)
-    
     padrao_lista = r'\n(?=\s*(?:<[^>]+>)*\s*(?:[-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+)'
     texto = re.sub(padrao_lista, '@@BLOCO@@', texto)
-    
     texto = texto.replace('\n', ' ')
     texto = re.sub(r'[ \t]+', ' ', texto)
-    
     blocos = texto.split('@@BLOCO@@')
     resultado = []
-    
     for bloco in blocos:
         bloco_limpo = bloco.strip()
         if not bloco_limpo: continue
-        
         texto_sem_tags = re.sub(r'<[^>]+>', '', bloco_limpo).strip()
-        
         if re.match(r'^([-\u2013\u2014•*]|[a-zA-Z]\)|[0-9]+\.)\s+', texto_sem_tags):
             resultado.append(f'<div style="margin-left: 20px; text-indent: -15px; margin-bottom: 8px; text-align: justify;">{bloco_limpo}</div>')
         else:
             resultado.append(f'<div style="margin-bottom: 12px; text-align: justify;">{bloco_limpo}</div>')
-            
     return "".join(resultado)
 
 def diff_palavra_a_palavra(texto_ref, texto_novo):
     tokens_ref = []
     tokens_novo = []
-
-    tokens_ref = [t for t in tokens_ref if t]
-    tokens_novo = [t for t in tokens_novo if t]
-
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
     matcher.set_seqs(tokens_ref, tokens_novo)
-
     html_ref_list = []
     html_novo_list = []
     tem_diff = False
@@ -146,19 +118,11 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
         
     texto_ref = limpar_espacos(texto_ref)
     texto_novo = limpar_espacos(texto_novo)
-
-    tokens_ref = re.split(r'(\s+)', texto_ref)
-    tokens_novo = re.split(r'(\s+)', texto_novo)
-    
-    tokens_ref = [t for t in tokens_ref if t]
-    tokens_novo = [t for t in tokens_novo if t]
+    tokens_ref = [t for t in re.split(r'(\s+)', texto_ref) if t]
+    tokens_novo = [t for t in re.split(r'(\s+)', texto_novo) if t]
 
     matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
     matcher.set_seqs(tokens_ref, tokens_novo)
-
-    html_ref_list = []
-    html_novo_list = []
-    tem_diff = False
     
     def envolver_diferenca(tokens):
         res = []
@@ -177,7 +141,6 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
             if tag in ['replace', 'delete']:
                 html_ref_list.append(envolver_diferenca(tokens_ref[i1:i2]))
                 if "".join(tokens_ref[i1:i2]).strip(): tem_diff = True
-            
             if tag in ['replace', 'insert']:
                 html_novo_list.append(envolver_diferenca(tokens_novo[j1:j2]))
                 if "".join(tokens_novo[j1:j2]).strip(): tem_diff = True
@@ -186,27 +149,21 @@ def diff_palavra_a_palavra(texto_ref, texto_novo):
 
 def extract_text_from_file_with_llamaparse(uploaded_file, api_key):
     try:
-        # Cria um arquivo temporário no disco (LlamaParse exige o caminho do arquivo)
         suffix = f".{uploaded_file.name.split('.')[-1]}"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(uploaded_file.getvalue())
             temp_path = tmp.name
 
-        # Inicializa a IA do LlamaParse focada em manter a estrutura (Markdown)
         parser = LlamaParse(
             api_key=api_key,
             result_type="markdown",
             verbose=False,
             language="pt"
         )
-
         docs = parser.load_data(temp_path)
-        texto_completo = "\n\n".join([doc.text for doc in docs])
-
-        # Exclui o arquivo temporário por segurança
+        texto_completo = "\\n\\n".join([doc.text for doc in docs])
         os.unlink(temp_path)
         
-        # Limpeza cirúrgica de formatação e rodapés
         texto_completo = re.sub(r'(\w)-\s+(\w)', r'\1-\2', texto_completo)
         texto_completo = re.sub(r'(?i)(?:bula\s+)?p[áa]gina\s+\d+\s+de\s+\d+', '', texto_completo)
         texto_completo = re.sub(r'(?i)\b\d*\s*VP\d+\s*=\s*[a-zA-Z0-9_]+\s*\d*', '', texto_completo)
@@ -221,55 +178,23 @@ def extract_text_from_file_with_llamaparse(uploaded_file, api_key):
 st.markdown("""
 <style>
     [data-testid="stHeader"] { visibility: hidden; }
-    
-    section[data-testid="stSidebar"] {
-        display: block !important;
-        visibility: visible !important;
-        width: 250px !important;
-        min-width: 250px !important;
-        max-width: 250px !important;
-        margin-left: 0 !important;
-        transform: translateX(0) !important;
-        transition: none !important;
-        position: relative !important;
-        background-color: #f0f2f6 !important;
-        z-index: 999 !important;
-    }
-    
-    section[data-testid="stSidebar"] > div:first-child {
-        width: 250px !important;
-        min-width: 250px !important;
-    }
-    
-    section[data-testid="stSidebar"][aria-expanded="false"],
-    section[data-testid="stSidebar"][aria-expanded="true"] {
-        margin-left: 0 !important;
-        transform: translateX(0) !important;
-    }
-    
-    button[kind="header"],
-    [data-testid="collapsedControl"],
-    button[data-testid="baseButton-header"] {
-        display: none !important;
-    }
+    section[data-testid="stSidebar"] { display: block !important; visibility: visible !important; width: 250px !important; min-width: 250px !important; max-width: 250px !important; margin-left: 0 !important; transform: translateX(0) !important; transition: none !important; position: relative !important; background-color: #f0f2f6 !important; z-index: 999 !important; }
+    section[data-testid="stSidebar"] > div:first-child { width: 250px !important; min-width: 250px !important; }
+    section[data-testid="stSidebar"][aria-expanded="false"], section[data-testid="stSidebar"][aria-expanded="true"] { margin-left: 0 !important; transform: translateX(0) !important; }
+    button[kind="header"], [data-testid="collapsedControl"], button[data-testid="baseButton-header"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------- 5. UI PRINCIPAL -----------------
 st.title("💊 Med. Referência x BELFAR")
 
-tipo_bula = st.radio(
-    "Escolha o Tipo de Bula:",
-    ("Paciente", "Profissional"),
-    horizontal=True
-)
+tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente", "Profissional"), horizontal=True)
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf", "docx"], key="f1")
 f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf", "docx"], key="f2")
 
 if st.button("🚀 Processar Conferência"):
-    
     keys_raw = [
         st.secrets.get("GEMINI_API_KEY"),
         st.secrets.get("GEMINI_API_KEY2"),
@@ -335,11 +260,11 @@ if st.button("🚀 Processar Conferência"):
                 genai.configure(api_key=key)
                 for modelo in MODELOS_PARA_TENTAR:
                     try:
-                        model = genai.GenerativeModel(
+                        model_instance = genai.GenerativeModel(
                             modelo, 
                             generation_config={"response_mime_type": "application/json", "temperature": 0.0}
                         )
-                        response = model.generate_content(prompt)
+                        response = model_instance.generate_content(prompt)
                         sucesso = True
                         break 
                     except Exception as e:
@@ -349,7 +274,7 @@ if st.button("🚀 Processar Conferência"):
 
             if not sucesso:
                 st.error("❌ Falha Total. Todas as chaves e modelos falharam. Detalhes:")
-                st.code("\n".join(log_erros))
+                st.code("\\n".join(log_erros))
                 st.stop()
             
             try:
@@ -380,20 +305,15 @@ if st.button("🚀 Processar Conferência"):
                     if eh_blindada:
                         status = "CONFORME"
                         if "DIZERES LEGAIS" in titulo_upper:
-                            html_mkt = destacar_datas(txt_mkt)
-                            html_ref = destacar_datas(txt_ref)
+                            html_mkt = destacar_datas(formatar_html(txt_mkt))
+                            html_ref = destacar_datas(formatar_html(txt_ref))
                         else:
-                            html_mkt = txt_mkt
-                            html_ref = txt_ref
-                            
-                        html_ref = formatar_html(html_ref)
-                        html_mkt = formatar_html(html_mkt)
+                            html_mkt = formatar_html(txt_mkt)
+                            html_ref = formatar_html(txt_ref)
                     else:
-                        html_ref_raw, html_mkt_raw, teve_diff = diff_palavra_a_palavra(txt_ref, txt_mkt)
-                        
-                        html_ref = formatar_html(html_ref_raw)
-                        html_mkt = formatar_html(html_mkt_raw)
-                        
+                        html_ref_raw, html_mkt_raw, teve_diff = diff_palavra_a_palavra(formatar_html(txt_ref), formatar_html(txt_mkt))
+                        html_ref = html_ref_raw
+                        html_mkt = html_mkt_raw
                         status = "DIVERGENTE" if teve_diff else "CONFORME"
                         if teve_diff: divs_count += 1
 
