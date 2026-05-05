@@ -2,7 +2,6 @@ import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
 import json
-import difflib
 import re
 import time
 
@@ -23,27 +22,10 @@ MODELOS_PARA_TENTAR = [
     "gemini-1.5-pro"
 ]
 
-SECOES_PACIENTE = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", 
-    "PARA QUE ESTE MEDICAMENTO É INDICADO", "COMO ESTE MEDICAMENTO FUNCIONA?", 
-    "QUANDO NÃO DEVO USAR ESTE MEDICAMENTO?", "O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO?", 
-    "ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO?", "COMO DEVO USAR ESTE MEDICAMENTO?", 
-    "O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO?", 
-    "QUAIS OS MALES QUE ESTE MEDICAMENTO PODE CAUSAR?", 
-    "O QUE FAZER SE ALGUEM USAR UMA QUANTIDADE MAIOR DO QUE A INDICADA DESTE MEDICAMENTO?"
-]
-
-SECOES_PROFISSIONAL = [
-    "APRESENTAÇÕES", "COMPOSIÇÃO", "INDICAÇÕES", "RESULTADOS DE EFICÁCIA", 
-    "CARACTERÍSTICAS FARMACOLÓGICAS", "CONTRAINDICAÇÕES", "ADVERTÊNCIAS E PRECAUÇÕES", 
-    "INTERAÇÕES MEDICAMENTOSAS", "CUIDADOS DE ARMAZENAMENTO DO MEDICAMENTO", 
-    "POSOLOGIA E MODO DE USAR", "REAÇÕES ADVERSAS", "SUPERDOSE"
-]
-
 # ----------------- 3. FUNÇÕES INTELIGENTES -----------------
 
 def extract_text_from_file(uploaded_file):
-    """Lê o PDF e CORTA A LEITURA após a data da Anvisa."""
+    """Lê o PDF bruto para dar contexto à IA."""
     try:
         text = ""
         if uploaded_file.name.lower().endswith('.pdf'):
@@ -51,93 +33,46 @@ def extract_text_from_file(uploaded_file):
             for page in doc: 
                 text += page.get_text("text") + "\n\n"
         
-        # Limpeza cirúrgica
-        text = re.sub(r'(\w)-\s+(\w)', r'\1\2', text) # Remove quebra de hifen
+        # Remove hifens de quebra de página e rodapés inúteis
+        text = re.sub(r'(\w)-\s+(\w)', r'\1\2', text)
         text = re.sub(r'(?i)(?:bula\s+)?p[áa]gina\s+\d+\s+de\s+\d+', '', text)
-        
-        # Faca de corte: IGNORA DIZERES LEGAIS
-        padrao_data = r'aprovada\s+pela\s+Anvisa\s+em\s*\d{2}/\d{2}/\d{4}'
-        matches = list(re.finditer(padrao_data, text, re.IGNORECASE))
-        
-        if matches:
-            ultimo_match = matches[-1]
-            text = text[:ultimo_match.end()] 
-            
         return text
     except: 
         return ""
 
-def achar_frases_divergentes(texto_ref, texto_novo):
-    """Compara e devolve frases com CONTEXTO (para o PDF não pintar a mesma palavra em todo lugar)."""
-    def limpar_espacos(t):
-        t = t.replace('\xa0', ' ').replace('\u200b', '').replace('\xad', '')
-        return re.sub(r'[ \t\n\r]+', ' ', t).strip()
-        
-    texto_ref = limpar_espacos(texto_ref)
-    texto_novo = limpar_espacos(texto_novo)
-
-    tokens_ref = texto_ref.split()
-    tokens_novo = texto_novo.split()
-
-    matcher = difflib.SequenceMatcher(None, tokens_ref, tokens_novo, autojunk=False)
-    
-    divergencias_ref = []
-    divergencias_mkt = []
-
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag in ['replace', 'delete']:
-            # Pega 2 palavras antes e 2 depois para ter certeza que é um lugar único no PDF
-            start = max(0, i1 - 2)
-            end = min(len(tokens_ref), i2 + 2)
-            frase = " ".join(tokens_ref[start:end]).strip()
-            if len(frase) > 5: divergencias_ref.append(frase)
-            
-        if tag in ['replace', 'insert']:
-            start = max(0, j1 - 2)
-            end = min(len(tokens_novo), j2 + 2)
-            frase = " ".join(tokens_novo[start:end]).strip()
-            if len(frase) > 5: divergencias_mkt.append(frase)
-                
-    return divergencias_ref, divergencias_mkt
-
-def achar_datas_anvisa(texto):
-    """Caça a data da anvisa."""
-    padrao = r'aprovada\s+pela\s+Anvisa\s+em\s*\d{2}/\d{2}/\d{4}'
-    return re.findall(padrao, texto, re.IGNORECASE)
-
-# ----------------- 4. A MÁGICA: PDFS PINTADOS -----------------
+# ----------------- 4. A MÁGICA: PINTAR OS PDFS LADO A LADO -----------------
 
 def gerar_imagens_pdf_grifado(uploaded_file, amarelo, vermelho, azul):
-    """Aplica marca-texto translúcido (pastel) para não esconder a letra."""
+    """Abre o PDF e aplica o marca-texto translúcido (Pastel) para leitura fácil."""
     doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
     imagens_geradas = []
 
     for page in doc:
-        # PINTA AS DIVERGÊNCIAS (AMARELO PASTEL)
+        # AMARELO PASTEL (Divergências Inteligentes) - Opacidade 25%
         for frase in amarelo:
             for area in page.search_for(frase):
                 annot = page.add_highlight_annot(area)
-                annot.set_colors(stroke=(1, 0.9, 0.2)) # Amarelo mais suave
-                annot.set_opacity(0.4) # Deixa transparente (consegue ler por baixo)
+                annot.set_colors(stroke=(1, 1, 0))
+                annot.set_opacity(0.25)
                 annot.update()
 
-        # PINTA ERROS DE PORTUGUÊS (VERMELHO PASTEL)
+        # VERMELHO PASTEL (Erros Reais de Português) - Opacidade 25%
         for frase in vermelho:
             for area in page.search_for(frase):
                 annot = page.add_highlight_annot(area)
-                annot.set_colors(stroke=(1, 0.4, 0.4)) # Vermelho suave/rosado
-                annot.set_opacity(0.4)
+                annot.set_colors(stroke=(1, 0, 0)) 
+                annot.set_opacity(0.25)
                 annot.update()
 
-        # PINTA DATA DA ANVISA (AZUL PASTEL)
+        # AZUL PASTEL (Data da Anvisa) - Opacidade 25%
         for frase in azul:
             for area in page.search_for(frase):
                 annot = page.add_highlight_annot(area)
-                annot.set_colors(stroke=(0.4, 0.7, 1)) # Azul claro
-                annot.set_opacity(0.4)
+                annot.set_colors(stroke=(0, 0.5, 1)) 
+                annot.set_opacity(0.25)
                 annot.update()
 
-        # Zoom 2x para qualidade de leitura
+        # Print em alta resolução (Zoom 2x)
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
         imagens_geradas.append(pix.tobytes("png"))
         
@@ -166,35 +101,46 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
     keys_validas = [k for k in keys_raw if k]
 
     if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key encontrada.")
+        st.error("Erro Crítico: Nenhuma API Key encontrada nos Secrets.")
         st.stop()
 
     if f1 and f2:
-        secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
-
-        with st.spinner("Lendo arquivos e cortando Dizeres Legais..."):
+        with st.spinner("Lendo arquivos..."):
             f1.seek(0); f2.seek(0)
             
             t_anvisa = extract_text_from_file(f1)
             t_mkt = extract_text_from_file(f2)
 
             if len(t_anvisa) < 20 or len(t_mkt) < 20:
-                st.error("Arquivo vazio, ilegível ou Data da Anvisa não encontrada."); st.stop()
+                st.error("Arquivo vazio ou ilegível."); st.stop()
 
-            # IA caça erros de português COM CONTEXTO
+            # IA FAZ A AUDITORIA INTELIGENTE AGORA (Substitui o difflib)
             prompt = f"""
-            Você é um Revisor Ortográfico Farmacêutico Rigoroso.
-            INPUT TEXTO DA BELFAR: {t_mkt[:150000]}
+            Você é um Auditor Farmacêutico Sênior. 
+            Audite a bula BELFAR usando a bula REFERÊNCIA como base.
             
-            SUA MISSÃO:
-            Liste trechos deste texto que contenham ERROS CLAROS DE GRAMÁTICA ou ORTOGRAFIA do Português.
-            REGRA CRÍTICA: Retorne a FRASE INTEIRA onde o erro está (coloque cerca de 3 palavras antes e 3 depois do erro para dar contexto). 
-            Se retornar apenas a palavra solta, o sistema vai bugar.
-            Não liste termos médicos corretos. Se não houver erros, retorne uma lista vazia.
+            REFERÊNCIA: {t_anvisa[:150000]}
+            BELFAR: {t_mkt[:150000]}
+            
+            REGRAS DE OURO CRÍTICAS:
+            1. DIVERGÊNCIAS (Amarelo): Liste trechos da BELFAR onde a informação farmacêutica, indicação, efeito colateral ou dosagem foi ALTERADA, ADICIONADA ou OMITIDA incorretamente.
+               - IGNORE mudanças de maiúsculas/minúsculas, layout, quebras de linha ou sinônimos óbvios.
+               - IGNORE COMPLETAMENTE as informações de Empresa (Nomes da empresa, CNPJ, Farmacêutico responsável, Endereços, SAC, Códigos de barras). Isso é naturalmente diferente e NÃO DEVE ser apontado.
+               - Para cada erro real achado, retorne exatamente o trecho da bula BELFAR (entre 3 a 8 palavras contínuas) para que eu possa grifar na tela.
 
-            SAÍDA JSON:
+            2. ERROS DE PORTUGUÊS (Vermelho): Liste erros graves de digitação ou gramática na BELFAR.
+               - NUNCA aponte nomes de doenças (ex: Sjögren, Alzheimer), compostos (ex: norfloxacino) ou termos médicos.
+               - Se tiver dúvida, NÃO aponte. Devolva o trecho exato (de 2 a 5 palavras).
+
+            3. DATA DA ANVISA (Azul): Devolva a frase exata contendo a data de aprovação na bula BELFAR (ex: "aprovada pela Anvisa em 05/02/2025").
+
+            Se não achar divergências ou erros ortográficos, retorne listas vazias [].
+
+            SAÍDA JSON OBRIGATÓRIA:
             {{
-                "erros_ortograficos": ["texto de contexto antes PALAVRA_ERRADA texto de contexto depois"]
+                "divergencias_belfar": ["trecho exato divergente 1", "trecho exato divergente 2"],
+                "erros_ortograficos": ["trecho com erro de gramatica"],
+                "data_anvisa": ["aprovada pela Anvisa em..."]
             }}
             """
             
@@ -218,7 +164,7 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
                         continue
 
             if not sucesso:
-                st.error("❌ Falha Total da IA ao buscar erros.")
+                st.error("❌ Falha Total da IA na Auditoria.")
                 st.stop()
             
             try:
@@ -229,28 +175,23 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
                 texto_resposta = response.text.replace(tag_inicio, "").replace(tag_fim, "").strip()
                 resultado = json.loads(texto_resposta)
                 
+                divergencias_mkt = resultado.get("divergencias_belfar", [])
                 erros_vermelhos = resultado.get("erros_ortograficos", [])
-                
-                # Compara textos para achar diferenças
-                divergencias_ref, divergencias_mkt = achar_frases_divergentes(t_anvisa, t_mkt)
-                
-                # Acha as datas azuis
-                datas_azuis_ref = achar_datas_anvisa(t_anvisa)
-                datas_azuis_mkt = achar_datas_anvisa(t_mkt)
+                datas_azuis_mkt = resultado.get("data_anvisa", [])
 
-                with st.spinner("Pintando PDFs e gerando a visão Lado a Lado (Pode levar alguns segundos)..."):
+                with st.spinner("Pintando os PDFs e montando a tela Lado a Lado..."):
                     f1.seek(0)
                     f2.seek(0)
                     
-                    fotos_ref = gerar_imagens_pdf_grifado(f1, divergencias_ref, [], datas_azuis_ref)
+                    # Gera as fotos com as marcações translúcidas (A Referência fica limpa ou só com Azul da data)
+                    fotos_ref = gerar_imagens_pdf_grifado(f1, [], [], []) # Referência não leva amarelo/vermelho aqui pra ficar limpa visualmente
                     fotos_mkt = gerar_imagens_pdf_grifado(f2, divergencias_mkt, erros_vermelhos, datas_azuis_mkt)
 
                     st.markdown("""
-                    ### 🎨 Legenda da Auditoria:
-                    * 🟡 **Amarelo (Opacidade 40%):** Divergência de texto (adicionado, removido ou alterado).
-                    * 🔴 **Vermelho (Opacidade 40%):** Erro de ortografia ou gramática (BELFAR).
-                    * 🔵 **Azul (Opacidade 40%):** Assinatura/Data da Anvisa.
-                    * 🛑 **Atenção:** Tudo o que está após a data da Anvisa foi sumariamente ignorado.
+                    ### 🎨 Legenda da Auditoria Inteligente:
+                    * 🟡 **Amarelo (Suave):** Divergência real de conteúdo (ignora layout e cabeçalhos).
+                    * 🔴 **Vermelho (Suave):** Erro de ortografia (ignora termos médicos e nomes de doenças).
+                    * 🔵 **Azul (Suave):** Data da Anvisa.
                     """)
                     st.divider()
 
@@ -261,17 +202,18 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
                         col_esq, col_dir = st.columns(2)
                         
                         with col_esq:
-                            st.caption("📜 Bula Referência")
+                            st.caption("📜 Bula Referência (Visão Limpa)")
                             if i < len(fotos_ref):
                                 st.image(fotos_ref[i], use_container_width=True)
                                 
                         with col_dir:
-                            st.caption("📜 Bula BELFAR")
+                            st.caption("📜 Bula BELFAR (Auditoria IA)")
                             if i < len(fotos_mkt):
                                 st.image(fotos_mkt[i], use_container_width=True)
                         st.divider()
 
             except Exception as e:
-                st.error(f"Erro ao processar e pintar o PDF: {e}")
+                st.error(f"Erro ao desenhar o PDF: {e}")
+                st.code(response.text)
     else:
-        st.warning("Adicione os arquivos PDF.")
+        st.warning("Adicione os arquivos PDF para iniciar.")
