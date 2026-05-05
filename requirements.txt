@@ -3,4 +3,6 @@ google-generativeai
 pymupdf
 python-docx
 pyspellchecker
-llama-parse llama-index-core nest-asyncio
+llama-parse
+llama-index-core
+nest-asyncio
