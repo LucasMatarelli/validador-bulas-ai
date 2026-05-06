@@ -13,7 +13,7 @@ st.markdown('<style>[data-testid="stHeader"]{visibility:hidden;}</style>', unsaf
 
 # ----------------- 2. CONSTANTES -----------------
 MODELOS_PARA_TENTAR = [
-    "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"
+    "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"
 ]
 
 SECOES_PACIENTE = [
@@ -43,18 +43,13 @@ def extract_text_from_file(uploaded_file):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         for page in doc:
             text += page.get_text("text") + "\n"
-        # Une hífens de quebra de linha com segurança
         text = re.sub(r'(\w)-\s*\n(\w)', r'\1\2', text)
         return text
     except:
         return ""
 
-# ----------------- 4. MOTOR DE DIVERGÊNCIAS (PERFEITO) -----------------
+# ----------------- 4. MOTOR DE DIVERGÊNCIAS -----------------
 def encontrar_divergencias_exatas(texto_ref, texto_belfar):
-    """
-    Compara palavra por palavra, símbolo por símbolo.
-    Retorna pedaços de texto exatos de ~6 palavras para o PyMuPDF grifar sem falhar.
-    """
     t_ref_limpo = re.sub(r'\s+', ' ', texto_ref).strip()
     t_bel_limpo = re.sub(r'\s+', ' ', texto_belfar).strip()
     
@@ -128,7 +123,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
     return imagens
 
 # ----------------- 6. UI PRINCIPAL -----------------
-st.title("💊 Auditor Visual de Bulas (Detecção Nível Palavra/Símbolo)")
+st.title("💊 Auditor Visual de Bulas")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente","Profissional"), horizontal=True)
 
@@ -136,22 +131,21 @@ c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf"], key="f1")
 f2 = c2.file_uploader("📜 Bula BELFAR",     type=["pdf"], key="f2")
 
-if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
+if st.button("🚀 Iniciar Auditoria"):
 
-    # Mapeamento robusto das 3 chaves de API
-    chaves_disponiveis = ["GEMINI_API_KEY", "GEMINI_API_KEY2", "GEMINI_API_KEY3"]
+    # Busca as chaves de API nos Secrets do Streamlit
     keys_validas = []
-    for nome_chave in chaves_disponiveis:
-        chave_secreta = st.secrets.get(nome_chave)
-        if chave_secreta:
-            keys_validas.append(chave_secreta)
+    for k_name in ["GEMINI_API_KEY", "GEMINI_API_KEY2", "GEMINI_API_KEY3"]:
+        val = st.secrets.get(k_name)
+        if val:
+            keys_validas.append((k_name, val))
 
     if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key (1, 2 ou 3) encontrada nos Secrets.")
+        st.error("Erro: Nenhuma chave API configurada nos Secrets.")
         st.stop()
 
     if not (f1 and f2):
-        st.warning("Adicione os dois arquivos PDF para iniciar.")
+        st.warning("Envie os dois arquivos PDF.")
         st.stop()
 
     secoes_alvo = SECOES_PACIENTE if tipo_bula == "Paciente" else SECOES_PROFISSIONAL
@@ -160,152 +154,79 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
     sucesso_ia = False
     erros_detalhados = []
 
-    with st.spinner("🧠 IA mapeando a estrutura literal das bulas (Usando nova API)..."):
+    with st.spinner("🧠 IA Analisando..."):
         f1.seek(0); f2.seek(0)
-        t_ref    = extract_text_from_file(f1)
-        t_belfar = extract_text_from_file(f2)
-
-        if len(t_ref) < 20 or len(t_belfar) < 20:
-            st.error("Arquivo vazio ou ilegível."); st.stop()
+        t_ref = extract_text_from_file(f1)
+        t_bel = extract_text_from_file(f2)
 
         prompt = f"""
-        Você é um Extrator de Dados Farmacêuticos de extrema precisão.
-
-        BULA REFERÊNCIA:
-        {t_ref[:150000]}
-
-        BULA BELFAR:
-        {t_belfar[:150000]}
-
-        SEÇÕES ALVO: {secoes_alvo}
-
-        MISSÃO: Extrair as seções LITERAIS para o comparador algorítmico do Python.
-
-        REGRAS ABSOLUTAS:
-        1. NÃO resuma. NÃO altere nenhuma palavra, pontuação ou marcador (mantenha •, -, números idênticos).
-        2. Copie os textos completos exatamente como estão nas bulas.
-        3. Se uma seção não existir em uma delas, coloque string vazia "".
-        
-        Responda SOMENTE em JSON:
-        {{
-            "data_anvisa_ref": "dd/mm/aaaa ou -",
-            "data_anvisa_mkt": "dd/mm/aaaa ou -",
-            "erros_ortograficos": ["palavra ou frase com erro de português na BELFAR"],
-            "data_anvisa_frase": ["frase literal da belfar com a data de aprovação"],
-            "secoes": [
-                {{
-                    "titulo": "NOME DA SEÇÃO",
-                    "texto_ref": "texto literal completo da Referência",
-                    "texto_belfar": "texto literal completo da BELFAR"
-                }}
-            ]
-        }}
+        Compare as bulas e extraia as seções {secoes_alvo} literalmente.
+        BULA REF: {t_ref[:100000]}
+        BULA BELFAR: {t_bel[:100000]}
+        Responda apenas com JSON estruturado contendo 'data_anvisa_ref', 'data_anvisa_mkt', 'erros_ortograficos', 'data_anvisa_frase' e 'secoes'.
         """
 
-        # Novo sistema de rodízio de chaves e modelos usando a biblioteca nova
-        for key in keys_validas:
+        for nome_chave, key in keys_validas:
             if sucesso_ia: break
-            
-            # Instancia um cliente novo para a chave atual
             try:
                 client = genai.Client(api_key=key)
-            except Exception as e:
-                erros_detalhados.append(f"Erro ao carregar chave: {e}")
-                continue
-
-            for modelo in MODELOS_PARA_TENTAR:
-                try:
-                    resp = client.models.generate_content(
-                        model=modelo,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            temperature=0.0
+                for modelo in MODELOS_PARA_TENTAR:
+                    try:
+                        resp = client.models.generate_content(
+                            model=modelo,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                temperature=0.0
+                            )
                         )
-                    )
-                    texto_resposta_ia = resp.text
-                    sucesso_ia = True
-                    break # Sai do loop de modelos
-                except Exception as e:
-                    erros_detalhados.append(f"Chave falhou no modelo {modelo}: {e}")
-                    time.sleep(1) # Aguarda 1s antes de tentar de novo para evitar block de rate limit
+                        texto_resposta_ia = resp.text
+                        sucesso_ia = True
+                        break
+                    except Exception as e_mod:
+                        erros_detalhados.append(f"{nome_chave} + {modelo}: {str(e_mod)}")
+            except Exception as e_key:
+                erros_detalhados.append(f"Erro na chave {nome_chave}: {str(e_key)}")
 
     if not sucesso_ia:
-        st.error("❌ Falha Total da IA. Todas as chaves e modelos foram esgotados.")
-        with st.expander("Ver detalhes do erro para debugar"):
-            for erro in erros_detalhados:
-                st.write(erro)
+        st.error("Falha na conexão com a IA.")
+        for err in erros_detalhados:
+            st.warning(err)
         st.stop()
 
-    with st.spinner("🔬 Cruzando palavras e símbolos detalhadamente e pintando PDFs..."):
+    with st.spinner("🔬 Processando Divergências..."):
         try:
-            texto_limpo = texto_resposta_ia.strip()
-            for fence in ("```json","
-```"):
-                texto_limpo = texto_limpo.replace(fence,"")
-            
-            resultado = json.loads(texto_limpo.strip())
+            # Limpeza básica do JSON
+            texto_limpo = texto_resposta_ia.strip().replace("```json", "").replace("```", "")
+            resultado = json.loads(texto_limpo)
 
-            data_ref        = resultado.get("data_anvisa_ref","-")
-            data_mkt        = resultado.get("data_anvisa_mkt","-")
-            erros_vermelhos = resultado.get("erros_ortograficos") or []
-            datas_azuis     = resultado.get("data_anvisa_frase")  or []
-            dados_secoes    = resultado.get("secoes", [])
-            
+            data_ref = resultado.get("data_anvisa_ref", "-")
+            data_mkt = resultado.get("data_anvisa_mkt", "-")
+            erros_v = resultado.get("erros_ortograficos") or []
+            datas_a = resultado.get("data_anvisa_frase") or []
+            dados_s = resultado.get("secoes") or []
+
             amarelo_final = []
-            for secao in dados_secoes:
-                titulo = secao.get("titulo", "").strip().upper()
-                
-                if any(b in titulo for b in SECOES_SEM_COMPARACAO):
+            for s in dados_s:
+                if any(b in s.get("titulo", "").upper() for b in SECOES_SEM_COMPARACAO):
                     continue
-                    
-                t_r = secao.get("texto_ref", "")
-                t_b = secao.get("texto_belfar", "")
-                
-                if t_r or t_b:
-                    divergencias = encontrar_divergencias_exatas(t_r, t_b)
-                    amarelo_final.extend(divergencias)
+                divs = encontrar_divergencias_exatas(s.get("texto_ref", ""), s.get("texto_belfar", ""))
+                amarelo_final.extend(divs)
 
             f1.seek(0); f2.seek(0)
-            fotos_ref    = gerar_imagens_pdf_grifado(f1)
-            fotos_belfar = gerar_imagens_pdf_grifado(
-                f2,
-                amarelo  = amarelo_final,
-                vermelho = erros_vermelhos,
-                azul     = datas_azuis
-            )
+            fotos_ref = gerar_imagens_pdf_grifado(f1)
+            fotos_bel = gerar_imagens_pdf_grifado(f2, amarelo=amarelo_final, vermelho=erros_v, azul=datas_a)
 
-        except Exception as e:
-            st.error(f"Erro ao processar: {e}")
+            st.metric("Trechos Divergentes", len(amarelo_final))
+            
+            for i in range(max(len(fotos_ref), len(fotos_bel))):
+                st.subheader(f"Página {i+1}")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if i < len(fotos_ref): st.image(fotos_ref[i])
+                with col_b:
+                    if i < len(fotos_bel): st.image(fotos_bel[i])
+
+        except Exception as e_final:
+            st.error(f"Erro ao processar dados: {str(e_final)}")
             st.code(texto_resposta_ia)
-            st.stop()
-
-    # ── ETAPA 3: Exibição ──
-    st.markdown("### 📊 Resumo da Auditoria")
-    ca, cb, cc = st.columns(3)
-    ca.metric("Data Referência", data_ref)
-    cb.metric("Data BELFAR", data_mkt,
-              delta="Igual" if data_ref == data_mkt else "⚠️ Diferente")
-    cc.metric("Segmentos Divergentes Identificados", len(amarelo_final))
-
-    st.markdown("""
-    ### 🎨 Legenda:
-    * 🟡 **Amarelo** — Inserções, alterações, tópicos/símbolos diferentes e parágrafos completos ausentes.
-    * 🔴 **Vermelho** — Erro ortográfico / gramática
-    * 🔵 **Azul** — Data de aprovação da Anvisa
-    """)
-    st.divider()
-
-    max_pages = max(len(fotos_ref), len(fotos_belfar))
-    for i in range(max_pages):
-        st.markdown(f"#### Página {i+1}")
-        cl, cr = st.columns(2)
-        with cl:
-            st.caption("📜 Bula Referência (Visão Limpa)")
-            if i < len(fotos_ref):
-                st.image(fotos_ref[i], use_container_width=True)
-        with cr:
-            st.caption("📜 Bula BELFAR (Auditoria Detalhada)")
-            if i < len(fotos_belfar):
-                st.image(fotos_belfar[i], use_container_width=True)
-        st.divider()
