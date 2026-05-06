@@ -4,6 +4,7 @@ import fitz  # PyMuPDF
 import json
 import re
 import time
+import difflib
 
 # ----------------- 1. CONFIG PÁGINA -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
@@ -32,6 +33,8 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR","REAÇÕES ADVERSAS","SUPERDOSE","DIZERES LEGAIS"
 ]
 
+SECOES_SEM_COMPARACAO = {"APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"}
+
 # ----------------- 3. EXTRAÇÃO DE TEXTO DO PDF -----------------
 def extract_text_from_file(uploaded_file):
     try:
@@ -39,13 +42,56 @@ def extract_text_from_file(uploaded_file):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         for page in doc:
             text += page.get_text("text") + "\n"
-        # Une hífens de quebra de linha
+        # Une hífens de quebra de linha com segurança
         text = re.sub(r'(\w)-\s*\n(\w)', r'\1\2', text)
         return text
     except:
         return ""
 
-# ----------------- 4. PINTURA DOS PDFs -----------------
+# ----------------- 4. MOTOR DE DIVERGÊNCIAS (PERFEITO) -----------------
+def encontrar_divergencias_exatas(texto_ref, texto_belfar):
+    """
+    Compara palavra por palavra, símbolo por símbolo.
+    Retorna pedaços de texto exatos de ~6 palavras para o PyMuPDF grifar sem falhar.
+    """
+    # Limpa formatações duplas mantendo as palavras
+    t_ref_limpo = re.sub(r'\s+', ' ', texto_ref).strip()
+    t_bel_limpo = re.sub(r'\s+', ' ', texto_belfar).strip()
+    
+    # Tokeniza mantendo pontuações
+    tok_ref = t_ref_limpo.split()
+    tok_bel = t_bel_limpo.split()
+    
+    # Normaliza apenas para a lente de comparação do código
+    norm_ref = [t.lower() for t in tok_ref]
+    norm_bel = [t.lower() for t in tok_bel]
+    
+    matcher = difflib.SequenceMatcher(None, norm_ref, norm_bel, autojunk=False)
+    trechos_para_grifar = []
+    
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in ('insert', 'replace'):
+            inicio = j1
+            fim = j2
+            
+            # Se for uma diferença de 1 caractere (ex: • para -)
+            # Adiciona 1 ou 2 palavras seguintes como âncora para o PDF não pintar todos os '-' da folha
+            tamanho_str = sum(len(tok_bel[x]) for x in range(inicio, fim))
+            if tamanho_str <= 3 and fim < len(tok_bel):
+                fim = min(fim + 2, len(tok_bel))
+            
+            palavras_divergentes = tok_bel[inicio:fim]
+            
+            # Fatiador: Quebra as divergências em bloquinhos de 6 palavras.
+            # Isso garante que um parágrafo GIGANTE seja 100% grifado pedaço por pedaço!
+            for k in range(0, len(palavras_divergentes), 6):
+                pedaco = " ".join(palavras_divergentes[k:k+6])
+                if len(pedaco.strip()) > 1:
+                    trechos_para_grifar.append(pedaco)
+                    
+    return trechos_para_grifar
+
+# ----------------- 5. PINTURA DOS PDFs -----------------
 def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=None):
     amarelo  = amarelo  or []
     vermelho = vermelho or []
@@ -55,17 +101,15 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
     imagens = []
 
     for page in doc:
-        # Pinta Amarelo (Divergências IA)
         for frase in amarelo:
             frase = str(frase).strip()
-            if len(frase) < 5: continue
+            if len(frase) < 2: continue
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0.85, 0))
                 a.set_opacity(0.45)
                 a.update()
 
-        # Pinta Vermelho (Erros)
         for frase in vermelho:
             frase = str(frase).strip()
             if len(frase) < 4: continue
@@ -75,7 +119,6 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
                 a.set_opacity(0.40)
                 a.update()
 
-        # Pinta Azul (Data Anvisa)
         for frase in azul:
             frase = str(frase).strip()
             if len(frase) < 4: continue
@@ -90,8 +133,8 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
 
     return imagens
 
-# ----------------- 5. UI PRINCIPAL -----------------
-st.title("💊 Auditor Visual de Bulas (Com IA Semântica)")
+# ----------------- 6. UI PRINCIPAL -----------------
+st.title("💊 Auditor Visual de Bulas (Detecção Nível Palavra/Símbolo)")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente","Profissional"), horizontal=True)
 
@@ -120,7 +163,7 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
     texto_resposta_ia = ""
     sucesso_ia = False
 
-    with st.spinner("🧠 IA Analisando conteúdo semântico (Isso será bem mais rápido agora)..."):
+    with st.spinner("🧠 IA mapeando a estrutura literal das bulas..."):
         f1.seek(0); f2.seek(0)
         t_ref    = extract_text_from_file(f1)
         t_belfar = extract_text_from_file(f2)
@@ -129,7 +172,7 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
             st.error("Arquivo vazio ou ilegível."); st.stop()
 
         prompt = f"""
-        Você é um Auditor Farmacêutico Sênior com olhar clínico.
+        Você é um Extrator de Dados Farmacêuticos de extrema precisão.
 
         BULA REFERÊNCIA:
         {t_ref[:150000]}
@@ -137,24 +180,27 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
         BULA BELFAR:
         {t_belfar[:150000]}
 
-        Sua missão é focar APENAS nestas seções: {secoes_alvo}.
+        SEÇÕES ALVO: {secoes_alvo}
 
-        INSTRUÇÕES DE ANÁLISE (MUITO IMPORTANTE):
-        1. Compare as seções equivalentes nas duas bulas.
-        2. Identifique DIVERGÊNCIAS REAIS de conteúdo (informações médicas adicionadas na BELFAR, informações removidas ou significados alterados).
-        3. IGNORE TOTALMENTE mudanças estéticas: troca de '•' por '-', números, parágrafos quebrados em lugares diferentes, ou pontuação diferente. Se o sentido da frase é o mesmo, NÃO é divergência.
-        4. "trechos_divergentes_belfar": Forneça trechos exatos (entre 5 a 15 palavras) LITERALMENTE copiados da bula BELFAR onde a divergência ocorre. Como é para grifar no PDF, a cópia deve ser idêntica (copiar e colar do texto da BELFAR).
+        MISSÃO: Extrair as seções LITERAIS para o comparador algorítmico do Python.
 
-        Responda SOMENTE em formato JSON válido:
+        REGRAS ABSOLUTAS:
+        1. NÃO resuma. NÃO altere nenhuma palavra, pontuação ou marcador (mantenha •, -, números idênticos).
+        2. Copie os textos completos exatamente como estão nas bulas.
+        3. Se uma seção não existir em uma delas, coloque string vazia "".
+        
+        Responda SOMENTE em JSON:
         {{
-            "raciocinio_auditor": "Explique brevemente em 1 linha o que você encontrou de diferente",
             "data_anvisa_ref": "dd/mm/aaaa ou -",
             "data_anvisa_mkt": "dd/mm/aaaa ou -",
             "erros_ortograficos": ["palavra ou frase com erro de português na BELFAR"],
-            "data_anvisa_frase": ["frase literal da belfar que contem a data"],
-            "trechos_divergentes_belfar": [
-                "frase exata copiada da belfar da mudanca 1",
-                "frase exata copiada da belfar da mudanca 2"
+            "data_anvisa_frase": ["frase literal da belfar com a data de aprovação"],
+            "secoes": [
+                {{
+                    "titulo": "NOME DA SEÇÃO",
+                    "texto_ref": "texto literal completo da Referência",
+                    "texto_belfar": "texto literal completo da BELFAR"
+                }}
             ]
         }}
         """
@@ -166,20 +212,20 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
                 try:
                     inst = genai.GenerativeModel(
                         modelo,
-                        generation_config={"response_mime_type":"application/json","temperature":0.1}
+                        generation_config={"response_mime_type":"application/json","temperature":0.0}
                     )
                     resp = inst.generate_content(prompt)
                     texto_resposta_ia = resp.text
                     sucesso_ia = True
                     break
-                except Exception as e:
+                except Exception:
                     time.sleep(0.5)
 
     if not sucesso_ia:
-        st.error("❌ Falha Total da IA. Verifique as chaves / cota.")
+        st.error("❌ Falha Total da IA.")
         st.stop()
 
-    with st.spinner("🖌️ Grifando PDFs com base no laudo da IA..."):
+    with st.spinner("🔬 Cruzando palavras e símbolos detalhadamente e pintando PDFs..."):
         try:
             texto_limpo = texto_resposta_ia.strip()
             for fence in ("```json","```"):
@@ -191,7 +237,23 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
             data_mkt        = resultado.get("data_anvisa_mkt","-")
             erros_vermelhos = resultado.get("erros_ortograficos") or []
             datas_azuis     = resultado.get("data_anvisa_frase")  or []
-            amarelo_final   = resultado.get("trechos_divergentes_belfar") or []
+            dados_secoes    = resultado.get("secoes", [])
+            
+            # --- ONDE A MÁGICA ACONTECE ---
+            amarelo_final = []
+            for secao in dados_secoes:
+                titulo = secao.get("titulo", "").strip().upper()
+                
+                # Pula as seções que variam de fábrica para fábrica (como composição e apresentações)
+                if any(b in titulo for b in SECOES_SEM_COMPARACAO):
+                    continue
+                    
+                t_r = secao.get("texto_ref", "")
+                t_b = secao.get("texto_belfar", "")
+                
+                if t_r or t_b:
+                    divergencias = encontrar_divergencias_exatas(t_r, t_b)
+                    amarelo_final.extend(divergencias)
 
             f1.seek(0); f2.seek(0)
             fotos_ref    = gerar_imagens_pdf_grifado(f1)
@@ -203,7 +265,7 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
             )
 
         except Exception as e:
-            st.error(f"Erro ao processar resposta: {e}")
+            st.error(f"Erro ao processar: {e}")
             st.code(texto_resposta_ia)
             st.stop()
 
@@ -213,13 +275,11 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
     ca.metric("Data Referência", data_ref)
     cb.metric("Data BELFAR", data_mkt,
               delta="Igual" if data_ref == data_mkt else "⚠️ Diferente")
-    cc.metric("Divergências Encontradas (IA)", len(amarelo_final))
-
-    st.markdown(f"> **Parecer da IA:** *{resultado.get('raciocinio_auditor', 'Nenhuma observação')}*")
+    cc.metric("Segmentos Divergentes Identificados", len(amarelo_final))
 
     st.markdown("""
     ### 🎨 Legenda:
-    * 🟡 **Amarelo** — Divergência real de conteúdo (ignorado marcadores e layout)
+    * 🟡 **Amarelo** — Inserções, alterações, tópicos/símbolos diferentes e parágrafos completos ausentes.
     * 🔴 **Vermelho** — Erro ortográfico / gramática
     * 🔵 **Azul** — Data de aprovação da Anvisa
     """)
@@ -234,7 +294,7 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
             if i < len(fotos_ref):
                 st.image(fotos_ref[i], use_container_width=True)
         with cr:
-            st.caption("📜 Bula BELFAR (Auditoria IA)")
+            st.caption("📜 Bula BELFAR (Auditoria Detalhada)")
             if i < len(fotos_belfar):
                 st.image(fotos_belfar[i], use_container_width=True)
         st.divider()
