@@ -43,7 +43,7 @@ PALAVRAS_FUNCIONAIS = {
     'ao','à','aos','às','seu','sua','seus','suas','este','esta','estes',
     'estas','esse','essa','esses','essas','isso','isto','quando','onde',
     'como','não','mais','muito','também','já','só','ainda','é','são',
-    'foi','foram','ser','estar','pode','podem','
+    'foi','foram','ser','estar','pode','podem'
 }
 
 # ----------------- 3. EXTRAÇÃO DE TEXTO -----------------
