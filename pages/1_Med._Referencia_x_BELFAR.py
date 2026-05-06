@@ -1,5 +1,6 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import fitz  # PyMuPDF
 import json
 import re
@@ -12,7 +13,7 @@ st.markdown('<style>[data-testid="stHeader"]{visibility:hidden;}</style>', unsaf
 
 # ----------------- 2. CONSTANTES -----------------
 MODELOS_PARA_TENTAR = [
-    "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"
+    "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"
 ]
 
 SECOES_PACIENTE = [
@@ -54,15 +55,12 @@ def encontrar_divergencias_exatas(texto_ref, texto_belfar):
     Compara palavra por palavra, símbolo por símbolo.
     Retorna pedaços de texto exatos de ~6 palavras para o PyMuPDF grifar sem falhar.
     """
-    # Limpa formatações duplas mantendo as palavras
     t_ref_limpo = re.sub(r'\s+', ' ', texto_ref).strip()
     t_bel_limpo = re.sub(r'\s+', ' ', texto_belfar).strip()
     
-    # Tokeniza mantendo pontuações
     tok_ref = t_ref_limpo.split()
     tok_bel = t_bel_limpo.split()
     
-    # Normaliza apenas para a lente de comparação do código
     norm_ref = [t.lower() for t in tok_ref]
     norm_bel = [t.lower() for t in tok_bel]
     
@@ -74,16 +72,12 @@ def encontrar_divergencias_exatas(texto_ref, texto_belfar):
             inicio = j1
             fim = j2
             
-            # Se for uma diferença de 1 caractere (ex: • para -)
-            # Adiciona 1 ou 2 palavras seguintes como âncora para o PDF não pintar todos os '-' da folha
             tamanho_str = sum(len(tok_bel[x]) for x in range(inicio, fim))
             if tamanho_str <= 3 and fim < len(tok_bel):
                 fim = min(fim + 2, len(tok_bel))
             
             palavras_divergentes = tok_bel[inicio:fim]
             
-            # Fatiador: Quebra as divergências em bloquinhos de 6 palavras.
-            # Isso garante que um parágrafo GIGANTE seja 100% grifado pedaço por pedaço!
             for k in range(0, len(palavras_divergentes), 6):
                 pedaco = " ".join(palavras_divergentes[k:k+6])
                 if len(pedaco.strip()) > 1:
@@ -144,14 +138,16 @@ f2 = c2.file_uploader("📜 Bula BELFAR",     type=["pdf"], key="f2")
 
 if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
 
-    keys_validas = [k for k in [
-        st.secrets.get("GEMINI_API_KEY"),
-        st.secrets.get("GEMINI_API_KEY2"),
-        st.secrets.get("GEMINI_API_KEY3")
-    ] if k]
+    # Mapeamento robusto das 3 chaves de API
+    chaves_disponiveis = ["GEMINI_API_KEY", "GEMINI_API_KEY2", "GEMINI_API_KEY3"]
+    keys_validas = []
+    for nome_chave in chaves_disponiveis:
+        chave_secreta = st.secrets.get(nome_chave)
+        if chave_secreta:
+            keys_validas.append(chave_secreta)
 
     if not keys_validas:
-        st.error("Erro Crítico: Nenhuma API Key encontrada nos Secrets.")
+        st.error("Erro Crítico: Nenhuma API Key (1, 2 ou 3) encontrada nos Secrets.")
         st.stop()
 
     if not (f1 and f2):
@@ -162,8 +158,9 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
 
     texto_resposta_ia = ""
     sucesso_ia = False
+    erros_detalhados = []
 
-    with st.spinner("🧠 IA mapeando a estrutura literal das bulas..."):
+    with st.spinner("🧠 IA mapeando a estrutura literal das bulas (Usando nova API)..."):
         f1.seek(0); f2.seek(0)
         t_ref    = extract_text_from_file(f1)
         t_belfar = extract_text_from_file(f2)
@@ -205,30 +202,46 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
         }}
         """
 
+        # Novo sistema de rodízio de chaves e modelos usando a biblioteca nova
         for key in keys_validas:
             if sucesso_ia: break
-            genai.configure(api_key=key)
+            
+            # Instancia um cliente novo para a chave atual
+            try:
+                client = genai.Client(api_key=key)
+            except Exception as e:
+                erros_detalhados.append(f"Erro ao carregar chave: {e}")
+                continue
+
             for modelo in MODELOS_PARA_TENTAR:
                 try:
-                    inst = genai.GenerativeModel(
-                        modelo,
-                        generation_config={"response_mime_type":"application/json","temperature":0.0}
+                    resp = client.models.generate_content(
+                        model=modelo,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            temperature=0.0
+                        )
                     )
-                    resp = inst.generate_content(prompt)
                     texto_resposta_ia = resp.text
                     sucesso_ia = True
-                    break
-                except Exception:
-                    time.sleep(0.5)
+                    break # Sai do loop de modelos
+                except Exception as e:
+                    erros_detalhados.append(f"Chave falhou no modelo {modelo}: {e}")
+                    time.sleep(1) # Aguarda 1s antes de tentar de novo para evitar block de rate limit
 
     if not sucesso_ia:
-        st.error("❌ Falha Total da IA.")
+        st.error("❌ Falha Total da IA. Todas as chaves e modelos foram esgotados.")
+        with st.expander("Ver detalhes do erro para debugar"):
+            for erro in erros_detalhados:
+                st.write(erro)
         st.stop()
 
     with st.spinner("🔬 Cruzando palavras e símbolos detalhadamente e pintando PDFs..."):
         try:
             texto_limpo = texto_resposta_ia.strip()
-            for fence in ("```json","```"):
+            for fence in ("```json","
+```"):
                 texto_limpo = texto_limpo.replace(fence,"")
             
             resultado = json.loads(texto_limpo.strip())
@@ -239,12 +252,10 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
             datas_azuis     = resultado.get("data_anvisa_frase")  or []
             dados_secoes    = resultado.get("secoes", [])
             
-            # --- ONDE A MÁGICA ACONTECE ---
             amarelo_final = []
             for secao in dados_secoes:
                 titulo = secao.get("titulo", "").strip().upper()
                 
-                # Pula as seções que variam de fábrica para fábrica (como composição e apresentações)
                 if any(b in titulo for b in SECOES_SEM_COMPARACAO):
                     continue
                     
