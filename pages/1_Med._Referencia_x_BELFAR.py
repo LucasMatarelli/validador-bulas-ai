@@ -4,8 +4,6 @@ import fitz  # PyMuPDF
 import json
 import re
 import time
-import difflib
-import unicodedata
 
 # ----------------- 1. CONFIG PÁGINA -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
@@ -34,12 +32,6 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR","REAÇÕES ADVERSAS","SUPERDOSE","DIZERES LEGAIS"
 ]
 
-SECOES_SEM_COMPARACAO = {"APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS"}
-
-# Similaridade mínima para considerar dois parágrafos como "o mesmo conteúdo"
-# (0.0 = qualquer coisa bate, 1.0 = idêntico)
-SIMILARIDADE_PARAGRAFO = 0.55
-
 # ----------------- 3. EXTRAÇÃO DE TEXTO DO PDF -----------------
 def extract_text_from_file(uploaded_file):
     try:
@@ -65,7 +57,6 @@ def reparar_json_truncado(texto):
         pass
 
     consertado = re.sub(r',\s*$', '', texto)
-
     num_aspas = consertado.count('"') - consertado.count('\\"')
     if num_aspas % 2 != 0:
         consertado += '"'
@@ -86,7 +77,6 @@ def reparar_json_truncado(texto):
             elif ch in ('}', ']'):
                 if pilha and pilha[-1] == ch:
                     pilha.pop()
-
     for f in reversed(pilha):
         consertado += f
 
@@ -95,122 +85,7 @@ def reparar_json_truncado(texto):
     except json.JSONDecodeError as e:
         raise ValueError(f"Não foi possível reparar o JSON: {e}")
 
-# ----------------- 5. NORMALIZAÇÃO -----------------
-def normalizar(texto):
-    """Remove acentos, lowercase, pontuação, espaços extras — para comparação semântica."""
-    t = unicodedata.normalize('NFD', texto)
-    t = ''.join(c for c in t if unicodedata.category(c) != 'Mn')
-    t = t.lower()
-    t = re.sub(r'[^\w\s]', ' ', t)
-    t = re.sub(r'\s+', ' ', t).strip()
-    return t
-
-def similaridade(a, b):
-    """Retorna razão de similaridade entre dois textos normalizados (0.0 a 1.0)."""
-    na, nb = normalizar(a), normalizar(b)
-    if not na or not nb:
-        return 0.0
-    return difflib.SequenceMatcher(None, na, nb).ratio()
-
-# ----------------- 6. TOKENIZAÇÃO PARA DIFF FINO -----------------
-def tokenizar(texto):
-    """Retorna lista de (token_original, token_normalizado)."""
-    tokens_raw = re.split(r'(\s+)', re.sub(r'\s+', ' ', texto).strip())
-    resultado = []
-    for t in tokens_raw:
-        if t.strip():
-            norm = normalizar(t)
-            resultado.append((t, norm if norm else '__punct__'))
-    return resultado
-
-# ----------------- 7. DIFF FINO ENTRE DOIS PARÁGRAFOS SIMILARES -----------------
-def diff_fino(para_ref, para_bel):
-    """
-    Dado que dois parágrafos são semanticamente similares,
-    faz diff token a token e retorna só os trechos da BELFAR que diferem.
-    """
-    tok_ref = tokenizar(para_ref)
-    tok_bel = tokenizar(para_bel)
-    norm_ref = [t[1] for t in tok_ref]
-    norm_bel = [t[1] for t in tok_bel]
-
-    matcher = difflib.SequenceMatcher(None, norm_ref, norm_bel, autojunk=False)
-    trechos = []
-
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag not in ('insert', 'replace'):
-            continue
-
-        # Se replace com mesma quantidade de tokens e normalizados iguais → não é divergência real
-        if tag == 'replace' and (i2 - i1) == (j2 - j1):
-            if all(norm_ref[i1+k] == norm_bel[j1+k] for k in range(i2 - i1)):
-                continue
-
-        palavras = [tok_bel[x][0] for x in range(j1, j2)]
-
-        # Adiciona contexto para tokens muito curtos
-        tamanho = sum(len(tok_bel[x][0]) for x in range(j1, j2))
-        if tamanho <= 3 and j2 < len(tok_bel):
-            palavras = [tok_bel[x][0] for x in range(j1, min(j2 + 2, len(tok_bel)))]
-
-        # Quebra em pedaços de 6 palavras
-        for k in range(0, len(palavras), 6):
-            pedaco = " ".join(palavras[k:k+6]).strip()
-            if len(pedaco) > 1:
-                trechos.append(pedaco)
-
-    return trechos
-
-# ----------------- 8. MOTOR PRINCIPAL DE DIVERGÊNCIAS -----------------
-def encontrar_divergencias_exatas(texto_ref, texto_belfar):
-    """
-    Estratégia em dois níveis:
-    1. Divide ambos os textos em parágrafos.
-    2. Para cada parágrafo da BELFAR, tenta achar o parágrafo mais similar da REF.
-       - Se similaridade >= limiar: faz diff fino (só marca palavras que mudaram).
-       - Se similaridade < limiar: o parágrafo inteiro é novo/ausente na REF → marca tudo.
-    Isso evita falsos positivos quando os textos têm a mesma info mas reorganizada.
-    """
-    # Divide em parágrafos não-vazios
-    def em_paragrafos(texto):
-        return [p.strip() for p in re.split(r'\n{1,}', texto) if len(p.strip()) > 15]
-
-    paras_ref = em_paragrafos(texto_ref)
-    paras_bel = em_paragrafos(texto_belfar)
-
-    if not paras_ref or not paras_bel:
-        # Fallback: texto simples sem parágrafos, faz diff direto
-        return diff_fino(texto_ref, texto_belfar)
-
-    trechos_para_grifar = []
-
-    # Para cada parágrafo da BELFAR, acha o mais similar na REF
-    for para_bel in paras_bel:
-        melhor_sim = 0.0
-        melhor_ref = ""
-
-        for para_ref in paras_ref:
-            sim = similaridade(para_ref, para_bel)
-            if sim > melhor_sim:
-                melhor_sim = sim
-                melhor_ref = para_ref
-
-        if melhor_sim >= SIMILARIDADE_PARAGRAFO:
-            # Parágrafos correspondem → diff fino para achar só o que mudou
-            diffs = diff_fino(melhor_ref, para_bel)
-            trechos_para_grifar.extend(diffs)
-        else:
-            # Parágrafo completamente novo na BELFAR → grifa tudo
-            tokens = tokenizar(para_bel)
-            palavras = [t[0] for t in tokens]
-            for k in range(0, len(palavras), 6):
-                pedaco = " ".join(palavras[k:k+6]).strip()
-                if len(pedaco) > 1:
-                    trechos_para_grifar.append(pedaco)
-
-    return trechos_para_grifar
-
-# ----------------- 9. PINTURA DOS PDFs -----------------
+# ----------------- 5. PINTURA DOS PDFs -----------------
 def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=None):
     amarelo  = amarelo  or []
     vermelho = vermelho or []
@@ -222,29 +97,29 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
     for page in doc:
         for frase in amarelo:
             frase = str(frase).strip()
-            if len(frase) < 2: continue
+            if len(frase) < 3: continue
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0.85, 0))
-                a.set_opacity(0.45)
+                a.set_opacity(0.5)
                 a.update()
 
         for frase in vermelho:
             frase = str(frase).strip()
-            if len(frase) < 4: continue
+            if len(frase) < 3: continue
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0, 0))
-                a.set_opacity(0.40)
+                a.set_opacity(0.45)
                 a.update()
 
         for frase in azul:
             frase = str(frase).strip()
-            if len(frase) < 4: continue
+            if len(frase) < 3: continue
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(0, 0.5, 1))
-                a.set_opacity(0.40)
+                a.set_opacity(0.45)
                 a.update()
 
         pix = page.get_pixmap(matrix=fitz.Matrix(4, 4))
@@ -252,7 +127,28 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
 
     return imagens
 
-# ----------------- 10. UI PRINCIPAL -----------------
+# ----------------- 6. QUEBRA EM CHUNKS PARA BUSCA NO PDF -----------------
+def chunks_de_frase(frase, tamanho=8):
+    """
+    Quebra uma frase longa em pedaços sobrepostos de N palavras
+    para que o PyMuPDF consiga encontrar no PDF mesmo com quebras de linha.
+    """
+    palavras = frase.split()
+    if len(palavras) <= tamanho:
+        return [frase]
+    resultado = []
+    for i in range(0, len(palavras) - tamanho + 1, max(1, tamanho // 2)):
+        chunk = " ".join(palavras[i:i+tamanho])
+        resultado.append(chunk)
+    return resultado
+
+def expandir_para_chunks(lista_frases, tamanho=8):
+    resultado = []
+    for frase in lista_frases:
+        resultado.extend(chunks_de_frase(frase, tamanho))
+    return resultado
+
+# ----------------- 7. UI PRINCIPAL -----------------
 st.title("💊 Auditor Visual de Bulas (Detecção Nível Palavra/Símbolo)")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente","Profissional"), horizontal=True)
@@ -282,7 +178,7 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
     texto_resposta_ia = ""
     sucesso_ia = False
 
-    with st.spinner("🧠 IA mapeando a estrutura literal das bulas..."):
+    with st.spinner("🧠 IA comparando as bulas e identificando divergências..."):
         f1.seek(0); f2.seek(0)
         t_ref    = extract_text_from_file(f1)
         t_belfar = extract_text_from_file(f2)
@@ -291,41 +187,58 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
             st.error("Arquivo vazio ou ilegível."); st.stop()
 
         prompt = f"""
-Você é um Extrator de Dados Farmacêuticos de extrema precisão.
+Você é um auditor farmacêutico especialista em comparação de bulas de medicamentos.
+
+Você receberá duas bulas:
+- BULA REFERÊNCIA: o texto oficial aprovado pela Anvisa
+- BULA BELFAR: a versão do fabricante que deve ser comparada
+
+Sua tarefa é analisar com extrema precisão e retornar um JSON com:
+
+1. **divergencias_amarelo**: Lista de trechos de texto que existem na BELFAR mas que
+   são DIFERENTES do correspondente na Referência (palavras trocadas, frases alteradas,
+   informações extras que não estão na Referência, parágrafos reorganizados com conteúdo diferente).
+   - NÃO inclua trechos que têm o mesmo conteúdo semântico mesmo que escritos de forma levemente diferente.
+   - NÃO inclua o nome do medicamento (Flagimax, FLAGYL etc.) — esses são diferentes por natureza.
+   - NÃO inclua trechos da seção APRESENTAÇÕES, COMPOSIÇÃO ou DIZERES LEGAIS.
+   - Cada item deve ser um trecho LITERAL de 5 a 10 palavras consecutivas como aparecem na BULA BELFAR,
+     para que possam ser encontradas e grifadas no PDF.
+
+2. **erros_ortograficos**: Lista de palavras ou trechos curtos com erro ortográfico/gramatical
+   na BULA BELFAR. Cada item deve ser o trecho LITERAL como aparece na bula BELFAR.
+
+3. **data_anvisa_ref**: Data de aprovação da Anvisa encontrada na Bula Referência (formato dd/mm/aaaa).
+
+4. **data_anvisa_mkt**: Data de aprovação da Anvisa encontrada na Bula BELFAR (formato dd/mm/aaaa).
+
+5. **data_anvisa_frase**: A frase LITERAL E COMPLETA como aparece na BULA BELFAR contendo
+   a data de aprovação da Anvisa. Exemplo: "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em 31/07/2025."
+   Deve ser uma lista com essa frase exata.
+
+SEÇÕES PARA COMPARAR (ignore APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS):
+{[s for s in secoes_alvo if s not in ("APRESENTAÇÕES", "COMPOSIÇÃO", "DIZERES LEGAIS")]}
+
+---
 
 BULA REFERÊNCIA:
-{t_ref[:120000]}
+{t_ref[:100000]}
+
+---
 
 BULA BELFAR:
-{t_belfar[:120000]}
+{t_belfar[:100000]}
 
-SEÇÕES ALVO: {secoes_alvo}
+---
 
-MISSÃO: Extrair as seções LITERAIS para o comparador algorítmico do Python.
-
-REGRAS ABSOLUTAS:
-1. NÃO resuma. NÃO altere nenhuma palavra, pontuação ou marcador (mantenha •, -, números idênticos).
-2. Copie os textos completos exatamente como estão nas bulas, preservando quebras de parágrafo com \\n.
-3. Se uma seção não existir em uma delas, coloque string vazia "".
-4. CRÍTICO: Retorne um JSON COMPLETO e válido. Se o texto for muito longo, prefira truncar
-   o conteúdo de uma seção a entregar um JSON incompleto.
-5. Para "data_anvisa_frase": copie a frase EXATA e COMPLETA como aparece na bula BELFAR
-   contendo a data de aprovação da Anvisa (ex: "Esta bula foi aprovada pela Anvisa em 31/07/2025.").
-   Deve ser uma lista com essa frase literal.
-
-Responda SOMENTE em JSON válido e completo:
+RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
 {{
-    "data_anvisa_ref": "dd/mm/aaaa ou -",
-    "data_anvisa_mkt": "dd/mm/aaaa ou -",
-    "erros_ortograficos": ["palavra ou frase com erro de português na BELFAR"],
-    "data_anvisa_frase": ["frase literal completa da belfar com a data de aprovação"],
-    "secoes": [
-        {{
-            "titulo": "NOME DA SEÇÃO",
-            "texto_ref": "texto literal completo da Referência com \\n entre parágrafos",
-            "texto_belfar": "texto literal completo da BELFAR com \\n entre parágrafos"
-        }}
-    ]
+  "data_anvisa_ref": "dd/mm/aaaa ou -",
+  "data_anvisa_mkt": "dd/mm/aaaa ou -",
+  "data_anvisa_frase": ["frase literal completa da BELFAR com a data"],
+  "erros_ortograficos": ["trecho literal com erro na BELFAR"],
+  "divergencias_amarelo": [
+    "trecho literal de 5-10 palavras da BELFAR que difere da Referência"
+  ]
 }}
 """
 
@@ -355,42 +268,33 @@ Responda SOMENTE em JSON válido e completo:
         st.error("❌ Falha Total da IA.")
         st.stop()
 
-    with st.spinner("🔬 Cruzando palavras e símbolos detalhadamente e pintando PDFs..."):
+    with st.spinner("🎨 Pintando PDFs com as divergências identificadas..."):
         try:
             resultado = reparar_json_truncado(texto_resposta_ia)
 
             data_ref        = resultado.get("data_anvisa_ref", "-")
             data_mkt        = resultado.get("data_anvisa_mkt", "-")
             erros_vermelhos = resultado.get("erros_ortograficos") or []
-            dados_secoes    = resultado.get("secoes", [])
+            divergencias    = resultado.get("divergencias_amarelo") or []
 
-            # ── Correção da data azul: garante que é lista de strings não-vazias ──
+            # Garante que data_anvisa_frase é lista de strings
             raw_azul = resultado.get("data_anvisa_frase") or []
             if isinstance(raw_azul, str):
                 raw_azul = [raw_azul]
             datas_azuis = [str(x).strip() for x in raw_azul if str(x).strip()]
 
-            amarelo_final = []
-            for secao in dados_secoes:
-                titulo = secao.get("titulo", "").strip().upper()
-
-                if any(b in titulo for b in SECOES_SEM_COMPARACAO):
-                    continue
-
-                t_r = secao.get("texto_ref", "")
-                t_b = secao.get("texto_belfar", "")
-
-                if t_r or t_b:
-                    divergencias = encontrar_divergencias_exatas(t_r, t_b)
-                    amarelo_final.extend(divergencias)
+            # Expande frases longas em chunks para o PyMuPDF encontrar no PDF
+            amarelo_chunks  = expandir_para_chunks(divergencias, tamanho=7)
+            vermelho_chunks = expandir_para_chunks(erros_vermelhos, tamanho=7)
+            azul_chunks     = expandir_para_chunks(datas_azuis, tamanho=7)
 
             f1.seek(0); f2.seek(0)
             fotos_ref    = gerar_imagens_pdf_grifado(f1)
             fotos_belfar = gerar_imagens_pdf_grifado(
                 f2,
-                amarelo  = amarelo_final,
-                vermelho = erros_vermelhos,
-                azul     = datas_azuis
+                amarelo  = amarelo_chunks,
+                vermelho = vermelho_chunks,
+                azul     = azul_chunks,
             )
 
         except Exception as e:
@@ -404,14 +308,14 @@ Responda SOMENTE em JSON válido e completo:
     ca.metric("Data Referência", data_ref)
     cb.metric("Data BELFAR", data_mkt,
               delta="Igual" if data_ref == data_mkt else "⚠️ Diferente")
-    cc.metric("Segmentos Divergentes Identificados", len(amarelo_final))
+    cc.metric("Divergências Identificadas", len(divergencias))
 
     if datas_azuis:
-        st.info(f"🔵 Frase de aprovação Anvisa localizada: *{datas_azuis[0]}*")
+        st.info(f"🔵 Frase Anvisa localizada: *{datas_azuis[0]}*")
 
     st.markdown("""
 ### 🎨 Legenda:
-* 🟡 **Amarelo** — Palavras/trechos diferentes ou ausentes na Referência
+* 🟡 **Amarelo** — Trechos diferentes ou ausentes na Referência
 * 🔴 **Vermelho** — Erro ortográfico / gramática
 * 🔵 **Azul** — Data de aprovação da Anvisa
 """)
