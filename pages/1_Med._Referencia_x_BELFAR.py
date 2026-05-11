@@ -32,16 +32,41 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR","REAÇÕES ADVERSAS","SUPERDOSE","DIZERES LEGAIS"
 ]
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO DO PDF -----------------
-def extract_text_from_file(uploaded_file):
+# ----------------- 3. EXTRAÇÃO DE TEXTO COM MARCAÇÃO DE NEGRITO -----------------
+def extract_text_with_bold(uploaded_file):
+    """
+    Extrai texto do PDF marcando trechos em negrito com **texto**.
+    Isso permite que o Gemini saiba quais trechos estão em negrito.
+    """
     try:
-        text = ""
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        paginas = []
         for page in doc:
-            text += page.get_text("text") + "\n"
-        text = re.sub(r'(\w)-\s*\n(\w)', r'\1\2', text)
-        return text
-    except:
+            blocos = page.get_text("dict")["blocks"]
+            linhas_pagina = []
+            for bloco in blocos:
+                if bloco.get("type") != 0:
+                    continue
+                for linha in bloco.get("lines", []):
+                    partes = []
+                    for span in linha.get("spans", []):
+                        txt = span.get("text", "").strip()
+                        if not txt:
+                            continue
+                        flags = span.get("flags", 0)
+                        is_bold = bool(flags & 2**4)  # bit 4 = negrito
+                        if is_bold:
+                            partes.append(f"**{txt}**")
+                        else:
+                            partes.append(txt)
+                    linha_txt = " ".join(partes)
+                    if linha_txt.strip():
+                        linhas_pagina.append(linha_txt)
+            paginas.append("\n".join(linhas_pagina))
+        texto = "\n".join(paginas)
+        texto = re.sub(r'(\w)-\s*\n(\w)', r'\1\2', texto)
+        return texto
+    except Exception as e:
         return ""
 
 # ----------------- 4. REPARADOR DE JSON TRUNCADO -----------------
@@ -50,17 +75,14 @@ def reparar_json_truncado(texto):
     for fence in ("```json", "```"):
         texto = texto.replace(fence, "")
     texto = texto.strip()
-
     try:
         return json.loads(texto)
     except json.JSONDecodeError:
         pass
-
     consertado = re.sub(r',\s*$', '', texto)
     num_aspas = consertado.count('"') - consertado.count('\\"')
     if num_aspas % 2 != 0:
         consertado += '"'
-
     pilha = []
     dentro_string = False
     escape = False
@@ -79,13 +101,25 @@ def reparar_json_truncado(texto):
                     pilha.pop()
     for f in reversed(pilha):
         consertado += f
-
     try:
         return json.loads(consertado)
     except json.JSONDecodeError as e:
         raise ValueError(f"Não foi possível reparar o JSON: {e}")
 
-# ----------------- 5. PINTURA DOS PDFs -----------------
+# ----------------- 5. TRUNCA APÓS DATA ANVISA -----------------
+def truncar_ate_data_anvisa(texto):
+    padroes = [
+        r'(esta bula foi (?:atualizada|aprovada)[^\n]{0,300}\d{2}/\d{2}/\d{4}[^\n]*)',
+        r'(bula (?:padrão\s+)?aprovada pela anvisa[^\n]{0,200}\d{2}/\d{2}/\d{4}[^\n]*)',
+        r'(\d{2}/\d{2}/\d{4}[^\n]{0,100}aprovad[ao][^\n]*)',
+    ]
+    for padrao in padroes:
+        m = re.search(padrao, texto, re.IGNORECASE)
+        if m:
+            return texto[:m.end()].strip()
+    return texto
+
+# ----------------- 6. PINTURA DOS PDFs -----------------
 def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=None):
     amarelo  = amarelo  or []
     vermelho = vermelho or []
@@ -98,7 +132,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
         for frase in amarelo:
             frase = str(frase).strip()
             if len(frase) < 3: continue
-            for area in page.search_for(frase):
+            for area in page.search_for(frase, quads=False):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0.85, 0))
                 a.set_opacity(0.5)
@@ -107,7 +141,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
         for frase in vermelho:
             frase = str(frase).strip()
             if len(frase) < 3: continue
-            for area in page.search_for(frase):
+            for area in page.search_for(frase, quads=False):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0, 0))
                 a.set_opacity(0.45)
@@ -116,7 +150,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
         for frase in azul:
             frase = str(frase).strip()
             if len(frase) < 3: continue
-            for area in page.search_for(frase):
+            for area in page.search_for(frase, quads=False):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(0, 0.5, 1))
                 a.set_opacity(0.45)
@@ -127,7 +161,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
 
     return imagens
 
-# ----------------- 6. QUEBRA EM CHUNKS PARA BUSCA NO PDF -----------------
+# ----------------- 7. CHUNKS PARA BUSCA NO PDF -----------------
 def chunks_de_frase(frase, tamanho=7):
     palavras = frase.split()
     if len(palavras) <= tamanho:
@@ -135,8 +169,7 @@ def chunks_de_frase(frase, tamanho=7):
     resultado = []
     passo = max(1, tamanho // 2)
     for i in range(0, len(palavras) - tamanho + 1, passo):
-        chunk = " ".join(palavras[i:i+tamanho])
-        resultado.append(chunk)
+        resultado.append(" ".join(palavras[i:i+tamanho]))
     return resultado
 
 def expandir_para_chunks(lista_frases, tamanho=7):
@@ -144,24 +177,6 @@ def expandir_para_chunks(lista_frases, tamanho=7):
     for frase in lista_frases:
         resultado.extend(chunks_de_frase(str(frase).strip(), tamanho))
     return resultado
-
-# ----------------- 7. TRUNCA TEXTO ATÉ A DATA DA ANVISA -----------------
-def truncar_ate_data_anvisa(texto):
-    """
-    Corta o texto logo após a frase de aprovação da Anvisa,
-    para não comparar dizeres legais e informações pós-bula.
-    """
-    # Padrões comuns da frase de data Anvisa
-    padroes = [
-        r'(esta bula foi (?:atualizada|aprovada)[^\n]{0,200}anvisa[^\n]{0,100}\d{2}/\d{2}/\d{4}[^\n]*)',
-        r'(bula (?:padrão\s+)?aprovada pela anvisa[^\n]{0,100}\d{2}/\d{2}/\d{4}[^\n]*)',
-        r'(\d{2}/\d{2}/\d{4}[^\n]*aprovad[ao][^\n]*)',
-    ]
-    for padrao in padroes:
-        m = re.search(padrao, texto, re.IGNORECASE)
-        if m:
-            return texto[:m.end()].strip()
-    return texto  # se não achar, retorna tudo
 
 # ----------------- 8. UI PRINCIPAL -----------------
 st.title("💊 Auditor Visual de Bulas (Detecção Nível Palavra/Símbolo)")
@@ -196,98 +211,102 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
 
     with st.spinner("🧠 IA comparando as bulas com precisão..."):
         f1.seek(0); f2.seek(0)
-        t_ref_bruto    = extract_text_from_file(f1)
-        t_belfar_bruto = extract_text_from_file(f2)
+        t_ref_bruto    = extract_text_with_bold(f1)
+        t_belfar_bruto = extract_text_with_bold(f2)
 
         if len(t_ref_bruto) < 20 or len(t_belfar_bruto) < 20:
             st.error("Arquivo vazio ou ilegível."); st.stop()
 
-        # Trunca ambos os textos após a data da Anvisa — não compara o que vem depois
         t_ref    = truncar_ate_data_anvisa(t_ref_bruto)
         t_belfar = truncar_ate_data_anvisa(t_belfar_bruto)
 
         prompt = f"""
-Você é um auditor farmacêutico sênior comparando duas bulas de medicamentos.
+Você é um auditor farmacêutico sênior comparando duas bulas do mesmo medicamento.
 
-DEFINIÇÕES IMPORTANTES:
-- BULA REFERÊNCIA = texto oficial da Anvisa (o padrão correto)
-- BULA BELFAR = versão do fabricante genérico (o que será auditado)
+CONTEXTO FUNDAMENTAL:
+- Os textos abaixo foram extraídos dos PDFs com marcação de negrito: trechos entre **asteriscos** estão em negrito no PDF original.
+- BULA REFERÊNCIA = texto oficial aprovado pela Anvisa.
+- BULA BELFAR = versão do fabricante genérico a ser auditada.
+- As duas bulas descrevem o mesmo medicamento com nomes comerciais diferentes (ex: FLAGYL vs Flagimax). Isso é NORMAL.
 
-As duas bulas descrevem o mesmo medicamento mas com nomes diferentes
-(ex: FLAGYL Ginecológico na Referência, Flagimax na BELFAR). Isso é normal e esperado.
+══════════════════════════════════════════════
+REGRAS PARA divergencias_amarelo (AMARELO):
+══════════════════════════════════════════════
 
-═══════════════════════════════════════════════════════
-REGRAS PARA divergencias_amarelo (grifo AMARELO):
-═══════════════════════════════════════════════════════
+Marque como divergência AMARELA SOMENTE quando:
 
-Marque AMARELO apenas quando:
-1. Um parágrafo ou informação existe na Referência mas NÃO existe na BELFAR (ausência).
-2. Um parágrafo ou informação existe na BELFAR mas NÃO existe na Referência (acréscimo).
-3. A ORDEM dos parágrafos/seções está diferente entre as duas bulas.
-4. O conteúdo de um trecho foi ALTERADO (palavras trocadas que mudam o sentido médico).
-5. O nome do medicamento está diferente entre as duas bulas em algum trecho específico
-   que deveria ser idêntico (ex: posologia, contraindicações).
+1. AUSÊNCIA: Um parágrafo ou informação existe na Referência mas está AUSENTE na BELFAR.
+2. ACRÉSCIMO: Um parágrafo ou informação existe na BELFAR mas NÃO existe na Referência.
+3. ORDEM: A sequência dos parágrafos/informações está diferente entre as duas bulas.
+4. CONTEÚDO ALTERADO: O texto diz coisas diferentes (ex: dose diferente, prazo diferente, instrução diferente).
+5. ESTILO DIFERENTE: Um trecho está em MAIÚSCULAS em uma bula e em minúsculas/normal na outra (ex: título de seção escrito de forma diferente).
+6. NEGRITO DIFERENTE: Um trecho está em negrito (**texto**) em uma bula mas NÃO está em negrito na outra — isso é divergência visual importante.
 
-NÃO marque AMARELO quando:
-- O texto diz a mesma coisa com palavras levemente diferentes (ex: "rubor (vermelhidão)" vs "rubor").
-- A diferença é apenas formatação, negrito, numeração ou estilo visual.
-- A diferença é apenas o nome do medicamento de referência vs genérico nos títulos de seção.
-- O texto está na mesma posição/ordem e tem o mesmo sentido médico.
+NÃO marque como AMARELO:
+- Textos que têm o mesmo conteúdo semântico, mesmo que levemente reescritos.
+- Diferença apenas no nome do medicamento (FLAGYL vs Flagimax) — isso é esperado e normal.
+- Diferença apenas de formatação que não altera sentido (vírgula a mais, espaço).
+- Texto em negrito em AMBAS as bulas — NÃO é divergência, é igual.
+- Texto sem negrito em AMBAS as bulas — NÃO é divergência, é igual.
 
-═══════════════════════════════════════════════════════
-REGRAS PARA erros_ortograficos (grifo VERMELHO):
-═══════════════════════════════════════════════════════
+══════════════════════════════════════════════
+REGRAS PARA erros_ortograficos (VERMELHO):
+══════════════════════════════════════════════
 
-Marque VERMELHO apenas quando houver erro real de português na BULA BELFAR:
-- Palavra escrita errada (ex: "mediamento" em vez de "medicamento").
-- Erro gramatical claro.
-- Palavra faltando que muda o sentido.
+Marque VERMELHO SOMENTE quando houver erro REAL e INEQUÍVOCO de português na BULA BELFAR:
+- Palavra claramente escrita errada (ex: "mediamento" em vez de "medicamento").
+- Palavra faltando que muda completamente o sentido da frase.
 
 NÃO marque VERMELHO:
-- Termos técnicos médicos corretos (aminotransferase, leucocitária, etc.).
-- Abreviações farmacêuticas padrão.
-- Texto em negrito ou formatação diferente.
-- Qualquer coisa que seja português correto, mesmo que incomum.
+- Termos técnicos médicos corretos (ex: aminotransferase, leucocitária, hepatotoxicidade).
+- Abreviações farmacêuticas padrão (ex: q.s.p., ALT, AST, LDH).
+- Texto em negrito — negrito não é erro ortográfico.
+- Qualquer frase ou palavra que seja português correto, mesmo que incomum.
+- Texto em maiúsculas — maiúsculas não são erro.
+- Se tiver dúvida se é erro, NÃO marque.
 
-═══════════════════════════════════════════════════════
-REGRAS PARA data_anvisa_frase (grifo AZUL):
-═══════════════════════════════════════════════════════
+══════════════════════════════════════════════
+REGRAS PARA data_anvisa_frase (AZUL):
+══════════════════════════════════════════════
 
-- Localize a frase EXATA e COMPLETA da BULA BELFAR que contém a data de aprovação pela Anvisa.
-- Copie literalmente, palavra por palavra, como aparece na bula.
+- Localize e copie LITERALMENTE a frase completa da BULA BELFAR com a data de aprovação Anvisa.
+- Localize e copie LITERALMENTE a frase completa da BULA REFERÊNCIA com a data de aprovação Anvisa.
+- Copie sem os asteriscos de negrito, apenas o texto puro.
 - Exemplo: "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em 31/07/2025."
-- Também localize e inclua a frase equivalente da BULA REFERÊNCIA em data_anvisa_frase_ref.
 
-═══════════════════════════════════════════════════════
-FORMATO DE SAÍDA:
-═══════════════════════════════════════════════════════
+══════════════════════════════════════════════
+FORMATO DOS ITENS:
+══════════════════════════════════════════════
 
-Cada item de divergencias_amarelo e erros_ortograficos deve ser um trecho
-LITERAL de 6 a 10 palavras consecutivas EXATAMENTE como aparecem na BULA BELFAR,
-para que possam ser encontradas e grifadas no PDF.
-Se o trecho for muito longo, quebre em subtrechos de 6-10 palavras cada.
+Cada item de divergencias_amarelo e erros_ortograficos deve ser:
+- Um trecho LITERAL de 6 a 10 palavras consecutivas EXATAMENTE como aparecem na BULA BELFAR (sem asteriscos).
+- Suficientemente específico para ser encontrado no PDF.
+- Se o trecho divergente for longo, quebre em múltiplos itens de 6-10 palavras cada.
 
-SEÇÕES A COMPARAR (ignore APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS):
+SEÇÕES A COMPARAR:
 {secoes_comparar}
 
----
-BULA REFERÊNCIA (texto completo até a data Anvisa):
+══════════════════════════════════════════════
+
+BULA REFERÊNCIA (** = negrito no PDF):
 {t_ref[:80000]}
 
----
-BULA BELFAR (texto completo até a data Anvisa):
+══════════════════════════════════════════════
+
+BULA BELFAR (** = negrito no PDF):
 {t_belfar[:80000]}
 
----
+══════════════════════════════════════════════
+
 RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
 {{
   "data_anvisa_ref": "dd/mm/aaaa ou -",
   "data_anvisa_mkt": "dd/mm/aaaa ou -",
-  "data_anvisa_frase": ["frase literal completa da BELFAR com a data de aprovação Anvisa"],
-  "data_anvisa_frase_ref": ["frase literal completa da REFERÊNCIA com a data de aprovação Anvisa"],
-  "erros_ortograficos": ["trecho literal 6-10 palavras com erro real na BELFAR"],
+  "data_anvisa_frase": ["frase literal completa da BELFAR com a data Anvisa, sem asteriscos"],
+  "data_anvisa_frase_ref": ["frase literal completa da REFERÊNCIA com a data Anvisa, sem asteriscos"],
+  "erros_ortograficos": ["trecho literal 6-10 palavras com erro real na BELFAR, sem asteriscos"],
   "divergencias_amarelo": [
-    "trecho literal 6-10 palavras da BELFAR que difere ou está fora de ordem vs Referência"
+    "trecho literal 6-10 palavras da BELFAR que é divergência real, sem asteriscos"
   ]
 }}
 """
@@ -327,7 +346,6 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
             erros_vermelhos = resultado.get("erros_ortograficos") or []
             divergencias    = resultado.get("divergencias_amarelo") or []
 
-            # Data azul: pega frase da BELFAR e da REFERÊNCIA
             raw_azul_belfar = resultado.get("data_anvisa_frase") or []
             raw_azul_ref    = resultado.get("data_anvisa_frase_ref") or []
             if isinstance(raw_azul_belfar, str): raw_azul_belfar = [raw_azul_belfar]
@@ -335,16 +353,13 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
             datas_azuis_belfar = [str(x).strip() for x in raw_azul_belfar if str(x).strip()]
             datas_azuis_ref    = [str(x).strip() for x in raw_azul_ref    if str(x).strip()]
 
-            # Chunks para o PyMuPDF encontrar no PDF
-            amarelo_chunks       = expandir_para_chunks(divergencias, tamanho=7)
-            vermelho_chunks      = expandir_para_chunks(erros_vermelhos, tamanho=7)
-            azul_chunks_belfar   = expandir_para_chunks(datas_azuis_belfar, tamanho=7)
-            azul_chunks_ref      = expandir_para_chunks(datas_azuis_ref, tamanho=7)
+            amarelo_chunks     = expandir_para_chunks(divergencias, tamanho=7)
+            vermelho_chunks    = expandir_para_chunks(erros_vermelhos, tamanho=7)
+            azul_chunks_belfar = expandir_para_chunks(datas_azuis_belfar, tamanho=7)
+            azul_chunks_ref    = expandir_para_chunks(datas_azuis_ref, tamanho=7)
 
             f1.seek(0); f2.seek(0)
-            # Referência: só grifa a data em azul
             fotos_ref    = gerar_imagens_pdf_grifado(f1, azul=azul_chunks_ref)
-            # BELFAR: grifa tudo
             fotos_belfar = gerar_imagens_pdf_grifado(
                 f2,
                 amarelo  = amarelo_chunks,
@@ -372,7 +387,7 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
 
     st.markdown("""
 ### 🎨 Legenda:
-* 🟡 **Amarelo** — Conteúdo ausente, acrescentado ou fora de ordem vs Referência
+* 🟡 **Amarelo** — Conteúdo ausente, acrescentado, fora de ordem, ou estilo diferente (negrito/maiúsculas)
 * 🔴 **Vermelho** — Erro ortográfico / gramatical real
 * 🔵 **Azul** — Frase de aprovação da Anvisa (em ambas as bulas)
 """)
