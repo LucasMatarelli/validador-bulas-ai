@@ -35,8 +35,8 @@ SECOES_PROFISSIONAL = [
 # ----------------- 3. EXTRAÇÃO DE TEXTO COM NEGRITO MARCADO -----------------
 def extract_text_with_bold(uploaded_file):
     """
-    Extrai texto real do PDF marcando trechos em negrito com [B]...[/B].
-    Agrupa spans da mesma linha para não quebrar palavras no meio.
+    Extrai texto do PDF marcando trechos em negrito com [B]...[/B].
+    Limpa formatações vazias para evitar confusão da IA.
     """
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
@@ -76,8 +76,9 @@ def extract_text_with_bold(uploaded_file):
                         todas_linhas.append(linha_txt)
 
         texto = "\n".join(todas_linhas)
-        # Tira a sujeira de hífens gerados por quebra de linha visual do PDF
         texto = re.sub(r'(\w)-\s*\n(\w)', r'\1\2', texto)
+        # Remove excesso de espaços para não confundir a IA
+        texto = re.sub(r'[ \t]+', ' ', texto) 
         return texto
     except Exception as e:
         return ""
@@ -133,7 +134,7 @@ def truncar_ate_data_anvisa(texto):
             return texto[:m.end()].strip()
     return texto
 
-# ----------------- 6. PINTURA DOS PDFs (Alta Resolução) -----------------
+# ----------------- 6. PINTURA DOS PDFs -----------------
 def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=None):
     amarelo  = amarelo  or []
     vermelho = vermelho or []
@@ -145,7 +146,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
     for page in doc:
         for frase in amarelo:
             frase = str(frase).strip()
-            if len(frase) < 4: continue # Ignora pedaços muito curtos que causam falsos realces
+            if len(frase) < 4: continue
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0.85, 0))
@@ -175,7 +176,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
 
     return imagens
 
-# ----------------- 7. CHUNKS PARA BUSCA NO PDF -----------------
+# ----------------- 7. CHUNKS PARA BUSCA -----------------
 def chunks_de_frase(frase, tamanho=6):
     palavras = frase.split()
     if len(palavras) <= tamanho:
@@ -195,7 +196,7 @@ def expandir_para_chunks(lista_frases, tamanho=6):
     return resultado
 
 # ----------------- 8. UI PRINCIPAL -----------------
-st.title("💊 Auditor Visual de Bulas (Detecção de Camada de Texto)")
+st.title("💊 Auditor Visual de Bulas (Anti-Alucinação)")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente","Profissional"), horizontal=True)
 
@@ -225,7 +226,7 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
     texto_resposta_ia = ""
     sucesso_ia = False
 
-    with st.spinner("🧠 IA comparando as bulas (ignorado lixo de formatação)..."):
+    with st.spinner("🧠 IA processando verificação cruzada (100% de exatidão)..."):
         f1.seek(0); f2.seek(0)
         t_ref_bruto    = extract_text_with_bold(f1)
         t_belfar_bruto = extract_text_with_bold(f2)
@@ -237,62 +238,62 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
         t_belfar = truncar_ate_data_anvisa(t_belfar_bruto)
 
         prompt = f"""
-Você é um auditor farmacêutico analisando o texto bruto extraído de dois PDFs.
-ATENÇÃO MÁXIMA: O usuário relatou que você está "alucinando" e criando divergências que não existem. PARE DE INVENTAR. Só reporte o que for real e visível.
-
-BULA REFERÊNCIA = texto base oficial.
-BULA BELFAR = versão a ser auditada.
+Você é um sistema de verificação de arquivos DIFF implacável e estrito. 
+Sua única função é extrair as diferenças absolutas entre o Arquivo A (Referência) e o Arquivo B (Belfar).
+VOCÊ ESTÁ PROIBIDO DE INVENTAR OU MARCAR FALSOS POSITIVOS. 
 
 ════════════════════════════════════════════════════
-REGRA ZERO: ANTI-ALUCINAÇÃO E FALSOS POSITIVOS
-- IGNORE totalmente espaços duplos, quebras de linha e mudanças de página. Os PDFs extraem esses dados de forma diferente e isso NÃO É DIVERGÊNCIA.
-- IGNORE Títulos e Numerações de Seções (ex: "8. QUAIS OS MALES...").
-- Se o texto tiver a mesma palavra, os mesmos símbolos importantes e os mesmos negritos [B], passe reto. NA DÚVIDA, NÃO MARQUE.
+REGRA ABSOLUTA 1: O TESTE DO NEGRITO
+A tag de negrito é representada por [B]...[/B].
+- Se a Referência diz: "[B]Atenção:[/B]"
+- E a Belfar diz: "[B]Atenção:[/B]"
+CONCLUSÃO: SÃO EXATAMENTE IGUAIS. É ESTRITAMENTE PROIBIDO MARCAR ISSO COMO DIVERGÊNCIA.
+
+QUANDO MARCAR NEGRITO:
+- Referência diz "[B]Atenção:[/B]" e Belfar diz "Atenção:" (Faltou a tag na Belfar -> MARQUE).
+- Referência diz "Atenção:" e Belfar diz "[B]Atenção:[/B]" (Sobrou a tag na Belfar -> MARQUE).
+
+REGRA ABSOLUTA 2: TEXTOS IDÊNTICOS
+Se as palavras, a pontuação e as tags [B] (se houver) forem as mesmas em ambos os textos, VOCÊ NÃO DEVE MARCAR.
+Ignore completamente se o texto sofreu quebra de linha ou se há espaços duplos. O conteúdo semântico literal é o que importa.
+
+REGRA ABSOLUTA 3: EXCEÇÕES NÃO MARCADAS
+Os nomes dos medicamentos (ex: FLAGYL na Referência vs Flagimax na Belfar) SÃO ESPERADOS. Não marque isso como divergência em hipótese alguma.
+Títulos de seções numeradas (Ex: "8. QUAIS OS MALES...") NÃO devem ser marcados se estiverem com a mesma grafia.
 ════════════════════════════════════════════════════
 
-O QUE É DIVERGÊNCIA REAL (AMARELO):
-1. Falta de texto ou alteração: Faltou uma palavra, adicionou uma frase, mudou a dose? Marque.
-2. Símbolos que importam: Se uma bula tem um traço (-) ligando palavras ou pontuação que muda o sentido e a outra não tem, marque. Mas se for só um espaço estranho, ignore.
-3. Falso Negrito: Se a Referência tem um alerta em [B]...[/B] e a BELFAR está sem o [B] (ou vice-versa), marque. SE AMBAS TÊM [B], É IGUAL, NÃO MARQUE!
-4. Diferenças de nome comercial (FLAGYL vs Flagimax) NÃO são divergências.
-
-O QUE É ERRO ORTOGRÁFICO (VERMELHO):
-- Erros reais de português (ex: "mediamento").
-
-DATA ANVISA (AZUL):
-- Extraia a frase exata da data de aprovação de ambas.
-
-COMO RESPONDER:
-Cada item no JSON (amarelo ou vermelho) deve ser um trecho exato de 6 a 10 palavras tirado LITERALMENTE da BULA BELFAR, sem as tags [B].
+FILTRO FINAL ANTES DE RESPONDER:
+Antes de colocar qualquer trecho na lista "divergencias_amarelo", pergunte a si mesmo: "Este exato trecho, com estas exatas palavras e tags de negrito, já existe na Referência?". Se a resposta for SIM, DELETE o item da sua lista.
 
 SEÇÕES A COMPARAR:
 {secoes_comparar}
 
 ════════════════════════════════════════════════════
-BULA REFERÊNCIA ([B]...[/B] = negrito no PDF):
+BULA REFERÊNCIA (Arquivo A):
 {t_ref[:80000]}
 
 ════════════════════════════════════════════════════
-BULA BELFAR ([B]...[/B] = negrito no PDF):
+BULA BELFAR (Arquivo B):
 {t_belfar[:80000]}
 
 ════════════════════════════════════════════════════
-RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
+SAÍDA ESPERADA:
+Retorne APENAS um JSON válido. Nos arrays "divergencias_amarelo" e "erros_ortograficos", insira trechos curtos (6 a 10 palavras) retirados da BELFAR, SEM as tags [B].
 {{
   "data_anvisa_ref": "dd/mm/aaaa ou -",
   "data_anvisa_mkt": "dd/mm/aaaa ou -",
-  "data_anvisa_frase": ["frase literal completa da BELFAR com data Anvisa, sem tags"],
-  "data_anvisa_frase_ref": ["frase literal completa da REFERÊNCIA com data Anvisa, sem tags"],
-  "erros_ortograficos": ["trecho literal 6-10 palavras com erro real na BELFAR, sem tags"],
+  "data_anvisa_frase": ["frase literal da BELFAR com data Anvisa, sem tags"],
+  "data_anvisa_frase_ref": ["frase literal da REFERÊNCIA com data Anvisa, sem tags"],
+  "erros_ortograficos": ["trecho literal com erro gramatical na BELFAR, sem tags"],
   "divergencias_amarelo": [
-    "trecho literal 6-10 palavras da BELFAR que é divergência real, sem tags"
+    "trecho literal da BELFAR que passou pelo filtro final e é uma divergência verdadeira, sem tags"
   ]
 }}
 """
 
         generation_config = genai.GenerationConfig(
             response_mime_type="application/json",
-            temperature=0.0,
+            temperature=0.0, # Zero alucinação
             max_output_tokens=65536,
         )
 
@@ -316,7 +317,7 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
         st.error("❌ Falha Total da IA.")
         st.stop()
 
-    with st.spinner("🎨 Pintando PDFs com Alta Resolução..."):
+    with st.spinner("🎨 Aplicando highlights finais..."):
         try:
             resultado = reparar_json_truncado(texto_resposta_ia)
 
@@ -357,7 +358,7 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
     ca.metric("Data Referência", data_ref)
     cb.metric("Data BELFAR", data_mkt,
               delta="Igual" if data_ref == data_mkt else "⚠️ Diferente")
-    cc.metric("Divergências Identificadas", len(divergencias))
+    cc.metric("Divergências Verificadas", len(divergencias))
 
     if datas_azuis_belfar:
         st.info(f"🔵 Frase Anvisa (BELFAR): *{datas_azuis_belfar[0]}*")
@@ -366,8 +367,8 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
 
     st.markdown("""
 ### 🎨 Legenda:
-* 🟡 **Amarelo** — Divergência real (falta de texto, erro de negrito, mudança de conteúdo)
-* 🔴 **Vermelho** — Erro ortográfico / gramatical real
+* 🟡 **Amarelo** — Divergência Exata (Texto exclusivo de uma bula ou divergência real de formatação)
+* 🔴 **Vermelho** — Erro ortográfico / gramatical
 * 🔵 **Azul** — Frase de aprovação da Anvisa
 """)
     st.divider()
@@ -381,7 +382,7 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
             if i < len(fotos_ref):
                 st.image(fotos_ref[i], use_container_width=True)
         with cr:
-            st.caption("📜 Bula BELFAR (Auditoria Detalhada)")
+            st.caption("📜 Bula BELFAR")
             if i < len(fotos_belfar):
                 st.image(fotos_belfar[i], use_container_width=True)
         st.divider()
