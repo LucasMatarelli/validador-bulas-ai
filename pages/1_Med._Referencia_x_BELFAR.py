@@ -48,14 +48,12 @@ def extract_text_with_bold(uploaded_file):
                 if bloco.get("type") != 0:
                     continue
                 for linha in bloco.get("lines", []):
-                    # Agrupa spans consecutivos com mesmo estilo negrito
                     grupos = []
                     for span in linha.get("spans", []):
                         txt = span.get("text", "")
                         if not txt.strip():
                             continue
                         flags = span.get("flags", 0)
-                        # bit 4 (16) = negrito; também verifica nome da fonte
                         font_name = span.get("font", "").lower()
                         is_bold = bool(flags & 16) or "bold" in font_name or "-bd" in font_name or "heavy" in font_name
                         if grupos and grupos[-1][1] == is_bold:
@@ -78,7 +76,6 @@ def extract_text_with_bold(uploaded_file):
                         todas_linhas.append(linha_txt)
 
         texto = "\n".join(todas_linhas)
-        # Une hífens de quebra de linha
         texto = re.sub(r'(\w)-\s*\n(\w)', r'\1\2', texto)
         return texto
     except Exception as e:
@@ -135,7 +132,7 @@ def truncar_ate_data_anvisa(texto):
             return texto[:m.end()].strip()
     return texto
 
-# ----------------- 6. PINTURA DOS PDFs -----------------
+# ----------------- 6. PINTURA DOS PDFs (Qualidade Melhorada) -----------------
 def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=None):
     amarelo  = amarelo  or []
     vermelho = vermelho or []
@@ -151,7 +148,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0.85, 0))
-                a.set_opacity(0.5)
+                a.set_opacity(0.3) # Opacidade reduzida para não esconder a letra preta
                 a.update()
 
         for frase in vermelho:
@@ -160,7 +157,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0, 0))
-                a.set_opacity(0.45)
+                a.set_opacity(0.3)
                 a.update()
 
         for frase in azul:
@@ -169,11 +166,11 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(0, 0.5, 1))
-                a.set_opacity(0.45)
+                a.set_opacity(0.3)
                 a.update()
 
-        # Aumentado a matriz para 5x5 para melhorar a resolução e leitura visual
-        pix = page.get_pixmap(matrix=fitz.Matrix(5, 5))
+        # Resolução altíssima para garantir que o texto fique nítido
+        pix = page.get_pixmap(matrix=fitz.Matrix(6, 6))
         imagens.append(pix.tobytes("png"))
 
     return imagens
@@ -228,7 +225,7 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
     texto_resposta_ia = ""
     sucesso_ia = False
 
-    with st.spinner("🧠 IA comparando as bulas com precisão..."):
+    with st.spinner("🧠 IA comparando as bulas com precisão extrema..."):
         f1.seek(0); f2.seek(0)
         t_ref_bruto    = extract_text_with_bold(f1)
         t_belfar_bruto = extract_text_with_bold(f2)
@@ -240,49 +237,34 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
         t_belfar = truncar_ate_data_anvisa(t_belfar_bruto)
 
         prompt = f"""
-Você é um auditor farmacêutico sênior comparando duas bulas do mesmo medicamento.
+Você é um auditor rigoroso comparando dois textos LITERALMENTE.
 
-NOTAÇÃO USADA NOS TEXTOS:
+NOTAÇÃO USADA:
 - Trechos entre [B]...[/B] estão em NEGRITO no PDF original.
 - Trechos sem marcação estão em texto normal.
-- BULA REFERÊNCIA = texto oficial aprovado pela Anvisa.
-- BULA BELFAR = versão do fabricante genérico a ser auditada.
-- As duas bulas descrevem o mesmo medicamento com nomes comerciais diferentes (FLAGYL vs Flagimax). Isso é NORMAL e ESPERADO — não é divergência.
+- BULA REFERÊNCIA = texto base.
+- BULA BELFAR = texto a ser auditado.
 
 ════════════════════════════════════════════════════
-REGRA DE OURO: PROIBIDO FALSOS POSITIVOS
-1. NÚMERO DE PÁGINA É IRRELEVANTE: Se o texto está na mesma ordem lógica, não importa se caiu em páginas diferentes.
-2. TEXTO IDÊNTICO: Se o conteúdo médico ou o texto é igual, NÃO MARQUE.
-3. TÍTULOS DE SEÇÕES: NUNCA marque títulos (ex: "8. QUAIS OS MALES...", "Distúrbios psiquiátricos:"). Ignore se um está em maiúscula e outro em minúscula.
-4. NEGRITO DUPLO: Se um trecho está com [B]...[/B] nas DUAS bulas, ele É IGUAL. É absolutamente PROIBIDO marcar trechos que possuem negrito em ambos os textos.
+REGRA DE OURO: COMPARAÇÃO LITERAL E ESTRITA
+A regra é simples e inegociável: O QUE NÃO FOR EXATAMENTE IGUAL, É DIVERGÊNCIA.
+
+1. SÍMBOLOS E PONTUAÇÃO: Se uma bula tem um traço (-), ponto, vírgula, ou qualquer símbolo e a outra não tem (ou tem um símbolo diferente), MARQUE COMO DIVERGÊNCIA.
+2. NEGRITO (A TAG [B]): Se uma palavra está com [B] em uma bula e sem [B] na outra, MARQUE COMO DIVERGÊNCIA. (Exceção: Se estiver com [B] nas DUAS, é igual, não marque).
+3. PALAVRAS E LETRAS: Qualquer diferença de grafia, maiúsculas/minúsculas, ou troca de palavras DEVE ser marcada.
+4. EXCEÇÃO: Apenas os nomes próprios do medicamento (FLAGYL vs Flagimax) NÃO são divergências. Todo o resto é.
 ════════════════════════════════════════════════════
 
 REGRAS PARA divergencias_amarelo (AMARELO):
-Marque AMARELO APENAS quando houver diferença REAL e CRÍTICA de conteúdo:
+Marque TUDO na BULA BELFAR que não for uma cópia idêntica (caractere por caractere, símbolo por símbolo, negrito por negrito) da BULA REFERÊNCIA, seguindo a Regra de Ouro acima.
 
-1. AUSÊNCIA: Parágrafo ou advertência presente na Referência mas AUSENTE na BELFAR.
-2. ACRÉSCIMO: Informação nova na BELFAR mas AUSENTE na Referência.
-3. CONTEÚDO ALTERADO: Doses, reações adversas, prazos ou instruções diferentes.
-4. NEGRITO FALTANTE: Se um alerta importantíssimo está como [B]...[/B] na Referência, mas na BELFAR está sem a tag [B].
-
-NÃO marque como AMARELO (FALSOS POSITIVOS):
-- Textos com o mesmo sentido onde mudou apenas uma vírgula ou sinonímio irrelevante.
-- Diferença no nome do medicamento (FLAGYL vs Flagimax).
-- TÍTULOS (nunca marque títulos, mesmo que haja leve diferença de formatação).
-- Texto em negrito ([B]...[/B]) nas DUAS bulas — se estão nas duas, estão corretos.
-
-════════════════════════════════════════════════════
 REGRAS PARA erros_ortograficos (VERMELHO):
-Marque VERMELHO SOMENTE com erro INEQUÍVOCO de português na BULA BELFAR:
-- Palavra escrita errada (ex: "mediamento").
-- NÃO marque termos técnicos, científicos, bulas ou abreviações.
+Marque SOMENTE palavras com erro claro de português na BULA BELFAR (ex: "mediamento" em vez de medicamento). Se a diferença for apenas de pontuação ou negrito, vai para o AMARELO.
 
-════════════════════════════════════════════════════
 REGRAS PARA data_anvisa_frase (AZUL):
-- Copie a frase LITERAL E COMPLETA da BULA BELFAR com a data de aprovação Anvisa (sem tags [B][/B]).
-- Copie a frase LITERAL E COMPLETA da BULA REFERÊNCIA com a data de aprovação Anvisa (sem tags [B][/B]).
+- Copie a frase LITERAL E COMPLETA da BULA BELFAR com a data de aprovação Anvisa (sem tags).
+- Copie a frase LITERAL E COMPLETA da BULA REFERÊNCIA com a data de aprovação Anvisa (sem tags).
 
-════════════════════════════════════════════════════
 FORMATO DOS ITENS DE SAÍDA:
 Cada item de divergencias_amarelo e erros_ortograficos deve ser:
 - Trecho LITERAL de 6 a 10 palavras da BULA BELFAR, SEM tags [B] ou [/B].
@@ -308,7 +290,7 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
   "data_anvisa_frase_ref": ["frase literal completa da REFERÊNCIA com data Anvisa, sem tags"],
   "erros_ortograficos": ["trecho literal 6-10 palavras com erro real na BELFAR, sem tags"],
   "divergencias_amarelo": [
-    "trecho literal 6-10 palavras da BELFAR que é divergência real, sem tags"
+    "trecho literal 6-10 palavras da BELFAR que é divergência literal real, sem tags"
   ]
 }}
 """
@@ -339,7 +321,7 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
         st.error("❌ Falha Total da IA.")
         st.stop()
 
-    with st.spinner("🎨 Pintando PDFs..."):
+    with st.spinner("🎨 Pintando PDFs com Alta Resolução..."):
         try:
             resultado = reparar_json_truncado(texto_resposta_ia)
 
@@ -389,7 +371,7 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
 
     st.markdown("""
 ### 🎨 Legenda:
-* 🟡 **Amarelo** — Conteúdo ausente, acrescentado, fora de ordem, negrito diferente ou maiúsculas/minúsculas diferentes
+* 🟡 **Amarelo** — Qualquer diferença literal: traços, pontuação, formatação, palavras ausentes/extras
 * 🔴 **Vermelho** — Erro ortográfico / gramatical real
 * 🔵 **Azul** — Frase de aprovação da Anvisa (em ambas as bulas)
 """)
