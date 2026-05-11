@@ -5,6 +5,7 @@ import json
 import re
 import time
 import difflib
+import unicodedata
 
 # ----------------- 1. CONFIG PÁGINA -----------------
 st.set_page_config(page_title="Med. Referência x BELFAR", page_icon="💊", layout="wide")
@@ -49,35 +50,23 @@ def extract_text_from_file(uploaded_file):
 
 # ----------------- 4. REPARADOR DE JSON TRUNCADO -----------------
 def reparar_json_truncado(texto):
-    """
-    Tenta consertar um JSON cortado no meio pelo limite de tokens.
-    Fecha strings abertas, arrays e objetos na ordem correta.
-    """
     texto = texto.strip()
-    # Remove fences de markdown se houver
     for fence in ("```json", "```"):
         texto = texto.replace(fence, "")
     texto = texto.strip()
 
-    # Primeiro tenta parse normal
     try:
         return json.loads(texto)
     except json.JSONDecodeError:
         pass
 
-    # Conta profundidade de chaves/colchetes e strings abertas
     consertado = texto
-    
-    # Remove a última vírgula pendente antes de fechar
     consertado = re.sub(r',\s*$', '', consertado)
-    
-    # Detecta se terminou no meio de uma string — fecha a string
-    # Conta aspas: se ímpar, tem uma string aberta
+
     num_aspas = consertado.count('"') - consertado.count('\\"')
     if num_aspas % 2 != 0:
         consertado += '"'
 
-    # Fecha estruturas abertas na ordem inversa
     pilha = []
     dentro_string = False
     escape = False
@@ -98,7 +87,6 @@ def reparar_json_truncado(texto):
                 if pilha and pilha[-1] == ch:
                     pilha.pop()
 
-    # Fecha o que ficou aberto
     for fechamento in reversed(pilha):
         consertado += fechamento
 
@@ -107,39 +95,75 @@ def reparar_json_truncado(texto):
     except json.JSONDecodeError as e:
         raise ValueError(f"Não foi possível reparar o JSON: {e}")
 
-# ----------------- 5. MOTOR DE DIVERGÊNCIAS -----------------
+# ----------------- 5. NORMALIZAÇÃO DE TOKEN -----------------
+def normalizar_token(t):
+    """
+    Remove acentos, lowercase e pontuação de borda.
+    Dois tokens com mesmo conteúdo semântico ficam idênticos após isso.
+    Ex: 'distúrbios,' == 'disturbios' == 'Distúrbios' → 'disturbios'
+    """
+    t = unicodedata.normalize('NFD', t)
+    t = ''.join(c for c in t if unicodedata.category(c) != 'Mn')
+    t = t.lower()
+    t = re.sub(r'^[^\w]+|[^\w]+$', '', t)
+    return t
+
+def tokenizar(texto):
+    """Retorna lista de (token_original, token_normalizado), ignorando espaços puros."""
+    tokens_raw = re.split(r'(\s+)', re.sub(r'\s+', ' ', texto).strip())
+    resultado = []
+    for t in tokens_raw:
+        if t.strip():
+            resultado.append((t, normalizar_token(t)))
+    return resultado
+
+# ----------------- 6. MOTOR DE DIVERGÊNCIAS -----------------
 def encontrar_divergencias_exatas(texto_ref, texto_belfar):
-    t_ref_limpo = re.sub(r'\s+', ' ', texto_ref).strip()
-    t_bel_limpo = re.sub(r'\s+', ' ', texto_belfar).strip()
+    """
+    Compara tokens normalizados (sem acento, sem pontuação de borda, lowercase).
+    Só marca no PDF o que realmente difere semanticamente entre as duas bulas.
+    """
+    tok_ref = tokenizar(texto_ref)
+    tok_bel = tokenizar(texto_belfar)
 
-    tok_ref = t_ref_limpo.split()
-    tok_bel = t_bel_limpo.split()
-
-    norm_ref = [t.lower() for t in tok_ref]
-    norm_bel = [t.lower() for t in tok_bel]
+    norm_ref = [t[1] if t[1] else '__punct__' for t in tok_ref]
+    norm_bel = [t[1] if t[1] else '__punct__' for t in tok_bel]
 
     matcher = difflib.SequenceMatcher(None, norm_ref, norm_bel, autojunk=False)
     trechos_para_grifar = []
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag in ('insert', 'replace'):
-            inicio = j1
-            fim = j2
+        if tag not in ('insert', 'replace'):
+            continue
 
-            tamanho_str = sum(len(tok_bel[x]) for x in range(inicio, fim))
-            if tamanho_str <= 3 and fim < len(tok_bel):
-                fim = min(fim + 2, len(tok_bel))
+        # Para 'replace': verifica se a diferença é apenas acento/pontuação
+        # Se os tokens normalizados são iguais, não é divergência real
+        if tag == 'replace' and (i2 - i1) == (j2 - j1):
+            todos_iguais = all(
+                norm_ref[i1 + k] == norm_bel[j1 + k]
+                for k in range(i2 - i1)
+            )
+            if todos_iguais:
+                continue
 
-            palavras_divergentes = tok_bel[inicio:fim]
+        # Pega tokens originais da BELFAR para grifar no PDF
+        palavras_originais = [tok_bel[x][0] for x in range(j1, j2)]
 
-            for k in range(0, len(palavras_divergentes), 6):
-                pedaco = " ".join(palavras_divergentes[k:k+6])
-                if len(pedaco.strip()) > 1:
-                    trechos_para_grifar.append(pedaco)
+        # Adiciona contexto para tokens muito curtos (evita grifar todas as ocorrências)
+        tamanho_str = sum(len(tok_bel[x][0]) for x in range(j1, j2))
+        if tamanho_str <= 3 and j2 < len(tok_bel):
+            fim_ctx = min(j2 + 2, len(tok_bel))
+            palavras_originais = [tok_bel[x][0] for x in range(j1, fim_ctx)]
+
+        # Quebra em pedaços de 6 palavras para o PyMuPDF não falhar
+        for k in range(0, len(palavras_originais), 6):
+            pedaco = " ".join(palavras_originais[k:k+6]).strip()
+            if len(pedaco) > 1:
+                trechos_para_grifar.append(pedaco)
 
     return trechos_para_grifar
 
-# ----------------- 6. PINTURA DOS PDFs -----------------
+# ----------------- 7. PINTURA DOS PDFs -----------------
 def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=None):
     amarelo  = amarelo  or []
     vermelho = vermelho or []
@@ -181,7 +205,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
 
     return imagens
 
-# ----------------- 7. UI PRINCIPAL -----------------
+# ----------------- 8. UI PRINCIPAL -----------------
 st.title("💊 Auditor Visual de Bulas (Detecção Nível Palavra/Símbolo)")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente","Profissional"), horizontal=True)
@@ -256,11 +280,10 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
         }}
         """
 
-        # ── Configuração com max_output_tokens alto para não cortar o JSON ──
         generation_config = genai.GenerationConfig(
             response_mime_type="application/json",
             temperature=0.0,
-            max_output_tokens=65536,  # ← CORREÇÃO PRINCIPAL: aumenta o limite de saída
+            max_output_tokens=65536,
         )
 
         for key in keys_validas:
@@ -285,7 +308,6 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
 
     with st.spinner("🔬 Cruzando palavras e símbolos detalhadamente e pintando PDFs..."):
         try:
-            # ── CORREÇÃO: usa reparador de JSON em vez de json.loads direto ──
             resultado = reparar_json_truncado(texto_resposta_ia)
 
             data_ref        = resultado.get("data_anvisa_ref", "-")
