@@ -32,38 +32,53 @@ SECOES_PROFISSIONAL = [
     "POSOLOGIA E MODO DE USAR","REAÇÕES ADVERSAS","SUPERDOSE","DIZERES LEGAIS"
 ]
 
-# ----------------- 3. EXTRAÇÃO DE TEXTO COM MARCAÇÃO DE NEGRITO -----------------
+# ----------------- 3. EXTRAÇÃO DE TEXTO COM NEGRITO MARCADO -----------------
 def extract_text_with_bold(uploaded_file):
     """
-    Extrai texto do PDF marcando trechos em negrito com **texto**.
-    Isso permite que o Gemini saiba quais trechos estão em negrito.
+    Extrai texto do PDF marcando trechos em negrito com [B]...[/B].
+    Agrupa spans da mesma linha para não quebrar palavras no meio.
     """
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        paginas = []
+        todas_linhas = []
+
         for page in doc:
-            blocos = page.get_text("dict")["blocks"]
-            linhas_pagina = []
+            blocos = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
             for bloco in blocos:
                 if bloco.get("type") != 0:
                     continue
                 for linha in bloco.get("lines", []):
-                    partes = []
+                    # Agrupa spans consecutivos com mesmo estilo negrito
+                    grupos = []
                     for span in linha.get("spans", []):
-                        txt = span.get("text", "").strip()
-                        if not txt:
+                        txt = span.get("text", "")
+                        if not txt.strip():
                             continue
                         flags = span.get("flags", 0)
-                        is_bold = bool(flags & 2**4)  # bit 4 = negrito
-                        if is_bold:
-                            partes.append(f"**{txt}**")
+                        # bit 4 (16) = negrito; também verifica nome da fonte
+                        font_name = span.get("font", "").lower()
+                        is_bold = bool(flags & 16) or "bold" in font_name or "-bd" in font_name or "heavy" in font_name
+                        if grupos and grupos[-1][1] == is_bold:
+                            grupos[-1][0] += txt
                         else:
-                            partes.append(txt)
-                    linha_txt = " ".join(partes)
-                    if linha_txt.strip():
-                        linhas_pagina.append(linha_txt)
-            paginas.append("\n".join(linhas_pagina))
-        texto = "\n".join(paginas)
+                            grupos.append([txt, is_bold])
+
+                    partes = []
+                    for texto_grupo, is_bold in grupos:
+                        t = texto_grupo.strip()
+                        if not t:
+                            continue
+                        if is_bold:
+                            partes.append(f"[B]{t}[/B]")
+                        else:
+                            partes.append(t)
+
+                    linha_txt = " ".join(partes).strip()
+                    if linha_txt:
+                        todas_linhas.append(linha_txt)
+
+        texto = "\n".join(todas_linhas)
+        # Une hífens de quebra de linha
         texto = re.sub(r'(\w)-\s*\n(\w)', r'\1\2', texto)
         return texto
     except Exception as e:
@@ -111,6 +126,7 @@ def truncar_ate_data_anvisa(texto):
     padroes = [
         r'(esta bula foi (?:atualizada|aprovada)[^\n]{0,300}\d{2}/\d{2}/\d{4}[^\n]*)',
         r'(bula (?:padrão\s+)?aprovada pela anvisa[^\n]{0,200}\d{2}/\d{2}/\d{4}[^\n]*)',
+        r'(atualizada conforme bula padrão[^\n]{0,200}\d{2}/\d{2}/\d{4}[^\n]*)',
         r'(\d{2}/\d{2}/\d{4}[^\n]{0,100}aprovad[ao][^\n]*)',
     ]
     for padrao in padroes:
@@ -132,7 +148,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
         for frase in amarelo:
             frase = str(frase).strip()
             if len(frase) < 3: continue
-            for area in page.search_for(frase, quads=False):
+            for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0.85, 0))
                 a.set_opacity(0.5)
@@ -141,7 +157,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
         for frase in vermelho:
             frase = str(frase).strip()
             if len(frase) < 3: continue
-            for area in page.search_for(frase, quads=False):
+            for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0, 0))
                 a.set_opacity(0.45)
@@ -150,7 +166,7 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
         for frase in azul:
             frase = str(frase).strip()
             if len(frase) < 3: continue
-            for area in page.search_for(frase, quads=False):
+            for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(0, 0.5, 1))
                 a.set_opacity(0.45)
@@ -175,7 +191,9 @@ def chunks_de_frase(frase, tamanho=7):
 def expandir_para_chunks(lista_frases, tamanho=7):
     resultado = []
     for frase in lista_frases:
-        resultado.extend(chunks_de_frase(str(frase).strip(), tamanho))
+        f = str(frase).strip()
+        if f:
+            resultado.extend(chunks_de_frase(f, tamanho))
     return resultado
 
 # ----------------- 8. UI PRINCIPAL -----------------
@@ -223,90 +241,88 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
         prompt = f"""
 Você é um auditor farmacêutico sênior comparando duas bulas do mesmo medicamento.
 
-CONTEXTO FUNDAMENTAL:
-- Os textos abaixo foram extraídos dos PDFs com marcação de negrito: trechos entre **asteriscos** estão em negrito no PDF original.
-- BULA REFERÊNCIA = texto oficial aprovado pela Anvisa.
+NOTAÇÃO USADA NOS TEXTOS:
+- Trechos entre [B]...[/B] estão em NEGRITO no PDF original.
+- Trechos sem marcação estão em texto normal.
+- BULA REFERÊNCIA = texto oficial aprovado pela Anvisa (padrão correto).
 - BULA BELFAR = versão do fabricante genérico a ser auditada.
-- As duas bulas descrevem o mesmo medicamento com nomes comerciais diferentes (ex: FLAGYL vs Flagimax). Isso é NORMAL.
+- As duas bulas descrevem o mesmo medicamento com nomes comerciais diferentes (FLAGYL vs Flagimax). Isso é NORMAL e ESPERADO — não é divergência.
 
-══════════════════════════════════════════════
+════════════════════════════════════════════════════
+REGRA FUNDAMENTAL: IGNORE NÚMERO DE PÁGINA
+A comparação é por ORDEM LÓGICA do conteúdo, não por página física.
+Se a Seção 9 aparece na página 6 de uma bula e na página 8 da outra, isso NÃO é divergência.
+O que importa é: o conteúdo está presente? Está na sequência correta de seções?
+════════════════════════════════════════════════════
+
 REGRAS PARA divergencias_amarelo (AMARELO):
-══════════════════════════════════════════════
+Marque AMARELO apenas quando houver diferença REAL de conteúdo ou formatação:
 
-Marque como divergência AMARELA SOMENTE quando:
-
-1. AUSÊNCIA: Um parágrafo ou informação existe na Referência mas está AUSENTE na BELFAR.
-2. ACRÉSCIMO: Um parágrafo ou informação existe na BELFAR mas NÃO existe na Referência.
-3. ORDEM: A sequência dos parágrafos/informações está diferente entre as duas bulas.
-4. CONTEÚDO ALTERADO: O texto diz coisas diferentes (ex: dose diferente, prazo diferente, instrução diferente).
-5. ESTILO DIFERENTE: Um trecho está em MAIÚSCULAS em uma bula e em minúsculas/normal na outra (ex: título de seção escrito de forma diferente).
-6. NEGRITO DIFERENTE: Um trecho está em negrito (**texto**) em uma bula mas NÃO está em negrito na outra — isso é divergência visual importante.
+1. AUSÊNCIA: Informação/parágrafo presente na Referência mas AUSENTE na BELFAR.
+2. ACRÉSCIMO: Informação/parágrafo presente na BELFAR mas AUSENTE na Referência.
+3. ORDEM ERRADA: Seções ou parágrafos em sequência diferente entre as bulas (ignorando páginas).
+4. CONTEÚDO ALTERADO: Texto que diz coisas diferentes — doses, prazos, instruções diferentes.
+5. MAIÚSCULAS vs MINÚSCULAS: Frase toda em MAIÚSCULAS em uma bula e em minúsculas/normal na outra.
+   Exemplos que DEVEM ser marcados:
+   - "TODO MEDICAMENTO DEVE SER MANTIDO FORA DO ALCANCE DAS CRIANÇAS." (maiúsculas) vs "Todo medicamento deve ser mantido fora do alcance das crianças." (minúsculas)
+   - Título de seção em maiúsculas em uma e minúsculas na outra.
+6. NEGRITO DIFERENTE: Trecho em [B]...[/B] em uma bula mas SEM [B] na outra.
+   ATENÇÃO CRÍTICA: Se o mesmo trecho aparece com [B]...[/B] em AMBAS as bulas → NÃO é divergência.
+   Só marque se o negrito existir em apenas UMA das bulas.
 
 NÃO marque como AMARELO:
-- Textos que têm o mesmo conteúdo semântico, mesmo que levemente reescritos.
-- Diferença apenas no nome do medicamento (FLAGYL vs Flagimax) — isso é esperado e normal.
-- Diferença apenas de formatação que não altera sentido (vírgula a mais, espaço).
-- Texto em negrito em AMBAS as bulas — NÃO é divergência, é igual.
-- Texto sem negrito em AMBAS as bulas — NÃO é divergência, é igual.
+- Mesmo conteúdo escrito com palavras levemente diferentes mas mesmo sentido médico.
+- Diferença APENAS no nome do medicamento (FLAGYL vs Flagimax) — é esperado.
+- Texto em negrito ([B]...[/B]) nas DUAS bulas — é igual, não marque.
+- Texto normal (sem [B]) nas DUAS bulas — é igual, não marque.
+- Diferença de página — irrelevante.
 
-══════════════════════════════════════════════
+════════════════════════════════════════════════════
 REGRAS PARA erros_ortograficos (VERMELHO):
-══════════════════════════════════════════════
-
-Marque VERMELHO SOMENTE quando houver erro REAL e INEQUÍVOCO de português na BULA BELFAR:
-- Palavra claramente escrita errada (ex: "mediamento" em vez de "medicamento").
-- Palavra faltando que muda completamente o sentido da frase.
+Marque VERMELHO SOMENTE com erro INEQUÍVOCO de português na BELA BELFAR:
+- Palavra claramente errada (ex: "mediamento" em vez de "medicamento").
+- Palavra faltando que compromete o sentido.
 
 NÃO marque VERMELHO:
-- Termos técnicos médicos corretos (ex: aminotransferase, leucocitária, hepatotoxicidade).
-- Abreviações farmacêuticas padrão (ex: q.s.p., ALT, AST, LDH).
-- Texto em negrito — negrito não é erro ortográfico.
-- Qualquer frase ou palavra que seja português correto, mesmo que incomum.
-- Texto em maiúsculas — maiúsculas não são erro.
-- Se tiver dúvida se é erro, NÃO marque.
+- Termos técnicos médicos (aminotransferase, leucocitária, hepatotoxicidade, etc.).
+- Abreviações farmacêuticas (q.s.p., ALT, AST, LDH, SSJ, NET, PEGA).
+- Texto em negrito — negrito não é erro.
+- Maiúsculas — não são erro ortográfico.
+- Se tiver qualquer dúvida, NÃO marque.
 
-══════════════════════════════════════════════
+════════════════════════════════════════════════════
 REGRAS PARA data_anvisa_frase (AZUL):
-══════════════════════════════════════════════
+- Copie a frase LITERAL E COMPLETA da BULA BELFAR com a data de aprovação Anvisa (sem tags [B][/B]).
+- Copie a frase LITERAL E COMPLETA da BULA REFERÊNCIA com a data de aprovação Anvisa (sem tags [B][/B]).
 
-- Localize e copie LITERALMENTE a frase completa da BULA BELFAR com a data de aprovação Anvisa.
-- Localize e copie LITERALMENTE a frase completa da BULA REFERÊNCIA com a data de aprovação Anvisa.
-- Copie sem os asteriscos de negrito, apenas o texto puro.
-- Exemplo: "Esta bula foi atualizada conforme Bula Padrão aprovada pela Anvisa em 31/07/2025."
-
-══════════════════════════════════════════════
-FORMATO DOS ITENS:
-══════════════════════════════════════════════
-
+════════════════════════════════════════════════════
+FORMATO DOS ITENS DE SAÍDA:
 Cada item de divergencias_amarelo e erros_ortograficos deve ser:
-- Um trecho LITERAL de 6 a 10 palavras consecutivas EXATAMENTE como aparecem na BULA BELFAR (sem asteriscos).
-- Suficientemente específico para ser encontrado no PDF.
-- Se o trecho divergente for longo, quebre em múltiplos itens de 6-10 palavras cada.
+- Trecho LITERAL de 6 a 10 palavras da BULA BELFAR, SEM tags [B] ou [/B].
+- Específico o suficiente para ser localizado no PDF.
+- Se o trecho for longo, quebre em múltiplos itens de 6-10 palavras.
 
-SEÇÕES A COMPARAR:
+SEÇÕES A COMPARAR (ignore APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS):
 {secoes_comparar}
 
-══════════════════════════════════════════════
-
-BULA REFERÊNCIA (** = negrito no PDF):
+════════════════════════════════════════════════════
+BULA REFERÊNCIA ([B]...[/B] = negrito no PDF):
 {t_ref[:80000]}
 
-══════════════════════════════════════════════
-
-BULA BELFAR (** = negrito no PDF):
+════════════════════════════════════════════════════
+BULA BELFAR ([B]...[/B] = negrito no PDF):
 {t_belfar[:80000]}
 
-══════════════════════════════════════════════
-
+════════════════════════════════════════════════════
 RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
 {{
   "data_anvisa_ref": "dd/mm/aaaa ou -",
   "data_anvisa_mkt": "dd/mm/aaaa ou -",
-  "data_anvisa_frase": ["frase literal completa da BELFAR com a data Anvisa, sem asteriscos"],
-  "data_anvisa_frase_ref": ["frase literal completa da REFERÊNCIA com a data Anvisa, sem asteriscos"],
-  "erros_ortograficos": ["trecho literal 6-10 palavras com erro real na BELFAR, sem asteriscos"],
+  "data_anvisa_frase": ["frase literal completa da BELFAR com data Anvisa, sem tags"],
+  "data_anvisa_frase_ref": ["frase literal completa da REFERÊNCIA com data Anvisa, sem tags"],
+  "erros_ortograficos": ["trecho literal 6-10 palavras com erro real na BELFAR, sem tags"],
   "divergencias_amarelo": [
-    "trecho literal 6-10 palavras da BELFAR que é divergência real, sem asteriscos"
+    "trecho literal 6-10 palavras da BELFAR que é divergência real, sem tags"
   ]
 }}
 """
@@ -387,7 +403,7 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
 
     st.markdown("""
 ### 🎨 Legenda:
-* 🟡 **Amarelo** — Conteúdo ausente, acrescentado, fora de ordem, ou estilo diferente (negrito/maiúsculas)
+* 🟡 **Amarelo** — Conteúdo ausente, acrescentado, fora de ordem, negrito diferente ou maiúsculas/minúsculas diferentes
 * 🔴 **Vermelho** — Erro ortográfico / gramatical real
 * 🔵 **Azul** — Frase de aprovação da Anvisa (em ambas as bulas)
 """)
