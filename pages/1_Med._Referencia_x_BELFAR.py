@@ -35,7 +35,7 @@ SECOES_PROFISSIONAL = [
 # ----------------- 3. EXTRAÇÃO DE TEXTO COM NEGRITO MARCADO -----------------
 def extract_text_with_bold(uploaded_file):
     """
-    Extrai texto do PDF marcando trechos em negrito com [B]...[/B].
+    Extrai texto real do PDF marcando trechos em negrito com [B]...[/B].
     Agrupa spans da mesma linha para não quebrar palavras no meio.
     """
     try:
@@ -76,6 +76,7 @@ def extract_text_with_bold(uploaded_file):
                         todas_linhas.append(linha_txt)
 
         texto = "\n".join(todas_linhas)
+        # Tira a sujeira de hífens gerados por quebra de linha visual do PDF
         texto = re.sub(r'(\w)-\s*\n(\w)', r'\1\2', texto)
         return texto
     except Exception as e:
@@ -132,7 +133,7 @@ def truncar_ate_data_anvisa(texto):
             return texto[:m.end()].strip()
     return texto
 
-# ----------------- 6. PINTURA DOS PDFs (Qualidade Melhorada) -----------------
+# ----------------- 6. PINTURA DOS PDFs (Alta Resolução) -----------------
 def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=None):
     amarelo  = amarelo  or []
     vermelho = vermelho or []
@@ -144,16 +145,16 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
     for page in doc:
         for frase in amarelo:
             frase = str(frase).strip()
-            if len(frase) < 3: continue
+            if len(frase) < 4: continue # Ignora pedaços muito curtos que causam falsos realces
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0.85, 0))
-                a.set_opacity(0.3) # Opacidade reduzida para não esconder a letra preta
+                a.set_opacity(0.3)
                 a.update()
 
         for frase in vermelho:
             frase = str(frase).strip()
-            if len(frase) < 3: continue
+            if len(frase) < 4: continue
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(1, 0, 0))
@@ -162,21 +163,20 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
 
         for frase in azul:
             frase = str(frase).strip()
-            if len(frase) < 3: continue
+            if len(frase) < 4: continue
             for area in page.search_for(frase):
                 a = page.add_highlight_annot(area)
                 a.set_colors(stroke=(0, 0.5, 1))
                 a.set_opacity(0.3)
                 a.update()
 
-        # Resolução altíssima para garantir que o texto fique nítido
         pix = page.get_pixmap(matrix=fitz.Matrix(6, 6))
         imagens.append(pix.tobytes("png"))
 
     return imagens
 
 # ----------------- 7. CHUNKS PARA BUSCA NO PDF -----------------
-def chunks_de_frase(frase, tamanho=7):
+def chunks_de_frase(frase, tamanho=6):
     palavras = frase.split()
     if len(palavras) <= tamanho:
         return [frase] if frase.strip() else []
@@ -186,7 +186,7 @@ def chunks_de_frase(frase, tamanho=7):
         resultado.append(" ".join(palavras[i:i+tamanho]))
     return resultado
 
-def expandir_para_chunks(lista_frases, tamanho=7):
+def expandir_para_chunks(lista_frases, tamanho=6):
     resultado = []
     for frase in lista_frases:
         f = str(frase).strip()
@@ -195,7 +195,7 @@ def expandir_para_chunks(lista_frases, tamanho=7):
     return resultado
 
 # ----------------- 8. UI PRINCIPAL -----------------
-st.title("💊 Auditor Visual de Bulas (Detecção Nível Palavra/Símbolo)")
+st.title("💊 Auditor Visual de Bulas (Detecção de Camada de Texto)")
 
 tipo_bula = st.radio("Escolha o Tipo de Bula:", ("Paciente","Profissional"), horizontal=True)
 
@@ -225,7 +225,7 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
     texto_resposta_ia = ""
     sucesso_ia = False
 
-    with st.spinner("🧠 IA comparando as bulas com precisão extrema..."):
+    with st.spinner("🧠 IA comparando as bulas (ignorado lixo de formatação)..."):
         f1.seek(0); f2.seek(0)
         t_ref_bruto    = extract_text_with_bold(f1)
         t_belfar_bruto = extract_text_with_bold(f2)
@@ -237,40 +237,35 @@ if st.button("🚀 Iniciar Auditoria Visual e Grifar PDFs"):
         t_belfar = truncar_ate_data_anvisa(t_belfar_bruto)
 
         prompt = f"""
-Você é um auditor rigoroso comparando dois textos LITERALMENTE.
+Você é um auditor farmacêutico analisando o texto bruto extraído de dois PDFs.
+ATENÇÃO MÁXIMA: O usuário relatou que você está "alucinando" e criando divergências que não existem. PARE DE INVENTAR. Só reporte o que for real e visível.
 
-NOTAÇÃO USADA:
-- Trechos entre [B]...[/B] estão em NEGRITO no PDF original.
-- Trechos sem marcação estão em texto normal.
-- BULA REFERÊNCIA = texto base.
-- BULA BELFAR = texto a ser auditado.
+BULA REFERÊNCIA = texto base oficial.
+BULA BELFAR = versão a ser auditada.
 
 ════════════════════════════════════════════════════
-REGRA DE OURO: COMPARAÇÃO LITERAL E ESTRITA
-A regra é simples e inegociável: O QUE NÃO FOR EXATAMENTE IGUAL, É DIVERGÊNCIA.
-
-1. SÍMBOLOS E PONTUAÇÃO: Se uma bula tem um traço (-), ponto, vírgula, ou qualquer símbolo e a outra não tem (ou tem um símbolo diferente), MARQUE COMO DIVERGÊNCIA.
-2. NEGRITO (A TAG [B]): Se uma palavra está com [B] em uma bula e sem [B] na outra, MARQUE COMO DIVERGÊNCIA. (Exceção: Se estiver com [B] nas DUAS, é igual, não marque).
-3. PALAVRAS E LETRAS: Qualquer diferença de grafia, maiúsculas/minúsculas, ou troca de palavras DEVE ser marcada.
-4. EXCEÇÃO: Apenas os nomes próprios do medicamento (FLAGYL vs Flagimax) NÃO são divergências. Todo o resto é.
+REGRA ZERO: ANTI-ALUCINAÇÃO E FALSOS POSITIVOS
+- IGNORE totalmente espaços duplos, quebras de linha e mudanças de página. Os PDFs extraem esses dados de forma diferente e isso NÃO É DIVERGÊNCIA.
+- IGNORE Títulos e Numerações de Seções (ex: "8. QUAIS OS MALES...").
+- Se o texto tiver a mesma palavra, os mesmos símbolos importantes e os mesmos negritos [B], passe reto. NA DÚVIDA, NÃO MARQUE.
 ════════════════════════════════════════════════════
 
-REGRAS PARA divergencias_amarelo (AMARELO):
-Marque TUDO na BULA BELFAR que não for uma cópia idêntica (caractere por caractere, símbolo por símbolo, negrito por negrito) da BULA REFERÊNCIA, seguindo a Regra de Ouro acima.
+O QUE É DIVERGÊNCIA REAL (AMARELO):
+1. Falta de texto ou alteração: Faltou uma palavra, adicionou uma frase, mudou a dose? Marque.
+2. Símbolos que importam: Se uma bula tem um traço (-) ligando palavras ou pontuação que muda o sentido e a outra não tem, marque. Mas se for só um espaço estranho, ignore.
+3. Falso Negrito: Se a Referência tem um alerta em [B]...[/B] e a BELFAR está sem o [B] (ou vice-versa), marque. SE AMBAS TÊM [B], É IGUAL, NÃO MARQUE!
+4. Diferenças de nome comercial (FLAGYL vs Flagimax) NÃO são divergências.
 
-REGRAS PARA erros_ortograficos (VERMELHO):
-Marque SOMENTE palavras com erro claro de português na BULA BELFAR (ex: "mediamento" em vez de medicamento). Se a diferença for apenas de pontuação ou negrito, vai para o AMARELO.
+O QUE É ERRO ORTOGRÁFICO (VERMELHO):
+- Erros reais de português (ex: "mediamento").
 
-REGRAS PARA data_anvisa_frase (AZUL):
-- Copie a frase LITERAL E COMPLETA da BULA BELFAR com a data de aprovação Anvisa (sem tags).
-- Copie a frase LITERAL E COMPLETA da BULA REFERÊNCIA com a data de aprovação Anvisa (sem tags).
+DATA ANVISA (AZUL):
+- Extraia a frase exata da data de aprovação de ambas.
 
-FORMATO DOS ITENS DE SAÍDA:
-Cada item de divergencias_amarelo e erros_ortograficos deve ser:
-- Trecho LITERAL de 6 a 10 palavras da BULA BELFAR, SEM tags [B] ou [/B].
-- Específico o suficiente para ser localizado no PDF.
+COMO RESPONDER:
+Cada item no JSON (amarelo ou vermelho) deve ser um trecho exato de 6 a 10 palavras tirado LITERALMENTE da BULA BELFAR, sem as tags [B].
 
-SEÇÕES A COMPARAR (ignore APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS):
+SEÇÕES A COMPARAR:
 {secoes_comparar}
 
 ════════════════════════════════════════════════════
@@ -290,7 +285,7 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
   "data_anvisa_frase_ref": ["frase literal completa da REFERÊNCIA com data Anvisa, sem tags"],
   "erros_ortograficos": ["trecho literal 6-10 palavras com erro real na BELFAR, sem tags"],
   "divergencias_amarelo": [
-    "trecho literal 6-10 palavras da BELFAR que é divergência literal real, sem tags"
+    "trecho literal 6-10 palavras da BELFAR que é divergência real, sem tags"
   ]
 }}
 """
@@ -337,10 +332,10 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
             datas_azuis_belfar = [str(x).strip() for x in raw_azul_belfar if str(x).strip()]
             datas_azuis_ref    = [str(x).strip() for x in raw_azul_ref    if str(x).strip()]
 
-            amarelo_chunks     = expandir_para_chunks(divergencias, tamanho=7)
-            vermelho_chunks    = expandir_para_chunks(erros_vermelhos, tamanho=7)
-            azul_chunks_belfar = expandir_para_chunks(datas_azuis_belfar, tamanho=7)
-            azul_chunks_ref    = expandir_para_chunks(datas_azuis_ref, tamanho=7)
+            amarelo_chunks     = expandir_para_chunks(divergencias, tamanho=6)
+            vermelho_chunks    = expandir_para_chunks(erros_vermelhos, tamanho=6)
+            azul_chunks_belfar = expandir_para_chunks(datas_azuis_belfar, tamanho=6)
+            azul_chunks_ref    = expandir_para_chunks(datas_azuis_ref, tamanho=6)
 
             f1.seek(0); f2.seek(0)
             fotos_ref    = gerar_imagens_pdf_grifado(f1, azul=azul_chunks_ref)
@@ -371,9 +366,9 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
 
     st.markdown("""
 ### 🎨 Legenda:
-* 🟡 **Amarelo** — Qualquer diferença literal: traços, pontuação, formatação, palavras ausentes/extras
+* 🟡 **Amarelo** — Divergência real (falta de texto, erro de negrito, mudança de conteúdo)
 * 🔴 **Vermelho** — Erro ortográfico / gramatical real
-* 🔵 **Azul** — Frase de aprovação da Anvisa (em ambas as bulas)
+* 🔵 **Azul** — Frase de aprovação da Anvisa
 """)
     st.divider()
 
@@ -382,7 +377,7 @@ RESPONDA APENAS EM JSON VÁLIDO E COMPLETO:
         st.markdown(f"#### Página {i+1}")
         cl, cr = st.columns(2)
         with cl:
-            st.caption("📜 Bula Referência (data Anvisa em azul)")
+            st.caption("📜 Bula Referência")
             if i < len(fotos_ref):
                 st.image(fotos_ref[i], use_container_width=True)
         with cr:
