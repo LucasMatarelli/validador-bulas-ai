@@ -1,5 +1,5 @@
 streamlit
-import google.generativeai as genai
+google.generativeai as genai
 pymupdf
 python-docx
 pyspellchecker
