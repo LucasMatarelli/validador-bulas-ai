@@ -172,7 +172,8 @@ def gerar_imagens_pdf_grifado(uploaded_file, amarelo=None, vermelho=None, azul=N
                 a.set_opacity(0.45)
                 a.update()
 
-        pix = page.get_pixmap(matrix=fitz.Matrix(4, 4))
+        # Aumentado a matriz para 5x5 para melhorar a resolução e leitura visual
+        pix = page.get_pixmap(matrix=fitz.Matrix(5, 5))
         imagens.append(pix.tobytes("png"))
 
     return imagens
@@ -244,51 +245,37 @@ Você é um auditor farmacêutico sênior comparando duas bulas do mesmo medicam
 NOTAÇÃO USADA NOS TEXTOS:
 - Trechos entre [B]...[/B] estão em NEGRITO no PDF original.
 - Trechos sem marcação estão em texto normal.
-- BULA REFERÊNCIA = texto oficial aprovado pela Anvisa (padrão correto).
+- BULA REFERÊNCIA = texto oficial aprovado pela Anvisa.
 - BULA BELFAR = versão do fabricante genérico a ser auditada.
 - As duas bulas descrevem o mesmo medicamento com nomes comerciais diferentes (FLAGYL vs Flagimax). Isso é NORMAL e ESPERADO — não é divergência.
 
 ════════════════════════════════════════════════════
-REGRA FUNDAMENTAL: IGNORE NÚMERO DE PÁGINA
-A comparação é por ORDEM LÓGICA do conteúdo, não por página física.
-Se a Seção 9 aparece na página 6 de uma bula e na página 8 da outra, isso NÃO é divergência.
-O que importa é: o conteúdo está presente? Está na sequência correta de seções?
+REGRA DE OURO: PROIBIDO FALSOS POSITIVOS
+1. NÚMERO DE PÁGINA É IRRELEVANTE: Se o texto está na mesma ordem lógica, não importa se caiu em páginas diferentes.
+2. TEXTO IDÊNTICO: Se o conteúdo médico ou o texto é igual, NÃO MARQUE.
+3. TÍTULOS DE SEÇÕES: NUNCA marque títulos (ex: "8. QUAIS OS MALES...", "Distúrbios psiquiátricos:"). Ignore se um está em maiúscula e outro em minúscula.
+4. NEGRITO DUPLO: Se um trecho está com [B]...[/B] nas DUAS bulas, ele É IGUAL. É absolutamente PROIBIDO marcar trechos que possuem negrito em ambos os textos.
 ════════════════════════════════════════════════════
 
 REGRAS PARA divergencias_amarelo (AMARELO):
-Marque AMARELO apenas quando houver diferença REAL de conteúdo ou formatação:
+Marque AMARELO APENAS quando houver diferença REAL e CRÍTICA de conteúdo:
 
-1. AUSÊNCIA: Informação/parágrafo presente na Referência mas AUSENTE na BELFAR.
-2. ACRÉSCIMO: Informação/parágrafo presente na BELFAR mas AUSENTE na Referência.
-3. ORDEM ERRADA: Seções ou parágrafos em sequência diferente entre as bulas (ignorando páginas).
-4. CONTEÚDO ALTERADO: Texto que diz coisas diferentes — doses, prazos, instruções diferentes.
-5. MAIÚSCULAS vs MINÚSCULAS: Frase toda em MAIÚSCULAS em uma bula e em minúsculas/normal na outra.
-   Exemplos que DEVEM ser marcados:
-   - "TODO MEDICAMENTO DEVE SER MANTIDO FORA DO ALCANCE DAS CRIANÇAS." (maiúsculas) vs "Todo medicamento deve ser mantido fora do alcance das crianças." (minúsculas)
-   - Título de seção em maiúsculas em uma e minúsculas na outra.
-6. NEGRITO DIFERENTE: Trecho em [B]...[/B] em uma bula mas SEM [B] na outra.
-   ATENÇÃO CRÍTICA: Se o mesmo trecho aparece com [B]...[/B] em AMBAS as bulas → NÃO é divergência.
-   Só marque se o negrito existir em apenas UMA das bulas.
+1. AUSÊNCIA: Parágrafo ou advertência presente na Referência mas AUSENTE na BELFAR.
+2. ACRÉSCIMO: Informação nova na BELFAR mas AUSENTE na Referência.
+3. CONTEÚDO ALTERADO: Doses, reações adversas, prazos ou instruções diferentes.
+4. NEGRITO FALTANTE: Se um alerta importantíssimo está como [B]...[/B] na Referência, mas na BELFAR está sem a tag [B].
 
-NÃO marque como AMARELO:
-- Mesmo conteúdo escrito com palavras levemente diferentes mas mesmo sentido médico.
-- Diferença APENAS no nome do medicamento (FLAGYL vs Flagimax) — é esperado.
-- Texto em negrito ([B]...[/B]) nas DUAS bulas — é igual, não marque.
-- Texto normal (sem [B]) nas DUAS bulas — é igual, não marque.
-- Diferença de página — irrelevante.
+NÃO marque como AMARELO (FALSOS POSITIVOS):
+- Textos com o mesmo sentido onde mudou apenas uma vírgula ou sinonímio irrelevante.
+- Diferença no nome do medicamento (FLAGYL vs Flagimax).
+- TÍTULOS (nunca marque títulos, mesmo que haja leve diferença de formatação).
+- Texto em negrito ([B]...[/B]) nas DUAS bulas — se estão nas duas, estão corretos.
 
 ════════════════════════════════════════════════════
 REGRAS PARA erros_ortograficos (VERMELHO):
-Marque VERMELHO SOMENTE com erro INEQUÍVOCO de português na BELA BELFAR:
-- Palavra claramente errada (ex: "mediamento" em vez de "medicamento").
-- Palavra faltando que compromete o sentido.
-
-NÃO marque VERMELHO:
-- Termos técnicos médicos (aminotransferase, leucocitária, hepatotoxicidade, etc.).
-- Abreviações farmacêuticas (q.s.p., ALT, AST, LDH, SSJ, NET, PEGA).
-- Texto em negrito — negrito não é erro.
-- Maiúsculas — não são erro ortográfico.
-- Se tiver qualquer dúvida, NÃO marque.
+Marque VERMELHO SOMENTE com erro INEQUÍVOCO de português na BULA BELFAR:
+- Palavra escrita errada (ex: "mediamento").
+- NÃO marque termos técnicos, científicos, bulas ou abreviações.
 
 ════════════════════════════════════════════════════
 REGRAS PARA data_anvisa_frase (AZUL):
@@ -300,7 +287,6 @@ FORMATO DOS ITENS DE SAÍDA:
 Cada item de divergencias_amarelo e erros_ortograficos deve ser:
 - Trecho LITERAL de 6 a 10 palavras da BULA BELFAR, SEM tags [B] ou [/B].
 - Específico o suficiente para ser localizado no PDF.
-- Se o trecho for longo, quebre em múltiplos itens de 6-10 palavras.
 
 SEÇÕES A COMPARAR (ignore APRESENTAÇÕES, COMPOSIÇÃO, DIZERES LEGAIS):
 {secoes_comparar}
