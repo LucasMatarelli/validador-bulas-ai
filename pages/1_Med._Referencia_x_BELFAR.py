@@ -154,13 +154,13 @@ def paint_blue_anvisa(doc, blue_rects):
         paint_rect(doc, page_idx, rect, blue, opacity=0.5)
 
 # ----------------- 4. UI -----------------
-st.title("💊 Validador Enterprise de Bulas")
+st.title("💊 Validador de Bulas")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf"])
 f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf"])
 
-if st.button("🚀 Processar Auditoria Exata"):
+if st.button("🚀 Processar Auditoria"):
     if not (f1 and f2):
         st.warning("Por favor, envie os dois arquivos PDF.")
     else:
