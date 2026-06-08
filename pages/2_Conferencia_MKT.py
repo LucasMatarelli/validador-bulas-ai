@@ -4,72 +4,81 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
-# ----------------- FUNÇÕES DE APOIO -----------------
+# ----------------- CONFIGURAÇÃO -----------------
+st.set_page_config(page_title="Validador Professional Belfar", layout="wide")
+
+# ----------------- LÓGICA DE LIMPEZA -----------------
 def clean_text(text):
     text = unicodedata.normalize('NFKD', text)
     return re.sub(r'[^\w\-]', '', text).lower().strip()
 
-def get_mismatched_rects(doc, other_doc_words):
-    """Retorna lista de retângulos que devem ser pintados de amarelo."""
-    # Lógica simplificada: extrai texto e coordenadas
-    words_data = []
-    for p_idx, page in enumerate(doc):
-        for w in page.get_text("words"):
-            words_data.append({"page": p_idx, "rect": fitz.Rect(w[:4]), "clean": clean_text(w[4])})
-    return words_data
-
-st.set_page_config(layout="wide")
-st.title("🛡️ Validador com Marcação Amarela Inteligente")
-
-c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Bula Referência (PDF)", type=["pdf"])
-f2 = c2.file_uploader("Bula BELFAR (PDF)", type=["pdf"])
-
-if f1 and f2:
-    doc_ref = fitz.open("pdf", f1.getvalue())
-    doc_bel = fitz.open("pdf", f2.getvalue())
-    
-    # Extração para comparação
-    def get_text_list(doc):
-        full = []
+# ----------------- MOTOR DE COMPARAÇÃO -----------------
+def get_divergences(doc_ref, doc_bel):
+    """Retorna uma lista de palavras que divergem entre os dois documentos."""
+    # Extrai todo o texto para comparação lógica (ignora colunas/layout)
+    def extract_words(doc):
+        words = []
         for p in doc:
             for w in p.get_text("words"):
-                full.append(clean_text(w[4]))
-        return full
+                words.append({"page": p.number, "rect": fitz.Rect(w[:4]), "text": clean_text(w[4])})
+        return words
 
-    t1 = get_text_list(doc_ref)
-    t2 = get_text_list(doc_bel)
-    matcher = SequenceMatcher(None, t1, t2)
+    words_ref = extract_words(doc_ref)
+    words_bel = extract_words(doc_bel)
     
-    # Mapear divergências
-    divergent_words = []
+    text_ref = [w["text"] for w in words_ref]
+    text_bel = [w["text"] for w in words_bel]
+    
+    matcher = SequenceMatcher(None, text_ref, text_bel)
+    divergentes = []
+    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag != 'equal':
-            divergent_words.extend(t1[i1:i2])
-            divergent_words.extend(t2[j1:j2])
+            # Se houve divergência, marcamos as palavras da referência e da belfar
+            divergentes.extend(words_ref[i1:i2])
+            divergentes.extend(words_bel[j1:j2])
+    return divergentes, words_ref, words_bel
 
-    page_select = st.slider("Página:", 0, max(len(doc_ref), len(doc_bel)) - 1, 0)
+# ----------------- MOTOR DE VISUALIZAÇÃO (O SEGREDO) -----------------
+def get_page_image_with_highlights(doc, page_num, divergent_words):
+    """Desenha o amarelo APENAS na imagem, nunca no PDF original."""
+    page = doc.load_page(page_num)
+    # Criamos uma cópia temporária da página para anotar
+    # Anotamos, renderizamos a imagem e descartamos a anotação
+    for word in divergent_words:
+        if word['page'] == page_num:
+            page.add_highlight_annot(word['rect'])
+            
+    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+    img_data = pix.tobytes("png")
+    # Limpamos as anotações após gerar a imagem para não corromper o doc
+    for annot in page.annots():
+        page.delete_annot(annot)
+    return img_data
+
+# ----------------- INTERFACE -----------------
+st.title("🛡️ Validador de Bulas Enterprise - Motor de Auditoria")
+
+f1, f2 = st.columns(2)
+file_ref = f1.file_uploader("Bula Referência", type=["pdf"])
+file_bel = f2.file_uploader("Bula BELFAR", type=["pdf"])
+
+if file_ref and file_bel:
+    doc_ref = fitz.open("pdf", file_ref.getvalue())
+    doc_bel = fitz.open("pdf", file_bel.getvalue())
     
-    # Renderização com Amarelo (Sem erro de Quads)
-    def render_with_highlights(doc, page_num, divergent_list):
-        if page_num >= len(doc): return None
-        page = doc.load_page(page_num)
-        
-        # PINTA O AMARELO NA IMAGEM (Overlay)
-        words = page.get_text("words")
-        for w in words:
-            if clean_text(w[4]) in divergent_list:
-                # Desenha o retângulo no PDF (temporário)
-                page.add_highlight_annot(fitz.Rect(w[:4]))
-        
-        # Renderiza a página com as anotações
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-        return pix.tobytes("png")
+    if st.button("🚀 Processar Auditoria"):
+        with st.spinner("Auditando..."):
+            divs, _, _ = get_divergences(doc_ref, doc_bel)
+            st.session_state['divergentes'] = divs
+            st.success("Auditoria concluída! Navegue pelas páginas abaixo.")
 
-    col_vis1, col_vis2 = st.columns(2)
-    with col_vis1:
-        st.subheader("Referência")
-        st.image(render_with_highlights(doc_ref, page_select, divergent_words), use_container_width=True)
-    with col_vis2:
-        st.subheader("BELFAR")
-        st.image(render_with_highlights(doc_bel, page_select, divergent_words), use_container_width=True)
+if 'divergentes' in st.session_state:
+    max_pag = max(len(doc_ref), len(doc_bel))
+    page_select = st.slider("Página:", 0, max_pag - 1, 0)
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.image(get_page_image_with_highlights(doc_ref, page_select, st.session_state['divergentes']), use_container_width=True)
+    with c2:
+        st.image(get_page_image_with_highlights(doc_bel, page_select, st.session_state['divergentes']), use_container_width=True)
