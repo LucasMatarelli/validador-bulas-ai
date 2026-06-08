@@ -46,8 +46,10 @@ def get_pdf_blocks(uploaded_file):
                 line_text = ""
                 line_rects = []
                 for span in line["spans"]:
-                    t = span["text"].strip()
-                    if t:
+                    # Alguns spans não têm "text" (ex: spans de imagem inline)
+                    raw = span.get("text", "") or ""
+                    t = raw.strip()
+                    if t and "bbox" in span:
                         line_text += (" " if line_text else "") + t
                         line_rects.append(fitz.Rect(span["bbox"]))
 
