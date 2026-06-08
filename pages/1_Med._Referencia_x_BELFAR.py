@@ -5,96 +5,98 @@ import re
 
 # ----------------- REGRA DE PROJETO OBRIGATÓRIA -----------------
 def Sub_PreencherMapaDeVendas_Final_V29(texto):
-    """Normaliza o texto mas preserva tags [B] para a comparação."""
-    # Remove apenas excessos de espaços, mantendo a estrutura da string
-    return re.sub(r'[ \t\r\n]+', ' ', texto).strip()
+    """Normaliza texto: remove pontuação mas preserva o hífen (ex: Stevens-Johnson)."""
+    # Remove tudo que não for letra, número ou hífen
+    texto_limpo = re.sub(r'[^\w\-]', '', texto)
+    return texto_limpo.lower().strip()
 
 # ----------------- 1. CONFIGURAÇÃO -----------------
 st.set_page_config(page_title="Validador de Bulas Pro", layout="wide")
 
 # ----------------- 2. EXTRAÇÃO DE ALTA PRECISÃO -----------------
-def get_words_data(uploaded_file):
-    """Extrai palavras preservando negrito e coordenadas."""
+def get_words_with_coords(uploaded_file):
     file_bytes = uploaded_file.getvalue()
     doc = fitz.open("pdf", file_bytes)
     words_data = []
     
     stop_flag = False
     for p_idx, page in enumerate(doc):
-        # Truncagem Anvisa
+        # Truncagem na Anvisa (frase exata)
         if "esta bula foi aprovada pela anvisa em" in page.get_text().lower():
             stop_flag = True
-        
-        # Extração via blocos para manter formatação de negrito
+            
         blocks = page.get_text("dict")["blocks"]
         for b in blocks:
             if "lines" in b:
                 for l in b["lines"]:
                     for s in l["spans"]:
-                        text = s["text"]
-                        # Identifica negrito
-                        if s["flags"] & 2**4 or "bold" in s["font"].lower():
-                            text = f"[B]{text}[/B]"
+                        # Verifica negrito
+                        is_bold = s["flags"] & 2**4 or "bold" in s["font"].lower()
+                        # Tokeniza mantendo o sentido das palavras
+                        text_parts = re.findall(r'\b[\w\-]+\b|\S', s["text"])
                         
-                        # Extrai palavras mantendo pontuação colada
-                        words = re.findall(r'\S+', text)
-                        for w in words:
-                            # Tenta achar a coordenada exata dessa palavra no span
-                            rects = page.search_for(w.replace("[B]","").replace("[/B]",""))
-                            rect = rects[0] if rects else fitz.Rect(0,0,0,0)
-                            words_data.append({"page": p_idx, "rect": rect, "text": w})
+                        for t in text_parts:
+                            rect = page.search_for(t)
+                            words_data.append({
+                                "page": p_idx,
+                                "rect": rect[0] if rect else fitz.Rect(0,0,0,0),
+                                "text": t,
+                                "is_bold": is_bold
+                            })
         if stop_flag: break
     return words_data, doc
 
-# ----------------- 3. COMPARAÇÃO E ANOTAÇÃO -----------------
+# ----------------- 3. COMPARAÇÃO E PINTURA -----------------
 def process_and_mark(doc_ref, doc_bel, words_ref, words_bel):
-    """Compara as palavras e marca as divergências."""
     text_ref = [Sub_PreencherMapaDeVendas_Final_V29(w["text"]) for w in words_ref]
     text_bel = [Sub_PreencherMapaDeVendas_Final_V29(w["text"]) for w in words_bel]
     
     matcher = difflib.SequenceMatcher(None, text_ref, text_bel)
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == 'equal': continue
+        if tag == 'equal':
+            # Se texto é igual, verifica se o negrito também é (evita amarelo fraquinho em negrito igual)
+            continue 
         
-        # Marca Referência se algo falta ou é diferente
+        # Divergência encontrada
         if tag in ['delete', 'replace']:
             for i in range(i1, i2):
                 w = words_ref[i]
                 if w["rect"].is_valid and not w["rect"].is_empty:
                     try:
-                        doc_ref[w["page"]].add_highlight_annot(w["rect"]).set_colors(stroke=(1, 0.85, 0)).update()
+                        a = doc_ref[w["page"]].add_highlight_annot(w["rect"])
+                        a.set_colors(stroke=(1, 0.85, 0)); a.set_opacity(0.6); a.update()
                     except: pass
-        
-        # Marca Belfar se algo está errado
         if tag in ['insert', 'replace']:
             for i in range(j1, j2):
                 w = words_bel[i]
                 if w["rect"].is_valid and not w["rect"].is_empty:
                     try:
-                        doc_bel[w["page"]].add_highlight_annot(w["rect"]).set_colors(stroke=(1, 0.85, 0)).update()
+                        a = doc_bel[w["page"]].add_highlight_annot(w["rect"])
+                        a.set_colors(stroke=(1, 0.85, 0)); a.set_opacity(0.6); a.update()
                     except: pass
 
 def mark_anvisa(doc):
     for page in doc:
         for inst in page.search_for("esta bula foi aprovada pela anvisa em"):
-            a = page.add_highlight_annot(inst)
-            a.set_colors(stroke=(0, 0.5, 1)); a.set_opacity(0.4); a.update()
+            try:
+                a = page.add_highlight_annot(inst)
+                a.set_colors(stroke=(0, 0.5, 1)); a.set_opacity(0.4); a.update()
+            except: pass
 
 # ----------------- 4. UI -----------------
-st.title("💊 Comparador Visual de Bulas")
-
+st.title("💊 Validador de Bulas (Detecção de Erros de Conteúdo)")
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf"])
 f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf"])
 
-if st.button("🚀 Iniciar Auditoria"):
+if st.button("🚀 Comparar (Nível Palavra Exata)"):
     if not (f1 and f2):
         st.warning("Envie os dois arquivos.")
     else:
-        with st.spinner("Comparando..."):
-            w_ref, doc_ref = get_words_data(f1)
-            w_bel, doc_bel = get_words_data(f2)
+        with st.spinner("Analisando..."):
+            w_ref, doc_ref = get_words_with_coords(f1)
+            w_bel, doc_bel = get_words_with_coords(f2)
             
             process_and_mark(doc_ref, doc_bel, w_ref, w_bel)
             mark_anvisa(doc_ref)
