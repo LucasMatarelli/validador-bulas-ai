@@ -3,71 +3,85 @@ import fitz
 import re
 import unicodedata
 from difflib import SequenceMatcher
-import pandas as pd
 
-# Lista padrão de cabeçalhos de bula que devem existir
-TOPICOS_OBRIGATORIOS = [
-    "identificação do medicamento", "apresentações", "composição", 
-    "informações ao paciente", "para que este medicamento é indicado", 
-    "como este medicamento funciona", "quando não devo usar", 
-    "o que devo saber antes", "como devo usar", 
-    "o que devo fazer quando eu me esquecer", "quais os males", 
-    "o que fazer se alguém usar", "dizeres legais"
-]
+st.set_page_config(page_title="Validador Belfar Enterprise", layout="wide")
 
+# ----------------- FUNÇÕES DE LIMPEZA -----------------
 def clean_text(text):
-    text = unicodedata.normalize('NFKD', text).lower()
-    return re.sub(r'[^\w\s]', '', text).strip()
+    text = unicodedata.normalize('NFKD', text)
+    return re.sub(r'[^\w\-]', '', text).lower().strip()
 
-def check_structure(text_list):
-    """Verifica quais tópicos obrigatórios estão presentes no texto."""
-    found = []
-    full_text = " ".join(text_list)
-    for topico in TOPICOS_OBRIGATORIOS:
-        if topico in full_text:
-            found.append(topico)
-    return found
+# ----------------- MOTOR DE EXTRAÇÃO (LAYOUT-AWARE) -----------------
+def get_blocks(doc):
+    """Extrai texto por blocos lógicos, o segredo para bulas com colunas."""
+    blocks_data = []
+    for p_idx, page in enumerate(doc):
+        # Usamos 'blocks' em vez de 'words' para ignorar a posição visual das colunas
+        blocks = page.get_text("blocks", sort=True)
+        for b in blocks:
+            txt = clean_text(b[4])
+            if len(txt) > 5: # Ignora ruídos (números de página, etc)
+                blocks_data.append({
+                    "page": p_idx, 
+                    "rect": fitz.Rect(b[:4]), 
+                    "text": txt
+                })
+    return blocks_data
 
-st.set_page_config(layout="wide")
-st.title("🛡️ Validador Belfar - Nível Enterprise")
+# ----------------- COMPARAÇÃO E PINTURA (ESTILO CIMED) -----------------
+def paint_rect(page, rect):
+    """Pinta o retângulo com amarelo sólido vibrante."""
+    # Amarelo puro (1, 1, 0) e opacidade 0.8 (sólido como na imagem 2)
+    annot = page.add_highlight_annot(rect)
+    annot.set_colors(stroke=(1, 1, 0))
+    annot.set_opacity(0.8)
+    annot.update()
+
+def process_audit(doc_ref, doc_bel):
+    blocks_ref = get_blocks(doc_ref)
+    blocks_bel = get_blocks(doc_bel)
+    
+    ref_texts = [b["text"] for b in blocks_ref]
+    bel_texts = [b["text"] for b in blocks_bel]
+    
+    matcher = SequenceMatcher(None, ref_texts, bel_texts)
+    
+    # Lista de páginas que precisam de pintura
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != 'equal':
+            # Pinta na Referência
+            for i in range(i1, i2):
+                if i < len(blocks_ref):
+                    paint_rect(doc_ref.load_page(blocks_ref[i]["page"]), blocks_ref[i]["rect"])
+            # Pinta na Belfar
+            for j in range(j1, j2):
+                if j < len(blocks_bel):
+                    paint_rect(doc_bel.load_page(blocks_bel[j]["page"]), blocks_bel[j]["rect"])
+
+# ----------------- UI -----------------
+st.title("🛡️ Validador de Bulas Enterprise - Auditoria Visual")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("Bula Referência", type=["pdf"])
-f2 = c2.file_uploader("Bula BELFAR/MKT", type=["pdf"])
+f2 = c2.file_uploader("Bula BELFAR", type=["pdf"])
 
 if f1 and f2:
     doc_ref = fitz.open("pdf", f1.getvalue())
     doc_bel = fitz.open("pdf", f2.getvalue())
     
-    if st.button("🚀 Iniciar Auditoria Completa (Estrutura + Conteúdo)"):
-        # 1. Auditoria de Estrutura
-        t1 = [clean_text(w) for p in doc_ref for w in p.get_text("text").split()]
-        t2 = [clean_text(w) for p in doc_bel for w in p.get_text("text").split()]
-        
-        struct_ref = check_structure(t1)
-        struct_bel = check_structure(t2)
-        
-        st.subheader("📊 Auditoria de Estrutura (Tópicos)")
-        col_a, col_b = st.columns(2)
-        col_a.write("Tópicos na Referência: " + str(len(struct_ref)))
-        col_b.write("Tópicos na BELFAR: " + str(len(struct_bel)))
-        
-        # Mostra o que falta
-        faltantes = [t for t in TOPICOS_OBRIGATORIOS if t not in struct_bel]
-        if faltantes:
-            st.error(f"⚠️ A Bula BELFAR está sem estes tópicos: {', '.join(faltantes)}")
-        else:
-            st.success("✅ Todos os tópicos obrigatórios estão presentes!")
+    if st.button("🚀 Processar Auditoria Visual"):
+        with st.spinner("Analisando estruturas e pintando divergências..."):
+            process_audit(doc_ref, doc_bel)
+            st.session_state['processed'] = True
 
-        # 2. Auditoria de Conteúdo (Divergências)
-        st.subheader("🔍 Divergências de Conteúdo")
-        matcher = SequenceMatcher(None, t1, t2)
-        divergencias = []
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-            if tag != 'equal':
-                divergencias.append({"Referência": " ".join(t1[i1:i2]), "BELFAR": " ".join(t2[j1:j2])})
-        
-        if divergencias:
-            st.table(pd.DataFrame(divergencias).head(20)) # Mostra as primeiras 20 divergências
-        else:
-            st.success("✅ Conteúdo idêntico!")
+    if st.session_state.get('processed'):
+        max_pag = max(len(doc_ref), len(doc_bel))
+        for i in range(max_pag):
+            st.divider()
+            col_r, col_b = st.columns(2)
+            if i < len(doc_ref):
+                col_r.subheader(f"Referência (Pág {i+1})")
+                col_r.image(doc_ref[i].get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png"), use_container_width=True)
+            if i < len(doc_bel):
+                col_b.subheader(f"BELFAR (Pág {i+1})")
+                col_b.image(doc_bel[i].get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png"), use_container_width=True)
