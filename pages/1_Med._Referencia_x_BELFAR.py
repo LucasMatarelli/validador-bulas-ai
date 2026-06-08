@@ -6,31 +6,27 @@ import unicodedata
 
 # ----------------- REGRA DE PROJETO OBRIGATÓRIA -----------------
 def Sub_PreencherMapaDeVendas_Final_V29(texto):
-    """Limpa pontuação e caracteres invisíveis do PDF, garantindo precisão."""
-    # Normaliza unicode (resolve ligaturas do PDF onde 'f' e 'i' ficam grudados)
+    """Limpa pontuação que causa falsos positivos, mas preserva hífens (ex: Stevens-Johnson)."""
+    # Normaliza caracteres especiais (evita que letras grudadas no PDF enganem o sistema)
     texto = unicodedata.normalize('NFKC', texto)
-    # Remove pontuação, mas preserva hífens (ex: Stevens-Johnson)
+    # Mantém apenas letras, números e hífen
     texto_limpo = re.sub(r'[^\w\-]', '', texto)
     return texto_limpo.lower().strip()
 
 # ----------------- 1. CONFIGURAÇÃO -----------------
-st.set_page_config(page_title="Validador de Bulas Enterprise", layout="wide")
+st.set_page_config(page_title="Validador Definitivo de Bulas", layout="wide")
 
-# ----------------- 2. EXTRAÇÃO DE ALTA PRECISÃO -----------------
+# ----------------- 2. EXTRAÇÃO E TRUNCAGEM PERFEITA -----------------
 def get_words_with_coords(uploaded_file):
+    """Extrai palavras pelo centro focal (evita vazamento de negrito) e isola a Anvisa."""
     doc = fitz.open("pdf", uploaded_file.getvalue())
     words_data = []
-    stop_flag = False
 
     for p_idx, page in enumerate(doc):
-        if "esta bula foi aprovada pela anvisa em" in page.get_text().lower():
-            stop_flag = True
-
-        # sort=True força o PyMuPDF a ler na ordem humana (cima->baixo, esq->dir)
-        words = page.get_text("words", sort=True)
+        words = page.get_text("words")
         blocks = page.get_text("dict")["blocks"]
 
-        # Mapeia onde estão os negritos
+        # Mapeia onde o negrito está na página
         spans_info = []
         for b in blocks:
             if "lines" in b:
@@ -46,32 +42,65 @@ def get_words_with_coords(uploaded_file):
 
             if not clean_text: continue 
 
-            # Verifica o estilo (negrito) exato da palavra
+            # Calcula o centro da palavra para não ler a formatação da palavra vizinha
+            cx = (rect.x0 + rect.x1) / 2
+            cy = (rect.y0 + rect.y1) / 2
+            pt = fitz.Point(cx, cy)
+
             is_bold = False
             for span in spans_info:
-                if span["rect"].intersects(rect):
+                if span["rect"].contains(pt):
                     is_bold = span["is_bold"]
                     break
 
             words_data.append({
                 "page": p_idx,
                 "rect": rect,
+                "raw": raw_text,
                 "clean": clean_text,
                 "is_bold": is_bold
             })
 
-        if stop_flag: break 
-    return words_data, doc
+    # TRUNCAGEM E MARCAÇÃO AZUL DA ANVISA
+    truncate_idx = len(words_data)
+    anvisa_blue_rects = []
+    
+    for i, w in enumerate(words_data):
+        if w["clean"] == "anvisa":
+            date_found = False
+            # Busca se existe uma data nas próximas 8 palavras
+            for j in range(1, 9): 
+                if i + j < len(words_data):
+                    nums = re.sub(r'[^\d]', '', words_data[i+j]["raw"])
+                    if len(nums) >= 6: # Identifica padrão de data (ex: 31072025)
+                        truncate_idx = i + j + 1
+                        date_found = True
+                        break
+            
+            if date_found:
+                # Volta para trás para achar o começo da frase ("esta" ou "essa")
+                start_idx = i
+                for k in range(i, max(-1, i - 20), -1):
+                    if words_data[k]["clean"] in ["esta", "essa", "bula"]:
+                        start_idx = k
+                        break
+                # Coleta as coordenadas exatas da frase inteira para pintar de azul
+                for k in range(start_idx, truncate_idx):
+                    anvisa_blue_rects.append((words_data[k]["page"], words_data[k]["rect"]))
+                break
 
-# ----------------- 3. COMPARAÇÃO MATEMÁTICA E PINTURA -----------------
-def paint_rect(doc, word_data, color=(1, 0.85, 0)):
-    """Pinta o retângulo no PDF de forma segura."""
-    if word_data["rect"].is_valid and not word_data["rect"].is_empty:
+    # Retorna os dados até a data da Anvisa (ignora Dizeres Legais automaticamente)
+    return words_data[:truncate_idx], anvisa_blue_rects, doc
+
+# ----------------- 3. COMPARAÇÃO E PINTURA (SEM BLEFES) -----------------
+def paint_rect(doc, page_idx, rect, color):
+    """Aplica o marca-texto de forma segura."""
+    if rect.is_valid and not rect.is_empty:
         try:
-            page = doc[word_data["page"]]
-            a = page.add_highlight_annot(word_data["rect"])
+            page = doc[page_idx]
+            a = page.add_highlight_annot(rect)
             a.set_colors(stroke=color)
-            a.set_opacity(0.6) # Opacidade padrão, sem 'amarelo fraquinho'
+            a.set_opacity(0.6) # Opacidade forte, fim do amarelo fraquinho
             a.update()
         except: pass
 
@@ -80,59 +109,54 @@ def process_and_mark(doc_ref, doc_bel, words_ref, words_bel):
     text_bel = [w["clean"] for w in words_bel]
 
     matcher = difflib.SequenceMatcher(None, text_ref, text_bel)
+    yellow = (1, 0.85, 0)
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            # Palavras são idênticas, mas e o negrito?
+            # Textos idênticos: checa EXCLUSIVAMENTE se um tem negrito e outro não
             for k in range(i2 - i1):
                 w_ref = words_ref[i1 + k]
                 w_bel = words_bel[j1 + k]
-                # Se um tem negrito e o outro não, marca os dois com o amarelo normal
                 if w_ref["is_bold"] != w_bel["is_bold"]:
-                    paint_rect(doc_ref, w_ref)
-                    paint_rect(doc_bel, w_bel)
+                    paint_rect(doc_ref, w_ref["page"], w_ref["rect"], yellow)
+                    paint_rect(doc_bel, w_bel["page"], w_bel["rect"], yellow)
                     
-        elif tag == 'replace':
-            # Textos divergentes (Ex: Flagyl vs Flagimax)
-            for i in range(i1, i2): paint_rect(doc_ref, words_ref[i])
-            for j in range(j1, j2): paint_rect(doc_bel, words_bel[j])
+        elif tag == 'replace': # Conteúdo divergente (ex: Flagyl vs Flagimax)
+            for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
+            for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
                 
-        elif tag == 'delete':
-            # Falta na Belfar
-            for i in range(i1, i2): paint_rect(doc_ref, words_ref[i])
+        elif tag == 'delete': # Falta na Belfar
+            for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
                 
-        elif tag == 'insert':
-            # Tem a mais na Belfar
-            for j in range(j1, j2): paint_rect(doc_bel, words_bel[j])
+        elif tag == 'insert': # Sobrando na Belfar
+            for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
 
-def mark_anvisa(doc):
-    for page in doc:
-        for inst in page.search_for("esta bula foi aprovada pela anvisa em", flags=fitz.TEXT_PRESERVE_WHITESPACE):
-            try:
-                a = page.add_highlight_annot(inst)
-                a.set_colors(stroke=(0, 0.5, 1)) # Azul
-                a.set_opacity(0.5)
-                a.update()
-            except: pass
+def paint_blue_anvisa(doc, blue_rects):
+    blue = (0, 0.5, 1)
+    for page_idx, rect in blue_rects:
+        paint_rect(doc, page_idx, rect, blue)
 
 # ----------------- 4. UI -----------------
-st.title("💊 Validador Enterprise de Bulas")
+st.title("💊 Validador Definitivo de Bulas")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf"])
 f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf"])
 
-if st.button("🚀 Processar Auditoria"):
+if st.button("🚀 Processar Auditoria Exata"):
     if not (f1 and f2):
         st.warning("Por favor, envie os dois arquivos PDF.")
     else:
-        with st.spinner("Lendo camada binária e comparando dados..."):
-            w_ref, doc_ref = get_words_with_coords(f1)
-            w_bel, doc_bel = get_words_with_coords(f2)
+        with st.spinner("Analisando caracteres, formatação e isolando Anvisa..."):
+            w_ref, blue_ref, doc_ref = get_words_with_coords(f1)
+            w_bel, blue_bel, doc_bel = get_words_with_coords(f2)
             
+            # Compara e pinta as divergências reais
             process_and_mark(doc_ref, doc_bel, w_ref, w_bel)
-            mark_anvisa(doc_ref)
-            mark_anvisa(doc_bel)
+            
+            # Pinta a data da Anvisa de azul
+            paint_blue_anvisa(doc_ref, blue_ref)
+            paint_blue_anvisa(doc_bel, blue_bel)
             
             max_pag = max(len(doc_ref), len(doc_bel))
             for i in range(max_pag):
