@@ -2,39 +2,35 @@ import streamlit as st
 import fitz
 import difflib
 import re
+import unicodedata
 
 # ----------------- REGRA DE PROJETO OBRIGATÓRIA -----------------
 def Sub_PreencherMapaDeVendas_Final_V29(texto):
-    """Limpa pontuação que causa falsos positivos, mas preserva hífens (ex: Stevens-Johnson)"""
-    # Remove tudo que não for letra, número ou hífen
+    """Limpa pontuação e caracteres invisíveis do PDF, garantindo precisão."""
+    # Normaliza unicode (resolve ligaturas do PDF onde 'f' e 'i' ficam grudados)
+    texto = unicodedata.normalize('NFKC', texto)
+    # Remove pontuação, mas preserva hífens (ex: Stevens-Johnson)
     texto_limpo = re.sub(r'[^\w\-]', '', texto)
     return texto_limpo.lower().strip()
 
-# Lista de marcas/termos esperados que NÃO devem ser marcados como divergência
-IGNORE_LIST = [
-    'sanofi', 'medley', 'belfar', 'flagyl', 'flagimax', 'agimax', 
-    'urotrobel', 'norfloxacino', 'ltda', 'farmacêutica', 'opella', 'healthcare', 'brazil'
-]
-
 # ----------------- 1. CONFIGURAÇÃO -----------------
-st.set_page_config(page_title="Validador de Bulas Definitivo", layout="wide")
+st.set_page_config(page_title="Validador de Bulas Enterprise", layout="wide")
 
-# ----------------- 2. EXTRAÇÃO EXATA -----------------
+# ----------------- 2. EXTRAÇÃO DE ALTA PRECISÃO -----------------
 def get_words_with_coords(uploaded_file):
-    """Extrai palavra por palavra, guardando a coordenada e o status de negrito."""
     doc = fitz.open("pdf", uploaded_file.getvalue())
     words_data = []
     stop_flag = False
 
     for p_idx, page in enumerate(doc):
-        # Truncagem exata na Anvisa
         if "esta bula foi aprovada pela anvisa em" in page.get_text().lower():
             stop_flag = True
 
-        words = page.get_text("words")
+        # sort=True força o PyMuPDF a ler na ordem humana (cima->baixo, esq->dir)
+        words = page.get_text("words", sort=True)
         blocks = page.get_text("dict")["blocks"]
 
-        # Pré-calcula os blocos de negrito para não perder performance
+        # Mapeia onde estão os negritos
         spans_info = []
         for b in blocks:
             if "lines" in b:
@@ -48,10 +44,9 @@ def get_words_with_coords(uploaded_file):
             raw_text = w[4]
             clean_text = Sub_PreencherMapaDeVendas_Final_V29(raw_text)
 
-            # Pula símbolos que ficaram vazios após a limpeza (ex: vírgulas soltas)
             if not clean_text: continue 
 
-            # Verifica se a palavra está dentro de um bloco em negrito
+            # Verifica o estilo (negrito) exato da palavra
             is_bold = False
             for span in spans_info:
                 if span["rect"].intersects(rect):
@@ -61,28 +56,26 @@ def get_words_with_coords(uploaded_file):
             words_data.append({
                 "page": p_idx,
                 "rect": rect,
-                "raw": raw_text,
                 "clean": clean_text,
                 "is_bold": is_bold
             })
 
-        if stop_flag: break # Para de ler o documento após a página da Anvisa
+        if stop_flag: break 
     return words_data, doc
 
-# ----------------- 3. COMPARAÇÃO E PINTURA -----------------
-def paint_rect(doc, word_data):
-    """Função segura para pintar o retângulo no PDF."""
+# ----------------- 3. COMPARAÇÃO MATEMÁTICA E PINTURA -----------------
+def paint_rect(doc, word_data, color=(1, 0.85, 0)):
+    """Pinta o retângulo no PDF de forma segura."""
     if word_data["rect"].is_valid and not word_data["rect"].is_empty:
         try:
             page = doc[word_data["page"]]
             a = page.add_highlight_annot(word_data["rect"])
-            a.set_colors(stroke=(1, 0.85, 0)) # Amarelo exato
-            a.set_opacity(0.6)
+            a.set_colors(stroke=color)
+            a.set_opacity(0.6) # Opacidade padrão, sem 'amarelo fraquinho'
             a.update()
         except: pass
 
 def process_and_mark(doc_ref, doc_bel, words_ref, words_bel):
-    """Compara as bulas e marca apenas as divergências reais."""
     text_ref = [w["clean"] for w in words_ref]
     text_bel = [w["clean"] for w in words_bel]
 
@@ -90,52 +83,50 @@ def process_and_mark(doc_ref, doc_bel, words_ref, words_bel):
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            # Se o texto é igual, verifica o NEGRITO
+            # Palavras são idênticas, mas e o negrito?
             for k in range(i2 - i1):
                 w_ref = words_ref[i1 + k]
                 w_bel = words_bel[j1 + k]
-                # Só pinta se um for True e o outro False
+                # Se um tem negrito e o outro não, marca os dois com o amarelo normal
                 if w_ref["is_bold"] != w_bel["is_bold"]:
                     paint_rect(doc_ref, w_ref)
                     paint_rect(doc_bel, w_bel)
                     
         elif tag == 'replace':
-            for i in range(i1, i2):
-                if words_ref[i]["clean"] not in IGNORE_LIST: paint_rect(doc_ref, words_ref[i])
-            for j in range(j1, j2):
-                if words_bel[j]["clean"] not in IGNORE_LIST: paint_rect(doc_bel, words_bel[j])
+            # Textos divergentes (Ex: Flagyl vs Flagimax)
+            for i in range(i1, i2): paint_rect(doc_ref, words_ref[i])
+            for j in range(j1, j2): paint_rect(doc_bel, words_bel[j])
                 
-        elif tag == 'delete': # Falta na Belfar
-            for i in range(i1, i2):
-                if words_ref[i]["clean"] not in IGNORE_LIST: paint_rect(doc_ref, words_ref[i])
+        elif tag == 'delete':
+            # Falta na Belfar
+            for i in range(i1, i2): paint_rect(doc_ref, words_ref[i])
                 
-        elif tag == 'insert': # Sobrando na Belfar
-            for j in range(j1, j2):
-                if words_bel[j]["clean"] not in IGNORE_LIST: paint_rect(doc_bel, words_bel[j])
+        elif tag == 'insert':
+            # Tem a mais na Belfar
+            for j in range(j1, j2): paint_rect(doc_bel, words_bel[j])
 
 def mark_anvisa(doc):
-    """Pinta a frase da Anvisa de azul."""
     for page in doc:
         for inst in page.search_for("esta bula foi aprovada pela anvisa em", flags=fitz.TEXT_PRESERVE_WHITESPACE):
             try:
                 a = page.add_highlight_annot(inst)
                 a.set_colors(stroke=(0, 0.5, 1)) # Azul
-                a.set_opacity(0.4)
+                a.set_opacity(0.5)
                 a.update()
             except: pass
 
-# ----------------- 4. UI PRINCIPAL -----------------
-st.title("💊 Validador Definitivo de Bulas")
+# ----------------- 4. UI -----------------
+st.title("💊 Validador Enterprise de Bulas")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf"])
 f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf"])
 
-if st.button("🚀 Validar Divergências"):
+if st.button("🚀 Processar Auditoria"):
     if not (f1 and f2):
         st.warning("Por favor, envie os dois arquivos PDF.")
     else:
-        with st.spinner("Realizando comparação exata..."):
+        with st.spinner("Lendo camada binária e comparando dados..."):
             w_ref, doc_ref = get_words_with_coords(f1)
             w_bel, doc_bel = get_words_with_coords(f2)
             
