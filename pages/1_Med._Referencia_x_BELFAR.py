@@ -6,27 +6,26 @@ import unicodedata
 
 # ----------------- REGRA DE PROJETO OBRIGATÓRIA -----------------
 def Sub_PreencherMapaDeVendas_Final_V29(texto):
-    """Limpa pontuação que causa falsos positivos, mas preserva hífens (ex: Stevens-Johnson)."""
-    # Normaliza caracteres especiais (evita que letras grudadas no PDF enganem o sistema)
+    """Limpa pontuação e caracteres invisíveis do PDF, garantindo precisão matemática."""
     texto = unicodedata.normalize('NFKC', texto)
-    # Mantém apenas letras, números e hífen
+    # Removemos pontuação, mas mantemos letras, números e hífens essenciais
     texto_limpo = re.sub(r'[^\w\-]', '', texto)
     return texto_limpo.lower().strip()
 
 # ----------------- 1. CONFIGURAÇÃO -----------------
-st.set_page_config(page_title="Validador Definitivo de Bulas", layout="wide")
+st.set_page_config(page_title="Validador de Bulas Enterprise", layout="wide")
 
-# ----------------- 2. EXTRAÇÃO E TRUNCAGEM PERFEITA -----------------
+# ----------------- 2. EXTRAÇÃO DE ALTA PRECISÃO -----------------
 def get_words_with_coords(uploaded_file):
-    """Extrai palavras pelo centro focal (evita vazamento de negrito) e isola a Anvisa."""
     doc = fitz.open("pdf", uploaded_file.getvalue())
     words_data = []
 
     for p_idx, page in enumerate(doc):
-        words = page.get_text("words")
+        # sort=True força a leitura na ordem humana (evita embaralhamento de layout)
+        words = page.get_text("words", sort=True)
         blocks = page.get_text("dict")["blocks"]
 
-        # Mapeia onde o negrito está na página
+        # Mapeia cirurgicamente onde estão os negritos
         spans_info = []
         for b in blocks:
             if "lines" in b:
@@ -42,14 +41,12 @@ def get_words_with_coords(uploaded_file):
 
             if not clean_text: continue 
 
-            # Calcula o centro da palavra para não ler a formatação da palavra vizinha
-            cx = (rect.x0 + rect.x1) / 2
-            cy = (rect.y0 + rect.y1) / 2
-            pt = fitz.Point(cx, cy)
-
+            # Lógica de intersecção de área matemática (mata o vazamento de negrito)
             is_bold = False
             for span in spans_info:
-                if span["rect"].contains(pt):
+                intersect = span["rect"] & rect
+                # Se pelo menos 40% da palavra está dentro do bloco de negrito original
+                if intersect.get_area() > rect.get_area() * 0.4:
                     is_bold = span["is_bold"]
                     break
 
@@ -63,44 +60,49 @@ def get_words_with_coords(uploaded_file):
 
     # TRUNCAGEM E MARCAÇÃO AZUL DA ANVISA
     truncate_idx = len(words_data)
-    anvisa_blue_rects = []
+    blue_rects = []
     
-    for i, w in enumerate(words_data):
-        if w["clean"] == "anvisa":
-            date_found = False
-            # Busca se existe uma data nas próximas 8 palavras
-            for j in range(1, 9): 
-                if i + j < len(words_data):
-                    nums = re.sub(r'[^\d]', '', words_data[i+j]["raw"])
-                    if len(nums) >= 6: # Identifica padrão de data (ex: 31072025)
-                        truncate_idx = i + j + 1
-                        date_found = True
-                        break
+    for i in range(len(words_data) - 4):
+        # Radar âncora: "aprovada pela anvisa em"
+        if (words_data[i]["clean"] == "aprovada" and 
+            words_data[i+1]["clean"] == "pela" and 
+            words_data[i+2]["clean"] == "anvisa" and 
+            words_data[i+3]["clean"] == "em"):
             
-            if date_found:
-                # Volta para trás para achar o começo da frase ("esta" ou "essa")
-                start_idx = i
-                for k in range(i, max(-1, i - 20), -1):
-                    if words_data[k]["clean"] in ["esta", "essa", "bula"]:
-                        start_idx = k
-                        break
-                # Coleta as coordenadas exatas da frase inteira para pintar de azul
-                for k in range(start_idx, truncate_idx):
-                    anvisa_blue_rects.append((words_data[k]["page"], words_data[k]["rect"]))
-                break
+            # Retrocede para achar o sujeito da frase ("esta" ou "essa")
+            start_idx = i
+            for k in range(i, max(-1, i - 15), -1):
+                if words_data[k]["clean"] in ["esta", "essa"]:
+                    start_idx = k
+                    break
+            
+            # Avança para capturar a data final (ex: 2025)
+            end_idx = i + 4
+            for k in range(i + 4, min(len(words_data), i + 10)):
+                end_idx = k
+                if re.search(r'\d{4}', words_data[k]["raw"]):
+                    end_idx = k + 1
+                    break
+                    
+            truncate_idx = start_idx # Corta o documento EXATAMENTE antes da Anvisa
+            
+            # Salva os retângulos da frase final para pintar de azul
+            for k in range(start_idx, end_idx):
+                blue_rects.append((words_data[k]["page"], words_data[k]["rect"]))
+            break
 
-    # Retorna os dados até a data da Anvisa (ignora Dizeres Legais automaticamente)
-    return words_data[:truncate_idx], anvisa_blue_rects, doc
+    # Retorna os dados cortando o jurídiques do final
+    return words_data[:truncate_idx], blue_rects, doc
 
-# ----------------- 3. COMPARAÇÃO E PINTURA (SEM BLEFES) -----------------
-def paint_rect(doc, page_idx, rect, color):
-    """Aplica o marca-texto de forma segura."""
+# ----------------- 3. COMPARAÇÃO MATEMÁTICA E PINTURA -----------------
+def paint_rect(doc, page_idx, rect, color, opacity=0.7):
+    """Pinta o retângulo no PDF com opacidade totalmente sólida."""
     if rect.is_valid and not rect.is_empty:
         try:
             page = doc[page_idx]
             a = page.add_highlight_annot(rect)
             a.set_colors(stroke=color)
-            a.set_opacity(0.6) # Opacidade forte, fim do amarelo fraquinho
+            a.set_opacity(opacity)
             a.update()
         except: pass
 
@@ -109,35 +111,50 @@ def process_and_mark(doc_ref, doc_bel, words_ref, words_bel):
     text_bel = [w["clean"] for w in words_bel]
 
     matcher = difflib.SequenceMatcher(None, text_ref, text_bel)
-    yellow = (1, 0.85, 0)
+    yellow = (1, 0.9, 0) # Amarelo vibrante e profissional
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            # Textos idênticos: checa EXCLUSIVAMENTE se um tem negrito e outro não
+            # Textos idênticos: checa EXCLUSIVAMENTE se o negrito divergiu
             for k in range(i2 - i1):
                 w_ref = words_ref[i1 + k]
                 w_bel = words_bel[j1 + k]
+                # Se apenas um tem formatação de negrito, é divergência
                 if w_ref["is_bold"] != w_bel["is_bold"]:
                     paint_rect(doc_ref, w_ref["page"], w_ref["rect"], yellow)
                     paint_rect(doc_bel, w_bel["page"], w_bel["rect"], yellow)
                     
-        elif tag == 'replace': # Conteúdo divergente (ex: Flagyl vs Flagimax)
-            for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
-            for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
+        elif tag == 'replace':
+            # Proteção contra palavras divididas por espaços ocultos no PDF (ex: Stevens- Johnson)
+            ref_str = "".join([words_ref[x]["clean"] for x in range(i1, i2)])
+            bel_str = "".join([words_bel[x]["clean"] for x in range(j1, j2)])
+            
+            if ref_str == bel_str:
+                # O texto é matematicamente idêntico. Ignora a divergência de texto.
+                # Resta verificar se houve alguma alteração de negrito no bloco.
+                ref_bold = any(words_ref[x]["is_bold"] for x in range(i1, i2))
+                bel_bold = any(words_bel[x]["is_bold"] for x in range(j1, j2))
+                if ref_bold != bel_bold:
+                    for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
+                    for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
+            else:
+                # Conteúdo realmente divergente (ex: Flagyl virou Flagimax)
+                for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
+                for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
                 
-        elif tag == 'delete': # Falta na Belfar
+        elif tag == 'delete': # Faltou conteúdo na Belfar
             for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
                 
-        elif tag == 'insert': # Sobrando na Belfar
+        elif tag == 'insert': # Sobrou conteúdo novo na Belfar
             for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
 
 def paint_blue_anvisa(doc, blue_rects):
     blue = (0, 0.5, 1)
     for page_idx, rect in blue_rects:
-        paint_rect(doc, page_idx, rect, blue)
+        paint_rect(doc, page_idx, rect, blue, opacity=0.5)
 
 # ----------------- 4. UI -----------------
-st.title("💊 Validador Definitivo de Bulas")
+st.title("💊 Validador Enterprise de Bulas")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf"])
