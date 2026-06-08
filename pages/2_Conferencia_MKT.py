@@ -1,83 +1,80 @@
 import streamlit as st
-import pdfplumber
-import difflib
+import fitz
+import re
+import unicodedata
 import pandas as pd
+from difflib import SequenceMatcher
 
-# ----------------- 1. CONFIGURAÇÃO -----------------
-st.set_page_config(page_title="Validador Profissional Belfar", layout="wide")
+# ----------------- FUNÇÕES DE APOIO -----------------
+def clean_text(text):
+    text = unicodedata.normalize('NFKD', text)
+    return re.sub(r'[^\w\-]', '', text).lower().strip()
 
-def extract_structured_text(pdf_file):
-    """Extrai texto preservando a estrutura de parágrafos (Layout Analysis)."""
-    text_data = []
-    with pdfplumber.open(pdf_file) as pdf:
-        for i, page in enumerate(pdf.pages):
-            # extrair_texto inteligente: mantém parágrafos e ignora posição visual rígida
-            text = page.extract_text(layout=True)
-            if text:
-                # Quebra em linhas para análise estrutural
-                lines = text.split('\n')
-                for line in lines:
-                    if line.strip():
-                        text_data.append({'page': i+1, 'content': line.strip()})
-    return text_data
+def render_page_as_image(doc, page_num):
+    """Converte uma página de PDF em imagem (pixmap) para exibição."""
+    page = doc.load_page(page_num)
+    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # Qualidade de visualização
+    return pix.tobytes("png")
 
-# ----------------- 2. LÓGICA DE AUDITORIA -----------------
-def compare_bula(ref_data, bel_data):
-    ref_lines = [d['content'] for d in ref_data]
-    bel_lines = [d['content'] for d in bel_data]
+def extract_text(doc):
+    """Extrai texto estruturado para comparação."""
+    full_text = []
+    for p in doc:
+        text = p.get_text("text", sort=True)
+        for w in text.split():
+            cleaned = clean_text(w)
+            if cleaned: full_text.append(cleaned)
+    return full_text
+
+# ----------------- UI DO STREAMLIT -----------------
+st.set_page_config(layout="wide")
+st.title("🛡️ Validador Profissional: Visualizador Lado a Lado")
+
+c1, c2 = st.columns(2)
+f1 = c1.file_uploader("Bula Referência (PDF)", type=["pdf"])
+f2 = c2.file_uploader("Bula BELFAR / MKT (PDF)", type=["pdf"])
+
+if f1 and f2:
+    doc_ref = fitz.open("pdf", f1.getvalue())
+    doc_bel = fitz.open("pdf", f2.getvalue())
     
-    matcher = difflib.SequenceMatcher(None, ref_lines, bel_lines)
-    report = []
+    # Navegação de páginas
+    max_pages = max(len(doc_ref), len(doc_bel))
+    page_select = st.slider("Escolha a página para conferência visual:", 0, max_pages - 1, 0)
     
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == 'equal': continue
-        
-        # Divergência encontrada
-        report.append({
-            "Tipo": "DIVERGÊNCIA" if tag == 'replace' else "FALTA/SOBRA",
-            "Referência": "\n".join(ref_lines[i1:i2]),
-            "BELFAR": "\n".join(bel_lines[j1:j2]),
-            "Página": f"{ref_data[i1]['page'] if i1 < len(ref_data) else 'N/A'}"
-        })
-    return report
-
-# ----------------- 3. INTERFACE PROFISSIONAL -----------------
-st.title("🛡️ Validador de Bulas - Auditoria Estrutural")
-
-col1, col2 = st.columns(2)
-f1 = col1.file_uploader("Bula Referência (PDF)", type=["pdf"])
-f2 = col2.file_uploader("Bula BELFAR (PDF)", type=["pdf"])
-
-if st.button("🚀 Iniciar Auditoria de Conteúdo"):
-    if f1 and f2:
-        with st.spinner("Analisando estrutura e colunas..."):
-            try:
-                ref_text = extract_structured_text(f1)
-                bel_text = extract_structured_text(f2)
-                
-                divergencias = compare_bula(ref_text, bel_text)
-                
-                if not divergencias:
-                    st.success("✅ Bulas idênticas! Nenhuma divergência encontrada.")
-                else:
-                    st.warning(f"⚠️ Encontradas {len(divergencias)} divergências estruturais.")
-                    df = pd.DataFrame(divergencias)
-                    st.table(df) # Tabela de auditoria profissional
-                    
-            except Exception as e:
-                st.error(f"Erro na auditoria: {e}")
-    else:
-        st.info("Por favor, suba os dois arquivos para começar.")
-
-# ----------------- 4. MANUAL DE USO -----------------
-with st.expander("ℹ️ Como funciona este modo?"):
-    st.write("""
-    Este script não tenta pintar o PDF (o que causava erros). 
-    Ele faz uma **Análise Estrutural**:
-    1. Lê a Bula independente de colunas (1, 2 ou 3).
-    2. Identifica o parágrafo lógico.
-    3. Compara o texto bruto entre a Referência e a Belfar.
-    4. Gera um relatório de divergência (Excel/Tabela).
+    st.divider()
     
-    Isso é o que sistemas como o TVT fazem antes de qualquer verificação visual.
-    """)
+    # Exibição Lado a Lado
+    col_vis1, col_vis2 = st.columns(2)
+    with col_vis1:
+        st.subheader("Referência")
+        if page_select < len(doc_ref):
+            st.image(render_page_as_image(doc_ref, page_select), use_container_width=True)
+    with col_vis2:
+        st.subheader("BELFAR / MKT")
+        if page_select < len(doc_bel):
+            st.image(render_page_as_image(doc_bel, page_select), use_container_width=True)
+            
+    st.divider()
+    
+    # Auditoria de Conteúdo abaixo
+    if st.button("🚀 Executar Auditoria de Texto (Sem pintar PDF)"):
+        with st.spinner("Comparando conteúdos..."):
+            t1 = extract_text(doc_ref)
+            t2 = extract_text(doc_bel)
+            matcher = SequenceMatcher(None, t1, t2)
+            
+            divergencias = []
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                if tag != 'equal':
+                    divergencias.append({
+                        "Tipo": tag.upper(),
+                        "Referência": " ".join(t1[i1:i2]),
+                        "BELFAR": " ".join(t2[j1:j2])
+                    })
+            
+            if divergencias:
+                st.warning(f"Foram encontradas {len(divergencias)} divergências de texto:")
+                st.table(pd.DataFrame(divergencias))
+            else:
+                st.success("✅ Textos idênticos!")
