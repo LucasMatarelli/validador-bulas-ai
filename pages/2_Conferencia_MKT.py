@@ -1,70 +1,95 @@
 import streamlit as st
-import re
 import fitz
+import re
+import unicodedata
 from difflib import SequenceMatcher
-import pandas as pd
 
-# Tópicos padronizados da ANVISA para ancoragem
-TOPICOS = [
-    r"1\. PARA QUE ESTE MEDICAMENTO É INDICADO",
-    r"2\. COMO ESTE MEDICAMENTO FUNCIONA",
-    r"3\. QUANDO NÃO DEVO USAR ESTE MEDICAMENTO",
-    r"4\. O QUE DEVO SABER ANTES DE USAR ESTE MEDICAMENTO",
-    r"5\. ONDE, COMO E POR QUANTO TEMPO POSSO GUARDAR ESTE MEDICAMENTO",
-    r"6\. COMO DEVO USAR ESTE MEDICAMENTO",
-    r"7\. O QUE DEVO FAZER QUANDO EU ME ESQUECER DE USAR ESTE MEDICAMENTO",
-    r"8\. QUAIS OS MALES QUE ESTE MEDICAMENTO PODE ME CAUSAR",
-    r"9\. O QUE FAZER SE ALGUÉM USAR UMA QUANTIDADE MAIOR"
-]
+st.set_page_config(page_title="Validador Belfar Side-by-Side", layout="wide")
 
-def extract_sections(pdf_file):
-    """Fatia o PDF em um dicionário de tópicos."""
-    doc = fitz.open("pdf", pdf_file.getvalue())
-    full_text = ""
-    for page in doc:
-        full_text += page.get_text("text") + " "
+# ----------------- FUNÇÕES DE APOIO -----------------
+def clean_text(text):
+    text = unicodedata.normalize('NFKD', text)
+    return re.sub(r'[^\w\-]', '', text).lower().strip()
+
+# ----------------- MOTOR DE AUDITORIA (LOGIC) -----------------
+def get_divergences(doc_ref, doc_bel):
+    """Retorna lista de blocos divergentes sem tocar no PDF original."""
+    def get_words(doc):
+        data = []
+        for p_idx, page in enumerate(doc):
+            for w in page.get_text("words"):
+                data.append({"page": p_idx, "rect": fitz.Rect(w[:4]), "clean": clean_text(w[4])})
+        return data
+
+    words_ref = get_words(doc_ref)
+    words_bel = get_words(doc_bel)
     
-    sections = {}
+    text_ref = [w["clean"] for w in words_ref]
+    text_bel = [w["clean"] for w in words_bel]
     
-    # Busca cada tópico no texto
-    for i in range(len(TOPICOS)):
-        pattern = TOPICOS[i]
-        # Regex para capturar tudo entre o tópico atual e o próximo
-        next_pattern = TOPICOS[i+1] if i+1 < len(TOPICOS) else r"DIZERES LEGAIS"
-        regex = f"{pattern}(.*?){next_pattern}"
-        match = re.search(regex, full_text, re.DOTALL | re.IGNORECASE)
+    matcher = SequenceMatcher(None, text_ref, text_bel)
+    divergentes = []
+    
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != 'equal':
+            divergentes.extend(words_ref[i1:i2])
+            divergentes.extend(words_bel[j1:j2])
+    return divergentes
+
+# ----------------- MOTOR DE RENDERIZAÇÃO (VISUAL) -----------------
+def render_page_with_marks(doc, page_num, divergent_words):
+    """Renderiza a página como imagem com marcações amarelas."""
+    if page_num >= len(doc): return None
+    
+    page = doc.load_page(page_num)
+    
+    # Adiciona anotações na página em memória temporária
+    for word in divergent_words:
+        if word['page'] == page_num:
+            annot = page.add_highlight_annot(word['rect'])
+            annot.set_colors(stroke=(1, 1, 0)) # Amarelo (R,G,B)
+            annot.set_opacity(0.8)             # Opacidade alta (sólido)
+            annot.update()
+            
+    # Gera a imagem
+    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+    img_bytes = pix.tobytes("png")
+    
+    # Limpa as anotações para não corromper o documento na próxima renderização
+    for annot in page.annots():
+        page.delete_annot(annot)
         
-        if match:
-            sections[pattern.replace(r"\\.", ".")] = match.group(1).strip()
-    
-    return sections
+    return img_bytes
 
-# UI de Auditoria
-st.title("🛡️ Validador de Estrutura e Conteúdo")
-c1, c2 = st.columns(2)
-f1 = c1.file_uploader("Referência", type=["pdf"])
-f2 = c2.file_uploader("BELFAR", type=["pdf"])
+# ----------------- UI -----------------
+st.title("🛡️ Auditoria de Bulas: Comparação Lado a Lado")
 
-if st.button("🚀 Auditar Tópicos e Conteúdo"):
-    s1 = extract_sections(f1)
-    s2 = extract_sections(f2)
-    
-    # 1. Auditoria de Estrutura
-    st.subheader("📊 Auditoria de Estrutura")
-    missing_in_bel = [t for t in s1.keys() if t not in s2.keys()]
-    
-    if missing_in_bel:
-        st.error(f"Tópicos faltando na BELFAR: {missing_in_bel}")
-    else:
-        st.success("Estrutura de tópicos validada!")
+col1, col2 = st.columns(2)
+f1 = col1.file_uploader("📜 Bula Referência", type=["pdf"])
+f2 = col2.file_uploader("📜 Bula BELFAR", type=["pdf"])
 
-    # 2. Auditoria de Conteúdo (Dentro de cada tópico)
-    st.subheader("🔍 Divergências de Conteúdo")
-    for topic, content in s1.items():
-        if topic in s2:
-            # Compara apenas o conteúdo daquele tópico específico
-            matcher = SequenceMatcher(None, content, s2[topic])
-            if matcher.ratio() < 0.9: # Se a similaridade for baixa
-                st.warning(f"Divergência detectada em: {topic}")
-                # Exibe resumo da divergência
-                st.write(f"Similaridade: {matcher.ratio():.2f}")
+if f1 and f2:
+    doc_ref = fitz.open("pdf", f1.getvalue())
+    doc_bel = fitz.open("pdf", f2.getvalue())
+    
+    if st.button("🚀 Iniciar Auditoria Visual"):
+        with st.spinner("Analisando divergências..."):
+            divs = get_divergences(doc_ref, doc_bel)
+            st.session_state['divs'] = divs
+            st.session_state['processed'] = True
+
+    if st.session_state.get('processed'):
+        max_pag = max(len(doc_ref), len(doc_bel))
+        st.write("### Auditoria Visual (Role para comparar)")
+        
+        for i in range(max_pag):
+            st.divider()
+            c_r, c_b = st.columns(2)
+            
+            with c_r:
+                st.caption(f"Referência - Página {i+1}")
+                st.image(render_page_with_marks(doc_ref, i, st.session_state['divs']), use_container_width=True)
+            
+            with c_b:
+                st.caption(f"BELFAR - Página {i+1}")
+                st.image(render_page_with_marks(doc_bel, i, st.session_state['divs']), use_container_width=True)
