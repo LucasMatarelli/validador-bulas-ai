@@ -4,81 +4,90 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
-# ----------------- CONFIGURAÇÃO -----------------
-st.set_page_config(page_title="Validador Professional Belfar", layout="wide")
+# ----------------- CONFIGURAÇÕES INICIAIS -----------------
+st.set_page_config(page_title="Auditoria Vertical Belfar", layout="wide")
 
-# ----------------- LÓGICA DE LIMPEZA -----------------
 def clean_text(text):
     text = unicodedata.normalize('NFKD', text)
     return re.sub(r'[^\w\-]', '', text).lower().strip()
 
-# ----------------- MOTOR DE COMPARAÇÃO -----------------
-def get_divergences(doc_ref, doc_bel):
-    """Retorna uma lista de palavras que divergem entre os dois documentos."""
-    # Extrai todo o texto para comparação lógica (ignora colunas/layout)
-    def extract_words(doc):
-        words = []
-        for p in doc:
-            for w in p.get_text("words"):
-                words.append({"page": p.number, "rect": fitz.Rect(w[:4]), "text": clean_text(w[4])})
-        return words
+# ----------------- MOTOR DE EXTRAÇÃO E COMPARAÇÃO -----------------
+def run_audit(doc_ref, doc_bel):
+    """Extrai palavras e encontra divergências sem renderizar nada ainda."""
+    def get_words(doc):
+        data = []
+        for p_idx, page in enumerate(doc):
+            for w in page.get_text("words"):
+                data.append({"page": p_idx, "rect": fitz.Rect(w[:4]), "clean": clean_text(w[4])})
+        return data
 
-    words_ref = extract_words(doc_ref)
-    words_bel = extract_words(doc_bel)
+    words_ref = get_words(doc_ref)
+    words_bel = get_words(doc_bel)
     
-    text_ref = [w["text"] for w in words_ref]
-    text_bel = [w["text"] for w in words_bel]
+    # Compara texto bruto
+    text_ref = [w["clean"] for w in words_ref]
+    text_bel = [w["clean"] for w in words_bel]
     
     matcher = SequenceMatcher(None, text_ref, text_bel)
     divergentes = []
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag != 'equal':
-            # Se houve divergência, marcamos as palavras da referência e da belfar
             divergentes.extend(words_ref[i1:i2])
             divergentes.extend(words_bel[j1:j2])
+            
     return divergentes, words_ref, words_bel
 
-# ----------------- MOTOR DE VISUALIZAÇÃO (O SEGREDO) -----------------
-def get_page_image_with_highlights(doc, page_num, divergent_words):
-    """Desenha o amarelo APENAS na imagem, nunca no PDF original."""
+# ----------------- MOTOR DE RENDERIZAÇÃO VERTICAL -----------------
+def get_clean_page_image(doc, page_num, divergent_words):
+    """Gera imagem da página com amarelo, sem corromper o PDF."""
     page = doc.load_page(page_num)
-    # Criamos uma cópia temporária da página para anotar
-    # Anotamos, renderizamos a imagem e descartamos a anotação
+    
+    # Pinta o amarelo temporariamente na página
     for word in divergent_words:
         if word['page'] == page_num:
             page.add_highlight_annot(word['rect'])
             
+    # Gera a imagem
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-    img_data = pix.tobytes("png")
-    # Limpamos as anotações após gerar a imagem para não corromper o doc
+    img_bytes = pix.tobytes("png")
+    
+    # Limpa as anotações imediatamente para evitar erros de memória
     for annot in page.annots():
         page.delete_annot(annot)
-    return img_data
+        
+    return img_bytes
 
 # ----------------- INTERFACE -----------------
-st.title("🛡️ Validador de Bulas Enterprise - Motor de Auditoria")
+st.title("🛡️ Auditoria de Bulas - Fluxo Vertical")
+c1, c2 = st.columns(2)
+f1 = c1.file_uploader("Bula Referência", type=["pdf"])
+f2 = c2.file_uploader("Bula BELFAR", type=["pdf"])
 
-f1, f2 = st.columns(2)
-file_ref = f1.file_uploader("Bula Referência", type=["pdf"])
-file_bel = f2.file_uploader("Bula BELFAR", type=["pdf"])
-
-if file_ref and file_bel:
-    doc_ref = fitz.open("pdf", file_ref.getvalue())
-    doc_bel = fitz.open("pdf", file_bel.getvalue())
+if f1 and f2:
+    doc_ref = fitz.open("pdf", f1.getvalue())
+    doc_bel = fitz.open("pdf", f2.getvalue())
     
-    if st.button("🚀 Processar Auditoria"):
-        with st.spinner("Auditando..."):
-            divs, _, _ = get_divergences(doc_ref, doc_bel)
-            st.session_state['divergentes'] = divs
-            st.success("Auditoria concluída! Navegue pelas páginas abaixo.")
+    if st.button("🚀 Processar"):
+        with st.spinner("Analisando todas as páginas..."):
+            divs, _, _ = run_audit(doc_ref, doc_bel)
+            st.session_state['divs'] = divs
+            st.session_state['processed'] = True
 
-if 'divergentes' in st.session_state:
-    max_pag = max(len(doc_ref), len(doc_bel))
-    page_select = st.slider("Página:", 0, max_pag - 1, 0)
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        st.image(get_page_image_with_highlights(doc_ref, page_select, st.session_state['divergentes']), use_container_width=True)
-    with c2:
-        st.image(get_page_image_with_highlights(doc_bel, page_select, st.session_state['divergentes']), use_container_width=True)
+    if st.session_state.get('processed'):
+        st.subheader("Visualização Vertical")
+        st.info("Role para baixo para conferir os documentos lado a lado.")
+        
+        max_pag = max(len(doc_ref), len(doc_bel))
+        
+        # Loop para mostrar uma página embaixo da outra
+        for i in range(max_pag):
+            st.markdown(f"--- ### Página {i+1}")
+            c_left, c_right = st.columns(2)
+            
+            with c_left:
+                if i < len(doc_ref):
+                    st.image(get_clean_page_image(doc_ref, i, st.session_state['divs']), use_container_width=True)
+            with c_right:
+                if i < len(doc_bel):
+                    st.image(get_clean_page_image(doc_bel, i, st.session_state['divs']), use_container_width=True)
