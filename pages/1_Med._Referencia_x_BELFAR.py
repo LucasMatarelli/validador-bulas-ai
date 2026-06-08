@@ -95,7 +95,7 @@ def get_words_with_coords(uploaded_file):
     return words_data[:truncate_idx], blue_rects, doc
 
 # ----------------- 3. COMPARAÇÃO MATEMÁTICA E PINTURA -----------------
-def paint_rect(doc, page_idx, rect, color, opacity=0.7):
+def paint_rect(doc, page_idx, rect, color, opacity=0.9):
     """Pinta o retângulo no PDF com opacidade totalmente sólida."""
     if rect.is_valid and not rect.is_empty:
         try:
@@ -111,7 +111,7 @@ def process_and_mark(doc_ref, doc_bel, words_ref, words_bel):
     text_bel = [w["clean"] for w in words_bel]
 
     matcher = difflib.SequenceMatcher(None, text_ref, text_bel)
-    yellow = (1, 0.9, 0) # Amarelo vibrante e profissional
+    yellow = (1, 1, 0) # Amarelo vibrante e profissional
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
