@@ -111,45 +111,27 @@ def process_and_mark(doc_ref, doc_bel, words_ref, words_bel):
     text_bel = [w["clean"] for w in words_bel]
 
     matcher = difflib.SequenceMatcher(None, text_ref, text_bel)
-    yellow = (1, 1, 0) # Amarelo vibrante
+    yellow = (1, 0.9, 0) # Amarelo profissional
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        # DEBUG: Remova o # da linha abaixo se quiser ver no terminal o que ele compara
-        # print(f"Tag: {tag} | Ref: {text_ref[i1:i2]} | Bel: {text_bel[j1:j2]}")
-
         if tag == 'equal':
             # Textos idênticos: checa EXCLUSIVAMENTE se o negrito divergiu
             for k in range(i2 - i1):
                 w_ref = words_ref[i1 + k]
                 w_bel = words_bel[j1 + k]
-                # Se apenas um tem formatação de negrito, é divergência
                 if w_ref["is_bold"] != w_bel["is_bold"]:
-                    paint_rect(doc_ref, w_ref["page"], w_ref["rect"], yellow)
-                    paint_rect(doc_bel, w_bel["page"], w_bel["rect"], yellow)
-                    
-        elif tag == 'replace':
-            # Proteção contra palavras divididas por espaços ocultos no PDF (ex: Stevens- Johnson)
-            ref_str = "".join([words_ref[x]["clean"] for x in range(i1, i2)])
-            bel_str = "".join([words_bel[x]["clean"] for x in range(j1, j2)])
-            
-            if ref_str == bel_str:
-                # O texto é matematicamente idêntico. Ignora divergência de texto.
-                # Resta verificar se houve alguma alteração de negrito no bloco.
-                ref_bold = any(words_ref[x]["is_bold"] for x in range(i1, i2))
-                bel_bold = any(words_bel[x]["is_bold"] for x in range(j1, j2))
-                if ref_bold != bel_bold:
-                    for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
-                    for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
-            else:
-                # Conteúdo realmente divergente
-                for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
-                for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
-                
-        elif tag == 'delete': # Faltou conteúdo na Belfar
-            for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
-                
-        elif tag == 'insert': # Sobrou conteúdo novo na Belfar
-            for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
+                    paint_rect(doc_ref, w_ref["page"], w_ref["rect"], yellow, opacity=0.9) # Marcado como 0.9
+                    paint_rect(doc_bel, w_bel["page"], w_bel["rect"], yellow, opacity=0.9)
+        else:
+            # DIVERGÊNCIA ENCONTRADA: Pinta ambos os lados para você nunca perder a diferença
+            # Pinta Referência
+            for i in range(i1, i2): 
+                if i < len(words_ref):
+                    paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow, opacity=0.9)
+            # Pinta Belfar
+            for j in range(j1, j2): 
+                if j < len(words_bel):
+                    paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow, opacity=0.9)
 def paint_blue_anvisa(doc, blue_rects):
     blue = (0, 0.5, 1)
     for page_idx, rect in blue_rects:
