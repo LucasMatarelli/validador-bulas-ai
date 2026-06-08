@@ -4,16 +4,15 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Validador Belfar Side-by-Side", layout="wide")
+st.set_page_config(page_title="Auditoria Belfar Enterprise", layout="wide")
 
 # ----------------- FUNÇÕES DE APOIO -----------------
 def clean_text(text):
     text = unicodedata.normalize('NFKD', text)
     return re.sub(r'[^\w\-]', '', text).lower().strip()
 
-# ----------------- MOTOR DE AUDITORIA (LOGIC) -----------------
 def get_divergences(doc_ref, doc_bel):
-    """Retorna lista de blocos divergentes sem tocar no PDF original."""
+    """Extrai texto e mapeia onde estão as divergências."""
     def get_words(doc):
         data = []
         for p_idx, page in enumerate(doc):
@@ -36,60 +35,57 @@ def get_divergences(doc_ref, doc_bel):
             divergentes.extend(words_bel[j1:j2])
     return divergentes
 
-# ----------------- MOTOR DE RENDERIZAÇÃO (VISUAL) -----------------
-def render_page_with_marks(doc, page_num, divergent_words):
-    """Renderiza a página como imagem com marcações amarelas."""
-    if page_num >= len(doc): return None
-    
+def render_page_with_solid_marks(doc, page_num, divergent_words):
+    """Desenha o marcatexto sólido na imagem, sem corromper o PDF original."""
     page = doc.load_page(page_num)
     
-    # Adiciona anotações na página em memória temporária
+    # Adiciona a anotação amarela sólida
     for word in divergent_words:
         if word['page'] == page_num:
             annot = page.add_highlight_annot(word['rect'])
-            annot.set_colors(stroke=(1, 1, 0)) # Amarelo (R,G,B)
-            annot.set_opacity(0.8)             # Opacidade alta (sólido)
+            annot.set_colors(stroke=(1, 1, 0)) # Amarelo puro
+            annot.set_opacity(0.8)             # Opacidade alta (Sólido!)
             annot.update()
             
-    # Gera a imagem
+    # Gera a imagem da página já com a anotação
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
     img_bytes = pix.tobytes("png")
     
-    # Limpa as anotações para não corromper o documento na próxima renderização
+    # IMPORTANTE: Deleta a anotação imediatamente para limpar a página original
     for annot in page.annots():
         page.delete_annot(annot)
         
     return img_bytes
 
-# ----------------- UI -----------------
-st.title("🛡️ Auditoria de Bulas: Comparação Lado a Lado")
+# ----------------- INTERFACE -----------------
+st.title("🛡️ Auditoria Visual Enterprise")
 
-col1, col2 = st.columns(2)
-f1 = col1.file_uploader("📜 Bula Referência", type=["pdf"])
-f2 = col2.file_uploader("📜 Bula BELFAR", type=["pdf"])
+col_f1, col_f2 = st.columns(2)
+f1 = col_f1.file_uploader("📜 Bula Referência", type=["pdf"])
+f2 = col_f2.file_uploader("📜 Bula BELFAR", type=["pdf"])
 
 if f1 and f2:
     doc_ref = fitz.open("pdf", f1.getvalue())
     doc_bel = fitz.open("pdf", f2.getvalue())
     
-    if st.button("🚀 Iniciar Auditoria Visual"):
-        with st.spinner("Analisando divergências..."):
+    if st.button("🚀 Processar Auditoria"):
+        with st.spinner("Analisando..."):
             divs = get_divergences(doc_ref, doc_bel)
             st.session_state['divs'] = divs
             st.session_state['processed'] = True
 
     if st.session_state.get('processed'):
         max_pag = max(len(doc_ref), len(doc_bel))
-        st.write("### Auditoria Visual (Role para comparar)")
+        st.write("### Comparação Visual (Scroll Vertical)")
         
         for i in range(max_pag):
             st.divider()
             c_r, c_b = st.columns(2)
             
-            with c_r:
-                st.caption(f"Referência - Página {i+1}")
-                st.image(render_page_with_marks(doc_ref, i, st.session_state['divs']), use_container_width=True)
+            # Renderiza Referência
+            if i < len(doc_ref):
+                c_r.image(render_page_with_marks(doc_ref, i, st.session_state['divs']), use_container_width=True)
             
-            with c_b:
-                st.caption(f"BELFAR - Página {i+1}")
-                st.image(render_page_with_marks(doc_bel, i, st.session_state['divs']), use_container_width=True)
+            # Renderiza Belfar
+            if i < len(doc_bel):
+                c_b.image(render_page_with_marks(doc_bel, i, st.session_state['divs']), use_container_width=True)
