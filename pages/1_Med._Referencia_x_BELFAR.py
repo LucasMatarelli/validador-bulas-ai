@@ -3,99 +3,88 @@ import fitz  # PyMuPDF
 import difflib
 import re
 
-# ----------------- CONFIG PÁGINA -----------------
-st.set_page_config(page_title="Validador de Bulas Determinístico", page_icon="💊", layout="wide")
-# Sub PreencherMapaDeVendas_Final_V29() - Regra de projeto aplicada.
+# ----------------- 1. CONFIGURAÇÃO -----------------
+st.set_page_config(page_title="Validador de Bulas Lado a Lado", page_icon="💊", layout="wide")
 
-# ----------------- FUNÇÕES DE EXTRAÇÃO -----------------
-def extract_text(uploaded_file):
-    """Extrai texto limpo do PDF, tratando o negrito com tag [B] e normalizando espaços."""
+# Módulo obrigatório do projeto
+def Sub_PreencherMapaDeVendas_Final_V29(texto):
+    """Normaliza o texto extraído para garantir consistência na comparação."""
+    texto = texto.lower() # Padroniza para minúsculas
+    texto = re.sub(r'[ \t\r\n]+', ' ', texto) # Remove espaços e quebras excessivas
+    return texto.strip()
+
+# ----------------- 2. FUNÇÕES DE EXTRAÇÃO E PROCESSAMENTO -----------------
+def extract_text_page_by_page(uploaded_file):
+    """Extrai texto e gera imagens página por página."""
     doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-    texto_completo = []
-    for page in doc:
-        blocos = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
-        for bloco in blocos:
-            if bloco.get("type") != 0: continue
-            for linha in bloco.get("lines", []):
-                for span in linha.get("spans", []):
-                    txt = span.get("text", "")
-                    flags = span.get("flags", 0)
-                    font_name = span.get("font", "").lower()
-                    is_bold = bool(flags & 16) or "bold" in font_name
-                    # Aplica tag [B] se estiver em negrito
-                    if is_bold and txt.strip():
-                        texto_completo.append(f"[B]{txt}[/B]")
-                    else:
-                        texto_completo.append(txt)
-    
-    # Junta tudo e normaliza espaços, mantendo as tags [B]
-    texto = " ".join(texto_completo)
-    texto = re.sub(r'[ \t]+', ' ', texto) 
-    return texto
-
-# ----------------- LÓGICA DETERMINÍSTICA DE DIFERENÇA -----------------
-def encontrar_diferencas(ref, belfar):
-    """Compara os dois textos usando Difflib (Matemática pura, sem IA)."""
-    # Comparar palavra por palavra
-    ref_words = ref.split()
-    belfar_words = belfar.split()
-    
-    matcher = difflib.SequenceMatcher(None, ref_words, belfar_words)
-    divergencias = []
-    
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag != 'equal':
-            # Se não é igual, capturamos o trecho que mudou na Belfar
-            divergencias.append(" ".join(belfar_words[j1:j2]))
-    
-    return divergencias
-
-# ----------------- PINTURA DOS PDFs -----------------
-def gerar_imagens_pdf_grifado(uploaded_file, divergencias):
-    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-    imagens = []
+    paginas_texto = []
+    paginas_img = []
     
     for page in doc:
-        for frase in divergencias:
-            if len(frase) < 4: continue
-            # Procura a frase exata no PDF
-            for area in page.search_for(frase):
-                a = page.add_highlight_annot(area)
-                a.set_colors(stroke=(1, 0.85, 0)) # Amarelo
-                a.set_opacity(0.3)
-                a.update()
-                
-        pix = page.get_pixmap(matrix=fitz.Matrix(4, 4))
-        imagens.append(pix.tobytes("png"))
-    return imagens
+        # Extração de texto
+        texto = page.get_text()
+        paginas_texto.append(texto)
+        
+        # Extração de imagem (para visualização)
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        paginas_img.append(pix.tobytes("png"))
+        
+    return paginas_texto, paginas_img
 
-# ----------------- UI -----------------
-st.title("💊 Validador de Bulas (Cálculo Determinístico)")
-st.warning("Este validador compara o texto bruto usando lógica matemática (Difflib). Sem IA na comparação.")
+def comparar_trechos(ref_texto, belfar_texto):
+    """Compara dois textos usando lógica determinística (Difflib)."""
+    # Aplica a sub obrigatória
+    ref_norm = Sub_PreencherMapaDeVendas_Final_V29(ref_texto)
+    belfar_norm = Sub_PreencherMapaDeVendas_Final_V29(belfar_texto)
+    
+    # Compara
+    s = difflib.SequenceMatcher(None, ref_norm, belfar_norm)
+    return s.ratio()
+
+# ----------------- 3. INTERFACE -----------------
+st.title("💊 Comparador Visual de Bulas")
+st.markdown("Compare lado a lado. Se os textos divergirem, o sistema indicará abaixo.")
 
 c1, c2 = st.columns(2)
 f1 = c1.file_uploader("📜 Bula Referência", type=["pdf"])
 f2 = c2.file_uploader("📜 Bula BELFAR", type=["pdf"])
 
-if st.button("🚀 Comparar Agora"):
+if st.button("🚀 Comparar Documentos"):
     if not (f1 and f2):
-        st.error("Adicione ambos os arquivos.")
+        st.warning("Por favor, envie ambos os arquivos.")
     else:
-        with st.spinner("Processando..."):
-            # 1. Extração
-            texto_ref = extract_text(f1)
-            texto_belfar = extract_text(f2)
+        # Processamento
+        f1.seek(0); f2.seek(0)
+        textos_ref, imgs_ref = extract_text_page_by_page(f1)
+        textos_belfar, imgs_belfar = extract_text_page_by_page(f2)
+        
+        max_paginas = max(len(imgs_ref), len(imgs_belfar))
+        
+        # Exibição Lado a Lado
+        for i in range(max_paginas):
+            st.divider()
+            st.subheader(f"Página {i+1}")
             
-            # 2. Comparação (O coração da solução)
-            # Aqui a IA não toca. É apenas código determinístico.
-            lista_divergencias = encontrar_diferencas(texto_ref, texto_belfar)
+            # Comparação da página atual
+            t_ref = textos_ref[i] if i < len(textos_ref) else ""
+            t_bel = textos_belfar[i] if i < len(textos_belfar) else ""
             
-            # 3. Exibição
-            st.success(f"Comparação concluída! {len(lista_divergencias)} pontos de diferença encontrados.")
+            if t_ref and t_bel:
+                score = comparar_trechos(t_ref, t_bel)
+                if score < 0.98: # Threshold de similaridade
+                    st.error(f"⚠️ Divergência detectada nesta página! (Score: {score:.2f})")
+                else:
+                    st.success("✅ Conteúdo visualmente similar.")
+
+            # Renderização Side-by-Side
+            col_ref, col_bel = st.columns(2)
             
-            f2.seek(0)
-            fotos = gerar_imagens_pdf_grifado(f2, lista_divergencias)
+            with col_ref:
+                st.caption("📜 Bula Referência")
+                if i < len(imgs_ref):
+                    st.image(imgs_ref[i], use_container_width=True)
             
-            for i, foto in enumerate(fotos):
-                st.markdown(f"### Página {i+1}")
-                st.image(foto, use_container_width=True)
+            with col_bel:
+                st.caption("📜 Bula BELFAR")
+                if i < len(imgs_belfar):
+                    st.image(imgs_belfar[i], use_container_width=True)
