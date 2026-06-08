@@ -4,7 +4,8 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Auditoria Belfar Enterprise", layout="wide")
+# ----------------- CONFIGURAÇÃO -----------------
+st.set_page_config(page_title="Auditoria Visual Belfar", layout="wide")
 
 # ----------------- FUNÇÕES DE APOIO -----------------
 def clean_text(text):
@@ -35,23 +36,24 @@ def get_divergences(doc_ref, doc_bel):
             divergentes.extend(words_bel[j1:j2])
     return divergentes
 
-def render_page_with_solid_marks(doc, page_num, divergent_words):
-    """Desenha o marcatexto sólido na imagem, sem corromper o PDF original."""
+def render_page_with_marks(doc, page_num, divergent_words):
+    """Gera imagem da página com marcação amarela (sem editar o PDF original)."""
+    if page_num >= len(doc): return None
     page = doc.load_page(page_num)
     
-    # Adiciona a anotação amarela sólida
+    # Desenha o marcatexto sólido (amarelo)
     for word in divergent_words:
         if word['page'] == page_num:
             annot = page.add_highlight_annot(word['rect'])
-            annot.set_colors(stroke=(1, 1, 0)) # Amarelo puro
-            annot.set_opacity(0.8)             # Opacidade alta (Sólido!)
+            annot.set_colors(stroke=(1, 1, 0)) # Amarelo vibrante
+            annot.set_opacity(0.8)             # Sólido
             annot.update()
             
-    # Gera a imagem da página já com a anotação
+    # Gera a imagem
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
     img_bytes = pix.tobytes("png")
     
-    # IMPORTANTE: Deleta a anotação imediatamente para limpar a página original
+    # Limpa as anotações para não corromper o PDF original
     for annot in page.annots():
         page.delete_annot(annot)
         
@@ -60,32 +62,35 @@ def render_page_with_solid_marks(doc, page_num, divergent_words):
 # ----------------- INTERFACE -----------------
 st.title("🛡️ Auditoria Visual Enterprise")
 
-col_f1, col_f2 = st.columns(2)
-f1 = col_f1.file_uploader("📜 Bula Referência", type=["pdf"])
-f2 = col_f2.file_uploader("📜 Bula BELFAR", type=["pdf"])
+col1, col2 = st.columns(2)
+f1 = col1.file_uploader("📜 Bula Referência", type=["pdf"])
+f2 = col2.file_uploader("📜 Bula BELFAR", type=["pdf"])
 
 if f1 and f2:
     doc_ref = fitz.open("pdf", f1.getvalue())
     doc_bel = fitz.open("pdf", f2.getvalue())
     
     if st.button("🚀 Processar Auditoria"):
-        with st.spinner("Analisando..."):
+        with st.spinner("Auditando..."):
             divs = get_divergences(doc_ref, doc_bel)
             st.session_state['divs'] = divs
             st.session_state['processed'] = True
+            st.success("Auditoria pronta!")
 
     if st.session_state.get('processed'):
-        max_pag = max(len(doc_ref), len(doc_bel))
         st.write("### Comparação Visual (Scroll Vertical)")
+        max_pag = max(len(doc_ref), len(doc_bel))
         
         for i in range(max_pag):
             st.divider()
             c_r, c_b = st.columns(2)
             
-            # Renderiza Referência
+            # Referência
             if i < len(doc_ref):
+                c_r.caption(f"Referência - Página {i+1}")
                 c_r.image(render_page_with_marks(doc_ref, i, st.session_state['divs']), use_container_width=True)
             
-            # Renderiza Belfar
+            # Belfar
             if i < len(doc_bel):
+                c_b.caption(f"BELFAR - Página {i+1}")
                 c_b.image(render_page_with_marks(doc_bel, i, st.session_state['divs']), use_container_width=True)
