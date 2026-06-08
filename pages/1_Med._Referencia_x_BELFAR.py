@@ -115,6 +115,11 @@ def process_and_mark(doc_ref, doc_bel, words_ref, words_bel):
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
+            # Adicione isso dentro do loop que percorre os opcodes:
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                  print(f"Tag: {tag} | Ref: {text_ref[i1:i2]} | Belfar: {text_bel[j1:j2]}") # <--- ADICIONE ISSO
+                if tag == 'equal':
+        # ... resto do código
             # Textos idênticos: checa EXCLUSIVAMENTE se o negrito divergiu
             for k in range(i2 - i1):
                 w_ref = words_ref[i1 + k]
