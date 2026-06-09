@@ -8,8 +8,8 @@ import unicodedata
 def Sub_PreencherMapaDeVendas_Final_V29(texto):
     """Limpa pontuação e caracteres invisíveis do PDF, garantindo precisão matemática."""
     texto = unicodedata.normalize('NFKC', texto)
-    # Removemos pontuação, mas mantemos letras, números e hífens essenciais
-    texto_limpo = re.sub(r'[^\w\-]', '', texto)
+    # Mantemos letras (\w), marcadores visuais de tópicos (•, ▪, *, etc), travessões e o hífen (\-)
+    texto_limpo = re.sub(r'[^\w\–\—\•\▪\*\►\➢\>▼\-]', '', texto)
     return texto_limpo.lower().strip()
 
 # ----------------- 1. CONFIGURAÇÃO -----------------
@@ -138,7 +138,7 @@ def process_and_mark(doc_ref, doc_bel, words_ref, words_bel):
                     for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
                     for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
             else:
-                # Conteúdo realmente divergente (ex: Flagyl virou Flagimax)
+                # Conteúdo realmente divergente (ex: Flagyl virou Flagimax, ou "•" virou "-")
                 for i in range(i1, i2): paint_rect(doc_ref, words_ref[i]["page"], words_ref[i]["rect"], yellow)
                 for j in range(j1, j2): paint_rect(doc_bel, words_bel[j]["page"], words_bel[j]["rect"], yellow)
                 
